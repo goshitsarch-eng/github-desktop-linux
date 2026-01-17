@@ -4,6 +4,7 @@ import { DialogContent } from '../dialog'
 import { Checkbox, CheckboxValue } from '../lib/checkbox'
 import { RadioGroup } from '../lib/radio-group'
 import { assertNever } from '../../lib/fatal-error'
+import { enableFilteredChangesList } from '../../lib/feature-flag'
 
 interface IPromptsPreferencesProps {
   readonly confirmRepositoryRemoval: boolean
@@ -13,6 +14,8 @@ interface IPromptsPreferencesProps {
   readonly confirmCheckoutCommit: boolean
   readonly confirmForcePush: boolean
   readonly confirmUndoCommit: boolean
+  readonly askForConfirmationOnCommitFilteredChanges: boolean
+  readonly confirmCommitMessageOverride: boolean
   readonly showCommitLengthWarning: boolean
   readonly uncommittedChangesStrategy: UncommittedChangesStrategy
   readonly onConfirmDiscardChangesChanged: (checked: boolean) => void
@@ -26,6 +29,8 @@ interface IPromptsPreferencesProps {
   readonly onUncommittedChangesStrategyChanged: (
     value: UncommittedChangesStrategy
   ) => void
+  readonly onAskForConfirmationOnCommitFilteredChanges: (value: boolean) => void
+  readonly onConfirmCommitMessageOverrideChanged: (checked: boolean) => void
 }
 
 interface IPromptsPreferencesState {
@@ -36,6 +41,8 @@ interface IPromptsPreferencesState {
   readonly confirmCheckoutCommit: boolean
   readonly confirmForcePush: boolean
   readonly confirmUndoCommit: boolean
+  readonly askForConfirmationOnCommitFilteredChanges: boolean
+  readonly confirmCommitMessageOverride: boolean
   readonly uncommittedChangesStrategy: UncommittedChangesStrategy
 }
 
@@ -56,6 +63,9 @@ export class Prompts extends React.Component<
       confirmForcePush: this.props.confirmForcePush,
       confirmUndoCommit: this.props.confirmUndoCommit,
       uncommittedChangesStrategy: this.props.uncommittedChangesStrategy,
+      askForConfirmationOnCommitFilteredChanges:
+        this.props.askForConfirmationOnCommitFilteredChanges,
+      confirmCommitMessageOverride: this.props.confirmCommitMessageOverride,
     }
   }
 
@@ -111,6 +121,24 @@ export class Prompts extends React.Component<
 
     this.setState({ confirmUndoCommit: value })
     this.props.onConfirmUndoCommitChanged(value)
+  }
+
+  private onAskForConfirmationOnCommitFilteredChanges = (
+    event: React.FormEvent<HTMLInputElement>
+  ) => {
+    const value = event.currentTarget.checked
+
+    this.setState({ askForConfirmationOnCommitFilteredChanges: value })
+    this.props.onAskForConfirmationOnCommitFilteredChanges(value)
+  }
+
+  private onConfirmCommitMessageOverrideChanged = (
+    event: React.FormEvent<HTMLInputElement>
+  ) => {
+    const value = event.currentTarget.checked
+
+    this.setState({ confirmCommitMessageOverride: value })
+    this.props.onConfirmCommitMessageOverrideChanged(value)
   }
 
   private onConfirmRepositoryRemovalChanged = (
@@ -173,6 +201,24 @@ export class Prompts extends React.Component<
           renderRadioButtonLabelContents={this.renderSwitchBranchOptionLabel}
         />
       </div>
+    )
+  }
+
+  private renderCommittingFilteredChangesPrompt = () => {
+    if (!enableFilteredChangesList()) {
+      return
+    }
+
+    return (
+      <Checkbox
+        label="Committing changes hidden by filter"
+        value={
+          this.state.askForConfirmationOnCommitFilteredChanges
+            ? CheckboxValue.On
+            : CheckboxValue.Off
+        }
+        onChange={this.onAskForConfirmationOnCommitFilteredChanges}
+      />
     )
   }
 
@@ -247,6 +293,16 @@ export class Prompts extends React.Component<
               }
               onChange={this.onConfirmUndoCommitChanged}
             />
+            <Checkbox
+              label="Overriding commit message with generated message"
+              value={
+                this.state.confirmCommitMessageOverride
+                  ? CheckboxValue.On
+                  : CheckboxValue.Off
+              }
+              onChange={this.onConfirmCommitMessageOverrideChanged}
+            />
+            {this.renderCommittingFilteredChangesPrompt()}
           </div>
         </div>
         {this.renderSwitchBranchOptions()}

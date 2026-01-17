@@ -1,6 +1,7 @@
-import { ChildProcess } from 'child_process'
+import { spawn, ChildProcess } from 'child_process'
 import { assertNever } from '../fatal-error'
 import { parseEnumValue } from '../enum'
+import { pathExists } from '../../ui/lib/path-exists'
 import { FoundShell } from './shared'
 import {
   expandTargetPathArgument,
@@ -8,11 +9,11 @@ import {
   parseCustomIntegrationArguments,
   spawnCustomIntegration,
 } from '../custom-integration'
-import { pathExists, spawn } from '../helpers/linux'
 
 export enum Shell {
   Gnome = 'GNOME Terminal',
   GnomeConsole = 'GNOME Console',
+  Ptyxis = 'Ptyxis',
   Mate = 'MATE Terminal',
   Tilix = 'Tilix',
   Terminator = 'Terminator',
@@ -27,7 +28,7 @@ export enum Shell {
   Kitty = 'Kitty',
   LXTerminal = 'LXDE Terminal',
   Warp = 'Warp',
-  BlackBox = 'Black Box',
+  Ghostty = 'Ghostty',
 }
 
 export const Default = Shell.Gnome
@@ -46,6 +47,8 @@ function getShellPath(shell: Shell): Promise<string | null> {
       return getPathIfAvailable('/usr/bin/gnome-terminal')
     case Shell.GnomeConsole:
       return getPathIfAvailable('/usr/bin/kgx')
+    case Shell.Ptyxis:
+      return getPathIfAvailable('/usr/bin/ptyxis')
     case Shell.Mate:
       return getPathIfAvailable('/usr/bin/mate-terminal')
     case Shell.Tilix:
@@ -74,8 +77,8 @@ function getShellPath(shell: Shell): Promise<string | null> {
       return getPathIfAvailable('/usr/bin/lxterminal')
     case Shell.Warp:
       return getPathIfAvailable('/usr/bin/warp-terminal')
-    case Shell.BlackBox:
-      return getPathIfAvailable('/usr/bin/blackbox-terminal')
+    case Shell.Ghostty:
+      return getPathIfAvailable('/usr/bin/ghostty')
     default:
       return assertNever(shell, `Unknown shell: ${shell}`)
   }
@@ -87,6 +90,7 @@ export async function getAvailableShells(): Promise<
   const [
     gnomeTerminalPath,
     gnomeConsolePath,
+    ptyxisPath,
     mateTerminalPath,
     tilixPath,
     terminatorPath,
@@ -101,10 +105,11 @@ export async function getAvailableShells(): Promise<
     kittyPath,
     lxterminalPath,
     warpPath,
-    blackBoxPath,
+    ghosttyPath,
   ] = await Promise.all([
     getShellPath(Shell.Gnome),
     getShellPath(Shell.GnomeConsole),
+    getShellPath(Shell.Ptyxis),
     getShellPath(Shell.Mate),
     getShellPath(Shell.Tilix),
     getShellPath(Shell.Terminator),
@@ -119,7 +124,7 @@ export async function getAvailableShells(): Promise<
     getShellPath(Shell.Kitty),
     getShellPath(Shell.LXTerminal),
     getShellPath(Shell.Warp),
-    getShellPath(Shell.BlackBox),
+    getShellPath(Shell.Ghostty),
   ])
 
   const shells: Array<FoundShell<Shell>> = []
@@ -129,6 +134,10 @@ export async function getAvailableShells(): Promise<
 
   if (gnomeConsolePath) {
     shells.push({ shell: Shell.GnomeConsole, path: gnomeConsolePath })
+  }
+
+  if (ptyxisPath) {
+    shells.push({ shell: Shell.Ptyxis, path: ptyxisPath })
   }
 
   if (mateTerminalPath) {
@@ -187,8 +196,8 @@ export async function getAvailableShells(): Promise<
     shells.push({ shell: Shell.Warp, path: warpPath })
   }
 
-  if (blackBoxPath) {
-    shells.push({ shell: Shell.BlackBox, path: blackBoxPath })
+  if (ghosttyPath) {
+    shells.push({ shell: Shell.Ghostty, path: ghosttyPath })
   }
 
   return shells
@@ -207,8 +216,13 @@ export function launch(
     case Shell.Terminator:
     case Shell.XFCE:
     case Shell.Alacritty:
-    case Shell.BlackBox:
       return spawn(foundShell.path, ['--working-directory', path])
+    case Shell.Ptyxis:
+      return spawn(foundShell.path, [
+        '--new-window',
+        '--working-directory',
+        path,
+      ])
     case Shell.Urxvt:
       return spawn(foundShell.path, ['-cd', path])
     case Shell.Konsole:
@@ -224,6 +238,7 @@ export function launch(
     case Shell.Kitty:
       return spawn(foundShell.path, ['--single-instance', '--directory', path])
     case Shell.LXTerminal:
+    case Shell.Ghostty:
       return spawn(foundShell.path, ['--working-directory=' + path])
     case Shell.Warp:
       return spawn(foundShell.path, [], { cwd: path })

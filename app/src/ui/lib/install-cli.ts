@@ -1,6 +1,6 @@
 import * as Path from 'path'
 
-import * as fsAdmin from 'fs-admin-forked'
+import * as fsAdmin from 'fs-admin'
 import { mkdir, readlink, symlink, unlink } from 'fs/promises'
 
 /** The path for the installed command line tool. */

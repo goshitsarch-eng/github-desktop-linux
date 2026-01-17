@@ -12,10 +12,11 @@ import { assertNever } from '../fatal-error'
 import * as GitPerf from '../../ui/lib/git-perf'
 import * as Path from 'path'
 import { isErrnoException } from '../errno-exception'
-import { getFileFromExceedsError } from '../helpers/regex'
 import { merge } from '../merge'
 import { withTrampolineEnv } from '../trampoline/trampoline-environment'
 import { createTailStream } from './create-tail-stream'
+import { createTerminalStream } from '../create-terminal-stream'
+import { kStringMaxLength } from 'buffer'
 
 export const coerceToString = (
   value: string | Buffer,
@@ -80,9 +81,6 @@ export interface IGitResult extends DugiteResult {
   /** The human-readable error description, based on `gitError`. */
   readonly gitErrorDescription: string | null
 
-  /** Both stdout and stderr combined. */
-  readonly combinedOutput: string
-
   /**
    * The path that the Git command was executed from, i.e. the
    * process working directory (not to be confused with the Git
@@ -129,15 +127,19 @@ export class GitError extends Error {
    */
   public readonly isRawMessage: boolean
 
-  public constructor(result: IGitResult, args: ReadonlyArray<string>) {
+  public constructor(
+    result: IGitResult,
+    args: ReadonlyArray<string>,
+    terminalOutput: string
+  ) {
     let rawMessage = true
     let message
 
     if (result.gitErrorDescription) {
       message = result.gitErrorDescription
       rawMessage = false
-    } else if (result.combinedOutput.length > 0) {
-      message = result.combinedOutput
+    } else if (terminalOutput.length > 0) {
+      message = terminalOutput
     } else if (result.stderr.length) {
       message = coerceToString(result.stderr)
     } else if (result.stdout.length) {
@@ -154,6 +156,16 @@ export class GitError extends Error {
     this.args = args
     this.isRawMessage = rawMessage
   }
+}
+
+export const isGitError = (
+  e: unknown,
+  parsedError?: DugiteError
+): e is GitError => {
+  return (
+    e instanceof GitError &&
+    (parsedError === undefined || e.result.gitError === parsedError)
+  )
 }
 
 /**
@@ -196,22 +208,34 @@ export async function git(
   const defaultOptions: IGitExecutionOptions = {
     successExitCodes: new Set([0]),
     expectedErrors: new Set(),
+    maxBuffer: options?.encoding === 'buffer' ? Infinity : kStringMaxLength,
   }
 
   const opts = { ...defaultOptions, ...options }
 
-  let combinedOutput = ''
+  // The combined contents of stdout and stderr with some light processing
+  // applied to remove redundant lines caused by Git's use of `\r` to "erase"
+  // the current line while writing progress output. See createTerminalOutput.
+  //
+  // Note: The output is capped at a maximum of 256kb and the sole intent of
+  // this property is to provide "terminal-like" output to the user when a Git
+  // command fails.
+  let terminalOutput = ''
 
   // Keep at most 256kb of combined stderr and stdout output. This is used
   // to provide more context in error messages.
   opts.processCallback = process => {
-    const ts = createTailStream(256 * 1024, { encoding: 'utf8' }).on(
-      'data',
-      data => (combinedOutput = data)
-    )
-    process.stdout?.pipe(ts, { end: false })
-    process.stderr?.pipe(ts, { end: false })
-    process.on('close', () => ts.end())
+    const terminalStream = createTerminalStream()
+    const tailStream = createTailStream(256 * 1024, { encoding: 'utf8' })
+
+    terminalStream
+      .pipe(tailStream)
+      .on('data', (data: string) => (terminalOutput = data))
+      .on('error', e => log.error(`Terminal output error`, e))
+
+    process.stdout?.pipe(terminalStream, { end: false })
+    process.stderr?.pipe(terminalStream, { end: false })
+    process.on('close', () => terminalStream.end())
     options?.processCallback?.(process)
   }
 
@@ -235,6 +259,21 @@ export async function git(
         // the operation.
         if (isErrnoException(err)) {
           throw new Error(`Failed to execute ${name}: ${err.code}`)
+        }
+
+        if (isMaxBufferExceededError(err)) {
+          throw new ExecError(
+            `${err.message} for ${name}`,
+            err.stdout,
+            err.stderr,
+            // Dugite stores the original Node error in the cause property, by
+            // passing that along we ensure that all we're doing here is
+            // changing the error message (and capping the stack but that's
+            // okay since we know exactly where this error is coming from).
+            // The null coalescing here is a safety net in case dugite's
+            // behavior changes from underneath us.
+            err.cause ?? err
+          )
         }
 
         throw err
@@ -261,7 +300,6 @@ export async function git(
         ...result,
         gitError,
         gitErrorDescription,
-        combinedOutput,
         path,
       }
 
@@ -280,9 +318,9 @@ export async function git(
         `\`git ${args.join(' ')}\` exited with an unexpected code: ${exitCode}.`
       )
 
-      if (combinedOutput.length > 0) {
+      if (terminalOutput.length > 0) {
         // Leave even less of the combined output in the log
-        errorMessage.push(combinedOutput.slice(10240))
+        errorMessage.push(terminalOutput.slice(-1024))
       }
 
       if (gitError !== null) {
@@ -293,17 +331,7 @@ export async function git(
 
       log.error(errorMessage.join('\n'))
 
-      if (gitError === DugiteError.PushWithFileSizeExceedingLimit) {
-        const files = getFileFromExceedsError(
-          coerceToString(result.stderr)
-        ).join('\n')
-
-        if (files !== '') {
-          gitResult.gitErrorDescription += '\n\nFile causing error:\n\n' + files
-        }
-      }
-
-      throw new GitError(gitResult, args)
+      throw new GitError(gitResult, args, terminalOutput)
     },
     path,
     options?.isBackgroundTask ?? false,
@@ -503,6 +531,7 @@ export function getDescriptionForError(
     case DugiteError.MergeCommitNoMainlineOption:
     case DugiteError.UnsafeDirectory:
     case DugiteError.PathExistsButNotInRef:
+    case DugiteError.PushWithSecretDetected:
       return null
     default:
       return assertNever(error, `Unknown error: ${error}`)

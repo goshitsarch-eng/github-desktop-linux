@@ -11,7 +11,7 @@ import {
   SignInStore,
   UpstreamRemoteName,
 } from '.'
-import { Account } from '../../models/account'
+import { Account, isDotComAccount } from '../../models/account'
 import { AppMenu, IMenu } from '../../models/app-menu'
 import { Author } from '../../models/author'
 import { Branch, BranchType, IAheadBehind } from '../../models/branch'
@@ -80,7 +80,6 @@ import {
   getPersistedThemeName,
   setPersistedTheme,
 } from '../../ui/lib/application-theme'
-import { TitleBarStyle } from '../../ui/lib/title-bar-style'
 import {
   getAppMenu,
   getCurrentWindowState,
@@ -92,19 +91,17 @@ import {
   sendWillQuitEvenIfUpdatingSync,
   quitApp,
   sendCancelQuittingSync,
-  saveTitleBarStyle,
-  getTitleBarStyle,
 } from '../../ui/main-process-proxy'
 import {
   API,
   getAccountForEndpoint,
-  getDotComAPIEndpoint,
   IAPIOrganization,
   getEndpointForRepository,
   IAPIFullRepository,
   IAPIComment,
   IAPIRepoRuleset,
   deleteToken,
+  IAPICreatePushProtectionBypassResponse,
 } from '../api'
 import { shell } from '../app-shell'
 import {
@@ -125,6 +122,7 @@ import {
   ChangesWorkingDirectorySelection,
   isRebaseConflictState,
   isCherryPickConflictState,
+  IFileListFilterState,
   isMergeConflictState,
   IMultiCommitOperationState,
   IConstrainedValue,
@@ -187,6 +185,8 @@ import {
   getBranchMergeBaseDiff,
   checkoutCommit,
   getRemoteURL,
+  getGlobalConfigPath,
+  getFilesDiffText,
 } from '../git'
 import {
   installGlobalLFSFilters,
@@ -245,7 +245,10 @@ import {
 } from './updates/changes-state'
 import { ManualConflictResolution } from '../../models/manual-conflict-resolution'
 import { BranchPruner } from './helpers/branch-pruner'
-import { enableCustomIntegration } from '../feature-flag'
+import {
+  enableCommitMessageGeneration,
+  enableCustomIntegration,
+} from '../feature-flag'
 import { Banner, BannerType } from '../../models/banner'
 import { ComputedAction } from '../../models/computed-action'
 import {
@@ -344,6 +347,8 @@ import {
   ICustomIntegration,
   migratedCustomIntegration,
 } from '../custom-integration'
+import { updateStore } from '../../ui/lib/update-store'
+import { BypassReasonType } from '../../ui/secret-scanning/bypass-push-protection-dialog'
 
 const LastSelectedRepositoryIDKey = 'last-selected-repository-id'
 
@@ -381,6 +386,8 @@ const confirmDiscardStashDefault: boolean = true
 const confirmCheckoutCommitDefault: boolean = true
 const askForConfirmationOnForcePushDefault = true
 const confirmUndoCommitDefault: boolean = true
+const confirmCommitFilteredChangesDefault: boolean = true
+const confirmCommitMessageOverrideDefault: boolean = true
 const askToMoveToApplicationsFolderKey: string = 'askToMoveToApplicationsFolder'
 const confirmRepoRemovalKey: string = 'confirmRepoRemoval'
 const showCommitLengthWarningKey: string = 'showCommitLengthWarning'
@@ -391,6 +398,9 @@ const confirmDiscardChangesPermanentlyKey: string =
   'confirmDiscardChangesPermanentlyKey'
 const confirmForcePushKey: string = 'confirmForcePush'
 const confirmUndoCommitKey: string = 'confirmUndoCommit'
+const confirmCommitFilteredChangesKey: string =
+  'confirmCommitFilteredChangesKey'
+const confirmCommitMessageOverrideKey: string = 'confirmCommitMessageOverride'
 
 const uncommittedChangesStrategyKey = 'uncommittedChangesStrategyKind'
 
@@ -444,6 +454,15 @@ export const underlineLinksDefault = true
 
 export const showDiffCheckMarksDefault = true
 export const showDiffCheckMarksKey = 'diff-check-marks-visible'
+
+const commitMessageGenerationDisclaimerLastSeenKey =
+  'commit-message-generation-disclaimer-last-seen'
+
+const commitMessageGenerationButtonClickedKey =
+  'commit-message-generation-button-clicked'
+
+export const showChangesFilterKey = 'show-changes-filter'
+export const showChangesFilterDefault = true
 
 export class AppStore extends TypedBaseStore<IAppState> {
   private readonly gitStoreCache: GitStoreCache
@@ -520,6 +539,10 @@ export class AppStore extends TypedBaseStore<IAppState> {
   private confirmCheckoutCommit: boolean = confirmCheckoutCommitDefault
   private askForConfirmationOnForcePush = askForConfirmationOnForcePushDefault
   private confirmUndoCommit: boolean = confirmUndoCommitDefault
+  private confirmCommitFilteredChanges: boolean =
+    confirmCommitFilteredChangesDefault
+  private confirmCommitMessageOverride: boolean =
+    confirmCommitMessageOverrideDefault
   private imageDiffType: ImageDiffType = imageDiffTypeDefault
   private hideWhitespaceInChangesDiff: boolean =
     hideWhitespaceInChangesDiffDefault
@@ -556,7 +579,6 @@ export class AppStore extends TypedBaseStore<IAppState> {
   private selectedTheme = ApplicationTheme.System
   private currentTheme: ApplicableTheme = ApplicationTheme.Light
   private selectedTabSize = tabSizeDefault
-  private titleBarStyle: TitleBarStyle = 'native'
 
   private useWindowsOpenSSH: boolean = false
 
@@ -593,6 +615,11 @@ export class AppStore extends TypedBaseStore<IAppState> {
   private cachedRepoRulesets = new Map<number, IAPIRepoRuleset>()
 
   private underlineLinks: boolean = underlineLinksDefault
+
+  private commitMessageGenerationDisclaimerLastSeen: number | null = null
+  private commitMessageGenerationButtonClicked: boolean = false
+
+  private showChangesFilter: boolean = false
 
   public constructor(
     private readonly gitHubUserStore: GitHubUserStore,
@@ -907,6 +934,10 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
     this.apiRepositoriesStore.onDidUpdate(() => this.emitUpdate())
     this.apiRepositoriesStore.onDidError(error => this.emitError(error))
+
+    // updateStore is a global, App.tsx handles most of it but we carry the
+    // UpdateState in the AppState so we need to emit whenever it updates.
+    updateStore.onDidChange(() => this.emitUpdate())
   }
 
   /** Load the emoji from disk. */
@@ -1044,6 +1075,10 @@ export class AppStore extends TypedBaseStore<IAppState> {
       askForConfirmationOnCheckoutCommit: this.confirmCheckoutCommit,
       askForConfirmationOnForcePush: this.askForConfirmationOnForcePush,
       askForConfirmationOnUndoCommit: this.confirmUndoCommit,
+      askForConfirmationOnCommitFilteredChanges:
+        this.confirmCommitFilteredChanges,
+      askForConfirmationOnCommitMessageOverride:
+        this.confirmCommitMessageOverride,
       uncommittedChangesStrategy: this.uncommittedChangesStrategy,
       selectedExternalEditor: this.selectedExternalEditor,
       imageDiffType: this.imageDiffType,
@@ -1059,7 +1094,6 @@ export class AppStore extends TypedBaseStore<IAppState> {
       selectedTheme: this.selectedTheme,
       currentTheme: this.currentTheme,
       selectedTabSize: this.selectedTabSize,
-      titleBarStyle: this.titleBarStyle,
       apiRepositories: this.apiRepositoriesStore.getState(),
       useWindowsOpenSSH: this.useWindowsOpenSSH,
       showCommitLengthWarning: this.showCommitLengthWarning,
@@ -1080,6 +1114,12 @@ export class AppStore extends TypedBaseStore<IAppState> {
       cachedRepoRulesets: this.cachedRepoRulesets,
       underlineLinks: this.underlineLinks,
       showDiffCheckMarks: this.showDiffCheckMarks,
+      updateState: updateStore.state,
+      commitMessageGenerationDisclaimerLastSeen:
+        this.commitMessageGenerationDisclaimerLastSeen,
+      commitMessageGenerationButtonClicked:
+        this.commitMessageGenerationButtonClicked,
+      showChangesFilter: this.showChangesFilter,
     }
   }
 
@@ -2215,6 +2255,16 @@ export class AppStore extends TypedBaseStore<IAppState> {
       confirmUndoCommitDefault
     )
 
+    this.confirmCommitFilteredChanges = getBoolean(
+      confirmCommitFilteredChangesKey,
+      confirmCommitFilteredChangesDefault
+    )
+
+    this.confirmCommitMessageOverride = getBoolean(
+      confirmCommitMessageOverrideKey,
+      confirmCommitMessageOverrideDefault
+    )
+
     this.uncommittedChangesStrategy =
       getEnum(uncommittedChangesStrategyKey, UncommittedChangesStrategy) ??
       defaultUncommittedChangesStrategy
@@ -2265,8 +2315,6 @@ export class AppStore extends TypedBaseStore<IAppState> {
       this.emitUpdate()
     })
 
-    this.titleBarStyle = await getTitleBarStyle()
-
     this.lastThankYou = getObject<ILastThankYou>(lastThankYouKey)
 
     this.useCustomEditor =
@@ -2303,6 +2351,19 @@ export class AppStore extends TypedBaseStore<IAppState> {
       showDiffCheckMarksDefault
     )
 
+    this.commitMessageGenerationDisclaimerLastSeen =
+      getNumber(commitMessageGenerationDisclaimerLastSeenKey) ?? null
+
+    this.commitMessageGenerationButtonClicked = getBoolean(
+      commitMessageGenerationButtonClickedKey,
+      false
+    )
+
+    this.showChangesFilter = getBoolean(
+      showChangesFilterKey,
+      showChangesFilterDefault
+    )
+
     this.emitUpdateNow()
 
     this.accountsStore.refresh()
@@ -2325,13 +2386,22 @@ export class AppStore extends TypedBaseStore<IAppState> {
     // Start with all the available width
     let available = window.innerWidth
 
+    // // The tutorial currently has a fixed-width sidebar which we have to account
+    // // for so it makes sense to limit the width of the file list in order to
+    // // give the tutorial enough space to show its content.
+    const tutorialMinWidth =
+      this.currentOnboardingTutorialStep === TutorialStep.NotApplicable
+        ? 0
+        : 650
+
     // Working our way from left to right (i.e. giving priority to the leftmost
     // pane when we need to constrain the width)
     //
     // 220 was determined as the minimum value since it is the smallest width
     // that will still fit the placeholder text in the branch selector textbox
     // of the history tab
-    const maxSidebarWidth = available - toolbarButtonsMinWidth
+    const maxSidebarWidth =
+      available - Math.max(toolbarButtonsMinWidth, tutorialMinWidth)
     this.sidebarWidth = constrain(this.sidebarWidth, 220, maxSidebarWidth)
 
     // Now calculate the width we have left to distribute for the other panes
@@ -2520,6 +2590,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
       isStashedChangesVisible,
       hasCurrentPullRequest: currentPullRequest !== null,
       askForConfirmationWhenStashingAllChanges,
+      isChangesFilterVisible: this.showChangesFilter,
     })
   }
 
@@ -3310,6 +3381,10 @@ export class AppStore extends TypedBaseStore<IAppState> {
       this.statsStore.increment('partialCommits')
     }
 
+    if (context.messageGeneratedByCopilot === true) {
+      this.statsStore.increment('generateCommitMessageUsedVerbatimCount')
+    }
+
     if (isAmend) {
       this.statsStore.recordAmendCommitSuccessful(selectedFiles.length > 0)
     }
@@ -3322,7 +3397,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
     const account = getAccountForRepository(this.accounts, repository)
     if (repository.gitHubRepository !== null) {
       if (account !== null) {
-        if (account.endpoint === getDotComAPIEndpoint()) {
+        if (isDotComAccount(account)) {
           this.statsStore.increment('dotcomCommits')
         } else {
           this.statsStore.increment('enterpriseCommits')
@@ -3373,13 +3448,25 @@ export class AppStore extends TypedBaseStore<IAppState> {
   /** This shouldn't be called directly. See `Dispatcher`. */
   public _changeFileIncluded(
     repository: Repository,
-    file: WorkingDirectoryFileChange,
+    file:
+      | WorkingDirectoryFileChange
+      | ReadonlyArray<WorkingDirectoryFileChange>,
     include: boolean
   ): Promise<void> {
-    const selection = include
-      ? file.selection.withSelectAll()
-      : file.selection.withSelectNone()
-    this.updateWorkingDirectoryFileSelection(repository, file, selection)
+    const files = Array.isArray(file) ? file : [file]
+    const modifiedIds = new Set<string>(files.map(f => f.id))
+
+    this.repositoryStateCache.updateChangesState(repository, state => {
+      const workingDirectory = WorkingDirectoryStatus.fromFiles(
+        state.workingDirectory.files.map(f =>
+          modifiedIds.has(f.id) ? f.withIncludeAll(include) : f
+        )
+      )
+
+      return { workingDirectory }
+    })
+
+    this.emitUpdate()
     return Promise.resolve()
   }
 
@@ -4688,6 +4775,31 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }
   }
 
+  private async withIsGeneratingCommitMessage(
+    repository: Repository,
+    fn: () => Promise<boolean>
+  ): Promise<boolean> {
+    const state = this.repositoryStateCache.get(repository)
+    // ensure the user doesn't try and commit again
+    if (state.isGeneratingCommitMessage) {
+      return false
+    }
+
+    this.repositoryStateCache.update(repository, () => ({
+      isGeneratingCommitMessage: true,
+    }))
+    this.emitUpdate()
+
+    try {
+      return await fn()
+    } finally {
+      this.repositoryStateCache.update(repository, () => ({
+        isGeneratingCommitMessage: false,
+      }))
+      this.emitUpdate()
+    }
+  }
+
   private async withPushPullFetch(
     repository: Repository,
     fn: () => Promise<void>
@@ -5339,6 +5451,105 @@ export class AppStore extends TypedBaseStore<IAppState> {
     return gitStore.setCommitMessage(message)
   }
 
+  public async _promptOverrideWithGeneratedCommitMessage(
+    repository: Repository,
+    filesSelected: ReadonlyArray<WorkingDirectoryFileChange>
+  ): Promise<void> {
+    if (!this.confirmCommitMessageOverride) {
+      // If user has disabled the confirmation, directly generate commit message
+      await this._generateCommitMessage(repository, filesSelected)
+      return
+    }
+
+    return this._showPopup({
+      type: PopupType.GenerateCommitMessageOverrideWarning,
+      repository,
+      filesSelected,
+    })
+  }
+
+  public _updateCommitMessageGenerationDisclaimerLastSeen(): void {
+    this.commitMessageGenerationDisclaimerLastSeen = Date.now()
+    setNumber(
+      commitMessageGenerationDisclaimerLastSeenKey,
+      this.commitMessageGenerationDisclaimerLastSeen
+    )
+    this.emitUpdate()
+  }
+
+  public _setCommitMessageGenerationButtonClicked(): void {
+    if (!this.commitMessageGenerationButtonClicked) {
+      this.commitMessageGenerationButtonClicked = true
+      setBoolean(commitMessageGenerationButtonClickedKey, true)
+      this.emitUpdate()
+    }
+  }
+
+  public async _generateCommitMessage(
+    repository: Repository,
+    filesSelected: ReadonlyArray<WorkingDirectoryFileChange>
+  ): Promise<boolean> {
+    const account = this.getState().accounts.find(enableCommitMessageGeneration)
+
+    if (!account) {
+      return false
+    }
+
+    this._setCommitMessageGenerationButtonClicked()
+
+    if (
+      !this.commitMessageGenerationDisclaimerLastSeen ||
+      offsetFromNow(-30, 'days') >
+        this.commitMessageGenerationDisclaimerLastSeen
+    ) {
+      await this._showPopup({
+        type: PopupType.GenerateCommitMessageDisclaimer,
+        repository,
+        filesSelected,
+      })
+      return false
+    }
+
+    return this.withIsGeneratingCommitMessage(repository, async () => {
+      // If user is amending a commit, we want to use the commit
+      // to amend as the base for the commit message generation.
+      const commitToAmend =
+        this.repositoryStateCache.get(repository)?.commitToAmend?.sha ??
+        undefined
+      const diff = await getFilesDiffText(
+        repository,
+        filesSelected,
+        commitToAmend ? `${commitToAmend}^` : undefined
+      )
+      if (!diff) {
+        return false
+      }
+
+      const api = API.fromAccount(account)
+      try {
+        const response = await api.getDiffChangesCommitMessage(diff)
+
+        this._setCommitMessage(repository, {
+          summary: response.title,
+          description: response.description,
+          timestamp: Date.now(),
+          generatedByCopilot: true,
+        })
+
+        this.statsStore.increment('generateCommitMessageCount')
+      } catch (e) {
+        this.emitError(
+          new ErrorWithMetadata(e, {
+            repository,
+          })
+        )
+        return false
+      }
+
+      return true
+    })
+  }
+
   /**
    * Set the global application menu.
    *
@@ -5637,6 +5848,12 @@ export class AppStore extends TypedBaseStore<IAppState> {
     return shell.openExternal(url)
   }
 
+  public async _editGlobalGitConfig() {
+    await getGlobalConfigPath()
+      .then(p => this._openInExternalEditor(p))
+      .catch(e => log.error('Could not open global Git config for editing', e))
+  }
+
   /** Open a path to a repository or file using the user's configured editor */
   public async _openInExternalEditor(fullPath: string): Promise<void> {
     const { selectedExternalEditor, useCustomEditor, customEditor } =
@@ -5765,6 +5982,26 @@ export class AppStore extends TypedBaseStore<IAppState> {
   public _setConfirmUndoCommitSetting(value: boolean): Promise<void> {
     this.confirmUndoCommit = value
     setBoolean(confirmUndoCommitKey, value)
+
+    this.emitUpdate()
+
+    return Promise.resolve()
+  }
+
+  public _setConfirmCommitFilteredChanges(value: boolean): Promise<void> {
+    this.confirmCommitFilteredChanges = value
+    setBoolean(confirmCommitFilteredChangesKey, value)
+
+    this.emitUpdate()
+
+    return Promise.resolve()
+  }
+
+  public _setConfirmCommitMessageOverrideSetting(
+    value: boolean
+  ): Promise<void> {
+    this.confirmCommitMessageOverride = value
+    setBoolean(confirmCommitMessageOverrideKey, value)
 
     this.emitUpdate()
 
@@ -6710,14 +6947,6 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }
 
     return Promise.resolve()
-  }
-
-  /*
-   * Set the title bar style for the application
-   */
-  public _setTitleBarStyle(titleBarStyle: TitleBarStyle) {
-    this.titleBarStyle = titleBarStyle
-    return saveTitleBarStyle(titleBarStyle)
   }
 
   public async _resolveCurrentEditor() {
@@ -8129,6 +8358,99 @@ export class AppStore extends TypedBaseStore<IAppState> {
       setBoolean(showDiffCheckMarksKey, showDiffCheckMarks)
       this.emitUpdate()
     }
+  }
+
+  public _updateFileListFilter(
+    repository: Repository,
+    filterUpdate: Partial<IFileListFilterState>
+  ) {
+    this.repositoryStateCache.updateChangesState(repository, state => ({
+      fileListFilter: {
+        ...state.fileListFilter,
+        ...filterUpdate,
+      },
+    }))
+    this.emitUpdate()
+  }
+
+  public _setChangesListFilterText(repository: Repository, filterText: string) {
+    this._updateFileListFilter(repository, { filterText })
+  }
+
+  public _setIncludedChangesInCommitFilter(
+    repository: Repository,
+    isIncludedInCommit: boolean
+  ) {
+    this._updateFileListFilter(repository, { isIncludedInCommit })
+  }
+
+  public _setFilterNewFiles(repository: Repository, isNewFile: boolean) {
+    this._updateFileListFilter(repository, { isNewFile })
+  }
+
+  public _setFilterModifiedFiles(
+    repository: Repository,
+    isModifiedFile: boolean
+  ) {
+    this._updateFileListFilter(repository, { isModifiedFile })
+  }
+
+  public _setFilterDeletedFiles(
+    repository: Repository,
+    isDeletedFile: boolean
+  ) {
+    this._updateFileListFilter(repository, { isDeletedFile })
+  }
+
+  public _setFilterExcludedFiles(
+    repository: Repository,
+    isExcludedFromCommit: boolean
+  ) {
+    this._updateFileListFilter(repository, { isExcludedFromCommit })
+  }
+
+  public async _createPushProtectionBypass(
+    reason: BypassReasonType,
+    placeholderId: string,
+    bypassURL: string
+  ): Promise<IAPICreatePushProtectionBypassResponse | null> {
+    const repository = this.selectedRepository
+    if (
+      repository === null ||
+      repository instanceof CloningRepository ||
+      isRepositoryWithGitHubRepository(repository) === false
+    ) {
+      log.error('[_createPushProtectionBypass] - No GitHub repository selected')
+      return null
+    }
+
+    const { endpoint, name, owner } = repository.gitHubRepository
+
+    const account = getAccountForEndpoint(this.accounts, endpoint)
+
+    if (account === null) {
+      log.error(
+        `[_createPushProtectionBypass] - No account found for endpoint - ${endpoint}`
+      )
+      return null
+    }
+
+    const api = API.fromAccount(account)
+
+    return api.createPushProtectionBypass(
+      owner.login,
+      name,
+      reason,
+      placeholderId,
+      bypassURL
+    )
+  }
+
+  public _toggleChangesFilterVisibility() {
+    this.showChangesFilter = !this.showChangesFilter
+    setBoolean(showChangesFilterKey, this.showChangesFilter)
+    this.updateMenuLabelsForSelectedRepository()
+    this.emitUpdate()
   }
 }
 

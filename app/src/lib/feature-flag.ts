@@ -1,3 +1,5 @@
+import { Account } from '../models/account'
+
 const Disable = false
 
 /**
@@ -27,6 +29,17 @@ function enableDevelopmentFeatures(): boolean {
 function enableBetaFeatures(): boolean {
   return enableDevelopmentFeatures() || __RELEASE_CHANNEL__ === 'beta'
 }
+
+/**
+ * Should the app show menu items that are used for testing various parts of the
+ * UI
+ *
+ * For our own testing purposes, this will likely remain enabled. But, sometimes
+ * we may want to create a test release for a user to test a fix in which case
+ * they should not need access to the test menu items.
+ */
+export const enableTestMenuItems = () =>
+  enableDevelopmentFeatures() || __RELEASE_CHANNEL__ === 'test'
 
 /** Should git pass `--recurse-submodules` when performing operations? */
 export function enableRecurseSubmodulesFlag(): boolean {
@@ -89,4 +102,21 @@ export function enableImagePreviewsForDDSFiles(): boolean {
 export const enableCustomIntegration = () => true
 
 export const enableResizingToolbarButtons = () => true
-export const enableGitConfigParameters = enableBetaFeatures
+
+export const enableFilteredChangesList = () => true
+export const enableMultipleEnterpriseAccounts = () => true
+
+export const enableCommitMessageGeneration = (account: Account) => {
+  return (
+    (account.features ?? []).includes(
+      'desktop_copilot_generate_commit_message'
+    ) &&
+    // IMPORTANT: Do not remove this feature flag without replacing its usages
+    // with a check for the `isCopilotDesktopEnabled` property on the account.
+    account.isCopilotDesktopEnabled
+  )
+}
+
+export function enableAccessibleListToolTips(): boolean {
+  return enableBetaFeatures()
+}

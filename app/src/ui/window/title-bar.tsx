@@ -4,7 +4,7 @@ import { WindowState } from '../../lib/window-state'
 import { WindowControls } from './window-controls'
 import { Octicon } from '../octicons/octicon'
 import * as octicons from '../octicons/octicons.generated'
-import { isMacOSBigSurOrLater } from '../../lib/get-os'
+import { isMacOSBigSurOrLater, isMacOSTahoeOrLater } from '../../lib/get-os'
 import {
   getAppleActionOnDoubleClick,
   isWindowMaximized,
@@ -16,8 +16,15 @@ import {
 /** Get the height (in pixels) of the title bar depending on the platform */
 export function getTitleBarHeight() {
   if (__DARWIN__) {
-    // Big Sur has taller title bars, see #10980
-    return isMacOSBigSurOrLater() ? 26 : 22
+    if (isMacOSTahoeOrLater()) {
+      // Tahoe also has taller title bars, see #21135
+      return 32
+    } else if (isMacOSBigSurOrLater()) {
+      // Big Sur has taller title bars, see #10980
+      return 26
+    } else {
+      return 22
+    }
   }
 
   return 28
@@ -84,7 +91,7 @@ export class TitleBar extends React.Component<ITitleBarProps> {
     const isMaximized = this.props.windowState === 'maximized'
 
     // No Windows controls when we're in full-screen mode.
-    const winControls = !inFullScreen ? <WindowControls /> : null
+    const winControls = __WIN32__ && !inFullScreen ? <WindowControls /> : null
 
     // On Windows it's not possible to resize a frameless window if the
     // element that sits flush along the window edge has -webkit-app-region: drag.
@@ -92,14 +99,12 @@ export class TitleBar extends React.Component<ITitleBarProps> {
     // window controls need to disable dragging so we add a 3px tall element which
     // disables drag while still letting users drag the app by the titlebar below
     // those 3px.
-    const topResizeHandle = !isMaximized ? (
-      <div className="resize-handle top" />
-    ) : null
+    const topResizeHandle =
+      __WIN32__ && !isMaximized ? <div className="resize-handle top" /> : null
 
     // And a 3px wide element on the left hand side.
-    const leftResizeHandle = !isMaximized ? (
-      <div className="resize-handle left" />
-    ) : null
+    const leftResizeHandle =
+      __WIN32__ && !isMaximized ? <div className="resize-handle left" /> : null
 
     const titleBarClass =
       this.props.titleBarStyle === 'light' ? 'light-title-bar' : ''

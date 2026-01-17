@@ -1,4 +1,4 @@
-import { Menu, shell, BrowserWindow } from 'electron'
+import { Menu, shell, app, BrowserWindow } from 'electron'
 import { ensureItemIds } from './ensure-item-ids'
 import { MenuEvent } from './menu-event'
 import { truncateWithEllipsis } from '../../lib/truncate-with-ellipsis'
@@ -7,6 +7,8 @@ import { UNSAFE_openDirectory } from '../shell'
 import { MenuLabelsEvent } from '../../models/menu-labels'
 import * as ipcWebContents from '../ipc-webcontents'
 import { mkdir } from 'fs/promises'
+import { buildTestMenu } from './build-test-menu'
+import { enableFilteredChangesList } from '../../lib/feature-flag'
 
 const createPullRequestLabel = __DARWIN__
   ? 'Create Pull Request'
@@ -30,6 +32,10 @@ enum ZoomDirection {
   Out,
 }
 
+export const separator: Electron.MenuItemConstructorOptions = {
+  type: 'separator',
+}
+
 export function buildDefaultMenu({
   selectedExternalEditor,
   selectedShell,
@@ -40,6 +46,7 @@ export function buildDefaultMenu({
   isForcePushForCurrentRepository = false,
   isStashedChangesVisible = false,
   askForConfirmationWhenStashingAllChanges = true,
+  isChangesFilterVisible = true,
 }: MenuLabelsEvent): Electron.Menu {
   contributionTargetDefaultBranch = truncateWithEllipsis(
     contributionTargetDefaultBranch,
@@ -55,7 +62,6 @@ export function buildDefaultMenu({
     : createPullRequestLabel
 
   const template = new Array<Electron.MenuItemConstructorOptions>()
-  const separator: Electron.MenuItemConstructorOptions = { type: 'separator' }
 
   if (__DARWIN__) {
     template.push({
@@ -208,6 +214,20 @@ export function buildDefaultMenu({
           ? emit('hide-stashed-changes')
           : emit('show-stashed-changes'),
       },
+      ...(enableFilteredChangesList()
+        ? [
+            {
+              label: __DARWIN__
+                ? `${isChangesFilterVisible ? 'Hide' : 'Show'} Changes Filter`
+                : `${
+                    isChangesFilterVisible ? 'Hide' : 'Show'
+                  } Toggle Chan&ges Filter`,
+              id: 'toggle-changes-filter',
+              accelerator: 'CmdOrCtrl+L',
+              click: emit('toggle-changes-filter'),
+            },
+          ]
+        : []),
       {
         label: __DARWIN__ ? 'Toggle Full Screen' : 'Toggle &full screen',
         role: 'togglefullscreen',
@@ -486,8 +506,19 @@ export function buildDefaultMenu({
     label: __DARWIN__ ? 'Report Issue…' : 'Report issue…',
     click() {
       shell
-        .openExternal('https://github.com/shiftkey/desktop/issues/new/choose')
+        .openExternal('https://github.com/desktop/desktop/issues/new/choose')
         .catch(err => log.error('Failed opening issue creation page', err))
+    },
+  }
+
+  const contactSupportItem: Electron.MenuItemConstructorOptions = {
+    label: __DARWIN__ ? 'Contact GitHub Support…' : '&Contact GitHub support…',
+    click() {
+      shell
+        .openExternal(
+          `https://github.com/contact?from_desktop_app=1&app_version=${app.getVersion()}`
+        )
+        .catch(err => log.error('Failed opening contact support page', err))
     },
   }
 
@@ -529,113 +560,13 @@ export function buildDefaultMenu({
 
   const helpItems = [
     submitIssueItem,
+    contactSupportItem,
     showUserGuides,
     showKeyboardShortcuts,
     showLogsItem,
   ]
 
-  if (__DEV__) {
-    helpItems.push(
-      separator,
-      {
-        label: 'Crash main process…',
-        click() {
-          throw new Error('Boomtown!')
-        },
-      },
-      {
-        label: 'Crash renderer process…',
-        click: emit('boomtown'),
-      },
-      {
-        label: 'Show popup',
-        submenu: [
-          {
-            label: 'Release notes',
-            click: emit('show-release-notes-popup'),
-          },
-          {
-            label: 'Thank you',
-            click: emit('show-thank-you-popup'),
-          },
-          {
-            label: 'Show App Error',
-            click: emit('show-app-error'),
-          },
-          {
-            label: 'Octicons',
-            click: emit('show-icon-test-dialog'),
-          },
-        ],
-      },
-      {
-        label: 'Prune branches',
-        click: emit('test-prune-branches'),
-      }
-    )
-  }
-
-  if (__RELEASE_CHANNEL__ === 'development' || __RELEASE_CHANNEL__ === 'test') {
-    if (__WIN32__) {
-      helpItems.push(separator, {
-        label: 'Command Line Tool',
-        submenu: [
-          {
-            label: 'Install',
-            click: emit('install-windows-cli'),
-          },
-          {
-            label: 'Uninstall',
-            click: emit('uninstall-windows-cli'),
-          },
-        ],
-      })
-    }
-
-    helpItems.push(
-      {
-        label: 'Show notification',
-        click: emit('test-show-notification'),
-      },
-      {
-        label: 'Show banner',
-        submenu: [
-          {
-            label: 'Update banner',
-            click: emit('show-update-banner'),
-          },
-          {
-            label: `Showcase Update banner`,
-            click: emit('show-showcase-update-banner'),
-          },
-          {
-            label: `${__DARWIN__ ? 'Apple silicon' : 'Arm64'} banner`,
-            click: emit('show-arm64-banner'),
-          },
-          {
-            label: 'Thank you',
-            click: emit('show-thank-you-banner'),
-          },
-          {
-            label: 'Reorder Successful',
-            click: emit('show-test-reorder-banner'),
-          },
-          {
-            label: 'Reorder Undone',
-            click: emit('show-test-undone-banner'),
-          },
-          {
-            label: 'Cherry Pick Conflicts',
-            click: emit('show-test-cherry-pick-conflicts-banner'),
-          },
-          {
-            label: 'Merge Successful',
-            click: emit('show-test-merge-successful-banner'),
-          },
-        ],
-      }
-    )
-  }
+  helpItems.push(...buildTestMenu())
 
   if (__DARWIN__) {
     template.push({
@@ -695,7 +626,7 @@ type ClickHandler = (
  * Utility function returning a Click event handler which, when invoked, emits
  * the provided menu event over IPC.
  */
-function emit(name: MenuEvent): ClickHandler {
+export function emit(name: MenuEvent): ClickHandler {
   return (_, focusedWindow) => {
     // focusedWindow can be null if the menu item was clicked without the window
     // being in focus. A simple way to reproduce this is to click on a menu item

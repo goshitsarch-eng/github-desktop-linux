@@ -3,7 +3,8 @@
 
 import * as path from 'path'
 import * as cp from 'child_process'
-import packager, { OsxNotarizeOptions } from 'electron-packager'
+import * as os from 'os'
+import packager, { OfficialArch, OsxNotarizeOptions } from 'electron-packager'
 import frontMatter from 'front-matter'
 import { externals } from '../app/webpack.common'
 
@@ -130,19 +131,17 @@ function packageApp() {
     )
   }
 
-  const getPackageArch = (): 'arm64' | 'x64' | 'armv7l' => {
-    const arch = process.env.npm_config_arch || process.arch
-
-    if (arch === 'arm64' || arch === 'x64') {
-      return arch
+  const toPackageArch = (targetArch: string | undefined): OfficialArch => {
+    if (targetArch === undefined) {
+      targetArch = os.arch()
     }
 
-    if (arch === 'arm') {
-      return 'armv7l'
+    if (targetArch === 'arm64' || targetArch === 'x64') {
+      return targetArch
     }
 
     throw new Error(
-      `Building Desktop for architecture '${arch}' is not supported. Currently these architectures are supported: arm, arm64, x64`
+      `Building Desktop for architecture '${targetArch}' is not supported`
     )
   }
 
@@ -161,20 +160,13 @@ function packageApp() {
     )
   }
 
-  // this setting only works for macOS and Windows, so let's clear it now to ensure
-  // the app is working as expected
-  const icon =
-    process.platform === 'linux'
-      ? undefined
-      : path.join(projectRoot, 'app', 'static', 'logos', getIconFileName())
-
   return packager({
     name: getExecutableName(),
     platform: toPackagePlatform(process.platform),
-    arch: getPackageArch(),
+    arch: toPackageArch(process.env.TARGET_ARCH),
     asar: false, // TODO: Probably wanna enable this down the road.
     out: getDistRoot(),
-    icon,
+    icon: path.join(projectRoot, 'app', 'static', 'logos', getIconFileName()),
     dir: outRoot,
     overwrite: true,
     tmpdir: false,
@@ -343,7 +335,7 @@ function copyDependencies() {
   copySync(path.resolve(projectRoot, 'app/node_modules/dugite/git'), gitDir)
 
   console.log('  Copying desktop credential helper…')
-  const mingw = getDistArchitecture() === 'x64' ? 'mingw64' : 'mingw32'
+  const mingw = getDistArchitecture() === 'x64' ? 'mingw64' : 'clangarm64'
   const gitCoreDir =
     process.platform === 'win32'
       ? path.resolve(outRoot, 'git', mingw, 'libexec', 'git-core')
