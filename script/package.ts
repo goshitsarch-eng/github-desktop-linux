@@ -165,21 +165,23 @@ async function packageLinux() {
   const { packageRedhat } = await import('./package-redhat')
   const { packageElectronBuilder } = await import('./package-electron-builder')
 
-  const promises: Array<Promise<string>> = []
+  const results: string[] = []
   const format = process.env.PACKAGE_FORMAT
 
-  if (!format || format === 'deb') {
-    promises.push(packageDebian())
-  }
-  if (!format || format === 'rpm') {
-    promises.push(packageRedhat())
-  }
-  if (!format || format === 'AppImage') {
-    promises.push(packageElectronBuilder())
-  }
-
   try {
-    const results = await Promise.all(promises)
+    if (!format || format === 'deb') {
+      const debPath = await packageDebian()
+      results.push(debPath)
+    }
+    if (!format || format === 'rpm') {
+      const rpmPath = await packageRedhat()
+      results.push(rpmPath)
+    }
+    if (!format || format === 'AppImage') {
+      const appImagePaths = await packageElectronBuilder()
+      results.push(...appImagePaths)
+    }
+
     for (const result of results) {
       console.log(`Package created: ${result}`)
     }

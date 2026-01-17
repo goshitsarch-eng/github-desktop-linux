@@ -26,6 +26,15 @@ const run = (...args: Array<string>) => {
       .on('error', cb)
       .on('exit', code => (process.exitCode = code ?? process.exitCode))
       .unref()
+  } else if (process.platform === 'linux') {
+    const exeName = `github-desktop${__DEV__ ? '-dev' : ''}`
+    spawn(join(__dirname, `../../${exeName}`), args, {
+      detached: true,
+      stdio: 'ignore',
+    })
+      .on('error', cb)
+      .on('exit', code => (process.exitCode = code ?? process.exitCode))
+      .unref()
   } else {
     throw new Error('Unsupported platform')
   }

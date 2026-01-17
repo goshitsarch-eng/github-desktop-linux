@@ -12,4 +12,10 @@ linux:
     - x-scheme-handler/x-github-desktop-dev-auth
   target:
     - AppImage
+    - rpm
   maintainer: 'Brendan Forster<github@brendanforster.com>'
+rpm:
+  depends:
+    - libcurl
+    - libsecret
+    - gnome-keyring
