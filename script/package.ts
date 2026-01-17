@@ -39,6 +39,8 @@ if (process.platform === 'darwin') {
   packageOSX()
 } else if (process.platform === 'win32') {
   packageWindows()
+} else if (process.platform === 'linux') {
+  packageLinux()
 } else {
   console.error(`I don't know how to package for ${process.platform} :(`)
   process.exit(1)
@@ -156,4 +158,33 @@ function packageWindows() {
       console.error(`Error packaging: ${e}`)
       process.exit(1)
     })
+}
+
+async function packageLinux() {
+  const { packageDebian } = await import('./package-debian')
+  const { packageRedhat } = await import('./package-redhat')
+  const { packageElectronBuilder } = await import('./package-electron-builder')
+
+  const promises: Array<Promise<string>> = []
+  const format = process.env.PACKAGE_FORMAT
+
+  if (!format || format === 'deb') {
+    promises.push(packageDebian())
+  }
+  if (!format || format === 'rpm') {
+    promises.push(packageRedhat())
+  }
+  if (!format || format === 'AppImage') {
+    promises.push(packageElectronBuilder())
+  }
+
+  try {
+    const results = await Promise.all(promises)
+    for (const result of results) {
+      console.log(`Package created: ${result}`)
+    }
+  } catch (e) {
+    console.error(`Error packaging for Linux: ${e}`)
+    process.exit(1)
+  }
 }

@@ -53,4 +53,14 @@ findYarnVersion(path => {
   if (result.status !== 0) {
     process.exit(result.status || 1)
   }
+
+  // Apply patches if patch-package is available
+  try {
+    result = spawnSync('npx', ['patch-package'], options)
+    if (result.status !== 0) {
+      console.warn('patch-package failed or not installed, continuing...')
+    }
+  } catch {
+    console.warn('patch-package not available, skipping patches')
+  }
 })
