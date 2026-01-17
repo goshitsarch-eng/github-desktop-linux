@@ -1,21 +1,55 @@
+# Build output
 out/
 dist/
+
+# Dependencies
 node_modules/
+app/node_modules/
+
+# Test coverage
 coverage/
+junit*.xml
+
+# Logs
 npm-debug.log
 yarn-error.log
-app/node_modules/
+*.log
+
+# Vendor builds
 vendor/windows-argv-parser/build/
 vendor/desktop-notifications/build/
 vendor/desktop-trampoline/build/
+
+# OS files
 .DS_Store
+Thumbs.db
+
+# IDE/Editor
 .awcache
 .idea/
 .vs/
 .vscode/*.log
-.eslintcache
 *.iml
-.envrc
-junit*.xml
 *.swp
+*~
+
+# Environment
+.envrc
+.env
+.env.local
+.env.*.local
+
+# Cache
+.eslintcache
+.cache/
+.yarn/
+*.tsbuildinfo
+
+# Package artifacts
+*.tgz
+*.rpm
+*.deb
+*.AppImage
+
+# Misc
 tslint-rules/
