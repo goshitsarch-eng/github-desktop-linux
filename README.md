@@ -1,8 +1,10 @@
-# [GitHub Desktop](https://desktop.github.com)
+# GitHub Desktop for Linux
 
-[GitHub Desktop](https://desktop.github.com/) is an open-source [Electron](https://www.electronjs.org/)-based
-GitHub app. It is written in [TypeScript](https://www.typescriptlang.org) and
-uses [React](https://reactjs.org/).
+[![Version](https://img.shields.io/badge/version-3.5.4-blue.svg)](https://github.com/desktop/desktop/releases/tag/release-3.5.4)
+[![Electron](https://img.shields.io/badge/electron-38.2.0-blue.svg)](https://www.electronjs.org/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+An unofficial Linux fork of [GitHub Desktop](https://desktop.github.com/), the open-source [Electron](https://www.electronjs.org/)-based GitHub app. Written in [TypeScript](https://www.typescriptlang.org) using [React](https://reactjs.org/).
 
 <picture>
   <source
@@ -16,95 +18,355 @@ uses [React](https://reactjs.org/).
   />
 </picture>
 
-## Where can I get it?
+## Features
 
-Download the official installer for your operating system:
+This fork includes all features from the official GitHub Desktop v3.5.4:
 
- - [macOS](https://central.github.com/deployments/desktop/desktop/latest/darwin)
- - [macOS (Apple silicon)](https://central.github.com/deployments/desktop/desktop/latest/darwin-arm64)
- - [Windows](https://central.github.com/deployments/desktop/desktop/latest/win32)
- - [Windows machine-wide install](https://central.github.com/deployments/desktop/desktop/latest/win32?format=msi)
+- **Copilot Commit Messages** - AI-powered commit message generation via context menu
+- **Attribute Co-authors** - Add co-authors to commits
+- **Conflict Resolution** - Built-in merge conflict editor
+- **Branch Management** - Create, rename, delete branches
+- **Pull Request Integration** - View and create PRs from the app
+- **Stashing** - Stash and restore changes
+- **Rebase Support** - Interactive rebase workflow
+- **Image Diff** - View image changes with various diff modes
+- **Syntax Highlighting** - For diffs in many languages
 
-Linux is not officially supported; however, you can find installers created for Linux from a fork of GitHub Desktop in the [Community Releases](https://github.com/desktop/desktop#community-releases) section.
+### Linux-Specific Features
 
-### Beta Channel
+- **Native RPM and AppImage packages** for x64 and ARM64
+- **Flexible Git selection** - Use bundled or system Git
+- **GNOME/GTK integration** - Native look and feel
+- **Keyring integration** - Secure credential storage via libsecret
 
-Want to test out new features and get fixes before everyone else? Install the
-beta channel to get access to early builds of Desktop:
+## Installation
 
- - [macOS](https://central.github.com/deployments/desktop/desktop/latest/darwin?env=beta)
- - [macOS (Apple silicon)](https://central.github.com/deployments/desktop/desktop/latest/darwin-arm64?env=beta)
- - [Windows](https://central.github.com/deployments/desktop/desktop/latest/win32?env=beta)
- - [Windows (ARM64)](https://central.github.com/deployments/desktop/desktop/latest/win32-arm64?env=beta)
+### Download
 
-The release notes for the latest beta versions are available [here](https://desktop.github.com/release-notes/?env=beta).
+| Architecture | RPM | AppImage |
+|--------------|-----|----------|
+| x86_64 (AMD/Intel) | [Download](../../releases) | [Download](../../releases) |
+| aarch64 (ARM64) | [Download](../../releases) | [Download](../../releases) |
 
-### Past Releases
-You can find past releases at https://desktop.githubusercontent.com. After installation of a past version, the auto update functionality will attempt to download the latest version. 
+### Fedora / RHEL / CentOS
 
-### Community Releases
+```bash
+# Download the RPM for your architecture
+sudo dnf install ./GitHubDesktop-linux-aarch64-3.5.4.rpm  # ARM64
+# or
+sudo dnf install ./GitHubDesktop-linux-x86_64-3.5.4.rpm   # x64
+```
 
-There are several community-supported package managers that can be used to
-install GitHub Desktop:
- - Windows users can install using [winget](https://docs.microsoft.com/en-us/windows/package-manager/winget/) `c:\> winget install github-desktop` or [Chocolatey](https://chocolatey.org/) `c:\> choco install github-desktop`
- - macOS users can install using [Homebrew](https://brew.sh/) package manager:
-      `$ brew install --cask github`
+### Ubuntu / Debian
 
-Installers for various Linux distributions can be found on the
-[`shiftkey/desktop`](https://github.com/shiftkey/desktop) fork.
+```bash
+# AppImage (no installation required)
+chmod +x GitHubDesktop-linux-arm64-3.5.4.AppImage
+./GitHubDesktop-linux-arm64-3.5.4.AppImage
+```
 
-## Is GitHub Desktop right for me? What are the primary areas of focus?
+### Other Distributions
 
-[This document](https://github.com/desktop/desktop/blob/development/docs/process/what-is-desktop.md) describes the focus of GitHub Desktop and who the product is most useful for.
+The AppImage should work on most Linux distributions. Make it executable and run:
 
-## I have a problem with GitHub Desktop
+```bash
+chmod +x GitHubDesktop-linux-*.AppImage
+./GitHubDesktop-linux-*.AppImage
+```
 
-Note: The [GitHub Desktop Code of Conduct](https://github.com/desktop/desktop/blob/development/CODE_OF_CONDUCT.md) applies in all interactions relating to the GitHub Desktop project.
+## System Requirements
 
-First, please search the [open issues](https://github.com/desktop/desktop/issues?q=is%3Aopen)
-and [closed issues](https://github.com/desktop/desktop/issues?q=is%3Aclosed)
-to see if your issue hasn't already been reported (it may also be fixed).
+### Minimum Requirements
 
-There is also a list of [known issues](https://github.com/desktop/desktop/blob/development/docs/known-issues.md)
-that are being tracked against Desktop, and some of these issues have workarounds.
+- **OS**: Linux kernel 4.15+ (glibc 2.28+)
+- **Desktop**: GNOME, KDE, XFCE, or other GTK-compatible environment
+- **Display**: X11 or Wayland
+- **Memory**: 2 GB RAM minimum, 4 GB recommended
+- **Storage**: 500 MB free space
 
-If you can't find an issue that matches what you're seeing, open a [new issue](https://github.com/desktop/desktop/issues/new/choose),
-choose the right template and provide us with enough information to investigate
-further.
+### Runtime Dependencies
 
-## The issue I reported isn't fixed yet. What can I do?
+The following packages are required at runtime:
 
-If nobody has responded to your issue in a few days, you're welcome to respond to it with a friendly ping in the issue. Please do not respond more than a second time if nobody has responded. The GitHub Desktop maintainers are constrained in time and resources, and diagnosing individual configurations can be difficult and time consuming. While we'll try to at least get you pointed in the right direction, we can't guarantee we'll be able to dig too deeply into any one person's issue.
+| Package | Fedora/RHEL | Ubuntu/Debian | Purpose |
+|---------|-------------|---------------|---------|
+| `libsecret` | `libsecret` | `libsecret-1-0` | Credential storage |
+| `gnome-keyring` | `gnome-keyring` | `gnome-keyring` | Keyring daemon |
+| `libcurl` | `libcurl` | `libcurl4` | Network operations |
+| `git` | `git` | `git` | Git operations (optional, see below) |
 
-## How can I contribute to GitHub Desktop?
+Install on Fedora:
+```bash
+sudo dnf install libsecret gnome-keyring git
+```
 
-The [CONTRIBUTING.md](./.github/CONTRIBUTING.md) document will help you get setup and
-familiar with the source. The [documentation](docs/) folder also contains more
-resources relevant to the project.
+Install on Ubuntu/Debian:
+```bash
+sudo apt install libsecret-1-0 gnome-keyring git
+```
 
-If you're looking for something to work on, check out the [help wanted](https://github.com/desktop/desktop/issues?q=is%3Aissue+is%3Aopen+label%3A%22help%20wanted%22) label.
+## Git Configuration
 
-## Building Desktop
+GitHub Desktop includes a bundled Git binary, but it may have library compatibility issues on some distributions (particularly Fedora/RHEL which use `libcurl-openssl` instead of `libcurl-gnutls`).
 
-To setup your development environment for building Desktop, check out: [`setup.md`](./docs/contributing/setup.md).
+### Automatic Detection
 
-## More Resources
+The application automatically detects whether the bundled Git will work:
+- If `libcurl-gnutls.so.4` is found → uses bundled Git
+- If not found → falls back to system Git
 
-See [desktop.github.com](https://desktop.github.com) for more product-oriented
-information about GitHub Desktop.
+### Manual Override
 
-See our [getting started documentation](https://docs.github.com/en/desktop/overview/getting-started-with-github-desktop) for more information on how to set up, authenticate, and configure GitHub Desktop.
+You can force a specific Git using environment variables:
+
+```bash
+# Force system Git (recommended for Fedora/RHEL)
+GITHUB_DESKTOP_USE_SYSTEM_GIT=1 github-desktop
+
+# Force bundled Git (if you've installed libcurl-gnutls)
+GITHUB_DESKTOP_USE_BUNDLED_GIT=1 github-desktop
+```
+
+To make this permanent, add to your shell profile (`~/.bashrc` or `~/.zshrc`):
+
+```bash
+export GITHUB_DESKTOP_USE_SYSTEM_GIT=1
+```
+
+Or create a desktop entry override in `~/.local/share/applications/github-desktop.desktop`:
+
+```ini
+[Desktop Entry]
+Name=GitHub Desktop
+Exec=env GITHUB_DESKTOP_USE_SYSTEM_GIT=1 /opt/GitHub Desktop/github-desktop %U
+Type=Application
+Icon=desktop
+Categories=GNOME;GTK;Development;
+MimeType=x-scheme-handler/x-github-client;x-scheme-handler/x-github-desktop-auth;
+```
+
+## Known Issues
+
+### Linux-Specific Issues
+
+#### OAuth Authentication Requires Protocol Handler
+
+GitHub Desktop uses `x-github-desktop-auth://` URLs for OAuth callbacks. Ensure your desktop environment is configured to handle these URLs (the RPM/AppImage should register this automatically).
+
+If authentication doesn't work after browser redirect:
+1. Check that the `.desktop` file is properly installed
+2. Run `update-desktop-database ~/.local/share/applications/` (for local installs)
+3. Try running the app from terminal to see any error messages
+
+#### Bundled Git Library Issues on Fedora/RHEL
+
+If you see errors like:
+```
+error while loading shared libraries: libcurl-gnutls.so.4: cannot open shared object file
+```
+
+Use system Git instead:
+```bash
+GITHUB_DESKTOP_USE_SYSTEM_GIT=1 github-desktop
+```
+
+Or install the compatibility library (if available for your distro):
+```bash
+# Ubuntu/Debian
+sudo apt install libcurl3-gnutls
+
+# Fedora (may not be available)
+# Use system Git instead
+```
+
+#### Wayland Compatibility
+
+GitHub Desktop runs on Wayland through XWayland. Some features may behave differently:
+- Window positioning may not persist correctly
+- Drag and drop between windows may not work
+
+#### High DPI Scaling
+
+If the UI appears too small or too large:
+```bash
+# Force specific scale factor
+GDK_SCALE=2 github-desktop
+
+# Or let GTK auto-detect
+GDK_DPI_SCALE=1.5 github-desktop
+```
+
+## Building from Source
+
+### Prerequisites
+
+#### Fedora / RHEL
+
+```bash
+sudo dnf install -y \
+  nodejs \
+  npm \
+  yarn \
+  python3 \
+  gcc-c++ \
+  make \
+  libsecret-devel \
+  libXScrnSaver-devel \
+  rpm-build \
+  git
+```
+
+#### Ubuntu / Debian
+
+```bash
+sudo apt install -y \
+  nodejs \
+  npm \
+  yarnpkg \
+  python3 \
+  build-essential \
+  libsecret-1-dev \
+  libxss-dev \
+  libgconf-2-4 \
+  git
+```
+
+### Build Steps
+
+```bash
+# Clone the repository
+git clone https://github.com/user/github-desktop-linux.git
+cd github-desktop-linux
+
+# Install dependencies
+yarn install
+
+# Build for production
+yarn build:prod
+
+# Package (creates RPM and AppImage)
+USE_SYSTEM_FPM=true yarn package
+```
+
+### Build Outputs
+
+After building, packages are created in the `dist/` directory:
+
+| File | Description |
+|------|-------------|
+| `GitHubDesktop-linux-arm64-X.X.X.AppImage` | AppImage for ARM64 |
+| `GitHubDesktop-linux-aarch64-X.X.X.rpm` | RPM for ARM64 |
+| `GitHubDesktop-linux-x86_64-X.X.X.AppImage` | AppImage for x64 |
+| `GitHubDesktop-linux-x86_64-X.X.X.rpm` | RPM for x64 |
+
+### Development Mode
+
+```bash
+# Start in development mode with hot reload
+yarn start
+
+# Run tests
+yarn test
+
+# Run linting
+yarn lint
+```
+
+## Data Directories
+
+GitHub Desktop stores data in the following locations:
+
+| Type | Location |
+|------|----------|
+| Configuration | `~/.config/GitHub Desktop/` |
+| Application data | `~/.config/GitHub Desktop/` |
+| Logs | `~/.config/GitHub Desktop/logs/` |
+| Cache | `~/.cache/GitHub Desktop/` |
+
+### Log Files
+
+Logs are stored by date: `~/.config/GitHub Desktop/logs/YYYY-MM-DD.desktop.production.log`
+
+To view recent logs:
+```bash
+tail -f ~/.config/GitHub\ Desktop/logs/$(date +%Y-%m-%d).desktop.production.log
+```
+
+## CLI Usage
+
+GitHub Desktop includes a command-line interface:
+
+```bash
+# Open current directory in GitHub Desktop
+github
+
+# Open a specific path
+github open /path/to/repo
+
+# Clone a repository
+github clone https://github.com/owner/repo
+github clone owner/repo  # Shorthand for GitHub repos
+
+# Clone and checkout specific branch
+github clone -b branch-name owner/repo
+
+# Show help
+github --help
+```
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `GITHUB_DESKTOP_USE_SYSTEM_GIT=1` | Force use of system Git |
+| `GITHUB_DESKTOP_USE_BUNDLED_GIT=1` | Force use of bundled Git |
+| `GITHUB_DESKTOP_DISABLE_HARDWARE_ACCELERATION=1` | Disable GPU acceleration |
+| `GDK_SCALE=2` | Set UI scale factor |
+| `GDK_DPI_SCALE=1.5` | Set DPI scale factor |
+
+## Troubleshooting
+
+### Application Won't Start
+
+1. **Check logs**: `cat ~/.config/GitHub\ Desktop/logs/*.log | tail -50`
+2. **Try disabling GPU acceleration**: `GITHUB_DESKTOP_DISABLE_HARDWARE_ACCELERATION=1 github-desktop`
+3. **Run from terminal** to see error output: `/opt/GitHub\ Desktop/github-desktop`
+
+### Authentication Issues
+
+1. **Clear stored credentials**:
+   ```bash
+   secret-tool search service github.com
+   # Then delete with secret-tool clear
+   ```
+2. **Check keyring is running**: `gnome-keyring-daemon --status`
+
+### Git Operations Fail
+
+1. **Check Git version**: `git --version` (minimum 2.25 recommended)
+2. **Try system Git**: `GITHUB_DESKTOP_USE_SYSTEM_GIT=1 github-desktop`
+3. **Check Git config**: `git config --list --show-origin`
+
+## Contributing
+
+See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for development guidelines.
+
+### Key Documentation
+
+- [Setup Guide](docs/contributing/setup.md) - Development environment setup
+- [Linux Setup](docs/contributing/setup-linux.md) - Linux-specific setup
+- [Architecture](docs/technical/packaging.md) - Packaging and build system
+
+## Upstream
+
+This is a fork of [GitHub Desktop](https://github.com/desktop/desktop). See also:
+- [Official GitHub Desktop](https://desktop.github.com)
+- [shiftkey/desktop](https://github.com/shiftkey/desktop) - Another popular Linux fork
 
 ## License
 
 **[MIT](LICENSE)**
 
-The MIT license grant is not for GitHub's trademarks, which include the logo
-designs. GitHub reserves all trademark and copyright rights in and to all
-GitHub trademarks. GitHub's logos include, for instance, the stylized
-Invertocat designs that include "logo" in the file title in the following
-folder: [logos](app/static/logos).
+The MIT license grant is not for GitHub's trademarks, which include the logo designs. GitHub reserves all trademark and copyright rights in and to all GitHub trademarks. GitHub's logos include, for instance, the stylized Invertocat designs that include "logo" in the file title in the following folder: [logos](app/static/logos).
 
-GitHub® and its stylized versions and the Invertocat mark are GitHub's
-Trademarks or registered Trademarks. When using GitHub's logos, be sure to
-follow the GitHub [logo guidelines](https://github.com/logos).
+GitHub® and its stylized versions and the Invertocat mark are GitHub's Trademarks or registered Trademarks. When using GitHub's logos, be sure to follow the GitHub [logo guidelines](https://github.com/logos).
