@@ -1,5 +1,13 @@
-# Table of contents
+# Table of Contents
 
+- [Linux](#linux)
+  - [Bundled Git fails with libcurl-gnutls error](#bundled-git-fails-with-libcurl-gnutls-error)
+  - [OAuth authentication doesn't complete after browser redirect](#oauth-authentication-doesnt-complete-after-browser-redirect)
+  - [Application shows black screen on launch](#application-shows-black-screen-on-launch)
+  - [Keyring unlock prompt on every launch](#keyring-unlock-prompt-on-every-launch)
+  - [Wayland drag and drop issues](#wayland-drag-and-drop-issues)
+  - [High DPI scaling issues](#high-dpi-scaling-issues)
+  - [Tray icon not showing](#tray-icon-not-showing)
 - [macOS](#macos)
   - ['The username or passphrase you entered is not correct' error after signing into account](#the-username-or-passphrase-you-entered-is-not-correct-error-after-signing-into-account)
   - [Checking for updates triggers a 'Could not create temporary directory: Permission denied' message](#checking-for-updates-triggers-a-could-not-create-temporary-directory-permission-denied-message)
@@ -29,6 +37,253 @@ Each known issue links off to an existing GitHub issue. If you have additional q
 ### My issue is not listed here?
 
 Please check the [open](https://github.com/desktop/desktop/labels/bug) and [closed](https://github.com/desktop/desktop/issues?q=is%3Aclosed+label%3Abug) bugs in the issue tracker for the details of your bug. If you can't find it, or if you're not sure, open a [new issue](https://github.com/desktop/desktop/issues/new?template=bug_report.md).
+
+---
+
+## Linux
+
+### Bundled Git fails with libcurl-gnutls error
+
+**Symptoms:**
+
+When pushing, pulling, or fetching, you see an error like:
+```
+error while loading shared libraries: libcurl-gnutls.so.4: cannot open shared object file: No such file or directory
+fatal: remote helper 'https' aborted session
+```
+
+**Cause:**
+
+The bundled Git binary is compiled against `libcurl-gnutls`, which is available on Debian/Ubuntu but not on Fedora/RHEL/CentOS (which use `libcurl-openssl`).
+
+**Workaround:**
+
+Use the system Git instead of the bundled Git:
+
+```bash
+# One-time
+GITHUB_DESKTOP_USE_SYSTEM_GIT=1 github-desktop
+
+# Permanent - add to ~/.bashrc
+export GITHUB_DESKTOP_USE_SYSTEM_GIT=1
+```
+
+Or install the compatibility library if available:
+
+```bash
+# Ubuntu/Debian
+sudo apt install libcurl3-gnutls
+```
+
+**Note:** The application now auto-detects this and will automatically use system Git if `libcurl-gnutls` is not found.
+
+---
+
+### OAuth authentication doesn't complete after browser redirect
+
+**Symptoms:**
+
+After signing in through the browser and authorizing GitHub Desktop, the browser shows a page with `x-github-desktop-auth://` URL but the desktop app doesn't log you in.
+
+**Cause:**
+
+Linux desktop environments handle custom protocol URLs differently than macOS/Windows. The desktop entry file must be properly registered to handle the `x-github-desktop-auth://` protocol.
+
+**Workaround:**
+
+1. **Verify the .desktop file is installed:**
+   ```bash
+   ls ~/.local/share/applications/desktop.desktop
+   # or for system-wide RPM install
+   ls /usr/share/applications/desktop.desktop
+   ```
+
+2. **Check protocol handler registration:**
+   ```bash
+   xdg-mime query default x-scheme-handler/x-github-desktop-auth
+   ```
+   Should return `desktop.desktop`
+
+3. **Manually register the handler:**
+   ```bash
+   xdg-mime default desktop.desktop x-scheme-handler/x-github-desktop-auth
+   xdg-mime default desktop.desktop x-scheme-handler/x-github-client
+   update-desktop-database ~/.local/share/applications
+   ```
+
+4. **For AppImage users**, create a desktop entry manually at `~/.local/share/applications/github-desktop.desktop`:
+   ```ini
+   [Desktop Entry]
+   Name=GitHub Desktop
+   Exec=/path/to/GitHubDesktop-linux-arm64-3.5.4.AppImage %U
+   Type=Application
+   Categories=Development;
+   MimeType=x-scheme-handler/x-github-client;x-scheme-handler/x-github-desktop-auth;
+   ```
+   Then run: `update-desktop-database ~/.local/share/applications`
+
+5. **As a last resort**, copy the auth URL from the browser and run:
+   ```bash
+   github-desktop "x-github-desktop-auth://oauth?code=YOUR_CODE_HERE"
+   ```
+
+---
+
+### Application shows black screen on launch
+
+**Symptoms:**
+
+The application window opens but displays only a black screen.
+
+**Cause:**
+
+Electron's hardware acceleration may not work correctly with certain GPU drivers (especially on older hardware, VMs, or with nouveau/mesa drivers).
+
+**Workaround:**
+
+Disable hardware acceleration:
+
+```bash
+# One-time
+GITHUB_DESKTOP_DISABLE_HARDWARE_ACCELERATION=1 github-desktop
+
+# Permanent - add to ~/.bashrc
+export GITHUB_DESKTOP_DISABLE_HARDWARE_ACCELERATION=1
+```
+
+Or create a modified desktop entry with this environment variable.
+
+---
+
+### Keyring unlock prompt on every launch
+
+**Symptoms:**
+
+Every time you launch GitHub Desktop, you're prompted to unlock your keyring or enter your password.
+
+**Cause:**
+
+The GNOME Keyring daemon isn't properly integrated with your login session, or you're using a desktop environment that doesn't automatically unlock the keyring.
+
+**Workaround:**
+
+1. **Ensure gnome-keyring is properly configured for PAM:**
+
+   Edit `/etc/pam.d/login` (or the appropriate PAM config for your display manager) and ensure these lines exist:
+   ```
+   auth       optional     pam_gnome_keyring.so
+   session    optional     pam_gnome_keyring.so auto_start
+   ```
+
+2. **For KDE/SDDM users:**
+
+   Install `gnome-keyring` and configure it to start with your session:
+   ```bash
+   mkdir -p ~/.config/autostart
+   cp /etc/xdg/autostart/gnome-keyring-*.desktop ~/.config/autostart/
+   ```
+
+3. **Check keyring daemon is running:**
+   ```bash
+   gnome-keyring-daemon --status
+   ```
+
+4. **Use seahorse to manage keyrings:**
+   ```bash
+   sudo dnf install seahorse  # Fedora
+   sudo apt install seahorse  # Ubuntu
+   seahorse  # Open and check your keyrings
+   ```
+
+---
+
+### Wayland drag and drop issues
+
+**Symptoms:**
+
+- Cannot drag files from the file manager into GitHub Desktop
+- Cannot drag commits or branches between windows
+- Drag and drop operations fail silently
+
+**Cause:**
+
+GitHub Desktop runs under XWayland (X11 compatibility layer) on Wayland, which has limitations with drag and drop operations across the Wayland/X11 boundary.
+
+**Workaround:**
+
+1. **Run under X11 session:**
+
+   Log out and select "GNOME on Xorg" or equivalent at your login screen.
+
+2. **Force X11 for this application only:**
+   ```bash
+   GDK_BACKEND=x11 github-desktop
+   ```
+
+3. **Use alternative methods:**
+   - Use the CLI to open repositories: `github open /path/to/repo`
+   - Use keyboard shortcuts instead of drag and drop
+
+---
+
+### High DPI scaling issues
+
+**Symptoms:**
+
+- UI appears too small or too large
+- Fonts are blurry
+- Window elements are misaligned
+
+**Cause:**
+
+Electron's auto-detection of DPI scaling may not work correctly on all display configurations, especially with mixed DPI setups.
+
+**Workaround:**
+
+Set scaling manually with environment variables:
+
+```bash
+# Force 2x scaling
+GDK_SCALE=2 github-desktop
+
+# Or use fractional scaling (may cause blurriness)
+GDK_DPI_SCALE=1.5 github-desktop
+
+# Or set Electron's own scale factor
+ELECTRON_FORCE_WINDOW_SCALE_FACTOR=2 github-desktop
+```
+
+For permanent fix, modify your desktop entry or add to `~/.bashrc`.
+
+---
+
+### Tray icon not showing
+
+**Symptoms:**
+
+No system tray icon appears, or the icon appears but is invisible/broken.
+
+**Cause:**
+
+GNOME removed the system tray by default. Some desktop environments require additional extensions or packages.
+
+**Workaround:**
+
+1. **GNOME:** Install AppIndicator extension:
+   ```bash
+   # Fedora
+   sudo dnf install gnome-shell-extension-appindicator
+
+   # Ubuntu
+   sudo apt install gnome-shell-extension-appindicator
+   ```
+   Then enable it in GNOME Extensions app.
+
+2. **KDE:** Should work by default. Check System Tray settings.
+
+3. **XFCE:** Ensure the notification area plugin is added to your panel.
+
+---
 
 ## macOS
 
@@ -75,6 +330,8 @@ Since GitHub Desktop is able to auto-update by changing the contents of the `/Ap
 sudo chown -R ${USER}:staff /Applications/GitHub\ Desktop.app
 chmod -R g+w /Applications/GitHub\ Desktop.app
 ```
+
+---
 
 ## Windows
 
