@@ -245,6 +245,22 @@ async function handleCommandLineArguments(argv: string[]) {
   // line arguments might be added by Chromium
   // (https://electronjs.org/docs/api/app#event-second-instance).
 
+  // Helper to find protocol URLs in command-line arguments
+  const findProtocolUrl = (argv: string[]): string | undefined => {
+    const prefixes = Array.from(possibleProtocols, p => `${p}://`)
+    return argv.find(arg => {
+      if (prefixes.some(p => arg.startsWith(p))) {
+        try {
+          new URL(arg)
+          return true
+        } catch (e) {
+          log.error(`Unable to parse argument as URL: ${arg}`)
+        }
+      }
+      return false
+    })
+  }
+
   if (__WIN32__ && args['protocol-launcher'] === true) {
     // On Windows we'll end up getting called with something like
     // `--protocol-launcher --allow-file-access-from-files x-github-client://..`
@@ -256,18 +272,7 @@ async function handleCommandLineArguments(argv: string[]) {
     // sure that Chromium won't add more switches later on which is why we have
     // to resort to looking through all arguments looking for something that
     // appears to be an app url.
-    const prefixes = Array.from(possibleProtocols, p => `${p}://`)
-    const matchingUrl = argv.find(arg => {
-      if (prefixes.some(p => arg.startsWith(p))) {
-        try {
-          new URL(arg)
-          return true
-        } catch (e) {
-          log.error(`Unable to parse argument as URL: ${arg}`)
-        }
-      }
-      return false
-    })
+    const matchingUrl = findProtocolUrl(argv)
 
     if (matchingUrl) {
       handleAppURL(matchingUrl)
@@ -277,6 +282,16 @@ async function handleCommandLineArguments(argv: string[]) {
     // If --protocol-launcher is present we always want to bail and not
     // risk a smuggled cli switch
     return
+  }
+
+  // On Linux, protocol URLs are passed directly as command-line arguments
+  // by the desktop environment when handling x-github-desktop-auth:// URLs
+  if (__LINUX__) {
+    const matchingUrl = findProtocolUrl(argv)
+    if (matchingUrl) {
+      handleAppURL(matchingUrl)
+      return
+    }
   }
 
   if (typeof args['cli-open'] === 'string') {
