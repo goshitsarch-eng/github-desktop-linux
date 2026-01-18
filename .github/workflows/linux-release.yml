@@ -1,0 +1,126 @@
+name: Linux Release
+
+on:
+  push:
+    tags:
+      - 'v*'           # Matches v1.0.0, v2.0.0-beta, etc.
+      - 'release-*'    # Matches release-3.5.4-linux1
+
+env:
+  NODE_VERSION: 22.19.0
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-22.04
+            deb_arch: amd64
+            rpm_arch: x86_64
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+            deb_arch: arm64
+            rpm_arch: aarch64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: yarn
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libsecret-1-dev \
+            libxss-dev \
+            dpkg-dev \
+            fakeroot \
+            rpm \
+            ruby \
+            ruby-dev \
+            rubygems
+          sudo gem install fpm
+
+      - name: Install dependencies
+        run: yarn install
+        env:
+          npm_config_arch: ${{ matrix.arch }}
+          TARGET_ARCH: ${{ matrix.arch }}
+
+      - name: Build production app
+        run: yarn build:prod
+        env:
+          npm_config_arch: ${{ matrix.arch }}
+          TARGET_ARCH: ${{ matrix.arch }}
+
+      - name: Package DEB
+        run: yarn package
+        env:
+          npm_config_arch: ${{ matrix.arch }}
+          TARGET_ARCH: ${{ matrix.arch }}
+          PACKAGE_FORMAT: deb
+          USE_SYSTEM_FPM: true
+
+      - name: Package RPM
+        run: yarn package
+        env:
+          npm_config_arch: ${{ matrix.arch }}
+          TARGET_ARCH: ${{ matrix.arch }}
+          PACKAGE_FORMAT: rpm
+          USE_SYSTEM_FPM: true
+
+      - name: Upload DEB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.deb_arch }}
+          path: dist/GitHubDesktop-linux-${{ matrix.deb_arch }}-*.deb
+          if-no-files-found: error
+
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-${{ matrix.rpm_arch }}
+          path: dist/GitHubDesktop-linux-${{ matrix.rpm_arch }}-*.rpm
+          if-no-files-found: error
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f -name '*.deb' -o -name '*.rpm' | sort
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          generate_release_notes: true
+          files: |
+            artifacts/**/*.deb
+            artifacts/**/*.rpm
