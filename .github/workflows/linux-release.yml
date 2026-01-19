@@ -70,11 +70,6 @@ jobs:
             libsecret-1-dev:arm64 \
             libxss-dev:arm64
 
-      - name: Verify fpm installation
-        run: |
-          which fpm
-          fpm --version
-
       - name: Install dependencies
         run: yarn install
         env:
@@ -91,12 +86,15 @@ jobs:
           CC: ${{ matrix.arch == 'arm64' && 'aarch64-linux-gnu-gcc' || 'gcc' }}
           CXX: ${{ matrix.arch == 'arm64' && 'aarch64-linux-gnu-g++' || 'g++' }}
 
-      - name: List build output
+      - name: Get version
+        id: version
+        run: echo "version=$(node -p "require('./app/package.json').version")" >> $GITHUB_OUTPUT
+
+      - name: Create tarball
         run: |
-          echo "=== dist directory ==="
-          ls -la dist/ || echo "dist/ not found"
-          echo "=== looking for app directory ==="
-          ls -la dist/desktop-linux-* || echo "No desktop-linux-* found"
+          cd dist
+          tar -czvf GitHubDesktop-linux-${{ matrix.arch }}-${{ steps.version.outputs.version }}.tar.gz \
+            desktop-linux-${{ matrix.arch }}/
 
       - name: Package DEB
         run: yarn package
@@ -105,11 +103,6 @@ jobs:
           TARGET_ARCH: ${{ matrix.arch }}
           PACKAGE_FORMAT: deb
           USE_SYSTEM_FPM: true
-          DEBUG: electron-installer-debian
-
-      - name: List dist after DEB packaging
-        run: ls -la dist/
-        if: always()
 
       - name: Package RPM
         run: yarn package
@@ -118,11 +111,17 @@ jobs:
           TARGET_ARCH: ${{ matrix.arch }}
           PACKAGE_FORMAT: rpm
           USE_SYSTEM_FPM: true
-          DEBUG: electron-installer-redhat
 
-      - name: List dist after RPM packaging
+      - name: List dist contents
         run: ls -la dist/
         if: always()
+
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tarball-${{ matrix.arch }}
+          path: dist/GitHubDesktop-linux-${{ matrix.arch }}-*.tar.gz
+          if-no-files-found: error
 
       - name: Upload DEB artifact
         uses: actions/upload-artifact@v4
@@ -152,7 +151,7 @@ jobs:
           path: artifacts
 
       - name: List artifacts
-        run: find artifacts -type f -name '*.deb' -o -name '*.rpm' | sort
+        run: find artifacts -type f | sort
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -160,5 +159,6 @@ jobs:
           draft: false
           generate_release_notes: true
           files: |
+            artifacts/**/*.tar.gz
             artifacts/**/*.deb
             artifacts/**/*.rpm

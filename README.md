@@ -34,7 +34,7 @@ This fork includes all features from the official GitHub Desktop v3.5.4:
 
 ### Linux-Specific Features
 
-- **Native RPM and AppImage packages** for x64 and ARM64
+- **Native DEB, RPM, and portable tarball packages** for x64 and ARM64
 - **Flexible Git selection** - Use bundled or system Git
 - **GNOME/GTK integration** - Native look and feel
 - **Keyring integration** - Secure credential storage via libsecret
@@ -43,35 +43,61 @@ This fork includes all features from the official GitHub Desktop v3.5.4:
 
 ### Download
 
-| Architecture | RPM | AppImage |
-|--------------|-----|----------|
-| x86_64 (AMD/Intel) | [Download](../../releases) | [Download](../../releases) |
-| aarch64 (ARM64) | [Download](../../releases) | [Download](../../releases) |
+| Architecture | DEB | RPM | Tarball |
+|--------------|-----|-----|---------|
+| x86_64 (AMD/Intel) | [Download](../../releases) | [Download](../../releases) | [Download](../../releases) |
+| ARM64 (aarch64) | [Download](../../releases) | [Download](../../releases) | [Download](../../releases) |
+
+### Ubuntu / Debian
+
+```bash
+# Download the DEB for your architecture
+sudo apt install ./GitHubDesktop-linux-amd64-3.5.4.deb   # x64
+# or
+sudo apt install ./GitHubDesktop-linux-arm64-3.5.4.deb   # ARM64
+```
 
 ### Fedora / RHEL / CentOS
 
 ```bash
 # Download the RPM for your architecture
-sudo dnf install ./GitHubDesktop-linux-aarch64-3.5.4.rpm  # ARM64
-# or
 sudo dnf install ./GitHubDesktop-linux-x86_64-3.5.4.rpm   # x64
+# or
+sudo dnf install ./GitHubDesktop-linux-aarch64-3.5.4.rpm  # ARM64
 ```
 
-### Ubuntu / Debian
+### Portable Tarball (Any Distribution)
+
+The tarball works on any Linux distribution without requiring root or a package manager:
 
 ```bash
-# AppImage (no installation required)
-chmod +x GitHubDesktop-linux-arm64-3.5.4.AppImage
-./GitHubDesktop-linux-arm64-3.5.4.AppImage
+# Extract the tarball
+tar -xzf GitHubDesktop-linux-x64-3.5.4.tar.gz
+
+# Run the application
+cd desktop-linux-x64
+./desktop
+
+# Or run from anywhere
+/path/to/desktop-linux-x64/desktop
 ```
 
-### Other Distributions
-
-The AppImage should work on most Linux distributions. Make it executable and run:
+To integrate with your desktop environment:
 
 ```bash
-chmod +x GitHubDesktop-linux-*.AppImage
-./GitHubDesktop-linux-*.AppImage
+# Create a desktop entry (optional)
+cat > ~/.local/share/applications/github-desktop.desktop << 'EOF'
+[Desktop Entry]
+Name=GitHub Desktop
+Exec=/path/to/desktop-linux-x64/desktop %U
+Icon=/path/to/desktop-linux-x64/resources/app/static/logos/1024x1024.png
+Type=Application
+Categories=Development;
+MimeType=x-scheme-handler/x-github-client;x-scheme-handler/x-github-desktop-auth;
+EOF
+
+# Update desktop database
+update-desktop-database ~/.local/share/applications/
 ```
 
 ## System Requirements
@@ -254,10 +280,12 @@ After building, packages are created in the `dist/` directory:
 
 | File | Description |
 |------|-------------|
-| `GitHubDesktop-linux-arm64-X.X.X.AppImage` | AppImage for ARM64 |
-| `GitHubDesktop-linux-aarch64-X.X.X.rpm` | RPM for ARM64 |
-| `GitHubDesktop-linux-x86_64-X.X.X.AppImage` | AppImage for x64 |
+| `GitHubDesktop-linux-amd64-X.X.X.deb` | DEB for x64 |
+| `GitHubDesktop-linux-arm64-X.X.X.deb` | DEB for ARM64 |
 | `GitHubDesktop-linux-x86_64-X.X.X.rpm` | RPM for x64 |
+| `GitHubDesktop-linux-aarch64-X.X.X.rpm` | RPM for ARM64 |
+| `GitHubDesktop-linux-x64-X.X.X.tar.gz` | Portable tarball for x64 |
+| `GitHubDesktop-linux-arm64-X.X.X.tar.gz` | Portable tarball for ARM64 |
 
 ### Development Mode
 
