@@ -42,43 +42,6 @@ Please check the [open](https://github.com/desktop/desktop/labels/bug) and [clos
 
 ## Linux
 
-### Bundled Git fails with libcurl-gnutls error
-
-**Symptoms:**
-
-When pushing, pulling, or fetching, you see an error like:
-```
-error while loading shared libraries: libcurl-gnutls.so.4: cannot open shared object file: No such file or directory
-fatal: remote helper 'https' aborted session
-```
-
-**Cause:**
-
-The bundled Git binary is compiled against `libcurl-gnutls`, which is available on Debian/Ubuntu but not on Fedora/RHEL/CentOS (which use `libcurl-openssl`).
-
-**Workaround:**
-
-Use the system Git instead of the bundled Git:
-
-```bash
-# One-time
-GITHUB_DESKTOP_USE_SYSTEM_GIT=1 github-desktop
-
-# Permanent - add to ~/.bashrc
-export GITHUB_DESKTOP_USE_SYSTEM_GIT=1
-```
-
-Or install the compatibility library if available:
-
-```bash
-# Ubuntu/Debian
-sudo apt install libcurl3-gnutls
-```
-
-**Note:** The application now auto-detects this and will automatically use system Git if `libcurl-gnutls` is not found.
-
----
-
 ### OAuth authentication doesn't complete after browser redirect
 
 **Symptoms:**

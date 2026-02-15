@@ -19,34 +19,17 @@ GitHub Desktop for Linux is available in two formats:
 
 | Format | Description | Best For |
 |--------|-------------|----------|
-| **RPM** | Native package for Fedora, RHEL, CentOS, openSUSE | System-wide installation with package management |
 | **AppImage** | Portable executable | Any distribution, no installation required |
+| **Tarball** | Compressed archive | Manual installation, custom setups |
 
 ### Supported Architectures
 
 | Architecture | CPU Examples |
 |--------------|--------------|
 | `x86_64` | Intel Core, AMD Ryzen |
-| `aarch64` / `arm64` | Apple M1/M2, Raspberry Pi 4, AWS Graviton |
+| `aarch64` / `arm64` | Raspberry Pi 4, AWS Graviton |
 
-### RPM Installation (Fedora, RHEL, CentOS)
-
-```bash
-# Download the RPM for your architecture from the releases page
-
-# Install with dnf (Fedora 22+, RHEL 8+)
-sudo dnf install ./GitHubDesktop-linux-aarch64-3.5.4.rpm
-
-# Or install with yum (older systems)
-sudo yum localinstall ./GitHubDesktop-linux-x86_64-3.5.4.rpm
-```
-
-After installation:
-- Launch from applications menu as "GitHub Desktop"
-- Or run `github-desktop` from terminal
-- CLI available as `github` command
-
-### AppImage Installation (Universal)
+### AppImage Installation (Recommended)
 
 AppImages are portable and work on most Linux distributions without installation.
 
@@ -116,39 +99,20 @@ sudo apt install libsecret-1-0 gnome-keyring git
 
 ### Git Configuration
 
-GitHub Desktop includes a bundled Git binary. However, on some distributions (particularly Fedora/RHEL), the bundled Git may fail due to library incompatibilities (`libcurl-gnutls` vs `libcurl-openssl`).
+GitHub Desktop ships with a bundled Git binary and a bundled `libcurl-gnutls.so.4`, so it works out of the box on all Linux distributions.
 
-#### Automatic Detection
-
-The app automatically detects library availability:
-- If `libcurl-gnutls.so.4` exists → uses bundled Git
-- Otherwise → falls back to system Git
-
-#### Manual Override
-
-Force a specific Git version with environment variables:
+To use your system Git instead:
 
 ```bash
-# Use system Git (recommended for Fedora/RHEL)
 GITHUB_DESKTOP_USE_SYSTEM_GIT=1 github-desktop
-
-# Use bundled Git
-GITHUB_DESKTOP_USE_BUNDLED_GIT=1 github-desktop
 ```
 
-To make permanent, add to `~/.bashrc`:
+To make permanent, add to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.):
 ```bash
 export GITHUB_DESKTOP_USE_SYSTEM_GIT=1
 ```
 
 ### Uninstalling
-
-**RPM:**
-```bash
-sudo dnf remove desktop
-# or
-sudo rpm -e desktop
-```
 
 **AppImage:**
 ```bash
@@ -273,14 +237,7 @@ Problems with installation or updates are tracked in separate log files.
 
 AppImage logs: Check terminal output when running the AppImage directly.
 
-RPM installation logs:
-```bash
-# DNF transaction history
-sudo dnf history info last
-
-# RPM verbose install
-sudo rpm -ivh --verbose GitHubDesktop-linux-*.rpm
-```
+Tarball: Run `./desktop` from a terminal to see error output.
 
 ### macOS
 

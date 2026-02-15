@@ -16,13 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: x64
-            deb_arch: amd64
-            rpm_arch: x86_64
-          - arch: arm64
-            deb_arch: arm64
-            rpm_arch: aarch64
+        arch: [x64, arm64]
 
     steps:
       - name: Checkout repository
@@ -48,13 +42,7 @@ jobs:
             build-essential \
             libsecret-1-dev \
             libxss-dev \
-            dpkg-dev \
-            fakeroot \
-            rpm \
-            ruby \
-            ruby-dev \
-            rubygems
-          sudo gem install fpm
+            libfuse2
 
       - name: Install ARM64 cross-compilation dependencies
         if: matrix.arch == 'arm64'
@@ -68,7 +56,8 @@ jobs:
             gcc-aarch64-linux-gnu \
             g++-aarch64-linux-gnu \
             libsecret-1-dev:arm64 \
-            libxss-dev:arm64
+            libxss-dev:arm64 \
+            libcurl3-gnutls:arm64
 
       - name: Install dependencies
         run: yarn install
@@ -90,27 +79,35 @@ jobs:
         id: version
         run: echo "version=$(node -p "require('./app/package.json').version")" >> $GITHUB_OUTPUT
 
+      - name: Bundle libcurl-gnutls for portable Git
+        run: |
+          DIST_DIR="dist/desktop-linux-${{ matrix.arch }}"
+          GIT_LIB_DIR="${DIST_DIR}/resources/app/git/lib"
+          mkdir -p "$GIT_LIB_DIR"
+
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            LIBCURL_PATH="/usr/lib/aarch64-linux-gnu/libcurl-gnutls.so.4"
+          else
+            LIBCURL_PATH="/usr/lib/x86_64-linux-gnu/libcurl-gnutls.so.4"
+          fi
+
+          # Copy the actual library (follow symlinks)
+          cp -L "$LIBCURL_PATH" "$GIT_LIB_DIR/"
+          echo "Bundled libcurl-gnutls:"
+          ls -la "$GIT_LIB_DIR/"
+
       - name: Create tarball
         run: |
           cd dist
           tar -czvf GitHubDesktop-linux-${{ matrix.arch }}-${{ steps.version.outputs.version }}.tar.gz \
             desktop-linux-${{ matrix.arch }}/
 
-      - name: Package DEB
+      - name: Package AppImage
         run: yarn package
         env:
           npm_config_arch: ${{ matrix.arch }}
           TARGET_ARCH: ${{ matrix.arch }}
-          PACKAGE_FORMAT: deb
-          USE_SYSTEM_FPM: true
-
-      - name: Package RPM
-        run: yarn package
-        env:
-          npm_config_arch: ${{ matrix.arch }}
-          TARGET_ARCH: ${{ matrix.arch }}
-          PACKAGE_FORMAT: rpm
-          USE_SYSTEM_FPM: true
+          PACKAGE_FORMAT: AppImage
 
       - name: List dist contents
         run: ls -la dist/
@@ -123,18 +120,11 @@ jobs:
           path: dist/GitHubDesktop-linux-${{ matrix.arch }}-*.tar.gz
           if-no-files-found: error
 
-      - name: Upload DEB artifact
+      - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: deb-${{ matrix.deb_arch }}
-          path: dist/GitHubDesktop-linux-${{ matrix.deb_arch }}-*.deb
-          if-no-files-found: error
-
-      - name: Upload RPM artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: rpm-${{ matrix.rpm_arch }}
-          path: dist/GitHubDesktop-linux-${{ matrix.rpm_arch }}-*.rpm
+          name: appimage-${{ matrix.arch }}
+          path: dist/GitHubDesktop-linux-*.AppImage
           if-no-files-found: error
 
   release:
@@ -160,5 +150,4 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/**/*.tar.gz
-            artifacts/**/*.deb
-            artifacts/**/*.rpm
+            artifacts/**/*.AppImage

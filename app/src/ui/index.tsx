@@ -91,39 +91,40 @@ enableSourceMaps()
 // Tell dugite where to find the git environment,
 // see https://github.com/desktop/dugite/pull/85
 //
-// On Linux, the bundled Git may have library compatibility issues
-// (compiled against libcurl-gnutls which isn't available on Fedora/RHEL).
-// Use GITHUB_DESKTOP_USE_SYSTEM_GIT=1 to force system Git, or
-// GITHUB_DESKTOP_USE_BUNDLED_GIT=1 to force bundled Git.
+// On Linux, bundled Git requires libcurl-gnutls which is shipped alongside
+// the app in git/lib/. We prepend that path to LD_LIBRARY_PATH so the
+// bundled Git works on all distros without requiring a system-installed
+// libcurl-gnutls. Use GITHUB_DESKTOP_USE_SYSTEM_GIT=1 to opt out.
 if (__LINUX__) {
   const useSystemGit = process.env.GITHUB_DESKTOP_USE_SYSTEM_GIT === '1'
-  const useBundledGit = process.env.GITHUB_DESKTOP_USE_BUNDLED_GIT === '1'
 
-  if (useBundledGit) {
-    // User explicitly wants bundled Git
-    process.env['LOCAL_GIT_DIRECTORY'] = Path.resolve(__dirname, 'git')
-  } else if (useSystemGit) {
+  if (useSystemGit) {
     // User explicitly wants system Git - don't set LOCAL_GIT_DIRECTORY
   } else {
-    // Auto-detect: check if libcurl-gnutls.so.4 exists (needed by bundled Git)
     const fs = require('fs')
-    const libcurlGnutlsPaths = [
-      '/usr/lib/x86_64-linux-gnu/libcurl-gnutls.so.4', // Debian/Ubuntu x64
-      '/usr/lib/aarch64-linux-gnu/libcurl-gnutls.so.4', // Debian/Ubuntu arm64
-      '/usr/lib64/libcurl-gnutls.so.4', // Fedora/RHEL (if installed)
-      '/usr/lib/libcurl-gnutls.so.4', // Other distros
-    ]
-    const hasLibcurlGnutls = libcurlGnutlsPaths.some(p => fs.existsSync(p))
+    const gitDir = Path.resolve(__dirname, 'git')
+    process.env['LOCAL_GIT_DIRECTORY'] = gitDir
 
-    if (hasLibcurlGnutls) {
-      // Bundled Git should work
-      process.env['LOCAL_GIT_DIRECTORY'] = Path.resolve(__dirname, 'git')
-    } else {
-      // Use system Git to avoid library issues
-      // Log this for debugging
-      console.log(
-        'Using system Git (libcurl-gnutls not found, set GITHUB_DESKTOP_USE_BUNDLED_GIT=1 to override)'
-      )
+    // Prepend bundled lib directory to LD_LIBRARY_PATH so the bundled Git
+    // can find libcurl-gnutls.so.4 regardless of the host distro
+    const libDir = Path.join(gitDir, 'lib')
+    const existingLdPath = process.env['LD_LIBRARY_PATH'] || ''
+    process.env['LD_LIBRARY_PATH'] = existingLdPath
+      ? `${libDir}:${existingLdPath}`
+      : libDir
+
+    // Detect the system CA certificate bundle so bundled Git/curl can
+    // verify HTTPS connections on any distro
+    const caCertPaths = [
+      '/etc/ssl/certs/ca-certificates.crt', // Debian/Ubuntu/Arch
+      '/etc/pki/tls/certs/ca-bundle.crt', // Fedora/RHEL
+      '/etc/ssl/ca-bundle.pem', // openSUSE
+      '/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem', // RHEL/CentOS
+      '/etc/ssl/cert.pem', // Alpine
+    ]
+    const caCertPath = caCertPaths.find(p => fs.existsSync(p))
+    if (caCertPath) {
+      process.env['GIT_SSL_CAINFO'] = caCertPath
     }
   }
 } else {
