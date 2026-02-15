@@ -51,7 +51,8 @@
     "yarn": ">= 1.9"
   },
   "resolutions": {
-    "@types/react-css-transition-replace/@types/react": "^16.14.62"
+    "@types/react-css-transition-replace/@types/react": "^16.14.62",
+    "**/wrap-ansi": "7.0.0"
   },
   "dependencies": {
     "@azure/storage-blob": "^12.25.0",
@@ -163,7 +164,7 @@
   "optionalDependencies": {
     "electron-installer-debian": "3.2.0",
     "electron-installer-redhat": "3.4.0",
-    "electron-builder": "^25.1.8",
+    "electron-builder": "^26.0.12",
     "patch-package": "^8.0.0",
     "postinstall-postinstall": "^2.1.0"
   }
