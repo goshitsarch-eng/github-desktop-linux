@@ -1,95 +1,87 @@
-#  Development Environment Setup
+# Development setup
 
-## Setup
+## Prerequisites
 
-Refer to the specific instructions for each platform:
+Use the versions pinned by the repository. At the time of writing these are:
 
- - [macOS](./setup-macos.md)
- - [Windows](./setup-windows.md)
- - [Linux](./setup-linux.md)
+- Node.js 22.19.0 (`.node-version` and `.nvmrc`)
+- Python 3.9 (`.python-version` and `.tool-versions`)
+- Git with submodule support
+- Native build tools for the host platform
+- A system `yarn` command to bootstrap the vendored Yarn 1.21.1 configured by `.yarnrc`
 
-Experimental support for building Desktop is also available for these platforms:
+The broad `engines` ranges in `package.json` are not the development toolchain. Prefer the checked-in version files and CI configuration.
 
- - [ARM64](./building-arm64.md)
+Choose the platform prerequisites:
 
-## Verification
+- [Linux](setup-linux.md)
+- [macOS](setup-macos.md)
+- [Windows](setup-windows.md)
+- [ARM64 and Linux cross-compilation](building-arm64.md)
 
-Verify you have these commands available in your shell and that the found
-versions look similar to the below output:
+## Clone
 
-```shellsession
-$ node -v
-v20.17.0
+Clone this fork and initialize all submodules:
 
-$ yarn -v
-1.21.1
-
-$ python --version
-Python 3.9.x
+```bash
+git clone --recurse-submodules https://github.com/goshitsarch-eng/github-desktop-linux.git
+cd github-desktop-linux
 ```
 
-There are also [additional resources](tooling.md) to configure your favorite
-editor to work nicely with the GitHub Desktop repository.
+For an existing clone:
 
-## Building Desktop
-
-First, create a fork of `desktop/desktop` and then clone the repository to your local machine. You'll need to be inside the repository in order to build the application locally.
-
-The typical workflow to get up running is as follows:
-
-* Run `yarn` to get all required dependencies on your machine.
-* Run `yarn build:dev` to create a development build of the app.
-* Run `yarn start` to launch the application. Changes will be compiled in the
-  background. The app can then be reloaded to see the changes (<kbd>Ctrl/Command+Alt+R</kbd>).
-
-**Optional Tip**: On macOS and Linux, you can use `screen` to avoid filling your terminal with logging output:
-
-```shellsession
-$ screen -S "desktop" yarn start # -S sets the name of the session; you can pick anything
-$ # Your screen clears and shows logs. Press Ctrl+A then D to exit.
-[detached]
-$ screen -R "desktop" # to reopen the session, read the logs, and exit (Ctrl+C)
-[screen is terminating]
+```bash
+git submodule update --init --recursive
 ```
 
-If you've made changes in the `main-process` folder you need to run `yarn
-build:dev` to rebuild the package, and then `yarn start` for these changes to be
-reflected in the running app.
+## Install dependencies
 
-If you are using GitHub Enterprise with your development build of GitHub Desktop, you will need to follow a few extra steps to [authenticate properly](github-enterprise-auth-from-dev-build.md).
+```bash
+yarn
+```
 
-If you're still encountering issues with building, refer to our
-[troubleshooting](troubleshooting.md) guide for more common
-problems.
+The post-install script installs root and app dependencies, applies supported patches, and builds native dependencies. Do not use `sudo yarn`.
 
-## Running tests
+## Build and run
 
-- `yarn test` - Alias for `yarn test:unit`
-- `yarn test:script` - Runs all script tests
-- `yarn test:eslint` - Runs all eslint tests 
-- `yarn test:unit` - Runs all unit tests
-  - Add `<file>` argument to only run tests in the specified file
-  - Add `<directory>` to search for tests matching our test pattern in the given directory
-  - Add `--test-name-pattern <pattern>` to only match tests whose name matches the pattern
-  - For more information on these and other arguments, see [Node CLI options](https://nodejs.org/api/test.html)
+```bash
+yarn build:dev
+yarn start
+```
+
+`build:dev` compiles webpack bundles and assembles a development application. `start` launches the development build and watches applicable source changes. Changes that affect the assembled main-process package or native resources may require another `yarn build:dev`.
+
+For a production build:
+
+```bash
+yarn build:prod
+yarn start:prod
+```
+
+Generated files are written to `out/` and `dist/`; both can be recreated.
+
+## Tests and validation
+
+```bash
+yarn test             # Application unit tests
+yarn test:script      # Tests under script/
+yarn test:eslint      # Custom ESLint rule tests
+yarn lint             # Prettier check plus source lint
+yarn markdownlint     # Markdown checks
+yarn validate-changelog
+```
+
+`script/test.mjs` accepts test file or directory arguments supported by the Node test runner. This repository does not define `test:coverage`, and Jest-style `--grep` examples do not apply.
 
 ## Debugging
 
-Electron ships with Chrome Dev Tools to assist with debugging, profiling and
-other measurement tools.
+Start the development app, then use **View > Toggle Developer Tools**. Development builds attempt to install React Developer Tools and axe DevTools.
 
-1. Run the command `yarn start` to launch the app
-2. Under the **View** menu, select **Toggle Developer Tools**
+For environment and native-build failures, see [contributor troubleshooting](troubleshooting.md). For application runtime problems, see [known issues](../known-issues.md).
 
-When running the app in development mode,
-[React Dev Tools](https://chrome.google.com/webstore/detail/react-developer-tools/fmkadmapgofadopljbjfkapdkoienihi?hl=en)
-should automatically install itself on first start when in development mode.
+## Next steps
 
-## The Next Steps
-
-You're almost there! Here's a couple of things we recommend you read next:
-
- - [Help Wanted](../../.github/CONTRIBUTING.md#help-wanted) - we've marked some
-   tasks in the backlog that are ideal for external contributors
- - [Notes for Contributors](../process/notes-for-contributors.md) - some notes
-   for new contributors getting started
+- Read the [architecture overview](../technical/architecture.md).
+- Read the [build and packaging pipeline](../technical/packaging.md).
+- Review the [style guide](styleguide.md) and [linting guide](linting.md).
+- Follow the repository [contribution guide](../../.github/CONTRIBUTING.md) before opening a pull request.

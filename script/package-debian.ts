@@ -57,7 +57,7 @@ const options: DebianOptions = {
     'This is the unofficial port of GitHub Desktop for Linux distributions',
   section: 'GNOME;GTK;Development',
   priority: 'extra',
-  homepage: 'https://github.com/shiftkey/desktop',
+  homepage: 'https://github.com/goshitsarch-eng/github-desktop-linux',
   depends: [
     // Desktop-specific dependencies
     'libcurl3 | libcurl4',
@@ -82,10 +82,9 @@ const options: DebianOptions = {
     // workaround for handling OAuth flow until we figure out what we're doing
     // with the development OAuth details
     //
-    // see https://github.com/shiftkey/desktop/issues/72 for more details
     'x-scheme-handler/x-github-desktop-dev-auth',
   ],
-  maintainer: 'Brendan Forster <github@brendanforster.com>',
+  maintainer: 'GitHub Desktop for Linux maintainers <noreply@github.com>',
 }
 
 export async function packageDebian(): Promise<string> {

@@ -1,36 +1,66 @@
-# Known Issues
+# Contributor troubleshooting
 
-Here's a non-exhaustive list of environmental issues that you may encounter
-while working on GitHub Desktop:
+This page covers development and build failures. For installed application problems, use [known issues](../known-issues.md).
 
-### Issues compiling node-keytar on Windows
+## Wrong tool versions
 
-If keytar fails to build on Windows with the following error during `npm install`:
+From the repository root, compare output with `.node-version`, `.python-version`, and `.yarnrc`:
 
-```
-npm ERR! keytar@3.0.2 install: `node-gyp rebuild`
-npm ERR! Exit status 1
-npm ERR!
-npm ERR! Failed at the keytar@3.0.2 install script 'node-gyp rebuild'.
-npm ERR! Make sure you have the latest version of node.js and npm installed.
-npm ERR! If you do, this is most likely a problem with the keytar package,
-npm ERR! not with npm itself.
-npm ERR! Tell the author that this fails on your system:
-npm ERR!     node-gyp rebuild
-npm ERR! You can get information on how to open an issue for this project with:
-npm ERR!     npm bugs keytar
-npm ERR! Or if that isn't available, you can get their info via:
-npm ERR!     npm owner ls keytar
+```bash
+node --version
+python3 --version
+yarn --version
 ```
 
-Make sure you're using npm >= 2.15.9
+Use the exact pinned Node.js version before investigating native module failures.
 
+## Missing submodule content
+
+License, gitignore, emoji, or static-resource build errors often indicate uninitialized submodules:
+
+```bash
+git submodule update --init --recursive
 ```
-PS> npm -g install npm@latest
+
+## Native module compilation fails
+
+Install the platform build tools and Linux headers documented in the platform setup guide. On Linux, verify:
+
+```bash
+pkg-config --libs libsecret-1
+pkg-config --libs xscrnsaver
 ```
 
-and run `npm install` again
+Do not install random global copies of `node-gyp` or `electron-rebuild`; use the dependencies and post-install flow pinned by this repository.
 
-For more information see
-[atom/node-keytar#45](https://github.com/atom/node-keytar/issues/45) and
-[nodejs/node-gyp#972](https://github.com/nodejs/node-gyp/issues/972).
+## Dependencies are inconsistent
+
+First retry `yarn`. If generated dependencies are irreparably stale, the repository provides:
+
+```bash
+yarn clean-slate
+```
+
+This removes `out`, root `node_modules`, and `app/node_modules`, then reinstalls. Preserve uncommitted source changes and expect downloads/build time.
+
+## Electron download fails
+
+Check proxy, certificate, and network configuration. Prefer configuring the standard npm/Electron proxy settings used by your organization. Mirrors change the binary trust source and should only be used when you understand and trust that source.
+
+## Production build runs out of memory
+
+`compile:prod` already sets Node's old-space limit to 4096 MB. Close memory-intensive processes or build on a machine with more available memory rather than lowering that value.
+
+## AppImage will not run
+
+The build host may need FUSE 2 compatibility (`libfuse2` on the Ubuntu release runner). For runtime diagnosis, compare with the [AppImage known issue](../known-issues.md#appimage-reports-a-fuse-error).
+
+## Packaging does not produce the expected format
+
+Set exactly one supported `PACKAGE_FORMAT` value: `AppImage`, `deb`, or `rpm`. AppImage uses electron-builder; DEB/RPM use separate installer packages and may need extra host tools. See [packaging](../technical/packaging.md).
+
+## Tests do not accept an option
+
+Tests run through `script/test.mjs` and Node's test runner. Use a file/directory argument or supported Node test options. There is no `test:coverage` script and no documented Jest-style `--grep` support.
+
+If the failure persists, open a bug report with the host OS/architecture, exact commands, tool versions, and complete relevant error output.

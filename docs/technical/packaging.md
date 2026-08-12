@@ -1,116 +1,87 @@
-# Building and Packaging Desktop
+# Building and packaging
 
-This document outlines how Desktop is currently packaged for all platforms -
-there are some parts in common but then each platform has it's own quirks.
+See [application architecture](architecture.md) for the runtime source map. This page describes how source becomes an executable and release asset.
 
-## `webpack`
+## 1. Compile with webpack
 
-GitHub Desktop use webpack to transpile and bundle its application resources.
-The configuration files that webpack uses are found under `app/`:
+`yarn compile:dev` and `yarn compile:prod` use the configurations under `app/`:
 
- - `app/webpack.common.ts` - base config and settings
- - `app/webpack.development.ts` - additional changes to base config for building
-    and running Desktop in development mode
- - `app/webpack.production.ts` - additional changes to base config for building
-    and running the app in production mode
+- `app/webpack.common.ts`
+- `app/webpack.development.ts`
+- `app/webpack.production.ts`
 
-The webpack configuration files organize the source files into these targets:
+Webpack transpiles TypeScript, React, and SCSS and emits bundles such as `main.js`, `renderer.js`, `crash.js`, `highlighter.js`, and `cli.js` into `out/`. Build-time constants come from `app/app-info.ts`.
 
- - `main.js` - logic in the main process in Electron
- - `renderer.js` - logic in the renderer process in Electron
- - `crash.js` - specialised UI for displaying an error that crashed the app
- - `highlighter.js` - logic for syntax highlighting, which runs in a web worker
- - `cli.js` - logic for the `github` command line interface
+## 2. Assemble the application
 
-Webpack also handles these steps:
+`yarn build:dev` or `yarn build:prod` runs compilation and `script/build.ts`. The build script:
 
- - placeholders in source for platform-specific values are now replaced, using
-   `app/app-info.ts` and the values of the platform the build is being performed
-   on
- - SCSS stylesheets under `app/styles/` are transpiled to CSS and emitted
- - source maps are generated to help with correlating runtime errors to the
-   corresponding TypeScript source
+- recreates `dist/`;
+- copies platform and common static resources;
+- installs only runtime external dependencies into `out/`;
+- copies dugite's bundled Git and Desktop credential helper;
+- generates application and third-party license metadata; and
+- runs `electron-packager` for the host platform and `TARGET_ARCH`.
 
-The output from webpack is stored in the `out` directory, and this folder is
-ignored in version control.
+The Linux assembled directory is:
 
-## `app/package.json`
-
-The `version` attribute in `app/package.json` is the canonical reference for
-the version number you see in the **About** view of GitHub Desktop.
-
-## `changelog.json`
-
-This file is used to track user-facing changes associated with each Desktop
-release. This can include new features, bug fixes, improvements or even removed
-features.
-
-## `script/build.ts`
-
-After webpack the next component in the pipeline is  `script/build.ts` which
-handles moving app resources into place and launching `electron-packager`, which
-merges the application resources and Electron runtime for the current
-platform into an executable program.
-
-This script is responsible for:
-
- - merging additional static resources into the output directory
- - generating a license bundle from the projects that Desktop uses, which are
-   accessible from the **About GitHub Desktop** dialog
- - generating license metadata from the `choosealicense.com` source repository,
-   so the user can add a suitable license to their new repository when creating
-   a repository in Desktop
-
-`electron-packager` is also responsible for code-signing on macOS at this stage,
-and if you do not have this configured you will likely see an error like this:
-
-```
-Packaging app for platform darwin x64 using electron v2.0.9
-WARNING: Code sign failed; please retry manually. Error: No identity found for signing.
+```text
+dist/desktop-linux-<architecture>/
 ```
 
-This is fine for development purposes, but code-signing is highly recommended
-when distributing Desktop to end users.
+`app/package.json` is the canonical application version.
 
-## `script/package.ts`
+## 3. Package for distribution
 
-After the build is the final step is to package the application for distribution
-to end users, and this is where much of the platform-specific variations occur.
-
-### macOS
-
-macOS does not need any additional work, as the previous step generated an
-application bundle and performed the required code-signing.
-
-The generated app is compressed into a `.zip` archive, reducing the download
-size by ~60%.
-
-### Windows
-
-Desktop uses `electron-winstaller` to generate two installers:
-
- - a [Squirrel](https://github.com/Squirrel/Squirrel.Windows)-based `.exe` that
-   does not require elevated permissions to install
- - an installer based on [Windows Installer](https://docs.microsoft.com/en-us/windows/desktop/msi/windows-installer-portal)
-   that supports being installed by administrators. Please note that this is a
-   partial solution and this still leverages `%LOCALAPPDATA%` when each users
-   runs the app for the first time. See [#1086](https://github.com/desktop/desktop/issues/1086)
-   for an ongoing discussion about alternatives.
-
-Other things to note about the Windows packaging process:
-
- - `electron-winstaller` is responsible for signing these installers
- - Squirrel supports generating delta packages (representing the difference
-   between this version and the previous version) to avoid downloading bytes
-   that haven't changed. This has been enabled for Desktop, and requires
-   downloading the previous version from Central to generate the delta package.
+`yarn package` invokes `script/package.ts` and packages the already assembled application.
 
 ### Linux
 
-Refer to the [`shiftkey/desktop`](https://github.com/shiftkey/desktop) fork
-for packaging details about Linux.
+Use `PACKAGE_FORMAT` to select one format:
 
-## `script/publish.ts`
+```bash
+PACKAGE_FORMAT=AppImage yarn package
+PACKAGE_FORMAT=deb yarn package
+PACKAGE_FORMAT=rpm yarn package
+```
 
-This script uploads the packaging artifacts to our S3 bucket, which is then
-verified before the build is made available to users.
+Without `PACKAGE_FORMAT`, the script attempts all three.
+
+| Format | Implementation | Typical output |
+| --- | --- | --- |
+| AppImage | `script/package-electron-builder.ts` and `electron-builder-linux.yml` | `GitHubDesktop-linux-<arch>-<version>.AppImage` |
+| DEB | `script/package-debian.ts` | `GitHubDesktop-linux-<debian-arch>-<version>.deb` |
+| RPM | `script/package-redhat.ts` | `GitHubDesktop-linux-<rpm-arch>-<version>.rpm` |
+
+DEB/RPM support is local packaging functionality. The current `.github/workflows/linux-release.yml` uploads only AppImages and tarballs.
+
+### macOS
+
+`electron-packager` creates the application bundle. `script/package.ts` compresses it into `GitHub Desktop-<architecture>.zip`. Publishable CI builds additionally require signing and notarization credentials.
+
+### Windows
+
+`electron-winstaller` creates architecture-specific Squirrel `.exe` and MSI installers plus NuGet packages. Publishable workflow runs can use Azure Code Signing credentials.
+
+## 4. Linux release workflow
+
+A tag matching `v*` or `release-*` starts `.github/workflows/linux-release.yml`. For each `x64` and `arm64` target, it:
+
+1. checks out recursive submodules;
+2. installs Node.js 22.19.0, Python 3.11 in CI, and Linux build dependencies;
+3. installs ARM64 cross-toolchains and target libraries when needed;
+4. runs `yarn`, then `yarn build:prod`, with `npm_config_arch`, `TARGET_ARCH`, `CC`, and `CXX`;
+5. copies target `libcurl-gnutls.so.4` into bundled Git;
+6. creates a tarball from the assembled directory;
+7. creates an AppImage with `PACKAGE_FORMAT=AppImage`; and
+8. attaches both architectures' artifacts to a GitHub Release.
+
+Python 3.11 in CI is an implementation detail of that workflow; contributor version files currently pin Python 3.9.
+
+## Generated content
+
+- `out/`: webpack output and temporary assembled resources
+- `dist/`: packaged applications and release artifacts
+- `dist/bundle-size.json`: renderer/main bundle-size metadata generated during packaging
+
+These directories are generated and should not be edited manually.

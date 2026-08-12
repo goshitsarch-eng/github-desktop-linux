@@ -1,11 +1,15 @@
-GitHub takes the security of our software products and services seriously, including the open source code repositories managed through our GitHub organizations, such as [GitHub](https://github.com/GitHub).
+# Security policy
 
-If you believe you have found a security vulnerability in this GitHub-owned open source repository, you can report it to us in one of two ways.
+## Reporting a vulnerability
 
-If the vulnerability you have found is *not* [in scope for the GitHub Bug Bounty Program](https://bounty.github.com/#scope) or if you do not wish to be considered for a bounty reward, please report the issue to us directly using [private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing/privately-reporting-a-security-vulnerability).
+Do not disclose suspected vulnerabilities in public issues, discussions, or pull requests.
 
-If the vulnerability you have found is [in scope for the GitHub Bug Bounty Program](https://bounty.github.com/#scope) and you would like for your finding to be considered for a bounty reward, please submit the vulnerability to us through [HackerOne](https://hackerone.com/github) in order to be eligible to receive a bounty award.
+Use GitHub's **Report a vulnerability** option on the repository's **Security** tab if private vulnerability reporting is enabled. If it is unavailable, contact the repository maintainers through a private contact method listed on their GitHub profiles and include only enough information to establish a secure reporting channel.
 
-**Please do not report security vulnerabilities through public GitHub issues, discussions, or pull requests.**
+Include the affected release, architecture/package type, reproduction steps, impact, and any suggested mitigation. Maintainers will acknowledge reports when capacity permits; this volunteer project cannot promise a response or remediation timeline.
 
-Thanks for helping make GitHub safe for everyone.
+## Scope
+
+This policy covers Linux-specific code, packaging, workflows, and release artifacts produced by `goshitsarch-eng/github-desktop-linux`.
+
+For a vulnerability that also affects official GitHub Desktop or a GitHub service, follow [GitHub's security reporting guidance](https://bounty.github.com/). This repository is independently maintained and cannot accept reports on behalf of GitHub, Inc. Reports about third-party dependencies may also need to be sent to their upstream maintainers.

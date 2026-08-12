@@ -9,4 +9,4 @@ linux:
     - x-scheme-handler/x-github-desktop-dev-auth
   target:
     - AppImage
-  maintainer: 'Brendan Forster<github@brendanforster.com>'
+  maintainer: 'GitHub Desktop for Linux maintainers'

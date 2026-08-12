@@ -1,27 +1,34 @@
-<!--
-What GitHub Desktop issue does this PR address (for example, #1234)?
-If you have not created an issue for your PR, please search the issue tracker to see if there is an existing issue that aligns with your PR, or open a new issue for discussion.
--->
+<!-- Link the issue when one exists. Use "Closes #123" for an issue this PR resolves. -->
 
-Closes #[issue number]
+Closes #
 
-## Description
-<!--
-A summary of the changes made along with any other information that would be helpful to a reviewer such as potential tradeoffs or alternative approaches you considered.
--->
+## Summary
+
+<!-- Explain the problem, solution, and important tradeoffs. -->
+
 -
 
-### Screenshots
+## Validation
 
-<!--
-If this PR touches the UI layer of the app, please include screenshots or animated gifs to show the changes.
--->
+<!-- List exact automated and manual checks. Include Linux distribution, architecture, and package format for packaging changes. -->
 
-## Release notes
+- [ ] `yarn test`
+- [ ] `yarn test:script`
+- [ ] `yarn lint`
+- [ ] `yarn markdownlint` (documentation changes)
+- [ ] Manual validation described below
 
-<!--
-You can leave this blank if you're not sure.
-If you don't believe this PR needs to be mentioned in the release notes, write "Notes: no-notes".
--->
+Manual validation:
+
+## Screenshots
+
+<!-- Include before/after screenshots for UI changes, or write "Not applicable". -->
+
+## Documentation and release notes
+
+- [ ] User/developer documentation is updated, or no documentation change is needed.
+- [ ] No generated files, credentials, or sensitive logs are included.
+
+<!-- Use "Notes: no-notes" when the change is not user-visible. -->
 
 Notes:

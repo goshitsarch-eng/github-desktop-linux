@@ -1,66 +1,95 @@
-name: 🐛 Bug Report
-description: File a bug report
+name: 🐛 Linux bug report
+description: Report a reproducible problem with this repository's Linux build
+title: "[Bug]: "
+labels:
+  - bug
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for filing a bug report! This issue tracker is for [GitHub Desktop](https://desktop.github.com). Please search the issue tracker to see if there is an existing issue for the problem you are experiencing. If you are experiencing issues with the Linux fork of GitHub Desktop please open an issue [in its repository](https://github.com/shiftkey/desktop). If you are experiencing issues with github.com please [contact GitHub Support](https://support.github.com/).
-  - type: textarea
-    id: the-problem
-    attributes:
-      label: The problem
-      description:
-        Describe the issue you are experiencing with GitHub Desktop. Provide a
-        clear and concise description of what you were trying to do and what
-        happened, along with any error messages you encountered.
-    validations:
-      required: true
+        Thanks for reporting a problem with this unofficial Linux fork. Read the [installation guide](https://github.com/goshitsarch-eng/github-desktop-linux/blob/main/docs/installation.md) and [known issues](https://github.com/goshitsarch-eng/github-desktop-linux/blob/main/docs/known-issues.md), then search existing issues. For GitHub.com account/service problems, contact [GitHub Support](https://support.github.com/). Report security vulnerabilities privately according to the [security policy](https://github.com/goshitsarch-eng/github-desktop-linux/blob/main/SECURITY.md).
   - type: input
     id: version
     attributes:
       label: Release version
-      description:
-        Open the 'About GitHub Desktop' menu item to see the GitHub Desktop
-        version.
+      description: Use Help > About GitHub Desktop or provide the release tag.
+      placeholder: "Example: 3.x.x or release tag"
+    validations:
+      required: true
+  - type: dropdown
+    id: package
+    attributes:
+      label: Package
+      options:
+        - AppImage
+        - Release tarball
+        - Locally built DEB
+        - Locally built RPM
+        - Development/source build
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: architecture
+    attributes:
+      label: Architecture
+      options:
+        - x64 (x86_64)
+        - arm64 (aarch64)
+        - Other
     validations:
       required: true
   - type: input
-    id: operating-system
+    id: linux
     attributes:
-      label: Operating system
-      description:
-        'Enter the specific operating system version you are running (example:
-        Windows 10)'
+      label: Linux distribution and version
+      placeholder: "Example: Ubuntu 24.04"
+    validations:
+      required: true
+  - type: input
+    id: desktop
+    attributes:
+      label: Desktop environment and session
+      description: Include desktop version and X11, XWayland, or Wayland when known.
+      placeholder: "Example: GNOME 46 on Wayland"
     validations:
       required: true
   - type: textarea
-    id: steps-to-reproduce
+    id: problem
     attributes:
-      label: Steps to reproduce the behavior
-      description: Provide steps to reproduce the problem you are experiencing.
+      label: Problem
+      description: Explain what you expected and what happened instead. Include exact error messages.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
       placeholder: |
-        1. Go to '...'
-        2. Click on '....'
-        3. Scroll down to '....'
-        4. See error
+        1. Start the application with ...
+        2. Open ...
+        3. Observe ...
+    validations:
+      required: true
   - type: textarea
     id: logs
     attributes:
-      label: Log files
-      description:
-        Please upload a log file from a day you experienced the issue. To access
-        the log files go to the menu and select `Help` > `Show Logs`.
-      placeholder:
-        You can attach log files by clicking this area to highlight it and then
-        dragging the files in.
+      label: Sanitized logs or terminal output
+      description: Use Help > Show Logs. Remove tokens, private URLs, usernames, and sensitive paths before attaching files.
+      render: shell
   - type: textarea
-    id: screenshots
-    attributes:
-      label: Screenshots
-      description: Add screenshots to help explain your problem, if applicable.
-  - type: textarea
-    id: additional-context
+    id: context
     attributes:
       label: Additional context
-      description:
-        Add any other context about the problem you are experiencing here.
+      description: Add screenshots, asset filename, keyring provider, GPU, or other relevant details.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I installed or built this repository's Linux version, not an unrelated package.
+          required: true
+        - label: I searched existing issues and reviewed the known-issues page.
+          required: true
+        - label: I removed secrets and private information from logs and screenshots.
+          required: true

@@ -1,254 +1,200 @@
-# Installing GitHub Desktop
+# Install GitHub Desktop for Linux
 
-GitHub Desktop supports Windows, macOS, and Linux.
+This is the installation guide for the unofficial Linux releases from `goshitsarch-eng/github-desktop-linux`. GitHub, Inc. does not publish or support these packages.
 
-## Table of Contents
+## Choose a release
 
-- [Linux](#linux)
-- [macOS](#macos)
-- [Windows](#windows)
-- [Data Directories](#data-directories)
-- [Log Files](#log-files)
-- [Installer Logs](#installer-logs)
+Open the [latest release](https://github.com/goshitsarch-eng/github-desktop-linux/releases/latest) and choose both an architecture and a format.
 
-## Linux
+| Your system | Release architecture |
+| --- | --- |
+| 64-bit Intel or AMD (`uname -m` reports `x86_64`) | `x64` |
+| 64-bit ARM (`uname -m` reports `aarch64` or `arm64`) | `arm64` |
 
-### Package Formats
+| Format | Use case |
+| --- | --- |
+| AppImage | Simplest portable desktop application; recommended for most users |
+| `.tar.gz` | Portable directory; useful when AppImage/FUSE is unavailable |
 
-GitHub Desktop for Linux is available in two formats:
+The release workflow currently uploads AppImages and tarballs. Although the source contains DEB and RPM packaging scripts, `.deb` and `.rpm` files are not currently uploaded by that workflow.
 
-| Format | Description | Best For |
-|--------|-------------|----------|
-| **AppImage** | Portable executable | Any distribution, no installation required |
-| **Tarball** | Compressed archive | Manual installation, custom setups |
+### Verify the source
 
-### Supported Architectures
+Download only from this repository's [Releases page](https://github.com/goshitsarch-eng/github-desktop-linux/releases). Review the release tag and, when GitHub displays an asset digest, compare it with the downloaded file. The current workflow does not attach a separate checksum or signature file, so do not trust checksums copied from comments or third-party download sites.
 
-| Architecture | CPU Examples |
-|--------------|--------------|
-| `x86_64` | Intel Core, AMD Ryzen |
-| `aarch64` / `arm64` | Raspberry Pi 4, AWS Graviton |
+## Install an AppImage
 
-### AppImage Installation (Recommended)
-
-AppImages are portable and work on most Linux distributions without installation.
+The examples use placeholders. Substitute the exact filename you downloaded.
 
 ```bash
-# Download the AppImage for your architecture
-
-# Make it executable
-chmod +x GitHubDesktop-linux-arm64-3.5.4.AppImage
-
-# Run directly
-./GitHubDesktop-linux-arm64-3.5.4.AppImage
+cd ~/Downloads
+chmod +x GitHubDesktop-linux-<architecture>-<version>.AppImage
+./GitHubDesktop-linux-<architecture>-<version>.AppImage
 ```
 
-#### Optional: System Integration
+AppImage mounts itself temporarily and does not require a system installation. If it reports a FUSE error, install your distribution's FUSE 2 compatibility package (often `libfuse2`) or use the tarball.
 
-To integrate the AppImage with your desktop environment:
+For a stable location:
 
 ```bash
-# Using AppImageLauncher (recommended)
-# Install AppImageLauncher from your package manager, then run the AppImage
-
-# Manual integration
-mkdir -p ~/.local/bin
-mv GitHubDesktop-linux-arm64-3.5.4.AppImage ~/.local/bin/github-desktop
+mkdir -p "$HOME/Applications"
+mv GitHubDesktop-linux-<architecture>-<version>.AppImage \
+  "$HOME/Applications/GitHubDesktop.AppImage"
+chmod +x "$HOME/Applications/GitHubDesktop.AppImage"
 ```
 
-Create a desktop entry at `~/.local/share/applications/github-desktop.desktop`:
+## Install a portable tarball
+
+```bash
+mkdir -p "$HOME/Applications/GitHubDesktop"
+tar -xzf GitHubDesktop-linux-<architecture>-<version>.tar.gz \
+  --strip-components=1 \
+  -C "$HOME/Applications/GitHubDesktop"
+"$HOME/Applications/GitHubDesktop/desktop"
+```
+
+Keep the extracted directory intact because the executable loads Git and application resources from it.
+
+## Desktop menu and browser sign-in
+
+Portable formats do not have a system installer to create a menu entry. Electron attempts protocol registration when the app starts, but Linux desktop environments generally need a registered `.desktop` file with matching MIME handlers for browser authentication to return to the app reliably.
+
+Create the applications directory:
+
+```bash
+mkdir -p "$HOME/.local/share/applications"
+```
+
+Create `~/.local/share/applications/github-desktop.desktop` with **one** of the following `Exec` lines. Desktop entries do not expand `$HOME`; use your absolute home path.
 
 ```ini
 [Desktop Entry]
+Type=Application
 Name=GitHub Desktop
 Comment=Simple collaboration from your desktop
-Exec=/home/YOUR_USERNAME/.local/bin/github-desktop %U
-Icon=github-desktop
-Type=Application
+Exec=/home/YOUR_USER/Applications/GitHubDesktop.AppImage %U
+Terminal=false
 Categories=Development;RevisionControl;
-MimeType=x-scheme-handler/x-github-client;x-scheme-handler/x-github-desktop-auth;x-scheme-handler/x-github-desktop-dev-auth;
+MimeType=x-scheme-handler/x-github-client;x-scheme-handler/x-github-desktop-auth;
 StartupWMClass=GitHub Desktop
 ```
 
-Update the desktop database:
-```bash
-update-desktop-database ~/.local/share/applications
+For the tarball, use:
+
+```ini
+Exec=/home/YOUR_USER/Applications/GitHubDesktop/desktop %U
 ```
 
-### Dependencies
-
-#### Runtime Dependencies
-
-The following packages are required at runtime:
-
-| Package | Fedora/RHEL | Ubuntu/Debian | Purpose |
-|---------|-------------|---------------|---------|
-| libsecret | `libsecret` | `libsecret-1-0` | Secure credential storage |
-| gnome-keyring | `gnome-keyring` | `gnome-keyring` | Keyring daemon |
-| git | `git` | `git` | Git operations (if using system Git) |
-
-**Fedora/RHEL:**
-```bash
-sudo dnf install libsecret gnome-keyring git
-```
-
-**Ubuntu/Debian:**
-```bash
-sudo apt install libsecret-1-0 gnome-keyring git
-```
-
-### Git Configuration
-
-GitHub Desktop ships with a bundled Git binary and a bundled `libcurl-gnutls.so.4`, so it works out of the box on all Linux distributions.
-
-To use your system Git instead:
+Then register the entry:
 
 ```bash
-GITHUB_DESKTOP_USE_SYSTEM_GIT=1 github-desktop
+update-desktop-database "$HOME/.local/share/applications"
+xdg-mime default github-desktop.desktop x-scheme-handler/x-github-client
+xdg-mime default github-desktop.desktop x-scheme-handler/x-github-desktop-auth
 ```
 
-To make permanent, add to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.):
+Confirm registration:
+
 ```bash
-export GITHUB_DESKTOP_USE_SYSTEM_GIT=1
+xdg-mime query default x-scheme-handler/x-github-desktop-auth
 ```
 
-### Uninstalling
+It should print `github-desktop.desktop`. Development builds use `x-github-desktop-dev-auth` instead of the production authentication scheme.
 
-**AppImage:**
+## Optional command-line helper
+
+The tarball contains the `github` helper. Link it without moving it away from the package:
+
 ```bash
-rm ~/.local/bin/github-desktop
-rm ~/.local/share/applications/github-desktop.desktop
-update-desktop-database ~/.local/share/applications
+mkdir -p "$HOME/.local/bin"
+ln -s "$HOME/Applications/GitHubDesktop/resources/app/static/github" \
+  "$HOME/.local/bin/github"
 ```
 
-**Remove user data:**
+Ensure `~/.local/bin` is on `PATH`, then run `github --help`. The AppImage does not expose its internal helper as a stable host path; use the tarball if this integration is important.
+
+## Runtime requirements
+
+The application requires a graphical Linux session and the native libraries required by Electron. Credential storage uses Secret Service.
+
+| Purpose | Debian/Ubuntu | Fedora/RHEL |
+| --- | --- | --- |
+| Secret Service library | `libsecret-1-0` | `libsecret` |
+| Keyring daemon (typical choice) | `gnome-keyring` | `gnome-keyring` |
+| AppImage FUSE compatibility, if needed | `libfuse2` | Distribution-specific FUSE 2 package |
+
 ```bash
-rm -rf ~/.config/GitHub\ Desktop
-rm -rf ~/.cache/GitHub\ Desktop
+# Debian or Ubuntu
+sudo apt install libsecret-1-0 gnome-keyring
+
+# Fedora or RHEL
+sudo dnf install libsecret gnome-keyring
 ```
 
----
+GitHub Desktop includes its own Git distribution; installing system Git does not replace the Git used internally by default. The Linux release workflow also bundles the `libcurl-gnutls` library needed by that Git distribution.
 
-## macOS
+To opt into the Git executable found on the application's `PATH`, launch with:
 
-Download the `GitHub Desktop.zip`, unpack the application and put it wherever you want.
+```bash
+GITHUB_DESKTOP_USE_SYSTEM_GIT=1 /absolute/path/to/GitHubDesktop.AppImage
+```
 
-### System Requirements
+Use the corresponding tarball executable path as needed. System Git is an escape hatch for compatibility testing and must provide the features expected by the app.
 
-- macOS 10.15 (Catalina) or later
-- Apple Silicon (M1/M2) or Intel processor
+## Environment variables
 
-### Installation
+| Variable | Behavior |
+| --- | --- |
+| `GITHUB_DESKTOP_USE_SYSTEM_GIT=1` | Do not select the bundled Git on Linux |
+| `GITHUB_DESKTOP_DISABLE_HARDWARE_ACCELERATION=1` | Disable Electron GPU acceleration |
+| `GITHUB_DESKTOP_PREVIEW_FEATURES=1` | Enable available preview features |
+| `XDG_CONFIG_HOME` | Override the base configuration location used by Electron |
 
-1. Download `GitHub Desktop-darwin-arm64.zip` (Apple Silicon) or `GitHub Desktop-darwin-x64.zip` (Intel)
-2. Unzip the archive
-3. Drag `GitHub Desktop.app` to your Applications folder
-4. Launch from Applications or Spotlight
+## Data and logs
 
----
+Electron follows XDG locations by default:
 
-## Windows
-
-### System Requirements
-
-- Windows 10 or later (64-bit)
-- Windows Server 2016 or later
-
-### Installation Options
-
-**Per-user installation (recommended):**
-- Download `GitHubDesktopSetup.exe`
-- Run the installer
-- GitHub Desktop installs to `%LOCALAPPDATA%\GitHubDesktop`
-
-**Machine-wide installation:**
-- Download `GitHubDesktopSetup.msi`
-- Run with administrator privileges
-- Installs to `%PROGRAMFILES(x86)%\GitHub Desktop Installer`
-- All users on the machine can run GitHub Desktop
-
----
-
-## Data Directories
-
-GitHub Desktop stores user data in platform-specific locations:
-
-### Linux
-
-| Type | Location |
-|------|----------|
-| Configuration | `~/.config/GitHub Desktop/` |
-| Cache | `~/.cache/GitHub Desktop/` |
+| Data | Default location |
+| --- | --- |
+| Settings and application data | `~/.config/GitHub Desktop/` |
 | Logs | `~/.config/GitHub Desktop/logs/` |
+| Cache | `~/.cache/GitHub Desktop/` |
 
-### macOS
+The **Help > Show Logs** menu is the preferred way to find logs. A typical production log is named `YYYY-MM-DD.desktop.production.log`.
 
-| Type | Location |
-|------|----------|
-| Application Support | `~/Library/Application Support/GitHub Desktop/` |
-| Logs | `~/Library/Application Support/GitHub Desktop/logs/` |
-| Cache | `~/Library/Caches/com.github.GitHubClient/` |
-
-### Windows
-
-| Type | Location |
-|------|----------|
-| Application | `%LOCALAPPDATA%\GitHubDesktop\` |
-| User Data | `%APPDATA%\GitHub Desktop\` |
-| Logs | `%APPDATA%\GitHub Desktop\logs\` |
-
----
-
-## Log Files
-
-GitHub Desktop generates logs for troubleshooting. Logs are organized by date using the format `YYYY-MM-DD.desktop.production.log`.
-
-### Viewing Logs
-
-**Linux:**
 ```bash
-# View today's log
-cat ~/.config/GitHub\ Desktop/logs/$(date +%Y-%m-%d).desktop.production.log
-
-# Follow log in real-time
-tail -f ~/.config/GitHub\ Desktop/logs/$(date +%Y-%m-%d).desktop.production.log
-
-# View recent entries
-tail -100 ~/.config/GitHub\ Desktop/logs/*.log
+tail -n 100 "$HOME/.config/GitHub Desktop/logs/$(date +%F).desktop.production.log"
 ```
 
-**macOS:**
+Locations can differ if XDG environment variables are customized.
+
+## Update
+
+Portable Linux builds do not provide a package-manager update path.
+
+- **AppImage:** quit the app, download the new asset, verify it, and replace the old AppImage while preserving its stable filename.
+- **Tarball:** quit the app, extract the new release into a new empty directory, then replace the old application directory. Do not merge new files into an old extracted tree.
+
+Application data is stored separately and is retained during replacement. Back it up before a major upgrade if it is important.
+
+## Uninstall
+
+Remove only the package format you installed:
+
 ```bash
-cat ~/Library/Application\ Support/GitHub\ Desktop/logs/$(date +%Y-%m-%d).desktop.production.log
+rm -f "$HOME/Applications/GitHubDesktop.AppImage"
+rm -rf "$HOME/Applications/GitHubDesktop"
+rm -f "$HOME/.local/bin/github"
+rm -f "$HOME/.local/share/applications/github-desktop.desktop"
+update-desktop-database "$HOME/.local/share/applications"
 ```
 
-**Windows (PowerShell):**
-```powershell
-Get-Content "$env:APPDATA\GitHub Desktop\logs\$(Get-Date -Format 'yyyy-MM-dd').desktop.production.log"
+Those commands preserve user data. To reset the app completely, first back up anything needed, then remove its configuration and cache manually:
+
+```bash
+rm -rf "$HOME/.config/GitHub Desktop" "$HOME/.cache/GitHub Desktop"
 ```
 
----
+## Troubleshooting
 
-## Installer Logs
-
-Problems with installation or updates are tracked in separate log files.
-
-### Linux
-
-AppImage logs: Check terminal output when running the AppImage directly.
-
-Tarball: Run `./desktop` from a terminal to see error output.
-
-### macOS
-
-Installer logs are located at:
-- `~/Library/Caches/com.github.GitHubClient.ShipIt/ShipIt_stderr.log`
-
-Check the end of the file for recent activity.
-
-### Windows
-
-- Initial installation: `%LOCALAPPDATA%\SquirrelSetup.log`
-- Updates: `%LOCALAPPDATA%\GitHubDesktop\SquirrelSetup.log`
-
-Look for mentions of `GitHubDesktop.exe` in the log.
+See [known issues](known-issues.md) for OAuth, keyring, AppImage, graphics, Wayland, and bundled Git problems. When reporting a reproducible Linux packaging problem, use this repository's [bug report form](https://github.com/goshitsarch-eng/github-desktop-linux/issues/new?template=bug_report.yaml).

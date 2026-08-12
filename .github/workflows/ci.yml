@@ -3,12 +3,12 @@ name: CI
 on:
   push:
     branches:
-      - development
+      - main
   pull_request:
   workflow_call:
     inputs:
       repository:
-        default: desktop/desktop
+        description: Repository to check out; defaults to the repository running the workflow
         required: false
         type: string
       ref:

@@ -82,7 +82,7 @@ function parseChannel(arg: string): Channel {
  */
 function printInstructions(nextVersion: string, entries: Array<string>) {
   const baseSteps = [
-    'Revise the release notes according to https://github.com/desktop/desktop/blob/development/docs/process/writing-release-notes.md',
+    'Revise the release notes according to https://github.com/goshitsarch-eng/github-desktop-linux/blob/main/docs/process/writing-release-notes.md',
     'Lint them with: yarn draft-release:format',
     'Commit these changes (on a "release" branch) and push them to GitHub',
     'See the deploy repo for details on performing the release: https://github.com/desktop/deploy',

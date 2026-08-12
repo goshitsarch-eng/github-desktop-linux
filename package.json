@@ -1,9 +1,9 @@
 {
   "repository": {
     "type": "git",
-    "url": "https://github.com/desktop/desktop.git"
+    "url": "https://github.com/goshitsarch-eng/github-desktop-linux.git"
   },
-  "description": "GitHub Desktop build dependencies",
+  "description": "Build dependencies for the unofficial GitHub Desktop for Linux fork",
   "scripts": {
     "cli": "ts-node app/src/cli/main.ts",
     "check:eslint": "tsc -P eslint-rules/",

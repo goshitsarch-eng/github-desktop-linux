@@ -1,49 +1,41 @@
-# GitHub Desktop Documentation
+# Documentation
 
-This is the [GitHub Desktop](https://github.com/desktop/desktop) development
-documentation.
+Documentation for the unofficial GitHub Desktop for Linux fork.
 
-## Contributing
+## Users
 
-If you are interested in contributing to the project, you should read these
-resources to get familiar with how things work:
+- [Install, update, and uninstall](installation.md)
+- [Known issues and troubleshooting](known-issues.md)
+- [Integrations](integrations/)
+- [Learn more](learn-more/)
 
- - **[How Can I Contribute?](../.github/CONTRIBUTING.md#how-can-i-contribute)** -
-    details about how you can participate
- - **[Development Environment Setup](contributing/setup.md)** - everything
-    you need to know to get Desktop up and running
- - **[Engineering Values](contributing/engineering-values.md)** - our high-level engineering values
- - **[Style Guide](contributing/styleguide.md)** - notes on the coding style
- - **[Tooling](contributing/tooling.md)** - if you have a preferred IDE,
-    there's some enhancements to make your life easier
- - **[Troubleshooting](contributing/troubleshooting.md)** - some additional
-    known issues if you're having environment issues
+Linux packages from this project are independently maintained. GitHub, Inc. does not support them.
 
-## Process
+## Contributors
 
-Details about how the team is organizing and shipping GitHub Desktop:
+- [Contribution guide](../.github/CONTRIBUTING.md)
+- [Development setup](contributing/setup.md)
+- [Linux setup](contributing/setup-linux.md)
+- [ARM64 builds](contributing/building-arm64.md)
+- [Contributor troubleshooting](contributing/troubleshooting.md)
+- [Style guide](contributing/styleguide.md)
+- [Linting](contributing/linting.md)
+- [Tooling](contributing/tooling.md)
+- [Working with packages](contributing/working-with-packages.md)
 
- - **[Roadmap](process/roadmap.md)** - the future as planned so far
- - **[Release Planning](process/release-planning.md)** - how we plan and execute
-    releases
- - **[Issue Triage](process/issue-triage.md)** - how we address issues reported
-    by users
- - **[Pull Requests](process/pull-requests.md)** - how code contributions are submitted and reviewed
- - **[Releasing Updates](process/releasing-updates.md)** - how we deploy things
+Some documents retained from upstream describe macOS and Windows development. Linux release and packaging behavior is documented locally and may differ from upstream.
 
-## Technical
+## Technical reference
 
-These documents contain more details about the internals of GitHub Desktop
-and how things work:
+- [Application architecture](technical/architecture.md)
+- [Build and packaging pipeline](technical/packaging.md)
+- [Adding tests](technical/adding-tests.md)
+- [OAuth](technical/oauth.md)
+- [Shell integration](technical/shell-integration.md)
+- [Editor integration](technical/editor-integration.md)
+- [Error reporting](technical/error-reporting.md)
+- [Proxy support](technical/proxies.md)
 
- - **[Dialogs](technical/dialogs.md)** - details about the dialog component API
- - **[Windows menu bar](technical/windows-menu-bar.md)** - Electron doesn't
-    provide inbuilt support for styling the menu for Windows, so we've created
-    our own custom components to achieve this.
- - **[Developer OAuth App](technical/oauth.md)** - GitHub Desktop ships with
-    the ability to OAuth on behalf of a user. A developer OAuth app is bundled
-    to reduce the friction of getting started.
- - **[Building and Packaging Desktop](technical/packaging.md)** - Outlines how
-    Desktop is currently packaged for all platforms 
- - **[Automatic Git Proxy support](technical/proxies.md)** - A pre-launch overview
-    and troubleshooting guide for the Git automatic proxy support in GitHub Desktop.
+## Project process
+
+The files under [`process/`](process/) originated upstream and explain many established GitHub Desktop practices. The maintainers of this fork may use a lighter process; the repository's issue tracker, pull request template, and contribution guide are authoritative for contributions here.

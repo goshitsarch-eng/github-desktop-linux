@@ -1,29 +1,43 @@
-name: ⭐ Feature Request
-description: Submit a feature request
+name: ⭐ Feature request
+description: Suggest an improvement to this Linux fork
+title: "[Feature]: "
+labels:
+  - enhancement
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for submitting a feature request! This issue tracker is for [GitHub Desktop](https://desktop.github.com). Please search the issue tracker to see if there is an existing issue for the feature you are requesting. If you have a feature request for github.com please visit the [GitHub public feedback discussions repository](https://github.com/github/feedback/discussions).
+        This repository focuses on Linux packaging and integration for GitHub Desktop. Search existing issues first. Cross-platform product requests may belong in the [upstream GitHub Desktop repository](https://github.com/desktop/desktop/issues); GitHub.com feedback belongs in [GitHub's feedback discussions](https://github.com/orgs/community/discussions).
   - type: textarea
-    id: the-feature-request
+    id: problem
     attributes:
-      label: The feature request
-      description:
-        Write a clear and concise description of what the feature or problem is.
+      label: Problem or use case
+      description: What Linux user or contributor problem should be solved?
     validations:
       required: true
   - type: textarea
-    id: proposed-solution
+    id: solution
     attributes:
       label: Proposed solution
-      description: Share how this will benefit GitHub Desktop and its users.
+      description: Describe the desired behavior and why it belongs in this fork.
     validations:
       required: true
   - type: textarea
-    id: additional-context
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Include existing workarounds or upstream behavior.
+  - type: textarea
+    id: context
     attributes:
       label: Additional context
-      description:
-        Please include any other context, like screenshots or mockups, if
-        applicable.
+      description: Add mockups, package/distribution details, or relevant links.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues for this request.
+          required: true
+        - label: This request concerns this Linux fork rather than GitHub.com support.
+          required: true

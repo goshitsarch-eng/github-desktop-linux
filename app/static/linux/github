@@ -13,11 +13,13 @@ else
 		GITHUB_PATH="/opt/GitHub Desktop"
 	fi
 fi
-# check if this is a dev install or standard
+# Check whether this is a development, system-package, or portable build.
 if [ -f "$GITHUB_PATH/github-desktop-dev" ]; then
 	BINARY_NAME="github-desktop-dev"
-else
+elif [ -f "$GITHUB_PATH/github-desktop" ]; then
 	BINARY_NAME="github-desktop"
+else
+	BINARY_NAME="desktop"
 fi
 
 ELECTRON="$GITHUB_PATH/$BINARY_NAME"
