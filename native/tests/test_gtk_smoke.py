@@ -104,6 +104,23 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             win._tutorial_panel.refresh(TutorialStep.PICK_EDITOR, "GNOME Text Editor")
             win._commit_summary.bind([], None)
             win._find()
+            win._show_window_info("Press F11 to exit fullscreen", hold_ms=1)
+            win._show_zoom_info(1.1)
+            win._hide_window_info()
+            if hasattr(win, "_repo_filter"):
+                win._repo_filter.set_text("zzz-no-such-repo")
+                win._refresh_repo_list()
+                win._repo_filter.set_text("")
+                win._refresh_repo_list()
+            if hasattr(win, "_branches_foldout"):
+                win._branches_foldout.refresh(
+                    [],
+                    [],
+                    current=None,
+                    default_name=None,
+                    recent=[],
+                    has_github=False,
+                )
             show_release_notes(win)
             show_checks(win, store, {"error": "CI failed", "title": "Demo PR"})
             from github_desktop.ui.checks import show_rerun_checks

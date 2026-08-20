@@ -208,9 +208,10 @@ class DiffViewer(Gtk.Box):
             return
         kind = getattr(diff, "kind", None)
         if kind == DiffType.BINARY:
-            page = Adw.StatusPage(title="Binary file", description="This file can't be displayed as text.")
+            page = Adw.StatusPage(title="This binary file has changed.")
+            page.add_css_class("binary")
             if self.on_open_binary and path:
-                btn = Gtk.Button(label="Open in default program")
+                btn = Gtk.Button(label="Open file in external program.")
                 btn.add_css_class("pill")
                 btn.add_css_class("suggested-action")
                 btn.set_halign(Gtk.Align.CENTER)

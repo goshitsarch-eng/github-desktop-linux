@@ -1669,16 +1669,39 @@ def api_endpoint_from_html(url: str) -> str:
     return f"{url}/api/v3"
 
 
+# Git ident.c "crud" characters: ASCII 0–32 plus ., : ; < > " \ '
+# Desktop `gitAuthorNameIsValid` rejects names that consist only of these.
+_GIT_AUTHOR_CRUD = frozenset(chr(i) for i in range(33)) | frozenset('.,:;<>"\\\'')
+
+
 def git_author_name_is_valid(name: str) -> bool:
-    if not name or not name.strip():
-        return False
-    # Git rejects names containing ":" (used in ident strings)
-    return ":" not in name
+    """Desktop `gitAuthorNameIsValid`. Empty is valid; all-crud names are not."""
+    return not name or not all(ch in _GIT_AUTHOR_CRUD for ch in name)
 
 
-INVALID_GIT_AUTHOR_NAME_MESSAGE = (
-    "Name can't contain a colon or be all ASCII control characters."
-)
+INVALID_GIT_AUTHOR_NAME_MESSAGE = "Name is invalid, it consists only of disallowed characters."
+
+
+def highlight_text_runs(text: str, highlight: Sequence[int]) -> list[tuple[str, bool]]:
+    """Desktop `HighlightText`: group characters into `(chunk, matched)` runs."""
+    matched = set(highlight)
+    runs: list[tuple[str, bool]] = []
+    buf: list[str] = []
+    state: bool | None = None
+    for index, ch in enumerate(text):
+        is_match = index in matched
+        if state is None:
+            state = is_match
+            buf = [ch]
+        elif is_match == state:
+            buf.append(ch)
+        else:
+            runs.append(("".join(buf), state))
+            buf = [ch]
+            state = is_match
+    if state is not None:
+        runs.append(("".join(buf), state))
+    return runs
 
 
 MaxTagNameLength = 245

@@ -301,6 +301,26 @@ window:not(.underline-links) link {
 .repo-rulesets-for-branch-link {
   padding: 0;
 }
+.toast-notification-container {
+  padding: 12px;
+}
+.toast-notification {
+  background-color: alpha(@window_bg_color, 0.94);
+  color: @window_fg_color;
+  padding: 10px 18px;
+  border-radius: 8px;
+  font-weight: 600;
+  box-shadow: 0 4px 16px alpha(black, 0.28);
+}
+.window-zoom-info {
+  font-size: 1.6rem;
+}
+.protip {
+  opacity: 0.8;
+}
+.no-results-found, .no-branches {
+  padding: 12px;
+}
 """
 
 _provider: Gtk.CssProvider | None = None

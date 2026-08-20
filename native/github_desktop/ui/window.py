@@ -91,8 +91,23 @@ class MainWindow(Adw.ApplicationWindow):
         self._light_update = False
         self._toast = Adw.ToastOverlay()
         self.set_content(self._toast)
+        self._overlay = Gtk.Overlay()
+        self._toast.set_child(self._overlay)
         self._root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self._toast.set_child(self._root)
+        self._overlay.set_child(self._root)
+        self._window_info_box = Gtk.Box()
+        self._window_info_box.add_css_class("toast-notification-container")
+        self._window_info_box.set_halign(Gtk.Align.CENTER)
+        self._window_info_box.set_valign(Gtk.Align.START)
+        self._window_info_box.set_margin_top(28)
+        self._window_info_box.set_visible(False)
+        self._window_info = Gtk.Label()
+        self._window_info.add_css_class("toast-notification")
+        self._window_info.set_wrap(True)
+        self._window_info_box.append(self._window_info)
+        self._overlay.add_overlay(self._window_info_box)
+        self._window_info_source = 0
+        self._last_zoom = store.settings.zoom_factor
         self._banner = Adw.Banner()
         self._banner.set_revealed(False)
         self._banner.connect("button-clicked", self._on_banner_clicked)
@@ -111,6 +126,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._install_file_drop()
         self.store.subscribe(self._on_store)
         self.connect("close-request", self._on_close)
+        self.connect("notify::fullscreened", self._on_fullscreened)
         self._apply_underline_links()
         self._on_store()
 
@@ -129,6 +145,44 @@ class MainWindow(Adw.ApplicationWindow):
                     self.store.settings.commit_summary_width = pos
             self.store.persist_settings()
         self._flush_commit_form()
+        if getattr(self, "_window_info_source", 0):
+            GLib.source_remove(self._window_info_source)
+            self._window_info_source = 0
+        return False
+
+    def _toggle_fullscreen(self) -> None:
+        if self.is_fullscreen():
+            self.unfullscreen()
+        else:
+            self.fullscreen()
+
+    def _on_fullscreened(self, *_args: object) -> None:
+        if self.is_fullscreen():
+            self._show_window_info("Press F11 to exit fullscreen", hold_ms=3000, zoom=False)
+
+    def _show_zoom_info(self, factor: float) -> None:
+        """Desktop `ZoomInfo` overlay when Ctrl+0/=/− changes the zoom factor."""
+        percent = f"{round(factor * 100)}%"
+        self._show_window_info(percent, hold_ms=750, zoom=True)
+
+    def _show_window_info(self, text: str, *, hold_ms: int = 3000, zoom: bool = False) -> None:
+        """Desktop `FullScreenInfo` / `ZoomInfo` overlay toast."""
+        if not hasattr(self, "_window_info"):
+            return
+        self._window_info.set_text(text)
+        if zoom:
+            self._window_info.add_css_class("window-zoom-info")
+        else:
+            self._window_info.remove_css_class("window-zoom-info")
+        self._window_info_box.set_visible(True)
+        if self._window_info_source:
+            GLib.source_remove(self._window_info_source)
+        self._window_info_source = GLib.timeout_add(hold_ms, self._hide_window_info)
+
+    def _hide_window_info(self) -> bool:
+        if hasattr(self, "_window_info_box"):
+            self._window_info_box.set_visible(False)
+        self._window_info_source = 0
         return False
 
     def _on_store(self) -> None:
@@ -159,6 +213,8 @@ class MainWindow(Adw.ApplicationWindow):
                 self._banner.set_button_label("Create branch")
             elif kind == BannerType.ACCESSIBILITY_SETTINGS:
                 self._banner.set_button_label("Open settings")
+            elif kind == BannerType.OS_VERSION_NO_LONGER_SUPPORTED:
+                self._banner.set_button_label("Support details")
             elif kind in CONFLICT_BANNER_KINDS:
                 self._banner.set_button_label("View conflicts")
             elif kind in SUCCESS_BANNER_KINDS and self.store.banner.undo_sha:
@@ -168,6 +224,10 @@ class MainWindow(Adw.ApplicationWindow):
             self._banner.set_revealed(True)
         else:
             self._banner.set_revealed(False)
+        zoom = self.store.settings.zoom_factor
+        if zoom != getattr(self, "_last_zoom", zoom):
+            self._last_zoom = zoom
+            self._show_zoom_info(zoom)
         popup = self.store.popup
         if popup or self.store.all_popups:
             for current in self.store.take_popups():
@@ -201,6 +261,9 @@ class MainWindow(Adw.ApplicationWindow):
                 "Check out the new accessibility settings to control the visibility of "
                 "the link underlines and diff check marks."
             ),
+            BannerType.OS_VERSION_NO_LONGER_SUPPORTED: (
+                "This operating system is no longer supported. Software updates have been disabled."
+            ),
         }
         return mapping.get(kind, kind.value)
 
@@ -215,6 +278,12 @@ class MainWindow(Adw.ApplicationWindow):
         if banner and banner.type == BannerType.ACCESSIBILITY_SETTINGS:
             self.store.dismiss_accessibility_banner()
             show_preferences(self, self.store, PreferencesTab.ACCESSIBILITY)
+            return
+        if banner and banner.type == BannerType.OS_VERSION_NO_LONGER_SUPPORTED:
+            self.store.clear_banner()
+            open_external(
+                "https://docs.github.com/en/desktop/installing-and-configuring-github-desktop/overview/supported-operating-systems"
+            )
             return
         if banner and banner.type in CONFLICT_BANNER_KINDS:
             kind = banner.operation_kind or {
@@ -299,6 +368,7 @@ class MainWindow(Adw.ApplicationWindow):
         add("pr-suggested-preview", self._pr_suggested_preview)
         add("pr-suggested-create", self._pr_suggested_create)
         add("show-shortcuts", self._show_shortcuts)
+        add("toggle-fullscreen", self._toggle_fullscreen)
         self.add_css_class("github-desktop-zoom")
         from .css import apply_zoom
 
@@ -355,6 +425,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.get_application().set_accels_for_action(f"win.{name}", [accel])
         self.get_application().set_accels_for_action("win.edit-redo", ["<Ctrl><Shift>z", "<Ctrl>y"])
         self.get_application().set_accels_for_action("win.zoom-in", ["<Ctrl>equal", "<Ctrl>plus"])
+        self.get_application().set_accels_for_action("win.toggle-fullscreen", ["F11"])
 
     def _repo_op(self, fn) -> None:
         repo = self.store.selected_repository
@@ -599,6 +670,16 @@ class MainWindow(Adw.ApplicationWindow):
         tutorial.connect("clicked", self._on_empty_tutorial)
         self._empty_tutorial_btn = tutorial
         box.append(tutorial)
+        protip = Gtk.Label(
+            label="ProTip! You can drag & drop an existing repository folder here to add it to Desktop",
+            wrap=True,
+            xalign=0,
+        )
+        protip.add_css_class("protip")
+        protip.add_css_class("dim-label")
+        protip.set_halign(Gtk.Align.CENTER)
+        protip.set_justify(Gtk.Justification.CENTER)
+        box.append(protip)
         page.set_child(box)
         return page
 
@@ -865,6 +946,7 @@ class MainWindow(Adw.ApplicationWindow):
         view.append("Go to summary", "win.go-to-commit-message")
         view.append(self._stash_menu_label(), "win.toggle-stash")
         view.append("Toggle changes filter", "win.toggle-changes-filter")
+        view.append("Toggle full screen", "win.toggle-fullscreen")
         view.append("Increase active resizable", "win.increase-resizable")
         view.append("Decrease active resizable", "win.decrease-resizable")
         view.append("Reset zoom", "win.zoom-reset")
@@ -1625,10 +1707,13 @@ class MainWindow(Adw.ApplicationWindow):
             for group in groups
             for item in group.items
         }
+        shown = 0
 
         def add_group(title: str, repos) -> None:
+            nonlocal shown
             if not repos:
                 return
+            shown += len(repos)
             header = Gtk.ListBoxRow()
             header.set_selectable(False)
             header.set_activatable(False)
@@ -1706,6 +1791,36 @@ class MainWindow(Adw.ApplicationWindow):
             cancel.connect("clicked", lambda *_a, cid=cloning.id: self.store.abort_clone(cid))
             row.add_suffix(cancel)
             self._repo_list.append(row)
+            shown += 1
+        if needle and shown == 0:
+            self._repo_list.append(self._repo_filter_empty_row())
+
+    def _repo_filter_empty_row(self) -> Gtk.Widget:
+        """Desktop `RepositoriesList.renderNoItems` filter blank slate."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.add_css_class("no-results-found")
+        box.set_margin_top(16)
+        box.set_margin_bottom(16)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        title = Gtk.Label(label="Sorry, I can't find that repository", wrap=True, xalign=0)
+        title.add_css_class("title-4")
+        box.append(title)
+        protip = Gtk.Label(
+            label=(
+                "ProTip! Press Ctrl+O to quickly add a local repository, and "
+                "Ctrl+Shift+O to clone from anywhere within the app"
+            ),
+            wrap=True,
+            xalign=0,
+        )
+        protip.add_css_class("protip")
+        box.append(protip)
+        row = Gtk.ListBoxRow()
+        row.set_activatable(False)
+        row.set_selectable(False)
+        row.set_child(box)
+        return row
 
     def _refresh_files(self) -> None:
         repo = self.store.selected_repository
@@ -3683,6 +3798,10 @@ class MainWindow(Adw.ApplicationWindow):
                         ("History", "<Control>2"),
                         ("Repository list", "<Control>t"),
                         ("Branches", "<Control>b"),
+                        ("Toggle full screen", "F11"),
+                        ("Zoom in", "<Control>plus"),
+                        ("Zoom out", "<Control>minus"),
+                        ("Reset zoom", "<Control>0"),
                         ("Increase active resizable", "<Control>9"),
                         ("Decrease active resizable", "<Control>8"),
                     ],

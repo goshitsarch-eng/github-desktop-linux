@@ -202,6 +202,7 @@ from .models import (
     WorkingDirectoryFileChange,
     fork_contribution_target,
     fork_pull_request_remote_name,
+    INVALID_GIT_AUTHOR_NAME_MESSAGE,
     git_author_name_is_valid,
     github_for_contribution,
     github_from_dict,
@@ -4470,7 +4471,7 @@ class AppStore:
 
     def save_git_user(self, name: str, email: str, default_branch: str | None = None) -> None:
         if not git_author_name_is_valid(name):
-            raise ValidationError("Name can't contain a colon.")
+            raise ValidationError(INVALID_GIT_AUTHOR_NAME_MESSAGE)
         set_config_value(None, "user.name", name, global_only=True)
         set_config_value(None, "user.email", email, global_only=True)
         if default_branch:

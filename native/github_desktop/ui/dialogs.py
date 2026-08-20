@@ -99,6 +99,29 @@ def _alert(
     dialog.choose(parent, None, done)
 
 
+def _author_name_error_row(name_row: Adw.EntryRow) -> Gtk.ListBoxRow:
+    """Desktop Git config `InvalidGitAuthorNameMessage` under the name field."""
+    label = Gtk.Label(label=INVALID_GIT_AUTHOR_NAME_MESSAGE, wrap=True, xalign=0)
+    label.add_css_class("error")
+    box = Gtk.Box()
+    box.set_margin_start(12)
+    box.set_margin_end(12)
+    box.set_margin_top(4)
+    box.set_margin_bottom(8)
+    box.append(label)
+    row = Gtk.ListBoxRow()
+    row.set_activatable(False)
+    row.set_selectable(False)
+    row.set_child(box)
+
+    def refresh(*_a: object) -> None:
+        row.set_visible(not git_author_name_is_valid(name_row.get_text()))
+
+    name_row.connect("notify::text", refresh)
+    refresh()
+    return row
+
+
 def show_editor_failed(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
     message = str(payload.get("message") or "Unable to open the selected editor.")
     if payload.get("open_preferences"):
@@ -2841,6 +2864,7 @@ def show_repository_settings(
     email_row.connect("notify::selected", sync_other)
     name_row.set_text((local_n if use_local else global_n) or "")
     git_group.add(name_row)
+    git_group.add(_author_name_error_row(name_row))
     git_group.add(email_row)
     git_group.add(other_email)
     save_git = Gtk.Button(label="Save Git config")
@@ -2875,7 +2899,10 @@ def show_repository_settings(
     def save_g(*_a: Any) -> None:
         def apply_config() -> None:
             if local_check.get_active():
-                set_config_value(repo.path, "user.name", name_row.get_text())
+                name = name_row.get_text()
+                if not git_author_name_is_valid(name):
+                    return
+                set_config_value(repo.path, "user.name", name)
                 set_config_value(repo.path, "user.email", _selected_email())
             else:
                 remove_config_value(repo.path, "user.name")
@@ -3139,6 +3166,7 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
     branch_row = Adw.EntryRow(title="Default branch name")
     branch_row.set_text(get_default_branch())
     git_group.add(name_row)
+    git_group.add(_author_name_error_row(name_row))
     git_group.add(email_row)
     git_group.add(other_email)
 
@@ -3343,10 +3371,11 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
             def save_user() -> None:
                 store.save_git_user(name, email, branch)
 
-            try:
-                save_user()
-            except GitError as exc:
-                _handle_config_lock(parent, exc, save_user)
+            if git_author_name_is_valid(name):
+                try:
+                    save_user()
+                except GitError as exc:
+                    _handle_config_lock(parent, exc, save_user)
         except ValidationError:
             pass
         store.persist_settings()

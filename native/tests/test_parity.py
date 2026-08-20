@@ -312,6 +312,7 @@ def test_window_actions_cover_menus() -> None:
         "release-notes",
         "edit-undo",
         "increase-resizable",
+        "toggle-fullscreen",
     ]:
         assert action in src
     for phrase in [
@@ -667,5 +668,23 @@ def test_window_actions_cover_menus() -> None:
         "License and Open Source Notices",
         "Terms and Conditions",
         "Responsible use of Copilot in GitHub Desktop",
+        "Press F11 to exit fullscreen",
+        "FullScreenInfo",
+        "ZoomInfo",
+        "Toggle full screen",
+        "Sorry, I can't find that branch",
+        "Do you want to create a new branch instead?",
+        "to quickly create a new branch from anywhere within the app",
+        "to quickly add a local repository",
+        "to clone from anywhere within the app",
+        "drag & drop an existing",
+        "This binary file has changed",
+        "Open file in external program.",
+        "Name is invalid, it consists only of disallowed characters.",
+        "gitAuthorNameIsValid",
+        "HighlightText",
+        "window-zoom-info",
+        "toast-notification-container",
+        "This operating system is no longer supported",
     ]:
         assert phrase in src

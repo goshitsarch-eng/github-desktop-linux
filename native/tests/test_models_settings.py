@@ -34,9 +34,34 @@ def test_diff_selection_toggle() -> None:
 
 
 def test_author_name_validation() -> None:
+    # Desktop `identifier-rules-test.ts` / `gitAuthorNameIsValid`
     assert git_author_name_is_valid("Ada Lovelace")
-    assert not git_author_name_is_valid("bad:name")
-    assert not git_author_name_is_valid("")
+    assert git_author_name_is_valid("this is great")
+    assert git_author_name_is_valid("")
+    assert git_author_name_is_valid("bad:name")
+    assert git_author_name_is_valid("this is great")
+    assert not git_author_name_is_valid(".")
+    assert not git_author_name_is_valid(",")
+    assert not git_author_name_is_valid(":")
+    assert not git_author_name_is_valid(";")
+    assert not git_author_name_is_valid("<")
+    assert not git_author_name_is_valid(">")
+    assert not git_author_name_is_valid('"')
+    assert not git_author_name_is_valid("\\")
+    assert not git_author_name_is_valid("'")
+    assert not git_author_name_is_valid(" ")
+    assert not git_author_name_is_valid(".;:<>")
+    for code in range(33):
+        assert not git_author_name_is_valid(chr(code))
+    assert git_author_name_is_valid(chr(33))
+    assert git_author_name_is_valid(f";hi. there;{chr(31)}")
+
+
+def test_highlight_text_runs() -> None:
+    from github_desktop.models import highlight_text_runs
+
+    runs = highlight_text_runs("hello", [0, 1, 4])
+    assert runs == [("he", True), ("ll", False), ("o", True)]
 
 
 def test_sanitize_ref() -> None:

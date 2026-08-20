@@ -218,6 +218,8 @@ class BranchesFoldout(Gtk.Popover):
             self._branch_list.append(header)
             for branch in items:
                 self._branch_list.append(self._branch_row(branch))
+        if not filtered:
+            self._branch_list.append(self._no_branches_row())
         clear_box(self._pr_list)
         prs = [
             pr
@@ -307,6 +309,36 @@ class BranchesFoldout(Gtk.Popover):
                     lambda *_: (self.popdown(), self._on_create_pr() if self._on_create_pr else None),
                 )
             box.append(cta)
+        row = Gtk.ListBoxRow()
+        row.set_activatable(False)
+        row.set_selectable(False)
+        row.set_child(box)
+        return row
+
+    def _no_branches_row(self) -> Gtk.Widget:
+        """Desktop `NoBranches` blank slate."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.add_css_class("no-branches")
+        box.set_margin_top(16)
+        box.set_margin_bottom(16)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        title = Gtk.Label(label="Sorry, I can't find that branch", wrap=True, xalign=0)
+        title.add_css_class("title-4")
+        box.append(title)
+        subtitle = Gtk.Label(label="Do you want to create a new branch instead?", wrap=True, xalign=0)
+        box.append(subtitle)
+        cta = Gtk.Button(label="Create new branch")
+        cta.add_css_class("create-branch-button")
+        cta.connect("clicked", lambda *_: (self.popdown(), self._on_create()))
+        box.append(cta)
+        protip = Gtk.Label(
+            label="ProTip! Press Ctrl+Shift+N to quickly create a new branch from anywhere within the app",
+            wrap=True,
+            xalign=0,
+        )
+        protip.add_css_class("protip")
+        box.append(protip)
         row = Gtk.ListBoxRow()
         row.set_activatable(False)
         row.set_selectable(False)
