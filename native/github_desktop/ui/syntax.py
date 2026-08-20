@@ -1,9 +1,10 @@
-"""Lightweight Pango markup highlighting for common source files."""
+"""Pygments-backed Pango markup highlighting, with a regex fallback."""
 
 from __future__ import annotations
 
 import html
 import re
+from functools import lru_cache
 
 _STRING = re.compile(r"(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*')")
 _NUMBER = re.compile(r"\b\d+(?:\.\d+)?\b")
@@ -14,34 +15,108 @@ KEYWORDS = {
     ".py": r"\b(and|as|assert|async|await|break|class|continue|def|del|elif|else|except|False|finally|for|from|global|if|import|in|is|lambda|None|nonlocal|not|or|pass|raise|return|True|try|while|with|yield)\b",
     ".js": r"\b(async|await|break|case|catch|class|const|continue|debugger|default|delete|else|export|extends|false|finally|for|function|if|import|in|instanceof|let|new|null|return|static|super|switch|this|throw|true|try|typeof|var|void|while|yield)\b",
     ".ts": r"\b(async|await|break|case|catch|class|const|continue|default|else|enum|export|extends|false|finally|for|function|if|import|interface|let|new|null|return|static|super|switch|this|throw|true|try|type|typeof|var|void|while|yield)\b",
-    ".tsx": r"\b(async|await|break|case|catch|class|const|continue|default|else|export|extends|false|finally|for|function|if|import|interface|let|new|null|return|static|super|switch|this|throw|true|try|type|typeof|var|void|while|yield)\b",
-    ".rs": r"\b(as|async|await|break|const|continue|crate|dyn|else|enum|extern|false|fn|for|if|impl|in|let|loop|match|mod|move|mut|pub|ref|return|self|Self|static|struct|super|trait|true|type|unsafe|use|where|while)\b",
-    ".go": r"\b(break|case|chan|const|continue|default|defer|else|fallthrough|for|func|go|goto|if|import|interface|map|package|range|return|select|struct|switch|type|var)\b",
-    ".c": r"\b(auto|break|case|char|const|continue|default|do|double|else|enum|extern|float|for|goto|if|inline|int|long|register|return|short|signed|sizeof|static|struct|switch|typedef|union|unsigned|void|volatile|while)\b",
-    ".h": r"\b(auto|break|case|char|const|continue|default|do|double|else|enum|extern|float|for|goto|if|inline|int|long|register|return|short|signed|sizeof|static|struct|switch|typedef|union|unsigned|void|volatile|while)\b",
-    ".cpp": r"\b(auto|bool|break|case|catch|char|class|const|constexpr|continue|default|delete|do|double|else|enum|explicit|extern|false|float|for|friend|goto|if|inline|int|long|namespace|new|nullptr|operator|private|protected|public|return|short|signed|sizeof|static|struct|switch|template|this|throw|true|try|typedef|typename|union|unsigned|using|virtual|void|volatile|while)\b",
-    ".java": r"\b(abstract|assert|boolean|break|byte|case|catch|char|class|const|continue|default|do|double|else|enum|extends|false|final|finally|float|for|goto|if|implements|import|instanceof|int|interface|long|native|new|null|package|private|protected|public|return|short|static|strictfp|super|switch|synchronized|this|throw|throws|transient|true|try|void|volatile|while)\b",
-    ".rb": r"\b(BEGIN|END|alias|and|begin|break|case|class|def|defined|do|else|elsif|end|ensure|false|for|if|in|module|next|nil|not|or|redo|rescue|retry|return|self|super|then|true|undef|unless|until|when|while|yield)\b",
-    ".sh": r"\b(alias|break|case|do|done|elif|else|esac|export|fi|for|function|if|in|local|return|select|then|time|until|while)\b",
     ".json": r"\b(true|false|null)\b",
-    ".jsx": r"\b(async|await|break|case|catch|class|const|continue|default|else|export|extends|false|finally|for|function|if|import|in|instanceof|let|new|null|return|static|super|switch|this|throw|true|try|typeof|var|void|while|yield)\b",
-    ".php": r"\b(abstract|and|array|as|break|case|catch|class|const|continue|echo|else|elseif|extends|final|for|foreach|function|if|include|interface|namespace|new|or|private|protected|public|return|static|switch|throw|trait|try|use|while|xor)\b",
-    ".cs": r"\b(abstract|as|base|bool|break|byte|case|catch|class|const|continue|decimal|default|delegate|do|double|else|enum|event|explicit|extern|false|finally|fixed|float|for|foreach|goto|if|implicit|in|int|interface|internal|is|lock|long|namespace|new|null|object|operator|out|override|params|private|protected|public|readonly|ref|return|sealed|short|static|string|struct|switch|this|throw|true|try|typeof|uint|ulong|unchecked|unsafe|ushort|using|virtual|void|volatile|while)\b",
 }
 
 HASH_COMMENTS = {".py", ".rb", ".sh", ".yml", ".yaml", ".toml"}
-SLASH_COMMENTS = {".js", ".ts", ".tsx", ".jsx", ".rs", ".go", ".c", ".h", ".cpp", ".java", ".php", ".cs", ".kt", ".swift", ".vue"}
+SLASH_COMMENTS = {".js", ".ts", ".tsx", ".jsx", ".rs", ".go", ".c", ".h", ".cpp", ".java", ".php", ".cs"}
+
+LIGHT = {
+    "keyword": "#c45c26",
+    "string": "#2a7f3e",
+    "number": "#1a5fb4",
+    "comment": "#77767b",
+    "name": "#1c71d8",
+    "builtin": "#613583",
+}
+DARK = {
+    "keyword": "#ffa348",
+    "string": "#8ff0a4",
+    "number": "#99c1f1",
+    "comment": "#9a9996",
+    "name": "#62a0ea",
+    "builtin": "#dc8add",
+}
+
+
+def _colors() -> dict[str, str]:
+    try:
+        from ..theme import is_dark
+
+        return DARK if is_dark() else LIGHT
+    except Exception:
+        return LIGHT
+
+
+@lru_cache(maxsize=64)
+def _lexer_for(path: str):
+    try:
+        from pygments.lexers import TextLexer, get_lexer_for_filename
+
+        if not path:
+            return TextLexer(stripnl=False)
+        return get_lexer_for_filename(path, stripnl=False, encoding="utf-8")
+    except Exception:
+        try:
+            from pygments.lexers import TextLexer
+
+            return TextLexer(stripnl=False)
+        except Exception:
+            return None
+
+
+def _token_color(ttype, colors: dict[str, str]) -> str | None:
+    names = [str(ttype)]
+    current = ttype
+    while getattr(current, "parent", None) is not None:
+        current = current.parent
+        names.append(str(current))
+    joined = " ".join(names).lower()
+    if "comment" in joined:
+        return colors["comment"]
+    if "string" in joined or "literal.string" in joined:
+        return colors["string"]
+    if "keyword" in joined or "operator.word" in joined:
+        return colors["keyword"]
+    if "number" in joined:
+        return colors["number"]
+    if "name.builtin" in joined or "name.function.magic" in joined:
+        return colors["builtin"]
+    if "name.function" in joined or "name.class" in joined or "name.decorator" in joined:
+        return colors["name"]
+    return None
 
 
 def highlight_diff_line(text: str, path: str) -> str:
     """Return Pango markup for a single diff line body (without +/- prefix)."""
+    lexer = _lexer_for(path)
+    if lexer is not None:
+        try:
+            from pygments import lex
+
+            colors = _colors()
+            parts: list[str] = []
+            for ttype, value in lex(text, lexer):
+                escaped = html.escape(value)
+                color = _token_color(ttype, colors)
+                if color:
+                    parts.append(f'<span foreground="{color}">{escaped}</span>')
+                else:
+                    parts.append(escaped)
+            return "".join(parts)
+        except Exception:
+            pass
+    return _regex_highlight(text, path)
+
+
+def _regex_highlight(text: str, path: str) -> str:
     escaped = html.escape(text)
     ext = ""
     if path:
         dot = path.rfind(".")
         if dot >= 0:
             ext = path[dot:].lower()
-    kw = KEYWORDS.get(ext)
+    kw = KEYWORDS.get(ext) or KEYWORDS.get(".js" if ext in {".tsx", ".jsx"} else "")
     if kw:
         escaped = re.sub(kw, r'<span foreground="#c45c26">\1</span>', escaped)
     escaped = _STRING.sub(r'<span foreground="#2a7f3e">\1</span>', escaped)

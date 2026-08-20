@@ -1448,11 +1448,46 @@ class MainWindow(Adw.ApplicationWindow):
         if not repo:
             return
         state = self.store.state_for(repo)
-        failed = [r for r in (state.check_runs or []) if r.conclusion in {"failure", "timed_out", "cancelled"}]
+        runs = list(state.check_runs or [])
+        popover = Gtk.Popover()
+        popover.set_parent(self._checks_btn)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+        box.set_margin_start(8)
+        box.set_margin_end(8)
+        box.set_size_request(280, -1)
+        if not runs:
+            box.append(Gtk.Label(label="No checks for this branch", xalign=0))
+        for run in runs[:20]:
+            status = run.conclusion or run.status or "unknown"
+            row = Adw.ActionRow(title=run.name or "check", subtitle=status)
+            if run.html_url:
+                open_btn = Gtk.Button(icon_name="web-browser-symbolic")
+                open_btn.add_css_class("flat")
+                open_btn.connect("clicked", lambda *_ , url=run.html_url: open_external(url))
+                row.add_suffix(open_btn)
+            box.append(row)
+        failed = [r for r in runs if r.conclusion in {"failure", "timed_out", "cancelled"}]
         if failed:
-            self.store.show_popup(PopupType.PULL_REQUEST_CHECKS_FAILED, error="\n".join(f"{r.name}: {r.conclusion}" for r in failed))
+            rerun = Gtk.Button(label=f"Re-run {len(failed)} failed check(s)")
+            rerun.add_css_class("suggested-action")
+
+            def do_rerun(*_a: object) -> None:
+                popover.popdown()
+                self.store.show_popup(
+                    PopupType.CI_CHECK_RUN_RERUN,
+                    on_rerun=lambda: self.store.rerun_failed_checks(repo),
+                )
+
+            rerun.connect("clicked", do_rerun)
+            box.append(rerun)
         elif state.current_pull_request:
-            open_external(state.current_pull_request.html_url + "/checks")
+            pr = Gtk.Button(label="View checks on GitHub")
+            pr.connect("clicked", lambda *_: open_external(state.current_pull_request.html_url + "/checks"))
+            box.append(pr)
+        popover.set_child(box)
+        popover.popup()
 
     def _update_tutorial_banner(self, repo, state) -> None:
         if not hasattr(self, "_tutorial_banner"):

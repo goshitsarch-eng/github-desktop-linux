@@ -1622,6 +1622,32 @@ class AppStore:
 
         self._pool.submit(runner)
 
+    def rerun_failed_checks(self, repo: Repository) -> None:
+        account = self.account_for_repo(repo)
+        if not account or not repo.github:
+            return
+        state = self.state_for(repo)
+        failed = [r for r in (state.check_runs or []) if r.conclusion in {"failure", "timed_out", "cancelled"}]
+        if not failed:
+            return
+        api = GitHubAPI.from_account(account)
+
+        def work() -> None:
+            for run in failed:
+                try:
+                    api.rerequest_check_run(repo.github.owner, repo.github.name, run.id)
+                except APIError:
+                    continue
+
+        def done(exc: BaseException | None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+            else:
+                self.refresh_repository(repo)
+            self.emit()
+
+        self._run(work, done)
+
     def poll_notifications(self) -> None:
         if not self.settings.notifications_enabled or not self.accounts:
             return
