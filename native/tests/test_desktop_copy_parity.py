@@ -277,6 +277,18 @@ def test_get_discard_label_matches_desktop_linux() -> None:
     assert get_discard_label(DiffRangeType.ADDITIONS, 2, confirm=False) == "Discard added lines"
 
 
+def test_get_hunk_handle_label_matches_desktop() -> None:
+    from github_desktop.git.diff import DiffRange, DiffRangeType
+    from github_desktop.ui.diff_view import get_hunk_handle_label, is_only_one_check_in_row
+
+    assert get_hunk_handle_label(DiffRangeType.ADDITIONS, 10, 14) == "Lines 10 to 14 added"
+    assert get_hunk_handle_label(DiffRangeType.DELETIONS, 3, 5) == "Lines 3 to 5 deleted"
+    assert get_hunk_handle_label(DiffRangeType.MIXED, 1, 2) == "Lines 1 to 2 modified"
+    assert is_only_one_check_in_row(None) is True
+    assert is_only_one_check_in_row(DiffRange(4, 4, DiffRangeType.ADDITIONS)) is True
+    assert is_only_one_check_in_row(DiffRange(4, 7, DiffRangeType.ADDITIONS)) is False
+
+
 def test_keyboard_reorder_copy() -> None:
     from github_desktop.ui.window import keyboard_reorder_insert_message, keyboard_reorder_intro_message
 

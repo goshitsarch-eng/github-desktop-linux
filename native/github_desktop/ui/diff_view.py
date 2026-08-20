@@ -9,7 +9,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GObject, Gtk, Pango
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
 from ..git.diff import (
     DiffRangeType,
@@ -45,6 +45,9 @@ except (ValueError, ImportError):
     GdkPixbuf = None  # type: ignore[misc, assignment]
 
 VIRTUALIZE_AFTER = 400
+# Desktop `MouseScroller`
+DEFAULT_SCROLL_EDGE = 30
+SCROLL_SPEED = 5
 
 
 def get_discard_label(range_type: DiffRangeType | None, num_lines: int, *, confirm: bool = True) -> str:
@@ -56,6 +59,25 @@ def get_discard_label(range_type: DiffRangeType | None, num_lines: int, *, confi
     if range_type == DiffRangeType.DELETIONS:
         return f"Discard removed line{plural}{suffix}"
     return f"Discard modified line{plural}{suffix}"
+
+
+def get_hunk_handle_label(range_type: DiffRangeType | None, first: int | None, last: int | None) -> str:
+    """Desktop hunk-handle sr-only: `Lines {first} to {last} added|deleted|modified`."""
+    kind = "modified"
+    if range_type == DiffRangeType.ADDITIONS:
+        kind = "added"
+    elif range_type == DiffRangeType.DELETIONS:
+        kind = "deleted"
+    start = first if first is not None else 0
+    end = last if last is not None else start
+    return f"Lines {start} to {end} {kind}"
+
+
+def is_only_one_check_in_row(found) -> bool:
+    """Desktop `isOnlyOneCheckInRow`: hide hunk-handle check-all for a single line."""
+    if found is None:
+        return True
+    return found.to_index <= found.from_index
 
 
 @dataclass
@@ -191,6 +213,7 @@ class DiffViewer(Gtk.Box):
         self._ask_discard_confirm = True
         self._temporary_selection: dict[str, int | bool] | None = None
         self._hovered_hunk: int | None = None
+        self._scroll_timer_id = 0
         self._line_widgets: dict[int, list[Gtk.Widget]] = {}
         self.set_focusable(True)
         key = Gtk.EventControllerKey()
@@ -242,6 +265,7 @@ class DiffViewer(Gtk.Box):
         self._ask_discard_confirm = ask_discard_confirm
         self._temporary_selection = None
         self._hovered_hunk = None
+        self._clear_scroll_timer()
         self._line_widgets = {}
         self._row_specs = []
         self._row_widgets = []
@@ -917,6 +941,7 @@ class DiffViewer(Gtk.Box):
         if tmp is None:
             return
         self._temporary_selection = None
+        self._clear_scroll_timer()
         self._refresh_gutter_css()
         from_index = int(tmp["from"])
         to_index = int(tmp["to"])
@@ -933,7 +958,6 @@ class DiffViewer(Gtk.Box):
     def _on_gutter_motion(self, _controller, x: float, y: float) -> None:
         if self._temporary_selection is None:
             return
-        adj = self._scroll.get_vadjustment()
         ok, _sx, sy = (False, x, y)
         translated = self.translate_coordinates(self._scroll, x, y)
         if translated is not None:
@@ -942,11 +966,7 @@ class DiffViewer(Gtk.Box):
             elif isinstance(translated, tuple) and len(translated) == 2:
                 ok, sy = True, translated[1]
         if ok:
-            height = self._scroll.get_allocated_height()
-            if sy < 24:
-                adj.set_value(max(adj.get_lower(), adj.get_value() - 16))
-            elif height and sy > height - 24:
-                adj.set_value(min(adj.get_upper() - adj.get_page_size(), adj.get_value() + 16))
+            self._setup_mouse_scroll(sy)
         try:
             picked = self.pick(x, y, Gtk.PickFlags.DEFAULT)
         except Exception:
@@ -954,6 +974,49 @@ class DiffViewer(Gtk.Box):
         index = self._line_index_from_widget(picked)
         if index is not None:
             self._update_gutter_selection(index)
+
+    def _setup_mouse_scroll(self, y_in_scroll: float) -> None:
+        """Desktop `MouseScroller.setupMouseScroll` (vertical only)."""
+        self._clear_scroll_timer()
+        if self._scroll_vertically_on_mouse_near_edge(y_in_scroll):
+            def tick(y=y_in_scroll) -> bool:
+                self._scroll_timer_id = 0
+                if self._temporary_selection is None:
+                    return False
+                self._setup_mouse_scroll(y)
+                return False
+
+            self._scroll_timer_id = GLib.timeout_add(30, tick)
+
+    def _clear_scroll_timer(self) -> None:
+        timer = getattr(self, "_scroll_timer_id", 0)
+        if timer:
+            GLib.source_remove(timer)
+            self._scroll_timer_id = 0
+
+    def _scroll_vertically_on_mouse_near_edge(self, y_in_scroll: float) -> bool:
+        adj = self._scroll.get_vadjustment()
+        height = self._scroll.get_allocated_height()
+        if not height or adj is None:
+            return False
+        distance_from_bottom = height - y_in_scroll
+        distance_from_top = y_in_scroll
+        value = adj.get_value()
+        lower = adj.get_lower()
+        upper = adj.get_upper() - adj.get_page_size()
+        if 0 < distance_from_bottom < DEFAULT_SCROLL_EDGE:
+            if value >= upper:
+                return False
+            distance = max(distance_from_bottom, 1)
+            adj.set_value(min(upper, value + SCROLL_SPEED * (DEFAULT_SCROLL_EDGE / distance)))
+            return True
+        if 0 < distance_from_top < DEFAULT_SCROLL_EDGE:
+            if value <= lower:
+                return False
+            distance = max(distance_from_top, 1)
+            adj.set_value(max(lower, value - SCROLL_SPEED * (DEFAULT_SCROLL_EDGE / distance)))
+            return True
+        return False
 
     def _refresh_gutter_css(self) -> None:
         hover_range: tuple[int, int] | None = None
@@ -1068,6 +1131,58 @@ class DiffViewer(Gtk.Box):
             return None
         return find_interactive_original_diff_range(self._diff.hunks, index)
 
+    def _range_line_numbers(self, found) -> tuple[int | None, int | None]:
+        if not isinstance(self._diff, TextDiff):
+            return found.from_index, found.to_index
+        first = last = None
+        for hunk in self._diff.hunks:
+            for line in hunk.lines:
+                number = line.diff_line_number
+                if number is None:
+                    continue
+                if found.from_index <= number <= found.to_index and line.selectable:
+                    displayed = line.new_line_number or line.old_line_number
+                    if first is None:
+                        first = displayed
+                    last = displayed
+        return first, last
+
+    def _hunk_handle(self, index: int, selection: DiffSelection | None) -> Gtk.Widget | None:
+        """Desktop overlay `.hunk-handle` check-all for groups of more than one line."""
+        if not self.interactive or getattr(self, "_hide_whitespace", False):
+            return None
+        found = self._interactive_range(index)
+        if is_only_one_check_in_row(found) or found is None:
+            return None
+        if index != found.from_index:
+            return None
+        check = Gtk.CheckButton()
+        check.add_css_class("hunk-handle")
+        included = True
+        if selection is not None:
+            selectable = [
+                i
+                for i in range(found.from_index, found.to_index + 1)
+                if selection.is_selectable(i)
+            ]
+            included = bool(selectable) and all(selection.is_selected(i) for i in selectable)
+            if selectable and not included and any(selection.is_selected(i) for i in selectable):
+                check.set_inconsistent(True)
+        check.set_active(included)
+        first, last = self._range_line_numbers(found)
+        check.set_tooltip_text(get_hunk_handle_label(found.type, first, last))
+        check.set_valign(Gtk.Align.START)
+
+        def on_toggled(btn, lo=found.from_index, hi=found.to_index) -> None:
+            included = btn.get_active()
+            if self.on_line_range_toggle:
+                self.on_line_range_toggle(self._path, lo, hi, included)
+            elif self.on_hunk_toggle:
+                self.on_hunk_toggle(self._path, lo, hi - lo + 1, included)
+
+        check.connect("toggled", on_toggled)
+        return check
+
     def _unified_line(
         self,
         line: DiffLine,
@@ -1081,6 +1196,9 @@ class DiffViewer(Gtk.Box):
             row.add_css_class("diff-add")
         elif line.kind == DiffLineType.DELETE:
             row.add_css_class("diff-del")
+        handle = self._hunk_handle(index, selection)
+        if handle is not None:
+            row.append(handle)
         if self.interactive and self._show_checks and line.selectable and not getattr(self, "_hide_whitespace", False):
             check = Gtk.CheckButton()
             active = selection.is_selected(index) if selection else True
@@ -1153,6 +1271,10 @@ class DiffViewer(Gtk.Box):
             box.add_css_class("diff-add")
         elif line.kind == DiffLineType.DELETE:
             box.add_css_class("diff-del")
+        if index is not None:
+            handle = self._hunk_handle(index, selection)
+            if handle is not None:
+                box.append(handle)
         if self.interactive and self._show_checks and line.selectable and index is not None and not getattr(self, "_hide_whitespace", False):
             check = Gtk.CheckButton()
             active = selection.is_selected(index) if selection else True

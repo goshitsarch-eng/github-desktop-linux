@@ -342,6 +342,7 @@ def test_env_for_proxy_skips_and_honors_git_config(monkeypatch) -> None:
     from github_desktop.git import runner as runner_mod
     from github_desktop.git.ops import env_for_proxy
 
+    monkeypatch.setattr(runner_mod, "read_linux_system_proxy", lambda: None)
     assert env_for_proxy("git@github.com:a/b.git", env={}) == {}
     assert env_for_proxy("https://github.com/", env={"ALL_PROXY": "socks5://127.0.0.1:1080"}) == {}
     assert env_for_proxy("https://github.com/", env={"https_proxy": "http://existing:8080"}) == {}
@@ -352,6 +353,9 @@ def test_env_for_proxy_skips_and_honors_git_config(monkeypatch) -> None:
     monkeypatch.setattr(runner_mod, "git", lambda *a, **k: _Result())
     assert env_for_proxy("https://github.com/", env={}) == {"https_proxy": "http://proxy.example:8080"}
     assert env_for_proxy("http://github.com/", env={}) == {"http_proxy": "http://proxy.example:8080"}
+    assert env_for_proxy("https://github.com/", env={}, resolve=lambda _url: "socks5://127.0.0.1:1080") == {
+        "https_proxy": "socks5://127.0.0.1:1080"
+    }
 
 
 def test_high_signal_notification_filter() -> None:

@@ -13,8 +13,10 @@ import sys
 import threading
 from dataclasses import dataclass
 from typing import Callable, Mapping, Sequence
+from urllib.parse import urlsplit
 
 from ..errors import GitError, GitNotFoundError
+from ..linux_proxy import host_matches_no_proxy, proxy_url_for_remote, read_linux_system_proxy
 from ..logging import get_logger
 from .progress import GitLFSProgressParser, GitProgress, GitProgressParser, ProgressStep, create_lfs_progress_file
 
@@ -407,12 +409,52 @@ def resolve_repository_root(path: str) -> str | None:
         return None
 
 
-def env_for_proxy(remote_url: str, env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Desktop `envForProxy` without Electron PAC resolution.
+def _git_config_http_proxy() -> str | None:
+    try:
+        result = git(
+            ["config", "--global", "--get", "http.proxy"],
+            os.path.expanduser("~"),
+            success_exit_codes={0, 1},
+            name="httpProxy",
+        )
+        proxy = (result.stdout or "").strip()
+    except Exception:
+        return None
+    return proxy or None
+
+
+def resolve_git_proxy(url: str) -> str | None:
+    """Linux stand-in for Desktop `resolveGitProxy` (Chromium PAC).
+
+    Uses GNOME `org.gnome.system.proxy` or KDE `kioslaverc` manual proxies.
+    ``mode=auto`` PAC JavaScript is not evaluated. Falls back to
+    ``git config --global http.proxy``.
+    """
+    proxy, _ignore = resolve_linux_proxy_or_git_config(url)
+    return proxy
+
+
+def resolve_linux_proxy_or_git_config(url: str) -> tuple[str | None, list[str]]:
+    settings = read_linux_system_proxy()
+    if settings is not None and settings.mode == "manual":
+        proxy = proxy_url_for_remote(settings, url)
+        if proxy:
+            return proxy, list(settings.ignore_hosts)
+    return _git_config_http_proxy(), []
+
+
+def env_for_proxy(
+    remote_url: str,
+    env: Mapping[str, str] | None = None,
+    resolve: Callable[[str], str | None] | None = None,
+) -> dict[str, str]:
+    """Desktop `envForProxy` with Linux system proxy instead of Chromium PAC.
 
     Only HTTP(S) remotes are eligible. Skipped when ``ALL_PROXY``/``all_proxy``
     or the protocol-specific ``http_proxy``/``https_proxy`` is already set.
-    Otherwise ``git config --global http.proxy`` is used when present.
+    ``resolve`` defaults to GNOME/KDE manual proxy, then
+    ``git config --global http.proxy``. Hosts in ignore-hosts become DIRECT
+    and are also exported as ``no_proxy`` when not already set.
     """
     import re as _re
 
@@ -426,20 +468,20 @@ def env_for_proxy(remote_url: str, env: Mapping[str, str] | None = None) -> dict
     env_key = f"{proto}_proxy"
     if env_key in source or (proto == "https" and "HTTPS_PROXY" in source):
         return {}
-    proxy = ""
-    try:
-        result = git(
-            ["config", "--global", "--get", "http.proxy"],
-            os.path.expanduser("~"),
-            success_exit_codes={0, 1},
-            name="httpProxy",
-        )
-        proxy = (result.stdout or "").strip()
-    except Exception:
-        proxy = ""
+    ignore_hosts: list[str] = []
+    if resolve is not None:
+        proxy = resolve(remote_url)
+    else:
+        proxy, ignore_hosts = resolve_linux_proxy_or_git_config(remote_url)
     if not proxy:
         return {}
-    return {env_key: proxy}
+    hostname = (urlsplit(remote_url).hostname or "").lower()
+    if hostname and ignore_hosts and host_matches_no_proxy(hostname, ignore_hosts):
+        return {}
+    result = {env_key: proxy}
+    if ignore_hosts and "no_proxy" not in source and "NO_PROXY" not in source:
+        result["no_proxy"] = ",".join(ignore_hosts)
+    return result
 
 
 def env_for_remote(

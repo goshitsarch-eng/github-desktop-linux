@@ -107,6 +107,7 @@ from .ops import (
     get_default_branch,
     get_files_diff_text,
     get_files_with_conflict_markers,
+    get_git_description,
     get_global_config_path,
     get_global_config_value,
     get_global_boolean_config_value,
@@ -206,9 +207,10 @@ from .ops import (
     update_submodules,
     warn_about_remote_commits,
     write_description,
+    write_git_description,
     write_gitignore,
 )
-from .runner import abort_git_process, env_for_proxy, env_for_remote, find_git, git, git_path_is_repository, git_user_agent, resolve_repository_root
+from .runner import abort_git_process, env_for_proxy, env_for_remote, find_git, git, git_path_is_repository, git_user_agent, resolve_git_proxy, resolve_repository_root
 from .status import parse_porcelain_status
 
 __all__ = [

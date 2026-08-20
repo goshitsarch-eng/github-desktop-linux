@@ -142,6 +142,8 @@ REQUIRED_GIT_FUNCS = [
     "is_auth_failure_error",
     "classify_git_error",
     "is_co_authored_by_trailer",
+    "get_git_description",
+    "write_git_description",
 ]
 
 
@@ -300,6 +302,10 @@ def test_window_actions_cover_menus() -> None:
     src += open(linux_mod.__file__, encoding="utf-8").read()
     src += open(text_tokens_mod.__file__, encoding="utf-8").read()
     src += open(menus_mod.__file__, encoding="utf-8").read()
+    from github_desktop import parse_pac as parse_pac_mod, linux_proxy as linux_proxy_mod
+
+    src += open(parse_pac_mod.__file__, encoding="utf-8").read()
+    src += open(linux_proxy_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -797,5 +803,17 @@ def test_window_actions_cover_menus() -> None:
         "fetchIssueComment",
         "fetchPullRequestReview",
         "MaxFetchFrequency",
+        "hunk-handle",
+        "isOnlyOneCheckInRow",
+        "parsePACString",
+        "org.gnome.system.proxy",
+        "kioslaverc",
+        "ignore-hosts",
+        "--action=default:Open",
+        "getGitDescription",
+        "DefaultGitDescription",
+        "MouseScroller",
+        "resolveGitProxy",
+        "Lines ",
     ]:
         assert phrase in src

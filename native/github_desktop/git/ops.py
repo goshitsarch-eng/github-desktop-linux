@@ -3197,6 +3197,10 @@ def get_global_config_path() -> str:
     return os.path.normpath(result.stdout.strip() or os.path.expanduser("~/.gitconfig"))
 
 
+# Desktop DefaultGitDescription
+DEFAULT_GIT_DESCRIPTION = "Unnamed repository; edit this file 'description' to name the repository.\n"
+
+
 def write_description(repo: str, description: str) -> None:
     git_dir = _git_dir(repo)
     Path(os.path.join(git_dir, "description")).write_text(description, encoding="utf-8")
@@ -3205,12 +3209,22 @@ def write_description(repo: str, description: str) -> None:
 def read_description(repo: str) -> str:
     git_dir = _git_dir(repo)
     try:
-        text = Path(os.path.join(git_dir, "description")).read_text(encoding="utf-8").strip()
-        if text.startswith("Unnamed repository"):
+        text = Path(os.path.join(git_dir, "description")).read_text(encoding="utf-8")
+        if text == DEFAULT_GIT_DESCRIPTION or text.strip().startswith("Unnamed repository"):
             return ""
-        return text
+        return text.strip()
     except OSError:
         return ""
+
+
+def get_git_description(repo: str) -> str:
+    """Desktop `getGitDescription`."""
+    return read_description(repo)
+
+
+def write_git_description(repo: str, description: str) -> None:
+    """Desktop `writeGitDescription`."""
+    write_description(repo, description)
 
 
 def list_worktree_files(repo: str) -> list[str]:

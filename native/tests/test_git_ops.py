@@ -238,6 +238,10 @@ def test_format_patch_and_trailers(git_repo: Path) -> None:
     assert any(token.lower() == "co-authored-by" for token, _value in parsed)
     write_description(str(git_repo), "A test repository")
     assert read_description(str(git_repo)) == "A test repository"
+    from github_desktop.git.ops import DEFAULT_GIT_DESCRIPTION, get_git_description, write_git_description
+
+    write_git_description(str(git_repo), DEFAULT_GIT_DESCRIPTION)
+    assert get_git_description(str(git_repo)) == ""
 
 
 def test_is_tracked_by_lfs_unspecified(git_repo: Path) -> None:

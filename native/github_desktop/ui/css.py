@@ -108,6 +108,13 @@ APP_CSS = """
 .diff-hunk-hover {
   background-color: alpha(@accent_bg_color, 0.12);
 }
+.hunk-handle {
+  min-width: 18px;
+  padding: 0 2px;
+}
+.hunk-handle:hover {
+  background-color: alpha(@accent_bg_color, 0.18);
+}
 .diff-side {
   min-width: 12em;
   padding: 0 6px;
