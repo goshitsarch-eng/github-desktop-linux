@@ -238,7 +238,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
             "Checkout commit?",
             "This will detach HEAD. You can create a branch afterwards.",
             confirm="Checkout",
-            on_confirm=lambda: repo and payload.get("sha") and store.checkout.__wrapped__ if False else _checkout_sha(store, payload),
+            on_confirm=lambda: _checkout_sha(store, payload),
         ),
         PopupType.WARN_LOCAL_CHANGES_BEFORE_UNDO: lambda: show_warn_undo(parent, store, payload),
         PopupType.WARNING_BEFORE_RESET: lambda: _alert(
@@ -256,7 +256,12 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
             "Install Git and restart GitHub Desktop.\n\nsudo apt install git",
             cancel=None,
         ),
-        PopupType.CLI_INSTALLED: lambda: _alert(parent, "CLI installed", "The github command is available.", cancel=None),
+        PopupType.CLI_INSTALLED: lambda: _alert(
+            parent,
+            "CLI installed",
+            f"The github command is available at {payload.get('path') or str(Path.home() / '.local' / 'bin' / 'github')}.",
+            cancel=None,
+        ),
         PopupType.INITIALIZE_LFS: lambda: show_lfs(parent, store),
         PopupType.LFS_ATTRIBUTE_MISMATCH: lambda: show_lfs_mismatch(parent, store),
         PopupType.OVERSIZED_FILES: lambda: show_oversized_files(parent, store, payload),
@@ -337,10 +342,10 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         PopupType.CREATE_TUTORIAL_REPOSITORY: lambda: show_tutorial(parent, store),
         PopupType.CONFIRM_EXIT_TUTORIAL: lambda: _alert(
             parent,
-            "Exit tutorial?",
-            "You can resume later from the repository list.",
-            confirm="Exit",
-            on_confirm=lambda: store.exit_tutorial(),
+            "Exit tutorial",
+            "Are you sure you want to leave the tutorial? This will bring you back to the home screen.",
+            confirm="Exit tutorial",
+            on_confirm=lambda: store.pause_tutorial(),
         ),
         PopupType.UPSTREAM_ALREADY_EXISTS: lambda: show_upstream_exists(parent, store, payload),
         PopupType.PULL_REQUEST_CHECKS_FAILED: lambda: show_checks(parent, store, payload),
@@ -564,10 +569,7 @@ def _checkout_sha(store: AppStore, payload: dict[str, Any]) -> None:
     repo = store.selected_repository
     sha = payload.get("sha")
     if repo and sha:
-        from ..git.ops import checkout_commit
-
-        checkout_commit(repo.path, sha)
-        store.refresh_repository(repo)
+        store.checkout_commit_sha(repo, sha, confirmed=True)
 
 
 def _discard_stash(store: AppStore, payload: dict[str, Any]) -> None:
@@ -1893,6 +1895,7 @@ def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
         store.persist_settings()
         store.apply_theme()
         store.set_zoom(s.zoom_factor)
+        store.emit()
 
     dialog.connect("closed", persist)
     dialog.present(parent)

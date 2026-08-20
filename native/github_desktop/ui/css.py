@@ -158,6 +158,14 @@ APP_CSS = """
   font-weight: 700;
   font-size: 0.7rem;
 }
+.author-warning {
+  border: 2px solid @warning_color;
+  border-radius: 999px;
+}
+.whitespace-hint {
+  padding: 8px 12px;
+  background-color: alpha(@warning_color, 0.12);
+}
 .diff-contents-warning {
   padding: 8px 12px;
   background-color: alpha(@warning_color, 0.12);

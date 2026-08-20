@@ -220,6 +220,13 @@ class BannerType(StrEnum):
     CONFLICTS_FOUND = "ConflictsFound"
     OS_VERSION_NO_LONGER_SUPPORTED = "OSVersionNoLongerSupported"
     OPEN_THANK_YOU_CARD = "OpenThankYouCard"
+    DETACHED_HEAD = "DetachedHead"
+
+
+class ForcePushBranchState(StrEnum):
+    NOT_AVAILABLE = "NotAvailable"
+    AVAILABLE = "Available"
+    RECOMMENDED = "Recommended"
 
 
 class MultiCommitOperationKind(StrEnum):

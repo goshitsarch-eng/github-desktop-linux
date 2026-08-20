@@ -18,6 +18,7 @@ from ..models import (
     ComparisonMode,
     ComputedAction,
     DiffSelectionType,
+    ForcePushBranchState,
     HistoryTabMode,
     ManualConflictResolution,
     MultiCommitOperationKind,
@@ -30,7 +31,7 @@ from ..models import (
 from ..shells import open_external, open_in_default_program
 from ..store import AppStore
 from ..version import APP_NAME
-from .avatar import AvatarStack, users_from_commit
+from .avatar import Avatar, AvatarStack, users_from_commit
 from .branches import BranchesFoldout
 from .checks import present_checks_popover
 from .dialogs import present_popup, show_preferences, show_reorder_commits
@@ -39,6 +40,7 @@ from .emoji import matching_shortcodes
 from .history import ExpandableCommitSummary
 from .menus import attach_right_click, clear_box, copy_text, show_context_menu
 from .multi_commit import show_confirm_abort, show_conflicts_dialog
+from .spellcheck import attach_spellcheck
 from .stash import StashDiffViewer
 from .tutorial import TutorialPanel
 
@@ -121,7 +123,8 @@ class MainWindow(Adw.ApplicationWindow):
         if self.store.welcome_step is not None:
             self._refresh_welcome()
             self._stack.set_visible_child_name("welcome")
-        elif not self.store.repositories and not self.store.cloning:
+        elif (not self.store.repositories and not self.store.cloning) or self.store.tutorial_step == TutorialStep.PAUSED:
+            self._refresh_empty()
             self._stack.set_visible_child_name("empty")
         else:
             self._stack.set_visible_child_name("repo")
@@ -131,6 +134,8 @@ class MainWindow(Adw.ApplicationWindow):
             self._banner.set_title(self._banner_text(kind, self.store.banner))
             if kind == BannerType.OPEN_THANK_YOU_CARD:
                 self._banner.set_button_label("Open Your Card")
+            elif kind == BannerType.DETACHED_HEAD:
+                self._banner.set_button_label("Create branch")
             elif kind in CONFLICT_BANNER_KINDS:
                 self._banner.set_button_label("View conflicts")
             elif kind in SUCCESS_BANNER_KINDS and self.store.banner.undo_sha:
@@ -162,6 +167,7 @@ class MainWindow(Adw.ApplicationWindow):
             BannerType.REORDER_UNDONE: "Reorder undone",
             BannerType.CONFLICTS_FOUND: banner.operation_description or "Conflicts found",
             BannerType.OPEN_THANK_YOU_CARD: "The Desktop team would like to thank you for your contributions.",
+            BannerType.DETACHED_HEAD: "You are in a detached HEAD state. Create a branch to keep your work.",
         }
         return mapping.get(kind, kind.value)
 
@@ -169,6 +175,9 @@ class MainWindow(Adw.ApplicationWindow):
         banner = self.store.banner
         if banner and banner.type == BannerType.OPEN_THANK_YOU_CARD:
             self.store.open_thank_you_card()
+            return
+        if banner and banner.type == BannerType.DETACHED_HEAD:
+            self.store.show_popup(PopupType.CREATE_BRANCH)
             return
         if banner and banner.type in CONFLICT_BANNER_KINDS:
             kind = banner.operation_kind or {
@@ -230,7 +239,7 @@ class MainWindow(Adw.ApplicationWindow):
         add("undo-commit", self._undo)
         add("create-tag", lambda: self.store.show_popup(PopupType.CREATE_TAG))
         add("generate-commit-message", lambda: self._generate_commit_message())
-        add("compare-to-branch", lambda: self.store.set_section(RepositorySectionTab.HISTORY))
+        add("compare-to-branch", self._compare_to_branch)
         add("install-cli", self.store.install_cli)
         add("toggle-changes-filter", self.store.toggle_changes_filter)
         add("zoom-in", lambda: self.store.set_zoom(self.store.settings.zoom_factor + 0.1))
@@ -376,6 +385,27 @@ class MainWindow(Adw.ApplicationWindow):
         if hasattr(self, "_diff_view"):
             self._diff_view.start_search()
 
+    def _compare_to_branch(self) -> None:
+        self.store.set_section(RepositorySectionTab.HISTORY)
+        if hasattr(self, "_view_stack"):
+            self._view_stack.set_visible_child_name("history")
+        if hasattr(self, "_compare_dropdown"):
+            GLib.idle_add(self._compare_dropdown.grab_focus)
+
+    def _refresh_empty(self) -> None:
+        if not hasattr(self, "_empty_tutorial_btn"):
+            return
+        paused = self.store.tutorial_step == TutorialStep.PAUSED
+        self._empty_tutorial_btn.set_label(
+            "Return to in progress tutorial" if paused else "Create a tutorial repository…"
+        )
+
+    def _on_empty_tutorial(self, *_args: object) -> None:
+        if self.store.tutorial_step == TutorialStep.PAUSED:
+            self.store.resume_tutorial()
+            return
+        self.store.show_popup(PopupType.CREATE_TUTORIAL_REPOSITORY)
+
     def _open_submodule(self, full_path: str) -> None:
         try:
             self.store.add_repositories([full_path])
@@ -486,7 +516,8 @@ class MainWindow(Adw.ApplicationWindow):
             btn.set_action_name(action)
             box.append(btn)
         tutorial = Gtk.Button(label="Create a tutorial repository…")
-        tutorial.connect("clicked", lambda *_: self.store.show_popup(PopupType.CREATE_TUTORIAL_REPOSITORY))
+        tutorial.connect("clicked", self._on_empty_tutorial)
+        self._empty_tutorial_btn = tutorial
         box.append(tutorial)
         page.set_child(box)
         return page
@@ -515,7 +546,9 @@ class MainWindow(Adw.ApplicationWindow):
             on_merge=lambda b: self._repo_op(lambda r: self.store.merge_branch(r, b.name)),
             on_pr=lambda pr: self._repo_op(lambda r: self.store.checkout_pull_request(r, pr)),
             on_view_github=lambda b: self._repo_op(lambda r: self.store.view_branch_on_github(r, b.name)),
-            on_cherry_pick=lambda b, sha: self._repo_op(lambda r: self.store.cherry_pick_commits(r, [sha], target_branch=b.name)),
+            on_cherry_pick=lambda b, sha: self._repo_op(
+                lambda r: self.store.cherry_pick_commits(r, [s for s in str(sha).split(",") if s], target_branch=b.name)
+            ),
         )
         self._branch_btn.set_popover(self._branches_foldout)
         header.pack_start(self._branch_btn)
@@ -811,19 +844,39 @@ class MainWindow(Adw.ApplicationWindow):
         left.append(self._stash_bar)
         commit_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         commit_box.add_css_class("commit-box")
+        summary_row = Gtk.Box(spacing=6)
+        self._author_btn = Gtk.MenuButton()
+        self._author_btn.set_tooltip_text("This commit will be authored as the configured Git user")
+        self._author_avatar_host = Gtk.Box()
+        self._author_btn.set_child(self._author_avatar_host)
+        self._author_popover = Gtk.Popover()
+        self._author_popover_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self._author_popover_box.set_margin_top(8)
+        self._author_popover_box.set_margin_bottom(8)
+        self._author_popover_box.set_margin_start(8)
+        self._author_popover_box.set_margin_end(8)
+        self._author_popover.set_child(self._author_popover_box)
+        self._author_btn.set_popover(self._author_popover)
+        summary_row.append(self._author_btn)
         self._summary = Gtk.Entry()
         self._summary.set_placeholder_text("Summary (required)")
         self._summary.set_max_length(72)
+        self._summary.set_hexpand(True)
+        summary_row.append(self._summary)
         self._issue_store = Gtk.ListStore(str)
         completion = Gtk.EntryCompletion()
         completion.set_model(self._issue_store)
         completion.set_text_column(0)
         completion.set_popup_completion(True)
         completion.set_minimum_key_length(1)
+        completion.set_match_func(lambda *_args: True)
         self._summary.connect("changed", self._on_summary_changed)
         self._summary_warn = Gtk.Label(xalign=0)
         self._summary_warn.add_css_class("warning")
         self._summary_warn.set_visible(False)
+        self._author_warn = Gtk.Label(xalign=0, wrap=True)
+        self._author_warn.add_css_class("warning")
+        self._author_warn.set_visible(False)
         self._rules_warn = Gtk.Label(wrap=True, xalign=0)
         self._rules_warn.add_css_class("repo-rules-warning")
         self._rules_warn.set_visible(False)
@@ -833,6 +886,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._description.get_buffer().connect("changed", lambda *_: self._update_commit_warnings())
         co = Gtk.CheckButton(label="Co-authors")
         co.connect("toggled", self._on_coauthors)
+        self._coauthor_check = co
         self._coauthor_entry = Gtk.Entry()
         self._coauthor_entry.set_placeholder_text("Name <email> or @username")
         self._coauthor_entry.set_visible(False)
@@ -843,6 +897,7 @@ class MainWindow(Adw.ApplicationWindow):
         co_completion.set_minimum_key_length(1)
         self._coauthor_entry.set_completion(co_completion)
         self._summary.set_completion(completion)
+        self._spell = attach_spellcheck(self._description, enabled=self.store.settings.spellcheck_enabled)
         btn_row = Gtk.Box(spacing=6)
         self._commit_btn = Gtk.Button(label="Commit to branch")
         self._commit_btn.add_css_class("suggested-action")
@@ -862,8 +917,9 @@ class MainWindow(Adw.ApplicationWindow):
         btn_row.append(undo)
         btn_row.append(self._amend_btn)
         btn_row.append(self._stop_amend_btn)
-        commit_box.append(self._summary)
+        commit_box.append(summary_row)
         commit_box.append(self._summary_warn)
+        commit_box.append(self._author_warn)
         commit_box.append(self._rules_warn)
         commit_box.append(self._description)
         commit_box.append(co)
@@ -884,6 +940,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_image_mode=self._on_image_mode,
             on_open_submodule=self._open_submodule,
             on_open_binary=self._open_binary_file,
+            on_hide_whitespace_changed=self._set_hide_whitespace,
         )
         paned.set_end_child(self._diff_view)
         self._changes_stack = Gtk.Stack()
@@ -1047,6 +1104,14 @@ class MainWindow(Adw.ApplicationWindow):
             self._amend_btn.set_visible(not amending)
         if hasattr(self, "_stop_amend_btn"):
             self._stop_amend_btn.set_visible(amending)
+        if hasattr(self, "_coauthor_check"):
+            self._coauthor_check.set_visible(bool(repo.github))
+            if not repo.github:
+                self._coauthor_check.set_active(False)
+                self._coauthor_entry.set_visible(False)
+        if hasattr(self, "_spell"):
+            self._spell.set_enabled(self.store.settings.spellcheck_enabled)
+        self._refresh_author_avatar(repo)
         self._update_commit_warnings()
 
     def _show_missing(self, repo) -> None:
@@ -1103,6 +1168,8 @@ class MainWindow(Adw.ApplicationWindow):
         ab = status.branch_ahead_behind
         if not status.current_upstream_branch:
             self._push_btn.set_label("Publish branch")
+        elif self.store.current_branch_force_push_state() == ForcePushBranchState.RECOMMENDED:
+            self._push_btn.set_label("Force push")
         elif ab and ab.ahead and ab.behind:
             self._push_btn.set_label(f"Pull {ab.behind} / Push {ab.ahead}")
         elif ab and ab.ahead:
@@ -1115,7 +1182,10 @@ class MainWindow(Adw.ApplicationWindow):
             label = "1 tag" if len(tags) == 1 else f"{len(tags)} tags"
             self._push_btn.set_label(f"Push {label}")
         elif ab and ab.behind:
-            self._push_btn.set_label(f"Pull {ab.behind}")
+            if getattr(state, "pull_with_rebase", False):
+                self._push_btn.set_label(f"Pull {ab.behind} with rebase")
+            else:
+                self._push_btn.set_label(f"Pull {ab.behind}")
         else:
             self._push_btn.set_label("Fetch origin")
 
@@ -1132,7 +1202,9 @@ class MainWindow(Adw.ApplicationWindow):
             return
         ab = status.branch_ahead_behind
         tags = state.local_tags_to_push
-        if not status.current_upstream_branch or (ab and ab.ahead and not ab.behind) or (tags and not (ab and ab.behind)):
+        if self.store.current_branch_force_push_state(repo) == ForcePushBranchState.RECOMMENDED:
+            self.store.show_popup(PopupType.CONFIRM_FORCE_PUSH)
+        elif not status.current_upstream_branch or (ab and ab.ahead and not ab.behind) or (tags and not (ab and ab.behind)):
             self.store.push_repo(repo)
         elif ab and ab.behind:
             self.store.pull_repo(repo)
@@ -1207,6 +1279,7 @@ class MainWindow(Adw.ApplicationWindow):
                     row.add_prefix(Gtk.Image.new_from_icon_name("user-bookmarks-symbolic"))
                 row.set_activatable(True)
                 row.connect("activated", lambda _r, rid=repo.id: self.store.select_repository(rid))
+                attach_right_click(row, lambda *_ , r=row, repository=repo: self._repo_list_menu(r, repository))
                 self._repo_list.append(row)
 
         add_group("GitHub", github)
@@ -1427,11 +1500,14 @@ class MainWindow(Adw.ApplicationWindow):
             self.store.set_include_all(repo, btn.get_active())
 
     def _on_hide_ws(self, btn: Gtk.CheckButton) -> None:
+        self._set_hide_whitespace(btn.get_active())
+
+    def _set_hide_whitespace(self, hidden: bool) -> None:
         repo = self.store.selected_repository
         if not repo:
             return
         state = self.store.state_for(repo)
-        state.hide_whitespace = btn.get_active()
+        state.hide_whitespace = hidden
         if state.selected_file:
             self.store.select_file(repo, state.selected_file)
 
@@ -1871,14 +1947,26 @@ class MainWindow(Adw.ApplicationWindow):
         repo = self.store.selected_repository
         if not repo:
             return
-        show_context_menu(
-            self._hist_files,
-            [
-                ("Copy path", lambda: copy_text(os.path.join(repo.path, file.path)), True),
-                ("Show in file manager", lambda: self.store.reveal_in_file_manager(repo, file.path), True),
-                ("Open in external editor", lambda: self.store.open_in_editor(repo, os.path.join(repo.path, file.path)), True),
-            ],
-        )
+        full = os.path.join(repo.path, file.path)
+        exists = os.path.exists(full)
+        state = self.store.state_for(repo)
+        commit = state.selected_commit
+        items = [
+            ("Copy path", lambda: copy_text(full), True),
+            ("Copy relative path", lambda: copy_text(file.path), True),
+            ("Open with default program", lambda: self.store.open_file_default(repo, file.path), exists),
+            ("Show in file manager", lambda: self.store.reveal_in_file_manager(repo, file.path), exists),
+            ("Open in external editor", lambda: self.store.open_in_editor(repo, full), exists),
+        ]
+        if repo.github and commit:
+            items.append(
+                (
+                    "View on GitHub",
+                    lambda: open_external(f"{repo.github.html_url}/blob/{commit.sha}/{file.path}"),
+                    True,
+                )
+            )
+        show_context_menu(self._hist_files, items)
 
     def _commit_item_menu(self, row: Gtk.ListBoxRow) -> None:
         repo = self.store.selected_repository
@@ -1938,27 +2026,49 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _install_commit_dnd(self, row: Gtk.ListBoxRow, commit) -> None:
         try:
+            from ..commit_dnd import commit_drop_kind, decode_commit_shas, encode_commit_shas
+
             drag = Gtk.DragSource()
             drag.set_actions(Gdk.DragAction.MOVE)
 
             def prepare(_src, _x, _y, sha=commit.sha):
-                return Gdk.ContentProvider.new_for_value(sha)
+                repo = self.store.selected_repository
+                shas = [sha]
+                if repo:
+                    state = self.store.state_for(repo)
+                    selected = [c.sha for c in (state.selected_commits or [])]
+                    if sha in selected:
+                        shas = selected
+                return Gdk.ContentProvider.new_for_value(encode_commit_shas(shas))
 
             drag.connect("prepare", prepare)
             row.add_controller(drag)
             drop = Gtk.DropTarget.new(str, Gdk.DragAction.MOVE)
 
-            def on_drop(_t, value, _x, _y, target=commit):
+            def on_drop(_t, value, _x, y, target=commit, widget=row):
                 repo = self.store.selected_repository
                 if not repo or not value:
                     return False
                 state = self.store.state_for(repo)
-                moving = [c for c in (state.selected_commits or state.commits) if c.sha == value]
+                shas = decode_commit_shas(value)
+                moving = [c for c in state.commits if c.sha in shas]
                 if not moving:
-                    moving = [c for c in state.commits if c.sha == value]
-                if not moving or moving[0].sha == target.sha:
                     return False
-                self.store.squash_onto(repo, moving, target, target.summary)
+                kind = commit_drop_kind(float(y or 0), float(widget.get_allocated_height() or 1))
+                if kind == "squash":
+                    others = [c for c in moving if c.sha != target.sha]
+                    if not others:
+                        return False
+                    self.store.squash_onto(repo, others, target, target.summary)
+                    return True
+                idx = next((i for i, c in enumerate(state.commits) if c.sha == target.sha), None)
+                if idx is None:
+                    return False
+                if kind == "reorder-before":
+                    before = state.commits[idx - 1] if idx > 0 else None
+                else:
+                    before = target
+                self.store.reorder_onto(repo, moving, before)
                 return True
 
             drop.connect("drop", on_drop)
@@ -2032,16 +2142,46 @@ class MainWindow(Adw.ApplicationWindow):
         if not hasattr(self, "_issue_store"):
             return
         self._issue_store.clear()
-        for number, title in state.issues:
-            self._issue_store.append([f"#{number} {title}"])
-        for login in state.mentions:
-            self._issue_store.append([f"@{login}"])
-        for short in matching_shortcodes(""):
-            self._issue_store.append([short])
         if hasattr(self, "_coauthor_store"):
             self._coauthor_store.clear()
             for login in state.mentions:
                 self._coauthor_store.append([f"@{login}"])
+        self._update_summary_completion()
+
+    def _token_before_cursor(self, entry: Gtk.Entry) -> str:
+        text = entry.get_text()
+        pos = entry.get_position()
+        prefix = text[:pos]
+        if not prefix:
+            return ""
+        for index in range(len(prefix) - 1, -1, -1):
+            if prefix[index] in " \t\n":
+                return prefix[index + 1 :]
+        return prefix
+
+    def _update_summary_completion(self) -> None:
+        if not hasattr(self, "_issue_store") or not hasattr(self, "_summary"):
+            return
+        repo = self.store.selected_repository
+        state = self.store.state_for(repo) if repo else None
+        token = self._token_before_cursor(self._summary)
+        self._issue_store.clear()
+        if state is None or len(token) < 1:
+            return
+        if token.startswith("#"):
+            needle = token[1:].lower()
+            for number, title in state.issues:
+                hay = f"#{number} {title}"
+                if not needle or needle in str(number) or needle in title.lower():
+                    self._issue_store.append([hay])
+        elif token.startswith("@"):
+            needle = token[1:].lower()
+            for login in state.mentions:
+                if not needle or login.lower().startswith(needle):
+                    self._issue_store.append([f"@{login}"])
+        elif token.startswith(":"):
+            for short in matching_shortcodes(token):
+                self._issue_store.append([short])
 
     def _refresh_compare_dropdown(self, state) -> None:
         if not hasattr(self, "_compare_dropdown"):
@@ -2148,8 +2288,79 @@ class MainWindow(Adw.ApplicationWindow):
             ops.append(squash)
             self._compare_cta.append(ops)
 
+    def _repo_list_menu(self, widget: Gtk.Widget, repo) -> None:
+        show_context_menu(
+            widget,
+            [
+                ("Change alias…", lambda: (self.store.select_repository(repo.id), self.store.show_popup(PopupType.CHANGE_REPOSITORY_ALIAS)), True),
+                ("Copy path", lambda: copy_text(repo.path), True),
+                ("View on GitHub", lambda: self.store.view_on_github(repo), bool(repo.github)),
+                ("Open in shell", lambda: self.store.open_in_shell(repo), True),
+                ("Show in file manager", lambda: self.store.reveal_in_file_manager(repo, ""), True),
+                ("Open in external editor", lambda: self.store.open_in_editor(repo, repo.path), True),
+                None,
+                ("Remove…", lambda: (self.store.select_repository(repo.id), self.store.show_popup(PopupType.REMOVE_REPOSITORY)), True),
+            ],
+        )
+
+    def _refresh_author_avatar(self, repo) -> None:
+        if not hasattr(self, "_author_avatar_host"):
+            return
+        from ..email import is_attributable_email_for, lookup_preferred_email
+        from ..git.ops import get_author_identity
+
+        name, email = get_author_identity(repo.path)
+        account = self.store.account_for_repo(repo)
+        clear_box(self._author_avatar_host)
+        avatar = Avatar(name or (account.login if account else "Git"), email or "", login=account.login if account else None, avatar_url=account.avatar_url if account else None, size=28)
+        self._author_avatar_host.append(avatar)
+        misattributed = bool(account and email and not is_attributable_email_for(account, email))
+        self._author_btn.remove_css_class("author-warning")
+        if misattributed:
+            self._author_btn.add_css_class("author-warning")
+            self._author_warn.set_text("This email address doesn't match your GitHub account. Commits may not be attributed to you.")
+            self._author_warn.set_visible(True)
+        else:
+            self._author_warn.set_visible(False)
+        self._author_btn.set_tooltip_text(f"{name or 'Unknown'} <{email or 'no email'}>")
+        clear_box(self._author_popover_box)
+        heading = Gtk.Label(label="Commit author", xalign=0)
+        heading.add_css_class("heading")
+        self._author_popover_box.append(heading)
+        self._author_popover_box.append(Gtk.Label(label=f"{name or ''} <{email or ''}>", xalign=0, wrap=True))
+        if misattributed:
+            warn = Gtk.Label(
+                label="This commit may not be attributed to your GitHub account. Choose an email below or update Git config.",
+                wrap=True,
+                xalign=0,
+            )
+            warn.add_css_class("warning")
+            self._author_popover_box.append(warn)
+        emails = list(account.emails) if account else []
+        if account:
+            preferred = lookup_preferred_email(account)
+            if preferred not in emails:
+                emails.insert(0, preferred)
+        for item in emails:
+            btn = Gtk.Button(label=item)
+            btn.add_css_class("flat")
+            btn.connect("clicked", lambda _b, addr=item: self._use_author_email(repo, addr))
+            self._author_popover_box.append(btn)
+        git_btn = Gtk.Button(label="Open Git settings")
+        git_btn.connect("clicked", lambda *_: (self._author_popover.popdown(), show_preferences(self, self.store)))
+        self._author_popover_box.append(git_btn)
+        repo_btn = Gtk.Button(label="Open repository Git config")
+        repo_btn.connect("clicked", lambda *_: (self._author_popover.popdown(), self.store.show_popup(PopupType.REPOSITORY_SETTINGS)))
+        self._author_popover_box.append(repo_btn)
+
+    def _use_author_email(self, repo, email: str) -> None:
+        self.store.set_commit_author_email(repo, email, local=True)
+        self._author_popover.popdown()
+        self._refresh_author_avatar(repo)
+
     def _on_summary_changed(self, entry: Gtk.Entry) -> None:
         self._update_commit_warnings()
+        self._update_summary_completion()
 
     def _update_commit_warnings(self) -> None:
         if not hasattr(self, "_summary_warn"):

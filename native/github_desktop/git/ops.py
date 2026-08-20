@@ -1204,6 +1204,9 @@ def fetch_tags_to_push(repo: str, remote: str, branch_name: str, *, env: dict[st
     return tags
 
 
+GIT_REBASE_ARGUMENTS = ["-c", "rebase.backend=merge"]
+
+
 def pull(
     repo: str,
     remote: str = "origin",
@@ -1212,12 +1215,18 @@ def pull(
     env: dict[str, str] | None = None,
     progress: ProgressCb | None = None,
 ) -> None:
-    args = ["pull", "--ff", "--no-rebase", remote]
+    """Pull matching Desktop: honor pull.rebase / pull.ff, recurse submodules."""
+    args = [*GIT_REBASE_ARGUMENTS, "pull"]
+    if get_config_value(repo, "pull.ff") is None:
+        args.append("--ff")
+    args.append("--recurse-submodules")
+    if progress:
+        args.append("--progress")
+    args.append(remote)
     if branch:
         args.append(branch)
     kwargs: dict = {"env": env, "name": "pull"}
     if progress:
-        args.insert(1, "--progress")
         kwargs["progress"] = _progress_adapter(progress)
         kwargs["progress_parser"] = GitProgressParser(PULL_STEPS)
         progress(f"Pulling {remote}", 0.0)
@@ -1299,7 +1308,7 @@ def rebase(
 
         kwargs["on_stderr_line"] = on_line
     try:
-        result = git(["rebase", base_branch], repo, **kwargs)
+        result = git([*GIT_REBASE_ARGUMENTS, "rebase", base_branch], repo, **kwargs)
         if "is up to date" in result.stdout.lower() or "up to date" in result.stderr.lower():
             return RebaseResult.ALREADY_UP_TO_DATE
         return RebaseResult.COMPLETED_WITHOUT_ERROR

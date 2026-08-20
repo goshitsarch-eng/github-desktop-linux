@@ -268,5 +268,14 @@ def test_window_actions_cover_menus() -> None:
         "Stash all changes?",
         "placeholder_id",
         "discarded permanently",
+        "Force push",
+        "detached HEAD",
+        "Selecting lines is disabled when hiding whitespace changes",
+        "Return to in progress tutorial",
+        "Copy relative path",
+        "This email address doesn't match your GitHub account",
+        "with rebase",
+        "rebase.backend=merge",
+        "leave the tutorial",
     ]:
         assert phrase in src

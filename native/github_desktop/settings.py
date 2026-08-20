@@ -63,6 +63,7 @@ class Settings:
     last_thank_you_users: list[str] = field(default_factory=list)
     recent_branches: dict[str, list[str]] = field(default_factory=dict)
     last_prune_dates: dict[str, float] = field(default_factory=dict)
+    tutorial_paused: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

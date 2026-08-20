@@ -73,6 +73,7 @@ class DiffViewer(Gtk.Box):
         on_image_mode: Callable[[str], None] | None = None,
         on_open_submodule: Callable[[str], None] | None = None,
         on_open_binary: Callable[[str], None] | None = None,
+        on_hide_whitespace_changed: Callable[[bool], None] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.add_css_class("diff-view")
@@ -87,6 +88,7 @@ class DiffViewer(Gtk.Box):
         self.on_image_mode = on_image_mode
         self.on_open_submodule = on_open_submodule
         self.on_open_binary = on_open_binary
+        self.on_hide_whitespace_changed = on_hide_whitespace_changed
         self._toolbar = Gtk.Box(spacing=6)
         self._toolbar.add_css_class("diff-toolbar")
         self.append(self._toolbar)
@@ -116,10 +118,18 @@ class DiffViewer(Gtk.Box):
         search_row.append(close_search)
         self._search_revealer.set_child(search_row)
         self.append(self._search_revealer)
-        self._hint = Gtk.Label(xalign=0)
-        self._hint.add_css_class("whitespace-hint")
-        self._hint.set_visible(False)
-        self.append(self._hint)
+        self._hint_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self._hint_box.add_css_class("whitespace-hint")
+        self._hint_box.set_visible(False)
+        self._hint = Gtk.Label(xalign=0, wrap=True)
+        self._hint_box.append(self._hint)
+        show_ws = Gtk.Button(label="Show whitespace changes")
+        show_ws.add_css_class("pill")
+        show_ws.set_halign(Gtk.Align.START)
+        show_ws.connect("clicked", self._on_show_whitespace)
+        self._hint_show = show_ws
+        self._hint_box.append(show_ws)
+        self.append(self._hint_box)
         self._scroll = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
         self._inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self._scroll.set_child(self._inner)
@@ -137,6 +147,7 @@ class DiffViewer(Gtk.Box):
         self._search_cursor = 0
         self._diff: FileDiff | None = None
         self._comments: list = []
+        self._hide_whitespace = False
         self.set_focusable(True)
         key = Gtk.EventControllerKey()
         key.connect("key-pressed", self._on_key)
@@ -165,11 +176,12 @@ class DiffViewer(Gtk.Box):
         self._row_widgets = []
         self._list_view = None
         clear_box(self._toolbar)
-        self._hint.set_visible(False)
+        self._hint_box.set_visible(False)
         self._scroll.set_child(self._inner)
         clear_box(self._inner)
         self._list_store = None
         self._diff = diff
+        self._hide_whitespace = hide_whitespace
         if diff is None:
             self._inner.append(Adw.StatusPage(title="No file selected", icon_name="document-symbolic"))
             return
@@ -204,8 +216,8 @@ class DiffViewer(Gtk.Box):
             self._inner.append(Gtk.Label(label="Unable to display this diff"))
             return
         if hide_whitespace:
-            self._hint.set_text("Whitespace changes are hidden. Turn off Hide whitespace to review them.")
-            self._hint.set_visible(True)
+            self._hint.set_text("Selecting lines is disabled when hiding whitespace changes.")
+            self._hint_box.set_visible(True)
         if diff.has_hidden_bidi_chars or diff.line_endings_change:
             warn_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
             warn_box.add_css_class("diff-contents-warning")
@@ -267,6 +279,12 @@ class DiffViewer(Gtk.Box):
     def start_search(self) -> None:
         self._search_revealer.set_reveal_child(True)
         self._search_entry.grab_focus()
+
+    def _on_show_whitespace(self, *_args: object) -> None:
+        self._hide_whitespace = False
+        self._hint_box.set_visible(False)
+        if self.on_hide_whitespace_changed:
+            self.on_hide_whitespace_changed(False)
 
     def close_search(self) -> None:
         self._search_revealer.set_reveal_child(False)
@@ -596,7 +614,7 @@ class DiffViewer(Gtk.Box):
             row.add_css_class("diff-add")
         elif line.kind == DiffLineType.DELETE:
             row.add_css_class("diff-del")
-        if self.interactive and self._show_checks and line.selectable:
+        if self.interactive and self._show_checks and line.selectable and not getattr(self, "_hide_whitespace", False):
             check = Gtk.CheckButton()
             active = selection.is_selected(index) if selection else True
             check.set_active(active)
@@ -653,7 +671,7 @@ class DiffViewer(Gtk.Box):
             box.add_css_class("diff-add")
         elif line.kind == DiffLineType.DELETE:
             box.add_css_class("diff-del")
-        if self.interactive and self._show_checks and line.selectable and index is not None:
+        if self.interactive and self._show_checks and line.selectable and index is not None and not getattr(self, "_hide_whitespace", False):
             check = Gtk.CheckButton()
             active = selection.is_selected(index) if selection else True
             check.set_active(active)
@@ -676,7 +694,7 @@ class DiffViewer(Gtk.Box):
 
     def _line_menu(self, index: int, selection: DiffSelection | None, line: DiffLine | None = None) -> None:
         items: list[MenuItem] = []
-        if self.interactive and selection is not None:
+        if self.interactive and selection is not None and not getattr(self, "_hide_whitespace", False):
             selected = selection.is_selected(index)
             items.append(
                 (

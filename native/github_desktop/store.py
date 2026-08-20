@@ -148,6 +148,7 @@ from .models import (
     FetchType,
     FileDiff,
     FoldoutType,
+    ForcePushBranchState,
     ForkContributionTarget,
     GitHubRepository,
     HistoryTabMode,
@@ -261,6 +262,9 @@ class RepositoryViewState:
     undo_branch: str | None = None
     pending_pr: int | None = None
     pending_filepath: str | None = None
+    force_push_with_lease_on: dict[str, str] = field(default_factory=dict)
+    pending_force_push_before: str | None = None
+    pull_with_rebase: bool = False
 
 
 class AppStore:
@@ -281,7 +285,7 @@ class AppStore:
         self.oauth_state: str | None = None
         self.cloning: list[CloningRepository] = []
         self.repo_state: dict[int, RepositoryViewState] = {}
-        self.tutorial_step = TutorialStep.NOT_APPLICABLE
+        self.tutorial_step = TutorialStep.PAUSED if self.settings.tutorial_paused else TutorialStep.NOT_APPLICABLE
         self.progress_kind: str | None = None
         self.progress_title: str = ""
         self.progress_value: float = 0.0
@@ -710,6 +714,7 @@ class AppStore:
                 repos = self.add_repositories([path])
                 if tutorial and repos:
                     repos[0].tutorial = True
+                    self.settings.tutorial_paused = False
                     self.tutorial_step = TutorialStep.PICK_EDITOR
                     self._save_repositories()
             self.emit()
@@ -825,6 +830,7 @@ class AppStore:
                 "mentions": [],
                 "local_commit_shas": [],
                 "upstream_mismatch": None,
+                "pull_with_rebase": bool(get_boolean_config_value(repo.path, "pull.rebase") or False),
             }
             payload["upstream_mismatch"] = upstream_mismatch
             if status and status.current_branch and status.current_upstream_branch:
@@ -960,6 +966,12 @@ class AppStore:
                 state.repo_rules = data["repo_rules"]
             if "protected_branches" in data:
                 state.protected_branches = list(data.get("protected_branches") or [])
+            if "pull_with_rebase" in data:
+                state.pull_with_rebase = bool(data.get("pull_with_rebase"))
+            pending_rewrite = state.pending_force_push_before
+            if pending_rewrite:
+                state.pending_force_push_before = None
+                self.add_branch_to_force_push_list(repo, pending_rewrite)
             if data.get("github"):
                 repo.github = data["github"]
                 self._save_repositories()
@@ -1110,7 +1122,9 @@ class AppStore:
     def _advance_tutorial(self, repo: Repository, state: RepositoryViewState) -> None:
         if not repo.tutorial:
             return
-        if self.tutorial_step in (TutorialStep.NOT_APPLICABLE, TutorialStep.PAUSED):
+        if self.tutorial_step == TutorialStep.PAUSED:
+            return
+        if self.tutorial_step == TutorialStep.NOT_APPLICABLE:
             self.tutorial_step = TutorialStep.PICK_EDITOR
         locals_ = [b for b in state.branches if b.type == BranchType.LOCAL]
         if self.tutorial_step == TutorialStep.PICK_EDITOR:
@@ -1136,13 +1150,26 @@ class AppStore:
             self.tutorial_step = TutorialStep.ALL_COMPLETE
             self.emit()
 
-    def exit_tutorial(self) -> None:
-        repo = self.selected_repository
-        if repo:
-            repo.tutorial = False
-            self._save_repositories()
-        self.tutorial_step = TutorialStep.NOT_APPLICABLE
+    def pause_tutorial(self) -> None:
+        self.tutorial_step = TutorialStep.PAUSED
+        self.settings.tutorial_paused = True
+        self.persist_settings()
         self.emit()
+
+    def resume_tutorial(self) -> None:
+        self.settings.tutorial_paused = False
+        self.persist_settings()
+        repo = next((r for r in self.repositories if r.tutorial), self.selected_repository)
+        if repo:
+            self.tutorial_step = TutorialStep.PICK_EDITOR
+            self.select_repository(repo.id)
+            self._advance_tutorial(repo, self.state_for(repo))
+        else:
+            self.tutorial_step = TutorialStep.NOT_APPLICABLE
+        self.emit()
+
+    def exit_tutorial(self) -> None:
+        self.pause_tutorial()
 
     def account_for_repo(self, repo: Repository) -> Account | None:
         if repo.github:
@@ -1275,7 +1302,9 @@ class AppStore:
     def resolve_co_authors(self, authors: Sequence[Author]) -> tuple[list[Author], list[Author]]:
         resolved: list[Author] = []
         unknown: list[Author] = []
-        api = GitHubAPI.from_account(self.accounts[0]) if self.accounts else None
+        repo = self.selected_repository
+        account = self.account_for_repo(repo) if repo else (self.accounts[0] if self.accounts else None)
+        api = GitHubAPI.from_account(account) if account else None
         for author in authors:
             login = author.username
             if login and api is not None:
@@ -1339,12 +1368,16 @@ class AppStore:
         def work() -> None:
             create_commit(repo.path, message, files, amend=amend)
 
+        amended_sha = state.commit_to_amend.sha if amend and state.commit_to_amend else None
+
         def done(exc: BaseException | None) -> None:
             if exc:
                 self.show_popup(PopupType.ERROR, error=str(exc))
             else:
                 state.commit_message = CommitMessage()
                 state.commit_to_amend = None
+                if amended_sha:
+                    state.pending_force_push_before = amended_sha
                 self.refresh_repository(repo)
             self.emit()
 
@@ -1455,11 +1488,11 @@ class AppStore:
         from .install_cli import install_cli
 
         try:
-            install_cli()
+            path = install_cli()
         except OSError as exc:
             self.show_popup(PopupType.ERROR, error=str(exc))
             return
-        self.show_popup(PopupType.CLI_INSTALLED)
+        self.show_popup(PopupType.CLI_INSTALLED, path=str(path))
 
     def remember_branch(self, repo: Repository, name: str) -> None:
         recents = [name, *[b for b in self.settings.recent_branches.get(repo.path, []) if b != name]]
@@ -1467,8 +1500,9 @@ class AppStore:
         self.persist_settings()
 
     def default_branch_name(self, repo: Repository) -> str | None:
-        if repo.github and repo.github.default_branch:
-            return repo.github.default_branch
+        gh = github_for_contribution(repo) or repo.github
+        if gh and gh.default_branch:
+            return gh.default_branch
         try:
             return get_default_branch()
         except GitError:
@@ -1479,7 +1513,17 @@ class AppStore:
         if not name:
             return
         state = self.state_for(repo)
-        target = next((b.name for b in state.branches if b.name == name or b.name.endswith("/" + name)), name)
+        candidates: list[str] = []
+        if repo.is_fork and fork_contribution_target(repo) == ForkContributionTarget.PARENT:
+            candidates.extend([f"upstream/{name}", f"origin/{name}"])
+        candidates.append(name)
+        target = None
+        for candidate in candidates:
+            target = next((b.name for b in state.branches if b.name == candidate), None)
+            if target:
+                break
+        if target is None:
+            target = next((b.name for b in state.branches if b.name.endswith("/" + name)), name)
         self.merge_branch(repo, target)
 
     def view_branch_on_github(self, repo: Repository, branch: str | None = None) -> None:
@@ -1872,6 +1916,7 @@ class AppStore:
         last_retained = onto.parent_shas[0] if onto.parent_shas else None
         result = squash_commits(repo.path, list(to_squash), onto, last_retained, message)
         if result == RebaseResult.COMPLETED_WITHOUT_ERROR:
+            self.state_for(repo).pending_force_push_before = undo_sha
             self.show_banner(Banner(BannerType.SUCCESSFUL_SQUASH, count=len(to_squash) + 1, undo_sha=undo_sha))
         elif result == RebaseResult.CONFLICTS_ENCOUNTERED:
             self.show_banner(Banner(BannerType.CONFLICTS_FOUND, operation_description="Squash", operation_kind=MultiCommitOperationKind.SQUASH.value))
@@ -1886,6 +1931,7 @@ class AppStore:
             last_retained = to_move[-1].parent_shas[0] if to_move[-1].parent_shas else None
         result = reorder_commits(repo.path, list(to_move), before, last_retained)
         if result == RebaseResult.COMPLETED_WITHOUT_ERROR:
+            self.state_for(repo).pending_force_push_before = undo_sha
             self.show_banner(Banner(BannerType.SUCCESSFUL_REORDER, count=len(to_move), undo_sha=undo_sha))
         elif result == RebaseResult.CONFLICTS_ENCOUNTERED:
             self.show_banner(Banner(BannerType.CONFLICTS_FOUND, operation_description="Reorder", operation_kind=MultiCommitOperationKind.REORDER.value))
@@ -1960,12 +2006,48 @@ class AppStore:
             return
         launch(editor, path)
 
-    def checkout_commit_sha(self, repo: Repository, sha: str) -> None:
-        if self.settings.confirm_checkout_commit:
+    def checkout_commit_sha(self, repo: Repository, sha: str, *, confirmed: bool = False) -> None:
+        if self.settings.confirm_checkout_commit and not confirmed:
             self.show_popup(PopupType.CONFIRM_CHECKOUT_COMMIT, sha=sha)
             return
         checkout_commit(repo.path, sha)
+        self.show_banner(Banner(BannerType.DETACHED_HEAD))
         self.refresh_repository(repo)
+
+    def set_commit_author_email(self, repo: Repository, email: str, *, local: bool = True) -> None:
+        if local:
+            set_config_value(repo.path, "user.email", email)
+        else:
+            set_config_value(None, "user.email", email, global_only=True)
+        self.emit()
+
+    def add_branch_to_force_push_list(self, repo: Repository, before_sha: str | None) -> None:
+        state = self.state_for(repo)
+        branch = state.status.current_branch if state.status else None
+        tip = (state.status.current_tip if state.status else None) or (state.commits[0].sha if state.commits else None)
+        if not branch or not tip or tip == before_sha:
+            return
+        state.force_push_with_lease_on[branch] = tip
+
+    def drop_current_branch_from_force_push_list(self, repo: Repository) -> None:
+        state = self.state_for(repo)
+        branch = state.status.current_branch if state.status else None
+        if branch:
+            state.force_push_with_lease_on.pop(branch, None)
+
+    def current_branch_force_push_state(self, repo: Repository | None = None) -> ForcePushBranchState:
+        repo = repo or self.selected_repository
+        if repo is None:
+            return ForcePushBranchState.NOT_AVAILABLE
+        state = self.state_for(repo)
+        ab = state.ahead_behind or (state.status.branch_ahead_behind if state.status else None)
+        if ab is None or ab.behind == 0 or ab.ahead == 0:
+            return ForcePushBranchState.NOT_AVAILABLE
+        branch = state.status.current_branch if state.status else None
+        tip = (state.status.current_tip if state.status else None) or (state.commits[0].sha if state.commits else None)
+        if branch and tip and state.force_push_with_lease_on.get(branch) == tip:
+            return ForcePushBranchState.RECOMMENDED
+        return ForcePushBranchState.AVAILABLE
 
     def amend_last(self, repo: Repository, summary: str, description: str = "") -> None:
         self.commit(repo, summary, description, amend=True)
@@ -2137,6 +2219,8 @@ class AppStore:
                 self._retry_action = {"kind": "push", "repo_id": repo.id, "force": force}
                 self._handle_remote_error(repo, exc)
             else:
+                if force:
+                    self.drop_current_branch_from_force_push_list(repo)
                 state.local_tags_to_push = []
                 self.refresh_repository(repo)
                 show_notification("Push complete", f"Pushed {status.current_branch}", enabled=self.settings.notifications_enabled)
@@ -2458,6 +2542,7 @@ class AppStore:
             elif rebase_result == RebaseResult.ALREADY_UP_TO_DATE:
                 self.show_banner(Banner(BannerType.BRANCH_ALREADY_UP_TO_DATE, their_branch=base))
             elif rebase_result == RebaseResult.COMPLETED_WITHOUT_ERROR:
+                self.state_for(repo).pending_force_push_before = undo_sha
                 self.show_banner(Banner(BannerType.SUCCESSFUL_REBASE, target_branch=base, undo_sha=undo_sha))
             self.refresh_repository(repo)
 
@@ -2498,6 +2583,8 @@ class AppStore:
                 self.show_popup(PopupType.ERROR, error=str(exc))
             elif isinstance(result, tuple) and result[1] is not None:
                 self.state_for(repo).status = result[1]
+                if kind in {MultiCommitOperationKind.REBASE, MultiCommitOperationKind.SQUASH, MultiCommitOperationKind.REORDER}:
+                    self.state_for(repo).pending_force_push_before = self.state_for(repo).undo_sha
             self.refresh_repository(repo)
 
         self._run(work, done)
@@ -3307,7 +3394,15 @@ class AppStore:
             elif "://" in arg:
                 self.handle_url_action(arg)
         if clone_url:
-            self.show_popup(PopupType.CLONE_REPOSITORY, initial_url=clone_url, branch=clone_branch)
+            parsed = parse_remote(clone_url)
+            default_dir = self.settings.clone_default_directory or str(Path.home() / "Documents" / "GitHub")
+            name = parsed.name if parsed else "repository"
+            self.show_popup(
+                PopupType.CLONE_REPOSITORY,
+                initial_url=clone_url,
+                branch=clone_branch,
+                path=os.path.join(default_dir, name),
+            )
 
 
 def _commits_are_contiguous(selected_newest_first: Sequence[Commit], history_newest_first: Sequence[Commit]) -> bool:
