@@ -11,6 +11,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 from ..git.ops import (
+    get_changed_files,
     get_commit_diff,
     stash_pop,
     undo_commit,
@@ -506,7 +507,10 @@ class MainWindow(Adw.ApplicationWindow):
         completion.set_text_column(0)
         completion.set_popup_completion(True)
         completion.set_minimum_key_length(1)
-        self._summary.set_completion(completion)
+        self._summary.connect("changed", self._on_summary_changed)
+        self._summary_warn = Gtk.Label(xalign=0)
+        self._summary_warn.add_css_class("warning")
+        self._summary_warn.set_visible(False)
         self._description = Gtk.TextView()
         self._description.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self._description.set_size_request(-1, 70)
@@ -531,6 +535,7 @@ class MainWindow(Adw.ApplicationWindow):
         btn_row.append(undo)
         btn_row.append(amend)
         commit_box.append(self._summary)
+        commit_box.append(self._summary_warn)
         commit_box.append(self._description)
         commit_box.append(co)
         commit_box.append(self._coauthor_entry)
@@ -734,6 +739,22 @@ class MainWindow(Adw.ApplicationWindow):
         if not repo or not hasattr(self, "_file_list"):
             return
         state = self.store.state_for(repo)
+        if state.stashed_visible and state.stashes:
+            stash = state.stashes[0]
+            try:
+                files = get_changed_files(repo.path, stash.stash_sha)
+            except Exception:
+                files = []
+            clear_box(self._file_list)
+            for file in files:
+                row = Adw.ActionRow(title=file.path, subtitle="Stashed")
+                row.set_activatable(True)
+                row._stash_file = file  # type: ignore[attr-defined]
+                row.connect("activated", lambda _r, f=file, sha=stash.stash_sha: self._show_stash_diff(f, sha))
+                self._file_list.append(row)
+            if files:
+                self._show_stash_diff(files[0], stash.stash_sha)
+            return
         files = list(state.status.working_directory.files) if state.status else []
         needle = self._filter.get_text().lower()
         if needle:
@@ -1368,4 +1389,24 @@ class MainWindow(Adw.ApplicationWindow):
             merge.add_css_class("suggested-action")
             merge.connect("clicked", lambda *_: self.store.merge_branch(repo, state.compare_branch.name))
             self._compare_cta.append(merge)
+
+    def _on_summary_changed(self, entry: Gtk.Entry) -> None:
+        if not hasattr(self, "_summary_warn"):
+            return
+        text = entry.get_text()
+        if self.store.settings.show_commit_length_warning and len(text) > 50:
+            self._summary_warn.set_text(f"{len(text)} / 72 characters — keep the summary short")
+            self._summary_warn.set_visible(True)
+        else:
+            self._summary_warn.set_visible(False)
+
+    def _show_stash_diff(self, file, sha: str) -> None:
+        repo = self.store.selected_repository
+        if not repo or not hasattr(self, "_diff_view"):
+            return
+        try:
+            diff = get_commit_diff(repo.path, file.path, sha, file.status)
+        except Exception:
+            diff = None
+        self._diff_view.render(diff, path=file.path, show_checks=False)
 
