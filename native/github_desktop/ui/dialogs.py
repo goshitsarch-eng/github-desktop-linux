@@ -38,6 +38,7 @@ from ..shells import get_available_shells, open_external
 from ..store import AppStore
 from ..version import APP_NAME, __version__
 from .avatar import Avatar
+from .checks import show_checks, show_rerun_checks
 from .diff_view import DiffViewer
 
 
@@ -325,13 +326,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
             parent, "Upstream exists", "This fork already has an upstream remote.", cancel=None
         ),
         PopupType.PULL_REQUEST_CHECKS_FAILED: lambda: show_checks(parent, store, payload),
-        PopupType.CI_CHECK_RUN_RERUN: lambda: _alert(
-            parent,
-            "Re-run checks",
-            "Re-run failed check runs on GitHub?",
-            confirm="Re-run",
-            on_confirm=lambda: payload.get("on_rerun") and payload["on_rerun"](),
-        ),
+        PopupType.CI_CHECK_RUN_RERUN: lambda: show_rerun_checks(parent, store, payload),
         PopupType.WARN_FORCE_PUSH: lambda: _alert(
             parent,
             "Force push required",
@@ -668,14 +663,46 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
     list_box.append(gh_clone)
     stack.add_titled(list_box, "github", "GitHub.com")
 
+    ent_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+    ent_box.set_margin_top(8)
+    ent_box.set_margin_start(8)
+    ent_box.set_margin_end(8)
+    ent_filter_row = Gtk.Box(spacing=6)
+    ent_filter = Gtk.SearchEntry()
+    ent_filter.set_placeholder_text("Filter repositories")
+    ent_filter.set_hexpand(True)
+    ent_refresh = Gtk.Button(icon_name="view-refresh-symbolic")
+    ent_refresh.set_tooltip_text("Refresh")
+    ent_filter_row.append(ent_filter)
+    ent_filter_row.append(ent_refresh)
+    ent_box.append(ent_filter_row)
+    ent_accounts = [a for a in accounts if not a.is_dotcom]
+    ent_drop = None
+    if len(ent_accounts) > 1:
+        ent_drop = Gtk.DropDown.new_from_strings([a.login for a in ent_accounts])
+        ent_box.append(ent_drop)
+    ent_scroller = Gtk.ScrolledWindow(vexpand=True)
+    ent_list = Gtk.ListBox()
+    ent_list.add_css_class("boxed-list")
+    ent_scroller.set_child(ent_list)
+    ent_box.append(ent_scroller)
+    ent_clone = Gtk.Button(label="Clone selected")
+    ent_clone.add_css_class("suggested-action")
+    ent_box.append(ent_clone)
+    stack.add_titled(ent_box, "enterprise", "GitHub Enterprise")
+
     selected_clone_url = {"url": "", "name": ""}
     loaded: list = []
 
-    def selected_account():
-        if account_drop is not None and accounts:
-            idx = account_drop.get_selected()
-            if 0 <= idx < len(accounts):
-                return accounts[idx]
+    def selected_account(enterprise: bool = False):
+        dropdown = ent_drop if enterprise else account_drop
+        source = ent_accounts if enterprise else accounts
+        if dropdown is not None and source:
+            idx = dropdown.get_selected()
+            if 0 <= idx < len(source):
+                return source[idx]
+        if enterprise:
+            return next((a for a in store.accounts if not a.is_dotcom), None)
         return next((a for a in store.accounts if a.is_dotcom), store.accounts[0] if store.accounts else None)
 
     def render_github_list() -> None:
@@ -735,6 +762,69 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
     if account_drop is not None:
         account_drop.connect("notify::selected", fill_github)
 
+    loaded_ent: list = []
+
+    def render_enterprise_list() -> None:
+        while True:
+            row = ent_list.get_first_child()
+            if row is None:
+                break
+            ent_list.remove(row)
+        needle = ent_filter.get_text().strip().lower()
+        shown = 0
+        for gh in loaded_ent:
+            hay = f"{gh.full_name} {gh.html_url}".lower()
+            if needle and needle not in hay:
+                continue
+            row = Adw.ActionRow(title=gh.full_name, subtitle=gh.clone_url)
+            row.set_activatable(True)
+
+            def pick_ent(_r, g=gh) -> None:
+                selected_clone_url["url"] = g.clone_url
+                selected_clone_url["name"] = g.name
+                url_row.set_text(g.clone_url)
+                path_row.set_text(os.path.join(default_dir, g.name))
+
+            row.connect("activated", pick_ent)
+            ent_list.append(row)
+            shown += 1
+            if shown >= 300:
+                break
+        if shown == 0:
+            title = (
+                "Sign in to GitHub Enterprise to see your repositories"
+                if not selected_account(True)
+                else "No matching repositories"
+            )
+            ent_list.append(Adw.ActionRow(title=title))
+
+    def fill_enterprise(*_a: Any) -> None:
+        account = selected_account(True)
+        loaded_ent.clear()
+        if not account:
+            render_enterprise_list()
+            return
+        from ..github.api import GitHubAPI
+
+        try:
+            loaded_ent.extend(GitHubAPI.from_account(account).fetch_repos())
+        except Exception as exc:
+            loaded_ent.clear()
+            while True:
+                row = ent_list.get_first_child()
+                if row is None:
+                    break
+                ent_list.remove(row)
+            ent_list.append(Adw.ActionRow(title="Could not load repositories", subtitle=str(exc)))
+            return
+        render_enterprise_list()
+
+    fill_enterprise()
+    ent_filter.connect("search-changed", lambda *_: render_enterprise_list())
+    ent_refresh.connect("clicked", fill_enterprise)
+    if ent_drop is not None:
+        ent_drop.connect("notify::selected", fill_enterprise)
+
     def do_clone(*_a: Any) -> None:
         url = url_row.get_text().strip() or selected_clone_url["url"]
         path = path_row.get_text().strip()
@@ -749,6 +839,7 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
 
     clone_btn.connect("clicked", do_clone)
     gh_clone.connect("clicked", do_clone)
+    ent_clone.connect("clicked", do_clone)
     toolbar.set_content(stack)
     dialog.set_child(toolbar)
     dialog.present(parent)
@@ -1750,87 +1841,6 @@ def show_pull_request_comment(parent: Gtk.Window, store: AppStore, payload: dict
         verb="commented on",
         title="Pull request comment",
     )
-
-
-def show_checks(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
-    repo = store.selected_repository
-    runs = list(store.state_for(repo).check_runs) if repo else []
-    payload_checks = payload.get("checks") or []
-    if payload_checks and not runs:
-        runs = payload_checks
-    failed = [r for r in runs if getattr(r, "conclusion", None) in {"failure", "timed_out", "cancelled"}]
-    heading = payload.get("error") or (
-        f"{len(failed)} check{'s' if len(failed) != 1 else ''} failed in your pull request"
-        if failed
-        else "Checks failed"
-    )
-    pr = payload.get("pull_request") if isinstance(payload.get("pull_request"), dict) else {}
-    subtitle = pr.get("title") or payload.get("title") or ""
-    if pr.get("number"):
-        subtitle = f"{subtitle} #{pr['number']}".strip()
-    dialog = Adw.Dialog()
-    dialog.set_content_width(520)
-    dialog.set_content_height(480)
-    toolbar = Adw.ToolbarView()
-    header = Adw.HeaderBar()
-    header.set_title_widget(Adw.WindowTitle(title="Checks failed", subtitle=subtitle or heading))
-    toolbar.add_top_bar(header)
-    scroller = Gtk.ScrolledWindow(vexpand=True)
-    listbox = Gtk.ListBox()
-    listbox.add_css_class("boxed-list")
-    shown = failed or runs
-    if not shown:
-        listbox.append(Adw.ActionRow(title=heading, subtitle="Open the pull request on GitHub to see details."))
-    for run in shown[:30]:
-        status = getattr(run, "conclusion", None) or getattr(run, "status", "") or "failed"
-        row = Adw.ExpanderRow(title=getattr(run, "name", None) or "check", subtitle=str(status))
-        for step in getattr(run, "steps", None) or []:
-            row.add_row(
-                Adw.ActionRow(
-                    title=getattr(step, "name", None) or "step",
-                    subtitle=str(getattr(step, "conclusion", None) or getattr(step, "status", "") or ""),
-                )
-            )
-        url = getattr(run, "html_url", None)
-        if url:
-            open_btn = Gtk.Button(icon_name="web-browser-symbolic")
-            open_btn.add_css_class("flat")
-            open_btn.connect("clicked", lambda *_ , u=url: open_external(u))
-            row.add_suffix(open_btn)
-        listbox.append(row)
-    scroller.set_child(listbox)
-    buttons = Gtk.Box(spacing=8)
-    if repo and failed:
-        rerun = Gtk.Button(label="Re-run failed checks")
-        rerun.add_css_class("suggested-action")
-
-        def do_rerun(*_a: Any) -> None:
-            store.rerun_failed_checks(repo)
-            dialog.close()
-
-        rerun.connect("clicked", do_rerun)
-        buttons.append(rerun)
-    if payload.get("should_checkout") or pr:
-        switch = Gtk.Button(label="Switch to pull request")
-        switch.connect("clicked", lambda *_: (store.switch_to_pull_request(payload), dialog.close()))
-        buttons.append(switch)
-    html = payload.get("html_url") or payload.get("url") or (pr.get("html_url") if pr else "")
-    if html:
-        web = Gtk.Button(label="Open in browser")
-        web.connect("clicked", lambda *_: open_external(str(html) + ("/checks" if "/pull/" in str(html) and not str(html).endswith("/checks") else "")))
-        buttons.append(web)
-    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-    box.set_margin_top(12)
-    box.set_margin_bottom(12)
-    box.set_margin_start(12)
-    box.set_margin_end(12)
-    summary = Gtk.Label(label=heading, wrap=True, xalign=0)
-    box.append(summary)
-    box.append(scroller)
-    box.append(buttons)
-    toolbar.set_content(box)
-    dialog.set_child(toolbar)
-    dialog.present(parent)
 
 
 def show_reorder_commits(parent: Gtk.Window, store: AppStore, to_move: list) -> None:

@@ -92,6 +92,15 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             win._find()
             show_release_notes(win)
             show_checks(win, store, {"error": "CI failed", "title": "Demo PR"})
+            from github_desktop.ui.checks import show_rerun_checks
+            from github_desktop.models import RefCheck
+            from github_desktop.ui.avatar import AvatarStack
+
+            show_rerun_checks(win, store, {"failed_only": True, "checks": []})
+            stack = AvatarStack([("Ada Lovelace", "ada@example.com"), ("Grace Hopper", "grace@example.com")], size=24)
+            assert stack.get_first_child() is not None
+            sample_run = RefCheck(id=1, name="build", description="Failed after 1m", status="completed", conclusion="failure")
+            show_checks(win, store, {"error": "1 check failed in your pull request", "title": "Demo PR", "checks": [sample_run]})
             show_pull_request_review(
                 win,
                 store,

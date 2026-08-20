@@ -55,6 +55,7 @@ from .diff import (
     format_partial_patch,
     is_buffer_too_large,
     is_valid_buffer,
+    parse_line_endings_warning,
     parse_unified_diff,
     selectable_line_indices,
 )
@@ -292,6 +293,9 @@ def _diff_from_result(
         if ext in IMAGE_EXTENSIONS:
             return _image_diff(repo, path, status, commitish)
         return BinaryDiff()
+    endings = parse_line_endings_warning(result.stderr)
+    if endings:
+        parsed.line_endings_change = endings
     return parsed
 
 

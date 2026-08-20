@@ -15,6 +15,7 @@ from ..avatars import avatar_urls, initials_for
 
 _CACHE: dict[str, Gdk.Texture] = {}
 _FAILED: set[str] = set()
+MAX_DISPLAYED_AVATARS = 3
 
 
 def _offline() -> bool:
@@ -84,3 +85,60 @@ class Avatar(Gtk.Overlay):
         except Exception:
             pass
         return False
+
+
+def users_from_commit(commit: object) -> list[tuple[str, str]]:
+    users: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(name: str, email: str) -> None:
+        key = (name or "", (email or "").lower())
+        if key in seen or not (name or email):
+            return
+        seen.add(key)
+        users.append((name or "", email or ""))
+
+    author = getattr(commit, "author", None)
+    if author is not None:
+        add(getattr(author, "name", "") or "", getattr(author, "email", "") or "")
+    if not getattr(commit, "authored_by_committer", True):
+        committer = getattr(commit, "committer", None)
+        if committer is not None:
+            add(getattr(committer, "name", "") or "", getattr(committer, "email", "") or "")
+    for co in getattr(commit, "co_authors", None) or []:
+        add(getattr(co, "name", "") or "", getattr(co, "email", "") or "")
+    return users
+
+
+def users_from_commits(commits: list[object]) -> list[tuple[str, str]]:
+    users: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for commit in commits:
+        for name, email in users_from_commit(commit):
+            key = (name, email.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            users.append((name, email))
+    return users
+
+
+class AvatarStack(Gtk.Box):
+    """Stacked avatars matching GitHub Desktop's AvatarStack (max 3 visible + overflow)."""
+
+    def __init__(self, users: list[tuple[str, str]], *, size: int = 28) -> None:
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        self.add_css_class("avatar-stack")
+        self.set_valign(Gtk.Align.CENTER)
+        names = [name or email for name, email in users if name or email]
+        self.set_tooltip_text(", ".join(names) if names else "")
+        extra = max(0, len(users) - MAX_DISPLAYED_AVATARS)
+        shown = users[:MAX_DISPLAYED_AVATARS]
+        for name, email in shown:
+            self.append(Avatar(name, email, size=size))
+        if extra:
+            more = Gtk.Label(label=f"+{extra}")
+            more.add_css_class("avatar-more")
+            more.set_size_request(size, size)
+            more.set_tooltip_text(f"{extra} more author{'s' if extra != 1 else ''}")
+            self.append(more)

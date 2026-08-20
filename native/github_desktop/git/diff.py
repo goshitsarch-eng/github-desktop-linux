@@ -17,7 +17,20 @@ from ..models import (
 
 DIFF_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 HIDDEN_BIDI_RE = re.compile(r"[\u202A-\u202E]|[\u2066-\u2069]")
+LINE_ENDINGS_CHANGE_RE = re.compile(r"', (CRLF|CR|LF) will be replaced by (CRLF|CR|LF) the .")
+LINE_ENDINGS_CHANGE_FALLBACK_RE = re.compile(r"(CRLF|CR|LF) will be replaced by (CRLF|CR|LF)")
 PREFIX = {"+": DiffLineType.ADD, "-": DiffLineType.DELETE, " ": DiffLineType.CONTEXT}
+
+
+def parse_line_endings_warning(stderr: str | bytes | None) -> tuple[str, str] | None:
+    """Parse Git's working-copy line-ending warning the same way Desktop does."""
+    if not stderr:
+        return None
+    text = stderr.decode("utf-8", errors="replace") if isinstance(stderr, bytes) else stderr
+    match = LINE_ENDINGS_CHANGE_RE.search(text) or LINE_ENDINGS_CHANGE_FALLBACK_RE.search(text)
+    if not match:
+        return None
+    return match.group(1), match.group(2)
 
 
 def is_valid_buffer(data: bytes) -> bool:

@@ -1,6 +1,13 @@
 """Git operations package."""
 
-from .diff import format_discard_patch, format_partial_patch, parse_unified_diff, selectable_line_indices, side_by_side_rows
+from .diff import (
+    format_discard_patch,
+    format_partial_patch,
+    parse_line_endings_warning,
+    parse_unified_diff,
+    selectable_line_indices,
+    side_by_side_rows,
+)
 from .expansion import (
     DEFAULT_DIFF_EXPANSION_STEP,
     apply_expansion_metadata,

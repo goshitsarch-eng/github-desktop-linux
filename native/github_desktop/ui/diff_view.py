@@ -206,10 +206,33 @@ class DiffViewer(Gtk.Box):
         if hide_whitespace:
             self._hint.set_text("Whitespace changes are hidden. Turn off Hide whitespace to review them.")
             self._hint.set_visible(True)
-        if diff.has_hidden_bidi_chars:
-            warn = Gtk.Label(label="This diff contains hidden bidirectional Unicode characters.")
-            warn.add_css_class("warning")
-            self._inner.append(warn)
+        if diff.has_hidden_bidi_chars or diff.line_endings_change:
+            warn_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            warn_box.add_css_class("diff-contents-warning")
+            if diff.has_hidden_bidi_chars:
+                warn = Gtk.Label(
+                    label="This diff contains bidirectional Unicode text that may be interpreted or compiled differently than what appears below. To review, open the file in an editor that reveals hidden Unicode characters.",
+                    wrap=True,
+                    xalign=0,
+                )
+                warn.add_css_class("warning")
+                warn_box.append(warn)
+                link = Gtk.LinkButton(
+                    uri="https://github.co/hiddenchars",
+                    label="Learn more about bidirectional Unicode characters",
+                )
+                link.set_halign(Gtk.Align.START)
+                warn_box.append(link)
+            if diff.line_endings_change:
+                frm, to = diff.line_endings_change
+                ending = Gtk.Label(
+                    label=f"This diff contains a change in line endings from '{frm}' to '{to}'.",
+                    wrap=True,
+                    xalign=0,
+                )
+                ending.add_css_class("warning")
+                warn_box.append(ending)
+            self._inner.append(warn_box)
         self._fill_toolbar(diff, can_collapse)
         rows = self._flatten(diff, side_by_side)
         self._row_specs = rows

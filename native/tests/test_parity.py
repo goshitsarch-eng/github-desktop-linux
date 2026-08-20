@@ -112,10 +112,13 @@ def test_window_actions_cover_menus() -> None:
     src += open(stash.__file__, encoding="utf-8").read()
     src += open(history.__file__, encoding="utf-8").read()
     src += open(diff_view.__file__, encoding="utf-8").read()
-    from github_desktop.ui import dialogs as dialogs_mod, tutorial
+    from github_desktop.ui import dialogs as dialogs_mod, tutorial, checks
+    from github_desktop.github import ci_checks
 
     src += open(dialogs_mod.__file__, encoding="utf-8").read()
     src += open(tutorial.__file__, encoding="utf-8").read()
+    src += open(checks.__file__, encoding="utf-8").read()
+    src += open(ci_checks.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -157,5 +160,9 @@ def test_window_actions_cover_menus() -> None:
         "Get started",
         "Exit tutorial",
         "Re-run failed checks",
+        "All checks have passed",
+        "View logs",
+        "GitHub Enterprise",
+        "line endings",
     ]:
         assert phrase in src

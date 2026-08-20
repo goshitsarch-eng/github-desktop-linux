@@ -133,6 +133,27 @@ APP_CSS = """
 .avatar-image {
   border-radius: 999px;
 }
+.avatar-stack .avatar {
+  margin-left: -8px;
+}
+.avatar-stack .avatar:first-child {
+  margin-left: 0;
+}
+.avatar-more {
+  min-width: 28px;
+  min-height: 28px;
+  margin-left: -8px;
+  border-radius: 999px;
+  background-color: alpha(@window_fg_color, 0.14);
+  font-weight: 700;
+  font-size: 0.7rem;
+}
+.diff-contents-warning {
+  padding: 8px 12px;
+  background-color: alpha(@warning_color, 0.12);
+  border-radius: 8px;
+  margin: 6px 8px;
+}
 .tutorial-panel {
   padding: 12px;
   min-width: 260px;

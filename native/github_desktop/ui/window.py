@@ -31,8 +31,9 @@ from ..models import (
 from ..shells import open_external, open_in_default_program
 from ..store import AppStore
 from ..version import APP_NAME
-from .avatar import Avatar
+from .avatar import AvatarStack, users_from_commit
 from .branches import BranchesFoldout
+from .checks import present_checks_popover
 from .dialogs import present_popup, show_preferences, show_reorder_commits
 from .diff_view import DiffViewer
 from .emoji import matching_shortcodes
@@ -1195,7 +1196,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _commit_row(self, commit) -> Gtk.ListBoxRow:
         row = Gtk.ListBoxRow()
         box = Gtk.Box(spacing=8)
-        box.append(Avatar(commit.author.name, commit.author.email, size=28))
+        box.append(AvatarStack(users_from_commit(commit), size=28))
         texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         summary = Gtk.Label(label=commit.summary, xalign=0)
         summary.add_css_class("commit-summary")
@@ -1658,63 +1659,7 @@ class MainWindow(Adw.ApplicationWindow):
                 self._ahead_label.set_text("")
 
     def _on_checks(self, *_args: object) -> None:
-        repo = self.store.selected_repository
-        if not repo:
-            return
-        self.store.load_check_steps(repo)
-        state = self.store.state_for(repo)
-        runs = list(state.check_runs or [])
-        popover = Gtk.Popover()
-        popover.set_parent(self._checks_btn)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        box.set_margin_top(8)
-        box.set_margin_bottom(8)
-        box.set_margin_start(8)
-        box.set_margin_end(8)
-        box.set_size_request(320, -1)
-        if not runs:
-            box.append(Gtk.Label(label="No checks for this branch", xalign=0))
-        for run in runs[:20]:
-            status = run.conclusion or run.status or "unknown"
-            row = Adw.ExpanderRow(title=run.name or "check", subtitle=status)
-            if run.html_url:
-                open_btn = Gtk.Button(icon_name="web-browser-symbolic")
-                open_btn.add_css_class("flat")
-                open_btn.connect("clicked", lambda *_ , url=run.html_url: open_external(url))
-                row.add_suffix(open_btn)
-            steps = getattr(run, "steps", None) or []
-            if steps:
-                for step in steps:
-                    step_status = step.conclusion or step.status or ""
-                    step_row = Adw.ActionRow(title=step.name or "step", subtitle=step_status)
-                    row.add_row(step_row)
-            else:
-                row.add_row(Adw.ActionRow(title="No job steps loaded yet"))
-            box.append(row)
-        failed = [r for r in runs if r.conclusion in {"failure", "timed_out", "cancelled"}]
-        if failed:
-            rerun = Gtk.Button(label=f"Re-run {len(failed)} failed check(s)")
-            rerun.add_css_class("suggested-action")
-
-            def do_rerun(*_a: object) -> None:
-                popover.popdown()
-                self.store.show_popup(
-                    PopupType.CI_CHECK_RUN_RERUN,
-                    on_rerun=lambda: self.store.rerun_failed_checks(repo),
-                )
-
-            rerun.connect("clicked", do_rerun)
-            box.append(rerun)
-        elif state.current_pull_request:
-            pr = Gtk.Button(label="View checks on GitHub")
-            pr.connect("clicked", lambda *_: open_external(state.current_pull_request.html_url + "/checks"))
-            box.append(pr)
-        scroller = Gtk.ScrolledWindow()
-        scroller.set_min_content_height(120)
-        scroller.set_max_content_height(360)
-        scroller.set_child(box)
-        popover.set_child(scroller)
-        popover.popup()
+        present_checks_popover(self._checks_btn, self.store)
 
     def _update_tutorial_banner(self, repo, state) -> None:
         if hasattr(self, "_tutorial_panel"):

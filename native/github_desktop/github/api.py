@@ -13,13 +13,13 @@ from ..errors import APIError, CopilotError
 from ..logging import get_logger
 from ..models import (
     Account,
-    CheckStep,
+    CheckSuite,
     GitHubRepository,
     Issue,
     PullRequest,
     RefCheck,
-    html_url_from_endpoint,
 )
+from .ci_checks import annotation_from_api, duration_ms, get_check_run_short_description
 from ..version import APP_NAME, __version__
 
 log = get_logger()
@@ -253,24 +253,43 @@ class GitHubAPI:
         return data if isinstance(data, list) else []
 
     def fetch_check_runs(self, owner: str, name: str, ref: str) -> list[RefCheck]:
-        try:
-            data = self.get(f"/repos/{owner}/{name}/commits/{urllib.parse.quote(ref)}/check-runs")
-        except APIError:
-            return []
-        runs = data.get("check_runs", []) if isinstance(data, dict) else []
-        return [
-            RefCheck(
-                id=int(r.get("id") or 0),
-                name=r.get("name") or "",
-                description=(r.get("output") or {}).get("title") or r.get("title") or "",
-                status=r.get("status") or "",
-                conclusion=r.get("conclusion"),
-                html_url=r.get("html_url"),
-                app_name=(r.get("app") or {}).get("name"),
-                check_suite_id=(r.get("check_suite") or {}).get("id"),
-            )
-            for r in runs
-        ]
+        mapped: list[RefCheck] = []
+        page = 1
+        quoted = urllib.parse.quote(ref)
+        while page <= 10:
+            try:
+                data = self.get(
+                    f"/repos/{owner}/{name}/commits/{quoted}/check-runs",
+                    query={"per_page": "100", "page": str(page)},
+                )
+            except APIError:
+                break
+            runs = data.get("check_runs", []) if isinstance(data, dict) else []
+            for r in runs:
+                status = r.get("status") or ""
+                conclusion = r.get("conclusion")
+                started = r.get("started_at")
+                completed = r.get("completed_at")
+                title = (r.get("output") or {}).get("title") or r.get("title") or ""
+                mapped.append(
+                    RefCheck(
+                        id=int(r.get("id") or 0),
+                        name=r.get("name") or "",
+                        description=title
+                        or get_check_run_short_description(status, conclusion, duration_ms(started, completed)),
+                        status=status,
+                        conclusion=conclusion,
+                        html_url=r.get("html_url"),
+                        app_name=(r.get("app") or {}).get("name"),
+                        check_suite_id=(r.get("check_suite") or {}).get("id"),
+                        started_at=started,
+                        completed_at=completed,
+                    )
+                )
+            if len(runs) < 100:
+                break
+            page += 1
+        return mapped
 
     def fetch_workflow_jobs_for_sha(self, owner: str, name: str, sha: str) -> list[dict[str, Any]]:
         try:
@@ -287,14 +306,80 @@ class GitHubAPI:
                 payload = self.get(f"/repos/{owner}/{name}/actions/runs/{run_id}/jobs")
             except APIError:
                 continue
-            jobs.extend((payload or {}).get("jobs") or [])
+            workflow_meta = {
+                "id": int(run_id),
+                "name": run.get("name") or "",
+                "event": run.get("event") or "",
+                "check_suite_id": run.get("check_suite_id"),
+                "html_url": run.get("html_url"),
+            }
+            for job in (payload or {}).get("jobs") or []:
+                job["_workflow"] = workflow_meta
+                jobs.append(job)
         return jobs
+
+    def fetch_check_suite(self, owner: str, name: str, suite_id: int) -> CheckSuite | None:
+        try:
+            data = self.get(f"/repos/{owner}/{name}/check-suites/{suite_id}")
+        except APIError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        return CheckSuite(
+            id=int(data.get("id") or suite_id),
+            rerequestable=bool(data.get("rerequestable")),
+            status=data.get("status") or "",
+            created_at=data.get("created_at") or "",
+        )
+
+    def fetch_check_run_annotations(self, owner: str, name: str, check_run_id: int) -> list:
+        try:
+            data = self.get(f"/repos/{owner}/{name}/check-runs/{check_run_id}/annotations")
+        except APIError:
+            return []
+        items = data if isinstance(data, list) else []
+        return [annotation_from_api(item) for item in items[:50] if isinstance(item, dict)]
+
+    def fetch_job_logs(self, owner: str, name: str, job_id: int, max_bytes: int = 512 * 1024) -> str:
+        url = self.endpoint + f"/repos/{owner}/{name}/actions/jobs/{job_id}/logs"
+        req = urllib.request.Request(url, headers=self._headers(), method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                raw = resp.read(max_bytes + 1)
+        except urllib.error.HTTPError as exc:
+            if exc.code in {404, 410}:
+                return ""
+            payload = exc.read().decode("utf-8", errors="replace")
+            raise APIError(
+                f"GitHub API GET {url} failed: {exc.code} {payload[:500]}",
+                status=exc.code,
+                body=payload,
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise APIError(f"GitHub API network error: {exc}") from exc
+        if raw[:2] == b"\x1f\x8b":
+            import gzip
+
+            try:
+                raw = gzip.decompress(raw)
+            except Exception:
+                pass
+        text = raw[:max_bytes].decode("utf-8", errors="replace")
+        if len(raw) > max_bytes:
+            text += "\n… truncated …\n"
+        return text
 
     def rerequest_check_suite(self, owner: str, name: str, suite_id: int) -> None:
         self.post(f"/repos/{owner}/{name}/check-suites/{suite_id}/rerequest")
 
     def rerequest_check_run(self, owner: str, name: str, run_id: int) -> None:
         self.post(f"/repos/{owner}/{name}/check-runs/{run_id}/rerequest")
+
+    def rerun_failed_jobs(self, owner: str, name: str, workflow_run_id: int) -> None:
+        self.post(f"/repos/{owner}/{name}/actions/runs/{workflow_run_id}/rerun-failed-jobs")
+
+    def rerun_job(self, owner: str, name: str, job_id: int) -> None:
+        self.post(f"/repos/{owner}/{name}/actions/jobs/{job_id}/rerun")
 
     def fetch_protected_branches(self, owner: str, name: str) -> list[str]:
         try:

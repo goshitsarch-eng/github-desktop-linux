@@ -893,12 +893,41 @@ class DiffComment:
 
 
 @dataclass
+class CheckAnnotation:
+    path: str
+    message: str
+    annotation_level: str = "warning"
+    start_line: int | None = None
+    end_line: int | None = None
+    title: str = ""
+
+
+@dataclass
+class ActionsWorkflow:
+    id: int
+    name: str
+    event: str = ""
+    check_suite_id: int | None = None
+    html_url: str | None = None
+
+
+@dataclass
+class CheckSuite:
+    id: int
+    rerequestable: bool = False
+    status: str = ""
+    created_at: str = ""
+
+
+@dataclass
 class CheckStep:
     name: str
     number: int = 0
     status: str = ""
     conclusion: str | None = None
     html_url: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
 
 
 @dataclass
@@ -911,7 +940,12 @@ class RefCheck:
     html_url: str | None = None
     app_name: str | None = None
     check_suite_id: int | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    actions_workflow: ActionsWorkflow | None = None
     steps: list[CheckStep] = field(default_factory=list)
+    annotations: list[CheckAnnotation] = field(default_factory=list)
+    logs: str | None = None
 
 
 @dataclass

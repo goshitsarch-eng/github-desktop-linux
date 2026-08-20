@@ -83,6 +83,7 @@ from .git import (
 )
 from .git.runner import find_git, resolve_repository_root
 from .github.api import GitHubAPI
+from .github.ci_checks import attach_workflow_jobs_to_checks, failing_checks, is_failure, split_rerunnable_checks
 from .github.notifications import classify_notification, pull_request_from_payload
 from .github.oauth import (
     dotcom_endpoint,
@@ -106,7 +107,6 @@ from .models import (
     BranchType,
     ChangesListFilter,
     ChangesetData,
-    CheckStep,
     CherryPickResult,
     CloningRepository,
     Commit,
@@ -2051,19 +2051,50 @@ class AppStore:
         self._pool.submit(runner)
 
     def rerun_failed_checks(self, repo: Repository) -> None:
+        self.rerun_checks(repo, failed_only=True)
+
+    def rerun_checks(
+        self,
+        repo: Repository,
+        check_runs: Sequence | None = None,
+        *,
+        failed_only: bool = True,
+    ) -> None:
         account = self.account_for_repo(repo)
         if not account or not repo.github:
             return
         state = self.state_for(repo)
-        failed = [r for r in (state.check_runs or []) if r.conclusion in {"failure", "timed_out", "cancelled"}]
-        if not failed:
+        runs = list(check_runs if check_runs is not None else (state.check_runs or []))
+        if failed_only:
+            runs = failing_checks(runs)
+        if not runs:
             return
         api = GitHubAPI.from_account(account)
+        owner, name = repo.github.owner, repo.github.name
 
         def work() -> None:
-            for run in failed:
+            if len(runs) == 1 and runs[0].actions_workflow is not None:
                 try:
-                    api.rerequest_check_run(repo.github.owner, repo.github.name, run.id)
+                    api.rerun_job(owner, name, runs[0].id)
+                except APIError:
+                    api.rerequest_check_run(owner, name, runs[0].id)
+                return
+            workflow_ids: set[int] = set()
+            suite_ids: set[int] = set()
+            for run in runs:
+                if failed_only and run.actions_workflow is not None:
+                    workflow_ids.add(run.actions_workflow.id)
+                    continue
+                if run.check_suite_id:
+                    suite_ids.add(run.check_suite_id)
+            for workflow_id in workflow_ids:
+                try:
+                    api.rerun_failed_jobs(owner, name, workflow_id)
+                except APIError:
+                    continue
+            for suite_id in suite_ids:
+                try:
+                    api.rerequest_check_suite(owner, name, suite_id)
                 except APIError:
                     continue
 
@@ -2076,41 +2107,98 @@ class AppStore:
 
         self._run(work, done)
 
-    def load_check_steps(self, repo: Repository) -> None:
+    def load_check_steps(self, repo: Repository, on_done: Callable[[], None] | None = None) -> None:
         account = self.account_for_repo(repo)
         if not account or not repo.github:
+            if on_done:
+                on_done()
             return
         state = self.state_for(repo)
         sha = (state.status.current_tip if state.status else None) or (state.commits[0].sha if state.commits else None)
         if not sha:
+            if on_done:
+                on_done()
+            return
+        api = GitHubAPI.from_account(account)
+        owner, name = repo.github.owner, repo.github.name
+        failed = [run for run in (state.check_runs or []) if is_failure(run) or run.conclusion in {"failure", "timed_out", "cancelled"}]
+
+        def work() -> tuple[list, dict[int, list]]:
+            jobs = api.fetch_workflow_jobs_for_sha(owner, name, sha)
+            annotations: dict[int, list] = {}
+            for run in failed[:8]:
+                try:
+                    annotations[run.id] = api.fetch_check_run_annotations(owner, name, run.id)
+                except APIError:
+                    continue
+            return jobs, annotations
+
+        def done(exc: BaseException | None, result: tuple | None = None) -> None:
+            if not exc and result:
+                jobs, annotations = result
+                attach_workflow_jobs_to_checks(state.check_runs, jobs)
+                for run in state.check_runs:
+                    notes = annotations.get(run.id)
+                    if notes:
+                        run.annotations = notes
+                self.emit()
+            if on_done:
+                on_done()
+
+        self._run(work, done)
+
+    def fetch_check_suites(self, repo: Repository, check_runs: Sequence) -> dict[int, Any]:
+        account = self.account_for_repo(repo)
+        if not account or not repo.github:
+            return {}
+        api = GitHubAPI.from_account(account)
+        suites: dict[int, Any] = {}
+        seen: set[int] = set()
+        for run in check_runs:
+            suite_id = getattr(run, "check_suite_id", None)
+            if not suite_id or suite_id in seen:
+                continue
+            seen.add(suite_id)
+            suite = api.fetch_check_suite(repo.github.owner, repo.github.name, suite_id)
+            if suite:
+                suites[suite_id] = suite
+        return suites
+
+    def load_rerunnable_checks(
+        self,
+        repo: Repository,
+        check_runs: Sequence,
+        *,
+        failed_only: bool = True,
+        on_done: Callable[[list, list], None] | None = None,
+    ) -> None:
+        def work() -> tuple[list, list]:
+            suites = self.fetch_check_suites(repo, check_runs)
+            return split_rerunnable_checks(check_runs, suites, failed_only=failed_only)
+
+        def done(exc: BaseException | None, result: tuple | None = None) -> None:
+            rerunnable, skipped = result if result else ([], list(check_runs))
+            if on_done:
+                on_done(rerunnable, skipped)
+
+        self._run(work, done)
+
+    def fetch_job_logs(self, repo: Repository, job_id: int, on_done: Callable[[str], None] | None = None) -> None:
+        account = self.account_for_repo(repo)
+        if not account or not repo.github:
+            if on_done:
+                on_done("")
             return
         api = GitHubAPI.from_account(account)
         owner, name = repo.github.owner, repo.github.name
 
-        def work() -> list:
-            return api.fetch_workflow_jobs_for_sha(owner, name, sha)
+        def work() -> str:
+            return api.fetch_job_logs(owner, name, job_id)
 
-        def done(exc: BaseException | None, jobs: list | None = None) -> None:
-            if exc or not jobs:
-                return
-            by_name = {job.get("name"): job for job in jobs if job.get("name")}
-            for run in state.check_runs:
-                job = by_name.get(run.name)
-                if not job:
-                    continue
-                steps = []
-                for step in job.get("steps") or []:
-                    steps.append(
-                        CheckStep(
-                            name=step.get("name") or "",
-                            number=int(step.get("number") or 0),
-                            status=step.get("status") or "",
-                            conclusion=step.get("conclusion"),
-                            html_url=job.get("html_url"),
-                        )
-                    )
-                run.steps = steps
-            self.emit()
+        def done(exc: BaseException | None, result: str | None = None) -> None:
+            text = "" if exc else (result or "")
+            if on_done:
+                on_done(text)
 
         self._run(work, done)
 

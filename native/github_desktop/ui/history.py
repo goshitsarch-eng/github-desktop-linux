@@ -11,7 +11,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Gtk
 
 from ..models import ChangesetData, Commit
-from .avatar import Avatar
+from .avatar import AvatarStack, users_from_commits
 from .menus import copy_text
 
 
@@ -82,12 +82,12 @@ class ExpandableCommitSummary(Gtk.Box):
             self._body.set_visible(False)
             self._unreachable_btn.set_visible(False)
             self._sha = ""
-            self._set_avatar("", "")
+            self._set_avatar(users_from_commits(commits))
             return
         primary = commits[0]
         self._sha = primary.sha
         self._body_text = primary.body
-        self._set_avatar(primary.author.name, primary.author.email)
+        self._set_avatar(users_from_commits(commits))
         if len(commits) == 1:
             summary = primary.summary or "Empty commit message"
             self._summary.set_text(summary)
@@ -126,14 +126,14 @@ class ExpandableCommitSummary(Gtk.Box):
         else:
             self._unreachable_btn.set_visible(False)
 
-    def _set_avatar(self, name: str, email: str) -> None:
+    def _set_avatar(self, users: list[tuple[str, str]]) -> None:
         child = self._avatar_slot.get_first_child()
         while child is not None:
             nxt = child.get_next_sibling()
             self._avatar_slot.remove(child)
             child = nxt
-        if name or email:
-            self._avatar_slot.append(Avatar(name, email, size=32))
+        if users:
+            self._avatar_slot.append(AvatarStack(users, size=32))
 
     def _on_toggle(self, *_args: object) -> None:
         self._expanded = not self._expanded
