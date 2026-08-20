@@ -188,6 +188,7 @@ from .ops import (
     set_global_config_value,
     set_default_branch,
     set_remote_url,
+    update_remote_url,
     squash_commits,
     stage_files,
     stage_manual_resolution,

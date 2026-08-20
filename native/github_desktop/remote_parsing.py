@@ -25,7 +25,7 @@ class ParsedRemote:
 
 
 def parse_remote(url: str) -> ParsedRemote | None:
-    url = url.strip()
+    url = sanitize_remote_url(url.strip()) if url else url
     if not url:
         return None
     for pattern, proto in ((HTTPS_RE, "https"), (GIT_RE, "git"), (SSH_RE, "ssh")):

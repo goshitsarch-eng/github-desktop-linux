@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from github_desktop.git.progress import format_bytes
 from github_desktop.models import (
     AppFileStatusKind,
@@ -328,3 +330,135 @@ def test_push_protection_bypass_uses_secret_scanning_path() -> None:
     api.post = fake_post  # type: ignore[method-assign]
     api.create_push_protection_bypass("desktop", "desktop", "false_positive", "ph")
     assert seen == ["/repos/desktop/desktop/secret-scanning/push-protection-bypasses"]
+
+
+def test_merge_updated_pull_requests_and_issues() -> None:
+    from github_desktop.github.api import merge_updated_issues, merge_updated_pull_requests
+    from github_desktop.models import Issue, PullRequest
+
+    open_pr = PullRequest(
+        number=1,
+        title="open",
+        body="",
+        created_at="2026-01-01T00:00:00Z",
+        author="hubot",
+        draft=False,
+        head_ref="head",
+        head_sha="abc",
+        base_ref="main",
+        html_url="https://github.com/o/r/pull/1",
+        state="open",
+        updated_at="2026-01-01T00:00:00Z",
+    )
+    closed = PullRequest(
+        number=1,
+        title="closed",
+        body="",
+        created_at="2026-01-01T00:00:00Z",
+        author="hubot",
+        draft=False,
+        head_ref="head",
+        head_sha="abc",
+        base_ref="main",
+        html_url="https://github.com/o/r/pull/1",
+        state="closed",
+        updated_at="2026-02-01T00:00:00Z",
+    )
+    other = PullRequest(
+        number=2,
+        title="new",
+        body="",
+        created_at="2026-02-01T00:00:00Z",
+        author="hubot",
+        draft=False,
+        head_ref="other",
+        head_sha="def",
+        base_ref="main",
+        html_url="https://github.com/o/r/pull/2",
+        state="open",
+        updated_at="2026-02-01T00:00:00Z",
+    )
+    merged = merge_updated_pull_requests([open_pr], [closed, other])
+    assert [pr.number for pr in merged] == [2]
+    issues = merge_updated_issues(
+        [Issue(number=3, title="old", state="open")],
+        [Issue(number=3, title="old", state="closed"), Issue(number=4, title="fresh")],
+    )
+    assert [issue.number for issue in issues] == [4]
+
+
+def test_fetch_updated_pull_requests_raises_max_results() -> None:
+    from github_desktop.errors import MaxResultsError
+    from github_desktop.github.api import GitHubAPI
+
+    api = GitHubAPI("https://api.github.com", "tok")
+
+    def fake_get(path, **kwargs):
+        return [
+            {"number": i, "title": str(i), "updated_at": "2026-08-01T00:00:00Z", "created_at": "2026-08-01T00:00:00Z", "user": {}, "head": {}, "base": {}, "html_url": ""}
+            for i in range(10)
+        ]
+
+    api.get = fake_get  # type: ignore[method-assign]
+    with pytest.raises(MaxResultsError):
+        api.fetch_updated_pull_requests("o", "r", "2020-01-01T00:00:00Z", max_results=5)
+
+
+def test_actions_and_ruleset_api_paths() -> None:
+    from github_desktop.github.api import GitHubAPI
+
+    api = GitHubAPI("https://api.github.com", "tok")
+    seen: list[tuple[str, dict]] = []
+
+    def fake_get(path, **kwargs):
+        seen.append((path, kwargs.get("query") or {}))
+        if "rulesets" in path and path.endswith("rulesets"):
+            return [{"id": 7}]
+        if "actions/runs" in path:
+            return {"workflow_runs": [{"id": 3, "name": "CI", "event": "pull_request", "check_suite_id": 11}]}
+        return {}
+
+    api.get = fake_get  # type: ignore[method-assign]
+    assert api.fetch_all_repo_rulesets("o", "r") == [{"id": 7}]
+    runs = api.fetch_pr_workflow_runs_by_branch_name("o", "r", "feature")
+    assert runs[0]["id"] == 3
+    assert seen[1][1]["event"] == "pull_request"
+    assert seen[1][1]["branch"] == "feature"
+    run = api.fetch_pr_action_workflow_run_by_check_suite_id("o", "r", 11)
+    assert run and run["id"] == 3
+
+
+def test_fetch_mentionables_honors_not_modified() -> None:
+    from github_desktop.errors import APIError
+    from github_desktop.github.api import GitHubAPI
+
+    api = GitHubAPI("https://api.github.com", "tok")
+
+    def not_modified(*_a, **_k):
+        raise APIError("not modified", status=304)
+
+    api.request = not_modified  # type: ignore[method-assign]
+    users, etag = api.fetch_mentionables("o", "r", etag='"abc"')
+    assert users is None
+    assert etag == '"abc"'
+
+
+def test_fetch_notification_subject_uses_typed_endpoints() -> None:
+    from github_desktop.github.api import GitHubAPI
+
+    api = GitHubAPI("https://api.github.com", "tok")
+    seen: list[str] = []
+
+    def fake_get(path, **kwargs):
+        seen.append(path)
+        return {"id": 1, "body": "hi"}
+
+    api.get = fake_get  # type: ignore[method-assign]
+    api.fetch_notification_subject("https://api.github.com/repos/o/r/issues/comments/9")
+    api.fetch_notification_subject("https://api.github.com/repos/o/r/pulls/comments/8")
+    api.fetch_notification_subject("https://api.github.com/repos/o/r/pulls/3/reviews/7")
+    assert seen == [
+        "/repos/o/r/issues/comments/9",
+        "/repos/o/r/pulls/comments/8",
+        "/repos/o/r/pulls/3/reviews/7",
+    ]

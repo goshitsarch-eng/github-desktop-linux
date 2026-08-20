@@ -393,6 +393,7 @@ class ForkContributionTarget(StrEnum):
 
 
 UPSTREAM_REMOTE_NAME = "upstream"
+ORIGIN_REMOTE_NAME = "origin"
 
 
 class BypassReason(StrEnum):
@@ -1465,6 +1466,7 @@ class PullRequest:
     state: str = "open"
     head_clone_url: str | None = None
     head_owner: str | None = None
+    updated_at: str = ""
 
 
 @dataclass
@@ -1472,6 +1474,7 @@ class Issue:
     number: int
     title: str
     state: str = "open"
+    updated_at: str = ""
 
 
 @dataclass
@@ -1536,6 +1539,7 @@ class RefCheck:
     check_suite_id: int | None = None
     started_at: str | None = None
     completed_at: str | None = None
+    has_pull_requests: bool = False
     actions_workflow: ActionsWorkflow | None = None
     steps: list[CheckStep] = field(default_factory=list)
     annotations: list[CheckAnnotation] = field(default_factory=list)

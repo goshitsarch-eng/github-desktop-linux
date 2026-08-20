@@ -786,5 +786,16 @@ def test_window_actions_cover_menus() -> None:
         "This is an example link",
         "Files must be selected to generate a commit message",
         "isCopilotDesktopEnabled",
+        "fetchPRWorkflowRunsByBranchName",
+        "getLatestCheckRunsById",
+        "fetchAllRepoRulesets",
+        "updateRemoteUrl",
+        "If-None-Match",
+        "fetchUpdatedPullRequests",
+        "manuallySetChecksToPending",
+        "PullRequestInterval",
+        "fetchIssueComment",
+        "fetchPullRequestReview",
+        "MaxFetchFrequency",
     ]:
         assert phrase in src

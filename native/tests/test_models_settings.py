@@ -85,6 +85,8 @@ def test_parse_remotes() -> None:
     assert ssh and ssh.owner == "desktop" and ssh.name == "desktop"
     https = parse_remote("https://github.com/desktop/desktop")
     assert https and https.hostname == "github.com"
+    token = parse_remote("https://x-access-token:secret@github.com/desktop/desktop.git")
+    assert token and token.hostname == "github.com" and token.owner == "desktop"
 
 
 def test_is_github_host() -> None:

@@ -135,6 +135,10 @@ class APIError(DesktopError):
         self.headers = headers or {}
 
 
+class MaxResultsError(DesktopError):
+    """Desktop `MaxResultsError`: too many updated PRs to page incrementally."""
+
+
 class CopilotError(DesktopError):
     pass
 

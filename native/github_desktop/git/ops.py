@@ -49,6 +49,7 @@ from ..models import (
     FileDiff,
     FileStatus,
     GitStatusEntry,
+    GitHubRepository,
     IStatusResult,
     ImageDiff,
     IndexStatus,
@@ -68,6 +69,7 @@ from ..models import (
     TrackingBranch,
     UnrenderableDiff,
     UPSTREAM_REMOTE_NAME,
+    ORIGIN_REMOTE_NAME,
     WorkingDirectoryFileChange,
     WorkingDirectoryStatus,
     format_as_local_ref,
@@ -1323,6 +1325,43 @@ def remove_remote(repo: str, name: str) -> None:
 
 def set_remote_url(repo: str, name: str, url: str) -> None:
     git(["remote", "set-url", name, url], repo, name="setRemoteUrl")
+
+
+def update_remote_url(
+    repo: str,
+    github: GitHubRepository,
+    api_repo: GitHubRepository,
+    remotes: Sequence[Remote] | None = None,
+) -> bool:
+    """Desktop `updateRemoteUrl`: retarget origin after a GitHub rename if the user hasn't customized it."""
+    from ..remote_parsing import parse_remote
+
+    known = list(remotes) if remotes is not None else get_remotes(repo)
+    default = next((item for item in known if item.name == ORIGIN_REMOTE_NAME), known[0] if known else None)
+    if default is None:
+        return False
+    remote_parsed = parse_remote(default.url)
+    updated_parsed = parse_remote(api_repo.clone_url)
+    recorded = parse_remote(github.clone_url)
+    if remote_parsed is None or updated_parsed is None or recorded is None:
+        return False
+    # Desktop skips scp-like SSH remotes (URL.parse protocol is null). Match protocols.
+    if remote_parsed.protocol != updated_parsed.protocol:
+        return False
+    remote_url_unchanged = (
+        remote_parsed.hostname.lower() == recorded.hostname.lower()
+        and remote_parsed.owner.lower() == recorded.owner.lower()
+        and remote_parsed.name.lower() == recorded.name.lower()
+    )
+    urls_match = (
+        remote_parsed.hostname.lower() == updated_parsed.hostname.lower()
+        and remote_parsed.owner.lower() == updated_parsed.owner.lower()
+        and remote_parsed.name.lower() == updated_parsed.name.lower()
+    )
+    if remote_url_unchanged and not urls_match:
+        set_remote_url(repo, default.name, api_repo.clone_url)
+        return True
+    return False
 
 
 def ensure_upstream_remote(repo: str, parent_url: str) -> tuple[str, Remote | None]:

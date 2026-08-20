@@ -9,7 +9,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Iterable
 
-from ..errors import APIError, CopilotError
+from ..errors import APIError, CopilotError, MaxResultsError
 from ..logging import get_logger
 from ..models import (
     Account,
@@ -19,6 +19,7 @@ from ..models import (
     Issue,
     PullRequest,
     RefCheck,
+    is_ghes_endpoint,
 )
 from .ci_checks import annotation_from_api, api_status_to_ref_check, duration_ms, get_check_run_short_description
 from .push_control import PushControl, default_push_control
@@ -132,6 +133,7 @@ class GitHubAPI:
         query: dict[str, str] | None = None,
         extra_headers: dict[str, str] | None = None,
         raw_url: str | None = None,
+        return_headers: bool = False,
     ) -> Any:
         if raw_url:
             url = raw_url
@@ -147,13 +149,21 @@ class GitHubAPI:
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
+                header_map = {
+                    str(key).lower(): str(value) for key, value in (resp.headers.items() if resp.headers else [])
+                }
                 raw = resp.read()
                 if not raw:
-                    return None
-                ctype = resp.headers.get("Content-Type", "")
-                if "json" in ctype or raw[:1] in (b"{", b"["):
-                    return json.loads(raw.decode("utf-8"))
-                return raw.decode("utf-8")
+                    parsed: Any = None
+                else:
+                    ctype = resp.headers.get("Content-Type", "")
+                    if "json" in ctype or raw[:1] in (b"{", b"["):
+                        parsed = json.loads(raw.decode("utf-8"))
+                    else:
+                        parsed = raw.decode("utf-8")
+                if return_headers:
+                    return parsed, header_map
+                return parsed
         except urllib.error.HTTPError as exc:
             payload = exc.read().decode("utf-8", errors="replace")
             header_map: dict[str, str] = {}
@@ -321,6 +331,42 @@ class GitHubAPI:
         items = self._paginate(f"/repos/{owner}/{name}/pulls", {"state": state, "sort": "updated"})
         return [self._to_pr(item) for item in items]
 
+    def fetch_updated_pull_requests(
+        self, owner: str, name: str, since: str, max_results: int = 320
+    ) -> list[PullRequest]:
+        """Desktop `fetchUpdatedPullRequests`: page PRs updated since `since`, newest first."""
+        since_stamp = since or ""
+        items: list[dict[str, Any]] = []
+        page = 1
+        per_page = 10
+        while True:
+            data = self.get(
+                f"/repos/{owner}/{name}/pulls",
+                query={
+                    "state": "all",
+                    "sort": "updated",
+                    "direction": "desc",
+                    "per_page": str(per_page),
+                    "page": str(page),
+                },
+            )
+            batch = data if isinstance(data, list) else []
+            if not batch:
+                break
+            items.extend(batch)
+            if len(items) >= max_results:
+                raise MaxResultsError("got max pull requests, aborting")
+            last = batch[-1] if batch else {}
+            if str(last.get("updated_at") or "") <= since_stamp:
+                break
+            if len(batch) < per_page:
+                break
+            page += 1
+            per_page = min(per_page * 2, 100)
+            if page > 20:
+                break
+        return [self._to_pr(item) for item in items if str(item.get("updated_at") or "") >= since_stamp]
+
     def fetch_pull_request(self, owner: str, name: str, number: int) -> PullRequest:
         return self._to_pr(self.get(f"/repos/{owner}/{name}/pulls/{number}"))
 
@@ -340,13 +386,25 @@ class GitHubAPI:
         )
         return self._to_pr(data)
 
-    def fetch_issues(self, owner: str, name: str) -> list[Issue]:
-        items = self._paginate(f"/repos/{owner}/{name}/issues", {"state": "open"})
+    def fetch_issues(
+        self, owner: str, name: str, state: str = "open", since: str | None = None
+    ) -> list[Issue]:
+        query: dict[str, str] = {"state": state}
+        if since:
+            query["since"] = since
+        items = self._paginate(f"/repos/{owner}/{name}/issues", query)
         issues = []
         for item in items:
             if "pull_request" in item:
                 continue
-            issues.append(Issue(number=item["number"], title=item["title"], state=item.get("state", "open")))
+            issues.append(
+                Issue(
+                    number=item["number"],
+                    title=item["title"],
+                    state=item.get("state", "open"),
+                    updated_at=item.get("updated_at") or "",
+                )
+            )
         return issues
 
     def fetch_notifications(self) -> list[dict[str, Any]]:
@@ -430,6 +488,7 @@ class GitHubAPI:
                         check_suite_id=(r.get("check_suite") or {}).get("id"),
                         started_at=started,
                         completed_at=completed,
+                        has_pull_requests=bool(r.get("pull_requests")),
                     )
                 )
             if len(runs) < 100:
@@ -440,7 +499,9 @@ class GitHubAPI:
             statuses = [api_status_to_ref_check(item) for item in self.fetch_combined_ref_status(owner, name, ref)]
         except APIError:
             statuses = []
-        return statuses + mapped
+        from .ci_checks import get_latest_check_runs_by_id
+
+        return get_latest_check_runs_by_id(statuses + mapped)
 
     def fetch_combined_ref_status(self, owner: str, name: str, ref: str) -> list[dict[str, Any]]:
         """Desktop `fetchCombinedRefStatus` (`GET /commits/{ref}/status`)."""
@@ -494,6 +555,73 @@ class GitHubAPI:
                 job["_workflow"] = workflow_meta
                 jobs.append(job)
         return jobs
+
+    def fetch_pr_workflow_runs_by_branch_name(
+        self, owner: str, name: str, branch_name: str
+    ) -> list[dict[str, Any]]:
+        """Desktop `fetchPRWorkflowRunsByBranchName`."""
+        extra = {"Accept": "application/vnd.github.antiope-preview+json"}
+        try:
+            data = self.get(
+                f"/repos/{owner}/{name}/actions/runs",
+                query={"event": "pull_request", "branch": branch_name},
+                extra_headers=extra,
+            )
+        except APIError:
+            log.debug("Failed fetching workflow runs for %s (%s/%s)", branch_name, owner, name)
+            return []
+        if isinstance(data, dict):
+            runs = data.get("workflow_runs") or []
+            return [item for item in runs if isinstance(item, dict)]
+        return []
+
+    def fetch_pr_action_workflow_run_by_check_suite_id(
+        self, owner: str, name: str, check_suite_id: int
+    ) -> dict[str, Any] | None:
+        """Desktop `fetchPRActionWorkflowRunByCheckSuiteId`."""
+        extra = {"Accept": "application/vnd.github.antiope-preview+json"}
+        try:
+            data = self.get(
+                f"/repos/{owner}/{name}/actions/runs",
+                query={"event": "pull_request", "check_suite_id": str(int(check_suite_id))},
+                extra_headers=extra,
+            )
+        except APIError:
+            log.debug("Failed fetching workflow runs for %s (%s/%s)", check_suite_id, owner, name)
+            return None
+        runs = (data or {}).get("workflow_runs") if isinstance(data, dict) else []
+        if isinstance(runs, list) and runs:
+            first = runs[0]
+            return first if isinstance(first, dict) else None
+        return None
+
+    def attach_action_workflows(
+        self, owner: str, name: str, branch_name: str | None, check_runs: list[RefCheck]
+    ) -> list[RefCheck]:
+        """Desktop `getCheckRunActionsWorkflowRuns` (suite id on dotcom, branch name on GHES)."""
+        from .ci_checks import get_latest_pr_workflow_runs, map_action_workflows_runs_to_check_runs
+
+        if not check_runs:
+            return check_runs
+        if is_ghes_endpoint(self.endpoint):
+            if not branch_name:
+                return check_runs
+            runs = self.fetch_pr_workflow_runs_by_branch_name(owner, name, branch_name)
+            return map_action_workflows_runs_to_check_runs(check_runs, get_latest_pr_workflow_runs(runs))
+        cache: dict[int, dict[str, Any] | None] = {}
+        for check in check_runs:
+            if not check.check_suite_id:
+                continue
+            if check.check_suite_id not in cache:
+                cache[check.check_suite_id] = self.fetch_pr_action_workflow_run_by_check_suite_id(
+                    owner, name, check.check_suite_id
+                )
+            run = cache[check.check_suite_id]
+            if run:
+                from .ci_checks import actions_workflow_from_run
+
+                check.actions_workflow = actions_workflow_from_run(run) or check.actions_workflow
+        return check_runs
 
     def fetch_check_suite(self, owner: str, name: str, suite_id: int) -> CheckSuite | None:
         try:
@@ -609,19 +737,39 @@ class GitHubAPI:
             log.info("fetch repo ruleset %s failed: %s", ruleset_id, exc)
             return None
 
-    def fetch_mentionables(self, owner: str, name: str) -> list[dict[str, Any]]:
-        """Desktop `fetchMentionables` (`/mentionables/users` jerry-maguire preview)."""
-        extra = {"Accept": "application/vnd.github.jerry-maguire-preview"}
+    def fetch_all_repo_rulesets(self, owner: str, name: str) -> list[dict[str, Any]] | None:
+        """Desktop `fetchAllRepoRulesets`: slim rulesets for cache prefetch."""
         try:
-            data = self.get(
+            data = self.get(f"/repos/{owner}/{name}/rulesets")
+            return data if isinstance(data, list) else []
+        except APIError as exc:
+            if exc.status in {403, 404}:
+                return None
+            log.info("fetchAllRepoRulesets unable to fetch all repo rulesets | /repos/%s/%s/rulesets", owner, name)
+            return None
+
+    def fetch_mentionables(
+        self, owner: str, name: str, etag: str | None = None
+    ) -> tuple[list[dict[str, Any]] | None, str | None]:
+        """Desktop `fetchMentionables`. Returns `(users, etag)`; `users` is None on HTTP 304."""
+        extra = {"Accept": "application/vnd.github.jerry-maguire-preview"}
+        if etag:
+            extra["If-None-Match"] = etag
+        try:
+            data, headers = self.request(
+                "GET",
                 f"/repos/{owner}/{name}/mentionables/users",
                 extra_headers=extra,
+                return_headers=True,
             )
         except APIError as exc:
+            if exc.status == 304:
+                return None, etag
             if exc.status == 404:
-                return []
-            log.debug("fetch_mentionables failed: %s", exc)
-            return []
+                log.warn("fetchMentionables: '%s/%s' returned a 404", owner, name)
+                return [], None
+            log.warn("fetchMentionables: failed for %s/%s", owner, name)
+            return [], None
         users: list[dict[str, Any]] = []
         if isinstance(data, list):
             for item in data:
@@ -636,10 +784,10 @@ class GitHubAPI:
                         "avatar_url": item.get("avatar_url"),
                     }
                 )
-        return users
+        return users, (headers or {}).get("etag")
 
     def fetch_mentions(self, owner: str, name: str) -> list[str]:
-        mentionables = self.fetch_mentionables(owner, name)
+        mentionables, _etag = self.fetch_mentionables(owner, name)
         if mentionables:
             return [item["login"] for item in mentionables if item.get("login")]
         try:
@@ -663,6 +811,83 @@ class GitHubAPI:
             return items if isinstance(items, list) else []
         except APIError:
             return []
+
+    def fetch_issue_comment(self, owner: str, name: str, comment_id: str | int) -> dict[str, Any] | None:
+        """Desktop `fetchIssueComment`."""
+        try:
+            data = self.get(f"/repos/{owner}/{name}/issues/comments/{comment_id}")
+            return data if isinstance(data, dict) else None
+        except APIError as exc:
+            if exc.status == 404:
+                log.warn("fetchIssueComment: '%s/%s/issues/comments/%s' returned a 404", owner, name, comment_id)
+            else:
+                log.warn("fetchIssueComment: an error occurred for '%s/%s/issues/comments/%s'", owner, name, comment_id)
+            return None
+
+    def fetch_pull_request_review_comment(
+        self, owner: str, name: str, comment_id: str | int
+    ) -> dict[str, Any] | None:
+        """Desktop `fetchPullRequestReviewComment`."""
+        try:
+            data = self.get(f"/repos/{owner}/{name}/pulls/comments/{comment_id}")
+            return data if isinstance(data, dict) else None
+        except APIError as exc:
+            if exc.status == 404:
+                log.warn(
+                    "fetchPullRequestReviewComment: '%s/%s/pulls/comments/%s' returned a 404",
+                    owner,
+                    name,
+                    comment_id,
+                )
+            else:
+                log.warn(
+                    "fetchPullRequestReviewComment: an error occurred for '%s/%s/pulls/comments/%s'",
+                    owner,
+                    name,
+                    comment_id,
+                )
+            return None
+
+    def fetch_pull_request_review(
+        self, owner: str, name: str, pr_number: str | int, review_id: str | int
+    ) -> dict[str, Any] | None:
+        """Desktop `fetchPullRequestReview`."""
+        try:
+            data = self.get(f"/repos/{owner}/{name}/pulls/{pr_number}/reviews/{review_id}")
+            return data if isinstance(data, dict) else None
+        except APIError:
+            log.debug(
+                "failed fetching PR review %s for %s/%s/pulls/%s",
+                review_id,
+                owner,
+                name,
+                pr_number,
+            )
+            return None
+
+    def fetch_notification_subject(self, url: str) -> dict[str, Any] | None:
+        """Load a notification's latest comment/review using Desktop's typed endpoints when possible."""
+        parsed = urllib.parse.urlparse(url)
+        parts = [part for part in parsed.path.split("/") if part]
+        try:
+            if len(parts) >= 6 and parts[0] == "repos" and parts[3] == "issues" and parts[4] == "comments":
+                return self.fetch_issue_comment(parts[1], parts[2], parts[5])
+            if len(parts) >= 6 and parts[0] == "repos" and parts[3] == "pulls" and parts[4] == "comments":
+                return self.fetch_pull_request_review_comment(parts[1], parts[2], parts[5])
+            if (
+                len(parts) >= 7
+                and parts[0] == "repos"
+                and parts[3] == "pulls"
+                and parts[5] == "reviews"
+            ):
+                return self.fetch_pull_request_review(parts[1], parts[2], parts[4], parts[6])
+        except Exception:
+            pass
+        try:
+            fetched = self.get("", raw_url=url)
+            return fetched if isinstance(fetched, dict) else None
+        except Exception:
+            return None
 
     def create_issue(self, owner: str, name: str, title: str, body: str = "") -> dict[str, Any]:
         return self.post(f"/repos/{owner}/{name}/issues", {"title": title, "body": body})
@@ -790,7 +1015,32 @@ class GitHubAPI:
             state=data.get("state") or "open",
             head_clone_url=repo.get("clone_url"),
             head_owner=(head.get("user") or {}).get("login"),
+            updated_at=data.get("updated_at") or "",
         )
+
+
+def merge_updated_pull_requests(
+    existing: list[PullRequest], updated: list[PullRequest]
+) -> list[PullRequest]:
+    """Upsert open PRs and prune closed/merged ones (Desktop `storePullRequests`)."""
+    by_number = {pr.number: pr for pr in existing}
+    for pr in updated:
+        if (pr.state or "open").lower() != "open":
+            by_number.pop(pr.number, None)
+        else:
+            by_number[pr.number] = pr
+    return sorted(by_number.values(), key=lambda item: item.updated_at or item.created_at, reverse=True)
+
+
+def merge_updated_issues(existing: list[Issue], fetched: list[Issue]) -> list[Issue]:
+    """Upsert open issues and prune closed ones (Desktop `storeIssues`)."""
+    by_number = {issue.number: issue for issue in existing}
+    for issue in fetched:
+        if (issue.state or "open").lower() == "closed":
+            by_number.pop(issue.number, None)
+        else:
+            by_number[issue.number] = issue
+    return sorted(by_number.values(), key=lambda item: item.number, reverse=True)
 
 
 def _parse_generated_message(content: str) -> tuple[str, str]:

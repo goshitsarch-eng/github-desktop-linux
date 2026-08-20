@@ -17,7 +17,7 @@ from ..git.runner import find_git
 from ..logging import get_logger
 from ..models import FetchType, PopupType
 from ..protocol import is_protocol_url, parse_app_url
-from ..store import AppStore
+from ..store import AppStore, PULL_REQUEST_INTERVAL
 from ..theme import apply_theme
 from ..version import APP_ID, APP_NAME, PROTOCOL_SCHEMES
 from .css import load_css
@@ -78,6 +78,7 @@ class DesktopApplication(Adw.Application):
             skew = 1 + (os.getpid() % 30)
             GLib.timeout_add_seconds(skew, self._background_fetch_tick)
             GLib.timeout_add_seconds(skew, self._indicator_tick)
+            GLib.timeout_add_seconds(2 * 60, self._pr_updater_tick)
 
     def _poll_notifications(self) -> bool:
         self.store.poll_notifications()
@@ -116,6 +117,17 @@ class DesktopApplication(Adw.Application):
         except Exception as exc:
             log.debug("indicator tick failed: %s", exc)
         GLib.timeout_add_seconds(15 * 60, self._indicator_tick)
+        return False
+
+    def _pr_updater_tick(self) -> bool:
+        """Desktop `PullRequestUpdater`: refresh PRs about every 30 minutes."""
+        if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("GITHUB_DESKTOP_OFFLINE"):
+            return False
+        try:
+            self.store.refresh_pull_requests()
+        except Exception as exc:
+            log.debug("pull request updater failed: %s", exc)
+        GLib.timeout_add_seconds(PULL_REQUEST_INTERVAL, self._pr_updater_tick)
         return False
 
     def _on_open(self, _app, files, _n, _hint) -> None:

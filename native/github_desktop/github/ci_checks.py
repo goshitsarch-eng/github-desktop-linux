@@ -197,6 +197,90 @@ def get_check_status_count_map(runs: Sequence[RefCheck]) -> dict[str, int]:
     return dict(counts)
 
 
+def get_latest_check_runs_by_id(check_runs: Sequence[RefCheck]) -> list[RefCheck]:
+    """Desktop `getLatestCheckRunsById`: keep the newest suite per check name and PR/push origin."""
+    latest: dict[str, RefCheck] = {}
+    for run in check_runs:
+        key = f"{run.name}:{('isPullRequestCheckRun' if run.has_pull_requests else 'isPushCheckRun')}"
+        current = latest.get(key)
+        if current is None:
+            latest[key] = run
+            continue
+        current_suite = int(current.check_suite_id or 0)
+        given_suite = int(run.check_suite_id or 0)
+        if current_suite < given_suite:
+            latest[key] = run
+    return list(latest.values())
+
+
+def actions_workflow_from_run(run: dict) -> ActionsWorkflow | None:
+    run_id = run.get("id")
+    if not run_id:
+        return None
+    return ActionsWorkflow(
+        id=int(run_id),
+        name=str(run.get("name") or ""),
+        event=str(run.get("event") or ""),
+        check_suite_id=run.get("check_suite_id"),
+        html_url=run.get("html_url"),
+    )
+
+
+def get_latest_pr_workflow_runs(workflow_runs: Sequence[dict]) -> list[dict]:
+    """Keep the newest Actions run per `workflow_id` (Desktop `getLatestPRWorkflowRunsByBranchName`)."""
+    latest: dict[int, dict] = {}
+    for run in workflow_runs:
+        workflow_id = int(run.get("workflow_id") or 0)
+        if not workflow_id:
+            continue
+        stored = latest.get(workflow_id)
+        if stored is None:
+            latest[workflow_id] = run
+            continue
+        if str(stored.get("created_at") or "") < str(run.get("created_at") or ""):
+            latest[workflow_id] = run
+    return list(latest.values())
+
+
+def map_action_workflows_runs_to_check_runs(
+    check_runs: Sequence[RefCheck], action_workflow_runs: Sequence[dict]
+) -> list[RefCheck]:
+    """Desktop `mapActionWorkflowsRunsToCheckRuns`: match by check suite id."""
+    if not action_workflow_runs or not check_runs:
+        return list(check_runs)
+    by_suite: dict[int, dict] = {}
+    for run in action_workflow_runs:
+        suite_id = run.get("check_suite_id")
+        if suite_id is not None:
+            by_suite[int(suite_id)] = run
+    mapped: list[RefCheck] = []
+    for check in check_runs:
+        matching = by_suite.get(int(check.check_suite_id)) if check.check_suite_id else None
+        if matching:
+            check.actions_workflow = actions_workflow_from_run(matching) or check.actions_workflow
+        mapped.append(check)
+    return mapped
+
+
+def manually_set_checks_to_pending(
+    cached_checks: Sequence[RefCheck], pending_checks: Sequence[RefCheck]
+) -> list[RefCheck]:
+    """Desktop `manuallySetChecksToPending`: optimistic in-progress after a re-run."""
+    pending_ids = {check.id for check in pending_checks}
+    updated: list[RefCheck] = []
+    for check in cached_checks:
+        if check.id not in pending_ids:
+            updated.append(check)
+            continue
+        check.status = "in_progress"
+        check.conclusion = None
+        for step in check.steps or []:
+            step.status = "in_progress"
+            step.conclusion = None
+        updated.append(check)
+    return updated
+
+
 def checks_header_state(runs: Sequence[RefCheck], *, loading: bool = False) -> tuple[str, str]:
     """Return (title, css_class) for the Desktop checks popover header."""
     if loading:

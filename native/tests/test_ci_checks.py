@@ -133,3 +133,42 @@ def test_users_from_commit_include_coauthors() -> None:
     assert "Ada" in names
     assert "Bot" in names
     assert "Grace" in names
+
+
+def test_get_latest_check_runs_by_id_keeps_newest_suite() -> None:
+    from github_desktop.github.ci_checks import get_latest_check_runs_by_id
+
+    older = _run(id=1, name="build", check_suite_id=10, has_pull_requests=True)
+    newer = _run(id=2, name="build", check_suite_id=20, has_pull_requests=True)
+    push = _run(id=3, name="build", check_suite_id=15, has_pull_requests=False)
+    latest = get_latest_check_runs_by_id([older, newer, push])
+    by_id = {run.id for run in latest}
+    assert 2 in by_id
+    assert 1 not in by_id
+    assert 3 in by_id
+
+
+def test_map_workflows_and_pending_rerun() -> None:
+    from github_desktop.github.ci_checks import (
+        get_latest_pr_workflow_runs,
+        manually_set_checks_to_pending,
+        map_action_workflows_runs_to_check_runs,
+    )
+    from github_desktop.models import CheckStep
+
+    runs = [
+        {"id": 1, "workflow_id": 9, "created_at": "2026-01-01T00:00:00Z", "check_suite_id": 10, "name": "CI"},
+        {"id": 2, "workflow_id": 9, "created_at": "2026-02-01T00:00:00Z", "check_suite_id": 11, "name": "CI"},
+    ]
+    latest = get_latest_pr_workflow_runs(runs)
+    assert len(latest) == 1
+    assert latest[0]["id"] == 2
+    check = _run(id=5, name="linux", check_suite_id=11, conclusion="failure")
+    mapped = map_action_workflows_runs_to_check_runs([check], latest)
+    assert mapped[0].actions_workflow is not None
+    assert mapped[0].actions_workflow.id == 2
+    check.steps = [CheckStep(name="test", status="completed", conclusion="failure")]
+    pending = manually_set_checks_to_pending([check], [check])
+    assert pending[0].status == "in_progress"
+    assert pending[0].conclusion is None
+    assert pending[0].steps[0].status == "in_progress"

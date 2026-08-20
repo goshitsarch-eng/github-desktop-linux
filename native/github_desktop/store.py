@@ -15,7 +15,7 @@ from typing import Any, Callable, Sequence
 from . import secrets
 from .custom_integration import command_for_custom_integration
 from .editors import Editor, find_editor, get_available_editors, open_in_editor
-from .errors import APIError, CopilotError, DiscardChangesError, GitError, GitNotFoundError, NotARepositoryError, ValidationError, extract_secret_scanning_results, overwritten_files_from_error, parse_saml_organization
+from .errors import APIError, CopilotError, DiscardChangesError, GitError, GitNotFoundError, MaxResultsError, NotARepositoryError, ValidationError, extract_secret_scanning_results, overwritten_files_from_error, parse_saml_organization
 from .git import (
     abort_cherry_pick,
     abort_merge,
@@ -117,6 +117,7 @@ from .git import (
     stash_push,
     undo_commit,
     update_remote_head,
+    update_remote_url,
     warn_about_remote_commits,
     write_gitignore,
 )
@@ -127,11 +128,12 @@ from .git.credential_helper import (
     start_credential_helper_server,
 )
 from .git.runner import find_git, git, resolve_repository_root
-from .github.api import GitHubAPI, on_token_invalidated
+from .github.api import GitHubAPI, merge_updated_issues, merge_updated_pull_requests, on_token_invalidated
 from .github.ci_checks import (
     attach_workflow_jobs_to_checks,
     failing_checks,
     is_failure,
+    manually_set_checks_to_pending,
     split_rerunnable_checks,
     summarize_check_runs,
 )
@@ -179,6 +181,7 @@ from .models import (
     GitHubRepository,
     HistoryTabMode,
     ImageDiffType,
+    Issue,
     IStatusResult,
     ManualConflictResolution,
     MergeResult,
@@ -237,6 +240,11 @@ BACKGROUND_FETCH_MINIMUM_INTERVAL = 30 * 60
 BACKGROUND_FETCH_DEFAULT_INTERVAL = 60 * 60
 # Desktop `UpdateIssuesThrottleInterval` in issues-autocompletion-provider.tsx.
 UPDATE_ISSUES_THROTTLE_INTERVAL = 60
+# Desktop `MaxFetchFrequency` in github-user-store.ts.
+MENTIONABLE_FETCH_FREQUENCY = 10 * 60
+# Desktop `PullRequestInterval` / `MaxPullRequestRefreshFrequency`.
+PULL_REQUEST_INTERVAL = 30 * 60
+MAX_PULL_REQUEST_REFRESH_FREQUENCY = 2 * 60
 BACKGROUND_FETCH_SERVER_MINIMUM = 5 * 60
 INDICATOR_REFRESH_INTERVAL = 15 * 60
 
@@ -289,6 +297,11 @@ class RepositoryViewState:
     merge_tree: MergeTreeResult | None = None
     mentions: list[str] = field(default_factory=list)
     mentionables: list[dict] = field(default_factory=list)
+    mentionables_etag: str | None = None
+    mentionables_fetched_at: float = 0.0
+    last_pr_updated_at: str | None = None
+    last_pr_refresh: float | None = None
+    issues_last_updated_at: str | None = None
     diff_context: int | None = None
     local_commit_shas: list[str] = field(default_factory=list)
     diff_new_content: list[str] | None = None
@@ -1108,6 +1121,14 @@ class AppStore:
         previous_files = list(state.status.working_directory.files) if state.status else []
         previous_selected = state.selected_file.path if state.selected_file else None
         previous_commit = state.selected_commit.sha if state.selected_commit else None
+        previous_prs = list(state.pull_requests)
+        previous_pr_updated = state.last_pr_updated_at
+        previous_issues = list(state.issues)
+        previous_issues_updated = state.issues_last_updated_at
+        previous_mentionables = list(state.mentionables)
+        previous_mentions = list(state.mentions)
+        previous_etag = state.mentionables_etag
+        previous_mention_fetched = state.mentionables_fetched_at
         state.loading = True
         self.emit()
 
@@ -1192,8 +1213,24 @@ class AppStore:
                             gh = fetched.parent
                         else:
                             gh = fetched or repo.github
-                        prs = api.fetch_pull_requests(gh.owner, gh.name)
-                        payload["pull_requests"] = prs
+                        if fetched and repo.github:
+                            try:
+                                if update_remote_url(repo.path, repo.github, fetched, remotes):
+                                    remotes = get_remotes(repo.path)
+                                    payload["remotes"] = remotes
+                            except GitError as exc:
+                                log.debug("updateRemoteUrl failed: %s", exc)
+                        try:
+                            prs, last_pr = self._sync_pull_requests(
+                                api, gh, previous_prs, previous_pr_updated
+                            )
+                            payload["pull_requests"] = prs
+                            payload["last_pr_updated_at"] = last_pr
+                            payload["last_pr_refresh"] = time.time()
+                        except APIError as exc:
+                            log.debug("pull request fetch failed: %s", exc)
+                            prs = previous_prs
+                            payload["pull_requests"] = prs
                         current = status.current_branch if status else None
                         payload["current_pull_request"] = next((pr for pr in prs if pr.head_ref == current), None)
                         pr = payload["current_pull_request"]
@@ -1218,7 +1255,11 @@ class AppStore:
                             except APIError:
                                 payload["diff_comments"] = []
                         try:
-                            payload["issues"] = [(i.number, i.title) for i in api.fetch_issues(gh.owner, gh.name)[:80]]
+                            issues, last_issue = self._sync_issues(
+                                api, gh, previous_issues, previous_issues_updated
+                            )
+                            payload["issues"] = [(item.number, item.title) for item in issues[:80]]
+                            payload["issues_last_updated_at"] = last_issue
                         except APIError:
                             pass
                         ref = (status.current_tip if status else None) or "HEAD"
@@ -1227,9 +1268,31 @@ class AppStore:
                         except APIError:
                             pass
                         try:
-                            mentionables = api.fetch_mentionables(gh.owner, gh.name)
-                            payload["mentionables"] = mentionables
-                            payload["mentions"] = [item["login"] for item in mentionables if item.get("login")] or api.fetch_mentions(gh.owner, gh.name)
+                            now = time.time()
+                            if (
+                                previous_mentionables
+                                and previous_mention_fetched
+                                and now - previous_mention_fetched < MENTIONABLE_FETCH_FREQUENCY
+                            ):
+                                payload["mentionables"] = previous_mentionables
+                                payload["mentions"] = previous_mentions
+                                payload["mentionables_etag"] = previous_etag
+                                payload["mentionables_fetched_at"] = previous_mention_fetched
+                            else:
+                                users, etag = api.fetch_mentionables(
+                                    gh.owner, gh.name, etag=previous_etag
+                                )
+                                if users is None:
+                                    payload["mentionables"] = previous_mentionables
+                                    payload["mentions"] = previous_mentions
+                                    payload["mentionables_etag"] = previous_etag
+                                else:
+                                    payload["mentionables"] = users
+                                    payload["mentions"] = [
+                                        item["login"] for item in users if item.get("login")
+                                    ] or api.fetch_mentions(gh.owner, gh.name)
+                                    payload["mentionables_etag"] = etag
+                                payload["mentionables_fetched_at"] = now
                         except APIError:
                             pass
                         try:
@@ -1305,6 +1368,16 @@ class AppStore:
             state.check_runs = data.get("check_runs") or []
             state.mentions = data.get("mentions") or []
             state.mentionables = data.get("mentionables") or []
+            if "mentionables_etag" in data:
+                state.mentionables_etag = data.get("mentionables_etag")
+            if "mentionables_fetched_at" in data:
+                state.mentionables_fetched_at = float(data.get("mentionables_fetched_at") or 0.0)
+            if "last_pr_updated_at" in data:
+                state.last_pr_updated_at = data.get("last_pr_updated_at")
+            if "last_pr_refresh" in data:
+                state.last_pr_refresh = data.get("last_pr_refresh")
+            if "issues_last_updated_at" in data:
+                state.issues_last_updated_at = data.get("issues_last_updated_at")
             state.local_commit_shas = data.get("local_commit_shas") or []
             if "local_tags_to_push" in data:
                 state.local_tags_to_push = list(data.get("local_tags_to_push") or [])
@@ -4418,17 +4491,24 @@ class AppStore:
         if account is None or gh is None:
             return
         self._issue_refresh_at[repo.id] = now
-        owner, name = gh.owner, gh.name
         state = self.state_for(repo)
 
-        def work() -> list[tuple[int, str]]:
+        def work() -> tuple[list[tuple[int, str]], str | None]:
             api = GitHubAPI.from_account(account)
-            return [(i.number, i.title) for i in api.fetch_issues(owner, name)[:80]]
+            issues, latest = self._sync_issues(
+                api, gh, list(state.issues), state.issues_last_updated_at
+            )
+            return [(item.number, item.title) for item in issues[:80]], latest
 
-        def done(exc: BaseException | None, result: list[tuple[int, str]] | None = None) -> None:
+        def done(
+            exc: BaseException | None, result: tuple[list[tuple[int, str]], str | None] | None = None
+        ) -> None:
             if exc or result is None:
                 return
-            state.issues = result
+            items, latest = result
+            state.issues = items
+            if latest:
+                state.issues_last_updated_at = latest
 
         self._run(work, done)
 
@@ -4561,13 +4641,114 @@ class AppStore:
 
         self._run(work, done)
 
+    def _issues_from_tuples(self, items: Sequence) -> list[Issue]:
+        issues: list[Issue] = []
+        for item in items:
+            if isinstance(item, Issue):
+                issues.append(item)
+            elif isinstance(item, tuple) and len(item) >= 2:
+                issues.append(Issue(number=int(item[0]), title=str(item[1]), state="open"))
+        return issues
+
+    def _sync_pull_requests(
+        self,
+        api: GitHubAPI,
+        gh,
+        existing: list[PullRequest],
+        last_updated: str | None,
+    ) -> tuple[list[PullRequest], str | None]:
+        if not last_updated:
+            prs = api.fetch_pull_requests(gh.owner, gh.name, state="open")
+        else:
+            try:
+                updated = api.fetch_updated_pull_requests(gh.owner, gh.name, last_updated)
+                prs = merge_updated_pull_requests(existing, updated)
+            except (MaxResultsError, APIError) as exc:
+                log.debug("fetchUpdatedPullRequests fell back to open PRs: %s", exc)
+                prs = api.fetch_pull_requests(gh.owner, gh.name, state="open")
+        stamps = [item.updated_at for item in prs if item.updated_at]
+        if last_updated:
+            stamps.append(last_updated)
+        latest = max(stamps) if stamps else last_updated
+        return prs, latest
+
+    def _sync_issues(
+        self,
+        api: GitHubAPI,
+        gh,
+        existing: Sequence,
+        last_updated: str | None,
+    ) -> tuple[list[Issue], str | None]:
+        known = self._issues_from_tuples(existing)
+        if not last_updated:
+            fetched = api.fetch_issues(gh.owner, gh.name, state="open")
+            issues = fetched
+        else:
+            fetched = api.fetch_issues(gh.owner, gh.name, state="all", since=last_updated)
+            issues = merge_updated_issues(known, fetched)
+        stamps = [item.updated_at for item in fetched if item.updated_at]
+        if last_updated:
+            stamps.append(last_updated)
+        latest = max(stamps) if stamps else last_updated
+        return issues, latest
+
+    def refresh_pull_requests(self, repo: Repository | None = None) -> None:
+        """Desktop `PullRequestUpdater`: refresh open PRs at most every 2 minutes, typically 30."""
+        repo = repo or self.selected_repository
+        if repo is None or not repo.github:
+            return
+        if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("GITHUB_DESKTOP_OFFLINE"):
+            return
+        state = self.state_for(repo)
+        now = time.time()
+        if state.last_pr_refresh and now - state.last_pr_refresh < MAX_PULL_REQUEST_REFRESH_FREQUENCY:
+            return
+        account = self.account_for_repo(repo)
+        gh = github_for_contribution(repo) or repo.github
+        if account is None or gh is None:
+            return
+        existing = list(state.pull_requests)
+        last_updated = state.last_pr_updated_at
+        current = state.status.current_branch if state.status else None
+
+        def work() -> dict:
+            api = GitHubAPI.from_account(account)
+            prs, latest = self._sync_pull_requests(api, gh, existing, last_updated)
+            return {
+                "pull_requests": prs,
+                "last_pr_updated_at": latest,
+                "last_pr_refresh": time.time(),
+                "current_pull_request": next((pr for pr in prs if pr.head_ref == current), None),
+            }
+
+        def done(exc: BaseException | None, result: dict | None = None) -> None:
+            if exc or not result:
+                return
+            view = self.state_for(repo)
+            view.pull_requests = result["pull_requests"]
+            view.last_pr_updated_at = result.get("last_pr_updated_at")
+            view.last_pr_refresh = result.get("last_pr_refresh")
+            view.current_pull_request = result.get("current_pull_request")
+            self.emit()
+
+        self._run(work, done)
+
     def _load_repo_rules(self, api: GitHubAPI, repo: Repository, status: IStatusResult | None) -> RepoRulesInfo:
         if not repo.github or not use_repo_rules_logic(self.account_for_repo(repo), repo):
             return RepoRulesInfo()
         branch = status.current_branch if status else None
         if not branch:
             return RepoRulesInfo()
-        rules = api.fetch_repo_rules_for_branch(repo.github.owner, repo.github.name, branch)
+        owner, name = repo.github.owner, repo.github.name
+        slim = api.fetch_all_repo_rulesets(owner, name)
+        if slim:
+            for item in slim:
+                rid = int(item.get("id") or 0)
+                if rid and rid not in self.cached_repo_rulesets:
+                    fetched = api.fetch_repo_ruleset(owner, name, rid)
+                    if fetched:
+                        self.cached_repo_rulesets[rid] = fetched
+        rules = api.fetch_repo_rules_for_branch(owner, name, branch)
         if not rules:
             return RepoRulesInfo()
         needed: dict[int, dict] = {}
@@ -4577,7 +4758,7 @@ class AppStore:
                 continue
             cached = self.cached_repo_rulesets.get(rid)
             if cached is None:
-                fetched = api.fetch_repo_ruleset(repo.github.owner, repo.github.name, rid)
+                fetched = api.fetch_repo_ruleset(owner, name, rid)
                 if fetched:
                     self.cached_repo_rulesets[rid] = fetched
                     cached = fetched
@@ -4716,7 +4897,9 @@ class AppStore:
             if exc:
                 self.show_popup(PopupType.ERROR, error=str(exc))
             else:
-                self.refresh_repository(repo)
+                view = self.state_for(repo)
+                view.check_runs = manually_set_checks_to_pending(view.check_runs, runs)
+                self.poll_commit_status(repo)
             self.emit()
 
         self._run(work, done)
@@ -4834,7 +5017,10 @@ class AppStore:
         def work() -> dict:
             api = GitHubAPI.from_account(account)
             runs_by_ref: dict[str, list] = {}
-            runs_by_ref[sha] = api.fetch_check_runs(owner, name, sha)
+            branch = state.status.current_branch if state.status else None
+            tip_runs = api.fetch_check_runs(owner, name, sha)
+            tip_runs = api.attach_action_workflows(owner, name, branch, tip_runs)
+            runs_by_ref[sha] = tip_runs
             pr_status: dict[int, str] = {}
             for pr in prs:
                 ref = pr.head_sha
@@ -4883,8 +5069,7 @@ class AppStore:
                 payload = None
                 if latest:
                     try:
-                        fetched = api.get("", raw_url=str(latest))
-                        payload = fetched if isinstance(fetched, dict) else None
+                        payload = api.fetch_notification_subject(str(latest))
                     except Exception:
                         payload = None
                 checks = None

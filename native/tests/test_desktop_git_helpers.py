@@ -368,3 +368,57 @@ def test_global_config_value_wrappers(tmp_path: Path, monkeypatch) -> None:
     assert get_global_boolean_config_value("desktop.testflag") is True
     remove_global_config_value("desktop.testuser")
     assert get_global_config_value("desktop.testuser") is None
+
+
+def test_update_remote_url_retargets_origin_after_rename(git_repo: Path) -> None:
+    from github_desktop.git.ops import add_remote, get_remotes, update_remote_url
+    from github_desktop.models import GitHubRepository
+    from github_desktop.remote_parsing import parse_remote
+
+    add_remote(str(git_repo), "origin", "https://github.com/octocat/old.git")
+    old = GitHubRepository(
+        name="old",
+        owner="octocat",
+        html_url="https://github.com/octocat/old",
+        clone_url="https://github.com/octocat/old.git",
+    )
+    renamed = GitHubRepository(
+        name="new",
+        owner="octocat",
+        html_url="https://github.com/octocat/new",
+        clone_url="https://github.com/octocat/new.git",
+    )
+    assert update_remote_url(str(git_repo), old, renamed) is True
+    remotes = get_remotes(str(git_repo))
+    parsed = parse_remote(remotes[0].url)
+    assert parsed is not None
+    assert parsed.owner == "octocat"
+    assert parsed.name == "new"
+
+
+def test_update_remote_url_skips_customized_and_ssh(git_repo: Path) -> None:
+    from github_desktop.git.ops import add_remote, get_remotes, update_remote_url
+    from github_desktop.models import GitHubRepository, Remote
+    from github_desktop.remote_parsing import parse_remote
+
+    add_remote(str(git_repo), "origin", "https://github.com/me/fork.git")
+    recorded = GitHubRepository(
+        name="old",
+        owner="octocat",
+        html_url="https://github.com/octocat/old",
+        clone_url="https://github.com/octocat/old.git",
+    )
+    api_repo = GitHubRepository(
+        name="new",
+        owner="octocat",
+        html_url="https://github.com/octocat/new",
+        clone_url="https://github.com/octocat/new.git",
+    )
+    assert update_remote_url(str(git_repo), recorded, api_repo) is False
+    fork = parse_remote(get_remotes(str(git_repo))[0].url)
+    assert fork is not None
+    assert fork.owner == "me"
+    assert fork.name == "fork"
+
+    ssh_remote = Remote(name="origin", url="git@github.com:octocat/old.git")
+    assert update_remote_url(str(git_repo), recorded, api_repo, remotes=[ssh_remote]) is False
