@@ -148,6 +148,9 @@ from .github.oauth import (
     get_oauth_authorization_url,
     new_oauth_state,
 )
+from .popup_manager import PopupManager
+from .large_files import get_large_file_paths
+from .infer_last_push import infer_last_push_for_repository
 from .offset_from import offset_from_now
 from .logging import get_logger
 from .models import (
@@ -225,7 +228,15 @@ from .models import (
 from .notifications import show_notification
 from .paths import accounts_path, repositories_path
 from .protocol import OAuthAction, OpenRepositoryAction, URLAction, parse_app_url
-from .remote_parsing import account_for_remote, github_from_remote, is_github_host, parse_remote, sanitize_remote_url, url_matches_remote
+from .remote_parsing import (
+    account_for_remote,
+    github_from_remote,
+    is_github_host,
+    match_existing_repository,
+    parse_remote,
+    sanitize_remote_url,
+    url_matches_remote,
+)
 from .settings import Settings, load_settings, save_settings
 from .shells import find_shell, get_available_shells, open_custom_shell, open_external, open_file_manager, open_shell
 from .thank_you import (
@@ -350,8 +361,7 @@ class AppStore:
         self.selected_repository_id: int | None = self.settings.selected_repository_id
         self.section = RepositorySectionTab(self.settings.repository_section) if self.settings.repository_section in RepositorySectionTab._value2member_map_ else RepositorySectionTab.CHANGES
         self.foldout: FoldoutType | None = None
-        self.popup: Popup | None = None
-        self.all_popups: list[Popup] = []
+        self._popups = PopupManager()
         self.banner: Banner | None = None
         self.cached_repo_rulesets: dict[int, dict] = {}
         self.welcome_step: WelcomeStep | None = None if self.settings.welcome_shown else WelcomeStep.START
@@ -618,28 +628,46 @@ class AppStore:
             return RepositoryViewState()
         return self.repo_state.setdefault(repo.id, RepositoryViewState())
 
+    @property
+    def popup(self) -> Popup | None:
+        return self._popups.current_popup
+
+    @popup.setter
+    def popup(self, value: Popup | None) -> None:
+        if value is None:
+            self._popups.clear()
+            return
+        if self._popups.current_popup is value:
+            return
+        self._popups.clear()
+        self._popups.add_popup(value)
+
+    @property
+    def all_popups(self) -> list[Popup]:
+        return self._popups.all_popups
+
     def show_popup(self, popup_type: PopupType, **payload: Any) -> None:
         popup = Popup(popup_type, payload)
-        self.all_popups.append(popup)
-        self.popup = popup
-        self.emit()
+        added = self._popups.add_popup(popup)
+        if added is popup:
+            self.emit()
 
     def close_popup(self) -> None:
         closed = self.popup
-        if self.all_popups:
-            self.all_popups.pop()
-        self.popup = self.all_popups[-1] if self.all_popups else None
+        if closed is not None:
+            self._popups.remove_popup(closed)
         self.emit()
         if closed is not None and closed.type == PopupType.SIGN_IN and self.sign_in_step != SignInStep.SUCCESS:
             self._finish_credential_sign_in(None)
 
+    def close_popup_by_type(self, popup_type: PopupType) -> None:
+        """Desktop `PopupManager.removePopupByType`."""
+        self._popups.remove_popup_by_type(popup_type)
+        self.emit()
+
     def take_popups(self) -> list[Popup]:
         """Drain Desktop `allPopups` for the GTK window to present (nested dialogs)."""
-        pending = list(self.all_popups)
-        if self.popup is not None and self.popup not in pending:
-            pending.append(self.popup)
-        self.all_popups.clear()
-        self.popup = None
+        pending = self._popups.clear()
         return pending
 
     def show_banner(self, banner: Banner) -> None:
@@ -683,15 +711,16 @@ class AppStore:
                 if not root:
                     raise NotARepositoryError(f"{path} isn't a Git repository.")
                 path = root
-            existing = None
-            for candidate in self.repositories:
-                try:
-                    same = os.path.isdir(candidate.path) and os.path.isdir(path) and os.path.samefile(candidate.path, path)
-                except OSError:
-                    same = candidate.path == path
-                if same:
-                    existing = candidate
-                    break
+            existing = match_existing_repository(self.repositories, path)
+            if existing is None:
+                for candidate in self.repositories:
+                    try:
+                        same = os.path.isdir(candidate.path) and os.path.isdir(path) and os.path.samefile(candidate.path, path)
+                    except OSError:
+                        same = candidate.path == path
+                    if same:
+                        existing = candidate
+                        break
             if existing:
                 added.append(existing)
                 continue
@@ -2030,14 +2059,7 @@ class AppStore:
         files = [f for f in state.status.working_directory.files if f.include]
         if not files and not amend:
             raise ValidationError("No files selected for commit")
-        oversized = []
-        for file in files:
-            full = os.path.join(repo.path, file.path)
-            try:
-                if os.path.isfile(full) and os.path.getsize(full) >= OVERSIZED_FILE_BYTES:
-                    oversized.append(file.path)
-            except OSError:
-                pass
+        oversized = get_large_file_paths(repo.path, files, limit=OVERSIZED_FILE_BYTES)
         if oversized and not ignore_oversized:
             oversized = files_not_tracked_by_lfs(repo.path, oversized)  # Desktop filesNotTrackedByLFS
         if oversized and not ignore_oversized:
@@ -3290,8 +3312,8 @@ class AppStore:
 
         self._run(work, done)
 
-    def should_background_fetch(self, repo: Repository | None = None) -> bool:
-        """Desktop `shouldBackgroundFetch`: GitHub repos whose last fetch is at least 30 minutes ago."""
+    def should_background_fetch(self, repo: Repository | None = None, last_push: float | None = None) -> bool:
+        """Desktop `shouldBackgroundFetch`: skip when recently fetched or nothing pushed since."""
         repo = repo or self.selected_repository
         if repo is None or repo.github is None or repo.is_missing:
             return False
@@ -3305,7 +3327,11 @@ class AppStore:
                 last = None
         if last is None:
             return True
-        return (time.time() - last) >= BACKGROUND_FETCH_MINIMUM_INTERVAL
+        if (time.time() - last) < BACKGROUND_FETCH_MINIMUM_INTERVAL:
+            return False
+        if last_push is None:
+            return True
+        return last < last_push
 
     @property
     def background_fetch_interval(self) -> int:
@@ -3339,15 +3365,28 @@ class AppStore:
                 try:
                     status = get_status(repo.path)
                     last = get_last_fetched(repo.path)
+                    last_push = None
+                    remotes = []
+                    remote = None
+                    if fetch_remotes and repo.github and repo.id != selected_id:
+                        try:
+                            remotes = get_remotes(repo.path)
+                            remote = self._network_remote(repo, remotes, prefer_upstream=True)
+                            last_push = infer_last_push_for_repository(
+                                self.accounts, repo, remote.url if remote else None
+                            )
+                        except Exception as exc:
+                            log.debug("inferLastPushForRepository failed for %s: %s", repo.path, exc)
                     if (
                         fetch_remotes
                         and repo.github
                         and repo.id != selected_id
-                        and self.should_background_fetch(repo)
+                        and self.should_background_fetch(repo, last_push)
                     ):
                         try:
-                            remotes = get_remotes(repo.path)
-                            remote = self._network_remote(repo, remotes, prefer_upstream=True)
+                            if remote is None:
+                                remotes = remotes or get_remotes(repo.path)
+                                remote = self._network_remote(repo, remotes, prefer_upstream=True)
                             if remote:
                                 fetch(repo.path, remote.name, env=self.env_for_repo(repo, remote.url))
                                 status = get_status(repo.path)

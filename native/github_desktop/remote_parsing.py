@@ -6,9 +6,10 @@ import os
 import re
 import uuid
 from dataclasses import dataclass
+from typing import Sequence
 from urllib.parse import urlparse
 
-from .models import Account, GitHubRepository, Remote, html_url_from_endpoint, is_dotcom_endpoint, is_ghe_endpoint
+from .models import Account, GitHubRepository, Remote, Repository, html_url_from_endpoint, is_dotcom_endpoint, is_ghe_endpoint
 
 GITHUB_GIST = re.compile(r"gist\.github\.com", re.I)
 SSH_RE = re.compile(r"^(?:ssh://)?git@([^:]+):(.+?)(?:\.git)?$")
@@ -22,6 +23,22 @@ class ParsedRemote:
     owner: str
     name: str
     protocol: str
+
+
+@dataclass
+class RepositoryIdentifier:
+    hostname: str | None
+    owner: str
+    name: str
+
+
+@dataclass
+class MatchedGitHubRepository:
+    """Desktop `IMatchedGitHubRepository`."""
+
+    name: str
+    owner: str
+    account: Account
 
 
 def parse_remote(url: str) -> ParsedRemote | None:
@@ -206,6 +223,63 @@ def url_matches_remote(url: str | None, remote: Remote) -> bool:
         and clone.owner.lower() == other.owner.lower()
         and clone.name.lower() == other.name.lower()
     )
+
+
+def parse_repository_identifier(url: str) -> RepositoryIdentifier | None:
+    """Desktop `parseRepositoryIdentifier`: remote URL or `owner/name` shortcut."""
+    parsed = parse_remote(url)
+    if parsed is not None and parsed.owner and parsed.name:
+        return RepositoryIdentifier(hostname=parsed.hostname, owner=parsed.owner, name=parsed.name)
+    pieces = url.split("/")
+    if len(pieces) == 2 and pieces[0] and pieces[1]:
+        return RepositoryIdentifier(hostname=None, owner=pieces[0], name=pieces[1])
+    return None
+
+
+def urls_match(url1: str, url2: str) -> bool:
+    """Desktop `urlsMatch`."""
+    first = parse_repository_identifier(url1)
+    second = parse_repository_identifier(url2)
+    return (
+        first is not None
+        and second is not None
+        and first.hostname == second.hostname
+        and first.owner == second.owner
+        and first.name == second.name
+    )
+
+
+def url_matches_clone_url(url: str, github: GitHubRepository | None) -> bool:
+    """Desktop `urlMatchesCloneURL`."""
+    if github is None or not github.clone_url:
+        return False
+    return urls_match(github.clone_url, url)
+
+
+def repository_matches_remote(github: GitHubRepository, remote: Remote) -> bool:
+    """Desktop `repositoryMatchesRemote`."""
+    return url_matches_remote(github.html_url, remote) or url_matches_remote(github.clone_url, remote)
+
+
+def match_github_repository(accounts: Sequence[Account], remote: str) -> MatchedGitHubRepository | None:
+    """Desktop `matchGitHubRepository`: guess owner/name from accounts + remote URL."""
+    parsed = parse_remote(remote)
+    if parsed is None:
+        return None
+    for account in accounts:
+        host = hostname_from_endpoint(account.endpoint)
+        if parsed.hostname.lower() == host.lower():
+            return MatchedGitHubRepository(name=parsed.name, owner=parsed.owner, account=account)
+    return None
+
+
+def match_existing_repository(repos: Sequence[Repository], path: str) -> Repository | None:
+    """Desktop `matchExistingRepository`: path match after `os.path.normpath`."""
+    needle = os.path.normpath(path)
+    for repo in repos:
+        if os.path.normpath(repo.path) == needle:
+            return repo
+    return None
 
 
 def github_from_remote(url: str, endpoint: str) -> GitHubRepository | None:

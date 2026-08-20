@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from enum import Enum, IntEnum, StrEnum
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
+from uuid import uuid4
 
 
 class AppFileStatusKind(StrEnum):
@@ -1575,6 +1576,7 @@ class Banner:
 class Popup:
     type: PopupType
     payload: dict[str, Any] = field(default_factory=dict)
+    id: str = field(default_factory=lambda: uuid4().hex)
 
 
 class RetryActionType(StrEnum):

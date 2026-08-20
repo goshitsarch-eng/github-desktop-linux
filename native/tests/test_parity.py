@@ -303,10 +303,20 @@ def test_window_actions_cover_menus() -> None:
     src += open(text_tokens_mod.__file__, encoding="utf-8").read()
     src += open(menus_mod.__file__, encoding="utf-8").read()
     from github_desktop import parse_pac as parse_pac_mod, linux_proxy as linux_proxy_mod, offset_from as offset_from_mod
+    from github_desktop import (
+        popup_manager as popup_manager_mod,
+        truncate as truncate_mod,
+        large_files as large_files_mod,
+        infer_last_push as infer_last_push_mod,
+    )
 
     src += open(parse_pac_mod.__file__, encoding="utf-8").read()
     src += open(linux_proxy_mod.__file__, encoding="utf-8").read()
     src += open(offset_from_mod.__file__, encoding="utf-8").read()
+    src += open(popup_manager_mod.__file__, encoding="utf-8").read()
+    src += open(truncate_mod.__file__, encoding="utf-8").read()
+    src += open(large_files_mod.__file__, encoding="utf-8").read()
+    src += open(infer_last_push_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -826,5 +836,16 @@ def test_window_actions_cover_menus() -> None:
         "offsetFromNow",
         "urlWithQueryString",
         "getLatestPRWorkflowRunsLogsForCheckRun",
+        "PopupManager",
+        "TooManyPopups",
+        "truncateWithEllipsis",
+        "getLargeFilePaths",
+        "inferLastPushForRepository",
+        "isValidNotificationPullRequestReview",
+        "matchGitHubRepository",
+        "matchExistingRepository",
+        "urlsMatch",
+        "parseRepositoryIdentifier",
+        "ReceiveLimit",
     ]:
         assert phrase in src

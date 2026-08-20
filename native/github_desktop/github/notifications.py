@@ -6,8 +6,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..models import PopupType, PullRequest
+from ..truncate import truncate_with_ellipsis
 
 REVIEW_STATES = {"APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"}
+VALID_NOTIFICATION_REVIEW_STATES = {"APPROVED", "CHANGES_REQUESTED", "COMMENTED"}
 
 REVIEW_VERBS = {
     "APPROVED": "approved",
@@ -59,6 +61,15 @@ def pull_request_from_payload(data: dict[str, Any] | PullRequest | None) -> Pull
 
 def review_verb(state: str) -> str:
     return REVIEW_VERBS.get((state or "").upper(), "reviewed")
+
+
+def is_valid_notification_pull_request_review(review: dict[str, Any] | str | None) -> bool:
+    """Desktop `isValidNotificationPullRequestReview`: approved, changes requested, or commented."""
+    if isinstance(review, dict):
+        state = str(review.get("state") or "")
+    else:
+        state = str(review or "")
+    return state.upper() in VALID_NOTIFICATION_REVIEW_STATES
 
 
 def notification_repo_full_name(note: dict[str, Any]) -> str:
@@ -151,6 +162,8 @@ def classify_notification(note: dict[str, Any], subject_payload: dict[str, Any] 
     is_review = state in REVIEW_STATES or bool(payload.get("submitted_at"))
     is_pr_resource = bool(payload.get("head") or payload.get("base")) and not is_review
     if is_review and stype in ("PullRequest", ""):
+        if not is_valid_notification_pull_request_review(state or "COMMENTED"):
+            return NotificationAction(title=repo_name, body=title, popup=None, payload=common)
         review = {
             "state": state or "COMMENTED",
             "body": body_text,
@@ -158,9 +171,13 @@ def classify_notification(note: dict[str, Any], subject_payload: dict[str, Any] 
             "submitted_at": payload.get("submitted_at") or payload.get("created_at") or "",
             "user": {"login": login, "avatar_url": user.get("avatar_url") or ""},
         }
+        snippet = truncate_with_ellipsis(body_text, 50)
+        body = f"{login} {review_verb(review['state'])} {title}"
+        if snippet:
+            body = f"{body}\n{snippet}"
         return NotificationAction(
             title=repo_name,
-            body=f"{login} {review_verb(review['state'])} {title}",
+            body=body,
             popup=PopupType.PULL_REQUEST_REVIEW,
             payload={**common, "review": review, "should_checkout": review["state"] != "APPROVED"},
         )
@@ -179,9 +196,13 @@ def classify_notification(note: dict[str, Any], subject_payload: dict[str, Any] 
             "user": {"login": login, "avatar_url": user.get("avatar_url") or ""},
         }
         popup = PopupType.PULL_REQUEST_COMMENT if stype == "PullRequest" else None
+        snippet = truncate_with_ellipsis(body_text, 50)
+        body = f"{login} commented: {title}"
+        if snippet:
+            body = f"{body}\n{snippet}"
         return NotificationAction(
             title=repo_name,
-            body=f"{login} commented: {title}",
+            body=body,
             popup=popup,
             payload={**common, "comment": comment, "should_checkout": True},
         )

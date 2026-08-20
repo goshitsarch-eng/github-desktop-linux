@@ -47,6 +47,7 @@ from ..push_pull import describe_push_pull, format_commit_relative_time, format_
 from ..shells import open_external, open_in_default_program
 from ..store import AppStore
 from ..text_tokens import MaxSummaryLength
+from ..truncate import truncate_with_ellipsis
 from ..version import APP_NAME
 from .avatar import Avatar, AvatarStack, users_from_commit
 from .author_input import AuthorInput
@@ -1737,7 +1738,7 @@ class MainWindow(Adw.ApplicationWindow):
         title = self.store.progress_title or kind.title()
         pct = int(self.store.progress_value * 100)
         if len(title) > 42:
-            title = title[:39] + "…"
+            title = truncate_with_ellipsis(title, 39)
         if pct:
             self._set_push_chrome(f"{title} {pct}%", None, sensitive=False, spinning=True)
         else:

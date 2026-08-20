@@ -36,6 +36,7 @@ from ..models import (
 )
 from ..shells import open_in_default_program
 from ..store import AppStore
+from ..truncate import truncate_with_ellipsis
 
 
 MERGE_OPTIONS = (
@@ -149,9 +150,8 @@ def can_start_operation(
 
 
 def _truncate(name: str, limit: int = 40) -> str:
-    if len(name) <= limit:
-        return name
-    return name[: limit - 1] + "…"
+    """Desktop `truncateWithEllipsis` for choose-branch titles."""
+    return truncate_with_ellipsis(name, limit)
 
 
 def _on_main(fn: Callable[[], None]) -> None:
