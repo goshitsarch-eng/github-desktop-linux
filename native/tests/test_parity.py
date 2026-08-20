@@ -272,6 +272,10 @@ def test_window_actions_cover_menus() -> None:
 
     src += open(editors_mod.__file__, encoding="utf-8").read()
     src += open(dds_mod.__file__, encoding="utf-8").read()
+    from github_desktop import shells as shells_mod, notifications as notifications_mod_os
+
+    src += open(shells_mod.__file__, encoding="utf-8").read()
+    src += open(notifications_mod_os.__file__, encoding="utf-8").read()
     from github_desktop import changed_range as changed_range_mod, group_repositories as group_repos_mod, avatars as avatars_mod
     from github_desktop.github import push_control as push_control_mod
 
@@ -619,5 +623,19 @@ def test_window_actions_cover_menus() -> None:
         "Show More locations",
         "Start tutorial",
         "Not now",
+        "MaxTagNameLength",
+        "isUncommittableSubmodule",
+        "isPartiallyCommittableSubmodule",
+        "warp-terminal",
+        "ghostty",
+        "com.visualstudio.code",
+        "allPopups",
+        "updateCheckoutProgress",
+        "RepoRulesetLink",
+        "grant permission",
+        "Notifications Settings",
+        "Previous tags",
+        "You are not able to cherry-pick from and to the same branch",
+        "new-branch-drop",
     ]:
         assert phrase in src

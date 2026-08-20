@@ -64,6 +64,7 @@ class BranchesFoldout(Gtk.Popover):
         on_view_github: Callable[[Branch], None],
         on_cherry_pick: Callable[[Branch, str], None] | None = None,
         on_cherry_pick_pr: Callable[[PullRequest, str], None] | None = None,
+        on_cherry_pick_new_branch: Callable[[str], None] | None = None,
         on_create_pr: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
@@ -79,6 +80,7 @@ class BranchesFoldout(Gtk.Popover):
         self._on_view_github = on_view_github
         self._on_cherry_pick = on_cherry_pick
         self._on_cherry_pick_pr = on_cherry_pick_pr
+        self._on_cherry_pick_new_branch = on_cherry_pick_new_branch
         self._current_name: str | None = None
         self._github = False
 
@@ -109,7 +111,23 @@ class BranchesFoldout(Gtk.Popover):
         branch_scroll.set_child(self._branch_list)
         branches_page.append(branch_scroll)
         new_btn = Gtk.Button(label="New branch…")
+        new_btn.add_css_class("new-branch-drop")
         new_btn.connect("clicked", lambda *_: self._on_create())
+        if on_cherry_pick_new_branch:
+            try:
+                drop = Gtk.DropTarget.new(str, Gdk.DragAction.MOVE)
+
+                def on_new_drop(_t, value, _x, _y):
+                    if value and self._on_cherry_pick_new_branch:
+                        self.popdown()
+                        self._on_cherry_pick_new_branch(str(value))
+                        return True
+                    return False
+
+                drop.connect("drop", on_new_drop)
+                new_btn.add_controller(drop)
+            except Exception:
+                pass
         branches_page.append(new_btn)
         self._merge_btn = Gtk.Button(label="Merge into current branch")
         self._merge_btn.connect("clicked", self._on_merge_clicked)
@@ -232,7 +250,7 @@ class BranchesFoldout(Gtk.Popover):
             motion.connect("enter", lambda *_a, r=row, p=pr: self._schedule_pr_quick(r, p))
             motion.connect("leave", lambda *_a: self._schedule_hide_pr_quick())
             row.add_controller(motion)
-            if self._on_cherry_pick_pr:
+            if self._on_cherry_pick_pr and pr.head_ref != self._current_name:
                 try:
                     drop = Gtk.DropTarget.new(str, Gdk.DragAction.MOVE)
 
@@ -365,7 +383,7 @@ class BranchesFoldout(Gtk.Popover):
         row.set_activatable(True)
         row._branch = branch  # type: ignore[attr-defined]
         attach_right_click(row, lambda *_ , b=branch, r=row: self._branch_menu(r, b))
-        if self._on_cherry_pick:
+        if self._on_cherry_pick and branch.name != self._current_name:
             try:
                 drop = Gtk.DropTarget.new(str, Gdk.DragAction.MOVE)
 

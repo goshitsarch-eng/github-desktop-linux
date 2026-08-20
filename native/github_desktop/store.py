@@ -319,6 +319,7 @@ class AppStore:
         self.section = RepositorySectionTab(self.settings.repository_section) if self.settings.repository_section in RepositorySectionTab._value2member_map_ else RepositorySectionTab.CHANGES
         self.foldout: FoldoutType | None = None
         self.popup: Popup | None = None
+        self.all_popups: list[Popup] = []
         self.banner: Banner | None = None
         self.cached_repo_rulesets: dict[int, dict] = {}
         self.welcome_step: WelcomeStep | None = None if self.settings.welcome_shown else WelcomeStep.START
@@ -554,12 +555,25 @@ class AppStore:
         return self.repo_state.setdefault(repo.id, RepositoryViewState())
 
     def show_popup(self, popup_type: PopupType, **payload: Any) -> None:
-        self.popup = Popup(popup_type, payload)
+        popup = Popup(popup_type, payload)
+        self.all_popups.append(popup)
+        self.popup = popup
         self.emit()
 
     def close_popup(self) -> None:
-        self.popup = None
+        if self.all_popups:
+            self.all_popups.pop()
+        self.popup = self.all_popups[-1] if self.all_popups else None
         self.emit()
+
+    def take_popups(self) -> list[Popup]:
+        """Drain Desktop `allPopups` for the GTK window to present (nested dialogs)."""
+        pending = list(self.all_popups)
+        if self.popup is not None and self.popup not in pending:
+            pending.append(self.popup)
+        self.all_popups.clear()
+        self.popup = None
+        return pending
 
     def show_banner(self, banner: Banner) -> None:
         self.banner = banner
@@ -1773,10 +1787,15 @@ class AppStore:
         state = self.state_for(repo)
         if not state.status:
             return
+        from .models import is_uncommittable_submodule
+
         files = []
         for f in state.status.working_directory.files:
             if f.path == path:
-                files.append(f.with_include(included))
+                if is_uncommittable_submodule(f):
+                    files.append(f)
+                else:
+                    files.append(f.with_include(included))
             else:
                 files.append(f)
         from .models import WorkingDirectoryStatus
@@ -3418,6 +3437,10 @@ class AppStore:
         return "merge"
 
     def cherry_pick_commits(self, repo: Repository, shas: Sequence[str], target_branch: str | None = None, on_done: Callable[..., None] | None = None, on_progress: Callable[..., None] | None = None) -> None:
+        state = self.state_for(repo)
+        current = state.status.current_branch if state.status else None
+        if target_branch and current and target_branch == current:
+            return
         undo_sha = self._capture_undo(repo)
 
         def work() -> tuple:
@@ -4334,7 +4357,7 @@ class AppStore:
             except Exception:
                 pass
             notes = api.fetch_notifications()
-            enriched: list[tuple[dict, dict | None]] = []
+            enriched: list[tuple[dict, dict | None, list | None]] = []
             for note in notes[:20]:
                 if not is_high_signal_notification(note, selected_full):
                     continue
@@ -4347,19 +4370,34 @@ class AppStore:
                         payload = fetched if isinstance(fetched, dict) else None
                     except Exception:
                         payload = None
-                enriched.append((note, payload))
+                checks = None
+                action = classify_notification(note, payload)
+                if action.popup == PopupType.PULL_REQUEST_CHECKS_FAILED:
+                    pr = action.payload.get("pull_request") if isinstance(action.payload.get("pull_request"), dict) else {}
+                    sha = str(pr.get("head_sha") or (payload or {}).get("head", {}).get("sha") or "")
+                    repo_info = note.get("repository") or {}
+                    full = str(repo_info.get("full_name") or action.payload.get("repository") or "")
+                    if sha and "/" in full:
+                        owner, name = full.split("/", 1)
+                        try:
+                            checks = api.fetch_check_runs(owner, name, sha)
+                        except Exception:
+                            checks = None
+                enriched.append((note, payload, checks))
             return enriched
 
         def done(exc: BaseException | None, result: list | None = None) -> None:
             if exc or not result:
                 return
-            for note, payload in result:
+            for note, payload, checks in result:
                 ident = str(note.get("id") or "")
                 if not ident or ident in self._seen_notifications:
                     continue
                 self._seen_notifications.add(ident)
                 action = classify_notification(note, payload)
                 nid = ident
+                if checks:
+                    action.payload["checks"] = checks
                 if action.popup:
                     self._notification_payloads[nid] = (action.popup, dict(action.payload))
                 show_notification(action.title, action.body, enabled=True, notification_id=nid)

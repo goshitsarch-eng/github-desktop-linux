@@ -557,11 +557,17 @@ def _show_cherry_pick_target(parent: Gtk.Window, store: AppStore, payload: dict[
     search = Gtk.SearchEntry()
     search.set_placeholder_text("Filter branches")
     box.append(search)
+    name_row = Adw.EntryRow(title="New branch name")
+    name_row.set_visible(bool(payload.get("create_branch")))
+    box.append(name_row)
     scroller = Gtk.ScrolledWindow(vexpand=True)
     listbox = Gtk.ListBox()
     listbox.add_css_class("boxed-list")
     scroller.set_child(listbox)
     box.append(scroller)
+    if payload.get("create_branch"):
+        search.set_visible(False)
+        scroller.set_visible(False)
     hint = Gtk.Label(wrap=True, xalign=0)
     box.append(hint)
     start_btn = Gtk.Button(label=f"Cherry-pick {count} {noun}")
@@ -570,7 +576,7 @@ def _show_cherry_pick_target(parent: Gtk.Window, store: AppStore, payload: dict[
     box.append(start_btn)
     toolbar.set_content(box)
     dialog.set_child(toolbar)
-    selected = {"branch": None, "create": False}
+    selected = {"branch": None, "create": bool(payload.get("create_branch"))}
 
     def render() -> None:
         while True:
@@ -588,8 +594,13 @@ def _show_cherry_pick_target(parent: Gtk.Window, store: AppStore, payload: dict[
             row._branch = branch  # type: ignore[attr-defined]
             listbox.append(row)
             shown += 1
-        selected["create"] = shown == 0 and bool(needle)
-        if selected["create"]:
+        selected["create"] = shown == 0 and bool(needle) or bool(payload.get("create_branch"))
+        if payload.get("create_branch"):
+            start_btn.set_label("Cherry-pick to new branch")
+            start_btn.set_sensitive(bool(name_row.get_text().strip()))
+            start_btn.set_tooltip_text("")
+            hint.set_text("A new branch will be created from HEAD, then the commits will be cherry-picked onto it.")
+        elif selected["create"]:
             listbox.append(Adw.ActionRow(title=f"Create branch “{search.get_text().strip()}”"))
             start_btn.set_label("Cherry-pick to new branch")
             start_btn.set_sensitive(True)
@@ -631,7 +642,7 @@ def _show_cherry_pick_target(parent: Gtk.Window, store: AppStore, payload: dict[
 
     def start(*_a: object) -> None:
         if selected["create"]:
-            name = search.get_text().strip()
+            name = name_row.get_text().strip() if payload.get("create_branch") else search.get_text().strip()
             if not name:
                 return
             dialog.close()
@@ -645,6 +656,7 @@ def _show_cherry_pick_target(parent: Gtk.Window, store: AppStore, payload: dict[
         run_cherry(branch.name)
 
     search.connect("search-changed", lambda *_: render())
+    name_row.connect("changed", lambda *_: render())
     listbox.connect("row-activated", on_row)
     listbox.connect("row-selected", on_row)
     start_btn.connect("clicked", start)

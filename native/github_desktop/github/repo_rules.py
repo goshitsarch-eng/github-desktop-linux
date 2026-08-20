@@ -109,6 +109,31 @@ def rulesets_url_for_branch(repository: GitHubRepository | None, branch: str | N
     return f"{html_url}/rules/?ref={ref}"
 
 
+def ruleset_url(repository: GitHubRepository | None, ruleset_id: int) -> str | None:
+    """Desktop `RepoRulesetLink`: ``{htmlURL}/rules/{rulesetId}``."""
+    if repository is None or not ruleset_id:
+        return None
+    html_url = (repository.html_url or "").rstrip("/")
+    if not html_url:
+        return None
+    return f"{html_url}/rules/{int(ruleset_id)}"
+
+
+def repo_rules_failure_heading(leading_text: str, failures: RepoRulesMetadataFailures) -> str:
+    """Desktop `RepoRulesMetadataFailureList` lead-in copy."""
+    total = len(failures.failed) + len(failures.bypassed)
+    if total == 0:
+        return ""
+    noun = "rule" if total == 1 else "rules"
+    if failures.status == "bypass":
+        pronoun = "it" if total == 1 else "them"
+        return (
+            f"{leading_text} fails {total} {noun}, but you can bypass {pronoun}. "
+            "Proceed with caution!"
+        )
+    return f"{leading_text} fails {total} {noun}."
+
+
 def use_repo_rules_logic(account: Account | None, repository: Repository) -> bool:
     """Client-side gate matching Desktop `useRepoRulesLogic`."""
     if account is None or repository is None or repository.github is None:

@@ -2987,6 +2987,50 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
         "Allows the display of notifications when high-signal events take place in the current repository."
     )
     n_group.add(n_row)
+    n_hint = Gtk.Label(wrap=True, xalign=0, use_markup=True)
+    n_hint.add_css_class("dim-label")
+    n_grant = Gtk.Button(label="Grant permission")
+    n_settings = Gtk.Button(label="Notifications Settings")
+    n_actions = Gtk.Box(spacing=8)
+    n_actions.append(n_grant)
+    n_actions.append(n_settings)
+
+    def refresh_notification_hint(*_a: Any) -> None:
+        from ..notifications import get_notifications_permission, notification_preference_hint
+
+        permission = get_notifications_permission()
+        hint = notification_preference_hint(n_row.get_active(), permission)
+        n_hint.set_text(hint)
+        n_hint.set_visible(bool(hint))
+        n_grant.set_visible(n_row.get_active() and permission == "default")
+        n_settings.set_visible(n_row.get_active() and permission in {"granted", "denied"})
+
+    def grant_permission(*_a: Any) -> None:
+        from ..notifications import request_notifications_permission
+
+        request_notifications_permission()
+        refresh_notification_hint()
+
+    def open_settings(*_a: Any) -> None:
+        from ..notifications import open_notification_settings
+
+        open_notification_settings()
+
+    n_row.connect("notify::active", refresh_notification_hint)
+    n_grant.connect("clicked", grant_permission)
+    n_settings.connect("clicked", open_settings)
+    hint_row = Gtk.ListBoxRow()
+    hint_row.set_activatable(False)
+    hint_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+    hint_box.set_margin_top(8)
+    hint_box.set_margin_bottom(8)
+    hint_box.set_margin_start(12)
+    hint_box.set_margin_end(12)
+    hint_box.append(n_hint)
+    hint_box.append(n_actions)
+    hint_row.set_child(hint_box)
+    n_group.add(hint_row)
+    refresh_notification_hint()
     notes.add(n_group)
 
     prompts = Adw.PreferencesPage(title="Prompts", icon_name="dialog-question-symbolic")
@@ -3163,19 +3207,111 @@ def show_create_tag(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]
     repo = store.selected_repository
     if not repo:
         return
+    from ..git.ops import create_tag
+    from ..models import create_tag_error, sanitize_ref_name
+
     state = store.state_for(repo)
     sha = (payload or {}).get("sha") or (state.selected_commit.sha if state.selected_commit else (state.status.current_tip if state.status else ""))
+    local_tags = dict(state.tags or {})
+    initial = sanitize_ref_name(str((payload or {}).get("initial_name") or ""))
+    dialog = Adw.Dialog()
+    dialog.set_content_width(480)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(Adw.WindowTitle(title="Create a tag", subtitle="Annotated tag on the selected commit."))
+    cancel = Gtk.Button(label="Cancel")
+    ok = Gtk.Button(label="Create tag")
+    ok.add_css_class("suggested-action")
+    header.pack_start(cancel)
+    header.pack_end(ok)
+    toolbar.add_top_bar(header)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+    box.set_margin_top(18)
+    box.set_margin_bottom(18)
+    box.set_margin_start(18)
+    box.set_margin_end(18)
+    name_row = Adw.EntryRow(title="Name")
+    name_row.set_text(initial)
+    error = Gtk.Label(wrap=True, xalign=0)
+    error.add_css_class("error")
+    error.set_visible(False)
+    previous_heading = Gtk.Label(label="Previous tags", xalign=0)
+    previous_heading.add_css_class("heading")
+    previous_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+    box.append(name_row)
+    box.append(error)
+    box.append(previous_heading)
+    box.append(previous_box)
+    toolbar.set_content(box)
+    dialog.set_child(toolbar)
+    closed = {"done": False, "updating": False}
 
-    def submit(values: dict[str, str]) -> None:
-        from ..git.ops import create_tag
+    def current_name() -> str:
+        return sanitize_ref_name(name_row.get_text())
 
-        name = values.get("name", "").strip()
-        if name and sha:
-            create_tag(repo.path, name, sha)
-            state.local_tags_to_push.append(name)
-            store.refresh_repository(repo)
+    def filtered_tags(needle: str) -> list[str]:
+        keys = list(local_tags.keys())
+        if not needle:
+            return keys
+        return [item for item in keys if needle in item]
 
-    _text_dialog(parent, "Create tag", "Annotated tag on the selected commit.", [("name", "Name", "")], submit, "Create tag")
+    def refresh(*_a: Any) -> None:
+        if closed["updating"]:
+            return
+        name = current_name()
+        if name_row.get_text() != name:
+            closed["updating"] = True
+            name_row.set_text(name)
+            closed["updating"] = False
+        err = create_tag_error(name, local_tags)
+        error.set_text(err or "")
+        error.set_visible(bool(err))
+        ok.set_sensitive(bool(name) and err is None)
+        matches = filtered_tags(name)
+        child = previous_box.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            previous_box.remove(child)
+            child = nxt
+        if not local_tags:
+            previous_heading.set_visible(False)
+            previous_box.set_visible(False)
+            return
+        previous_heading.set_visible(True)
+        previous_box.set_visible(True)
+        last_three = matches[-3:]
+        if not last_three:
+            previous_box.append(Gtk.Label(label=f"No matches found for '{name}'", xalign=0, wrap=True))
+        else:
+            for item in last_three:
+                tag = Gtk.Label(label=item, xalign=0)
+                tag.add_css_class("monospace")
+                previous_box.append(tag)
+
+    def submit(*_a: Any) -> None:
+        if closed["done"]:
+            return
+        name = current_name()
+        if create_tag_error(name, local_tags) or not name or not sha:
+            return
+        closed["done"] = True
+        dialog.close()
+        create_tag(repo.path, name, sha)
+        state.local_tags_to_push.append(name)
+        state.tags[name] = str(sha)
+        store.refresh_repository(repo)
+
+    def cancel_clicked(*_a: Any) -> None:
+        if closed["done"]:
+            return
+        closed["done"] = True
+        dialog.close()
+
+    name_row.connect("changed", refresh)
+    cancel.connect("clicked", cancel_clicked)
+    ok.connect("clicked", submit)
+    refresh()
+    dialog.present(parent)
 
 
 def show_delete_tag(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:

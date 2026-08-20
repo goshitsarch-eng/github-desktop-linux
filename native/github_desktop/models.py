@@ -624,6 +624,42 @@ class WorkingDirectoryFileChange:
         return replace(self, selection=selection)
 
 
+UNCOMMITTABLE_SUBMODULE_TOOLTIP = (
+    "This submodule change cannot be added to a commit in this repository because it contains changes that have not been committed."
+)
+PARTIALLY_COMMITTABLE_SUBMODULE_TOOLTIP = (
+    "Only changes that have been committed within the submodule will be added to this repository. You need to commit any other modified or untracked changes in the submodule before including them in this repository."
+)
+
+
+def is_uncommittable_submodule(file: WorkingDirectoryFileChange) -> bool:
+    """Desktop `isUncommittableSubmodule`: modified submodule without a commit change."""
+    status = file.status.submodule_status
+    return (
+        status is not None
+        and file.status.kind == AppFileStatusKind.MODIFIED
+        and not status.commit_changed
+    )
+
+
+def is_partially_committable_submodule(file: WorkingDirectoryFileChange) -> bool:
+    """Desktop `isPartiallyCommittableSubmodule`: committed submodule still has WD changes."""
+    status = file.status.submodule_status
+    if status is None:
+        return False
+    return (status.commit_changed or file.status.kind == AppFileStatusKind.NEW) and (
+        status.modified_changes or status.untracked_changes
+    )
+
+
+def submodule_include_tooltip(file: WorkingDirectoryFileChange) -> str | None:
+    if is_uncommittable_submodule(file):
+        return UNCOMMITTABLE_SUBMODULE_TOOLTIP
+    if is_partially_committable_submodule(file):
+        return PARTIALLY_COMMITTABLE_SUBMODULE_TOOLTIP
+    return None
+
+
 @dataclass
 class CommittedFileChange:
     path: str
@@ -664,8 +700,13 @@ class WorkingDirectoryStatus:
         return cls(list(files), include_all)
 
     def with_include_all_files(self, include_all: bool) -> "WorkingDirectoryStatus":
-        files = [f.with_include(include_all) for f in self.files]
-        return WorkingDirectoryStatus(files, include_all)
+        files = []
+        for item in self.files:
+            if is_uncommittable_submodule(item):
+                files.append(item.with_include(False))
+            else:
+                files.append(item.with_include(include_all))
+        return WorkingDirectoryStatus.from_files(files)
 
     def find_file(self, path: str) -> WorkingDirectoryFileChange | None:
         for f in self.files:
@@ -1492,6 +1533,18 @@ def git_author_name_is_valid(name: str) -> bool:
 INVALID_GIT_AUTHOR_NAME_MESSAGE = (
     "Name can't contain a colon or be all ASCII control characters."
 )
+
+
+MaxTagNameLength = 245
+
+
+def create_tag_error(name: str, local_tags: Mapping[str, str] | None = None) -> str | None:
+    """Desktop `CreateTag.getCurrentError` copy."""
+    if len(name) > MaxTagNameLength:
+        return f"The tag name cannot be longer than {MaxTagNameLength} characters"
+    if local_tags is not None and name in local_tags:
+        return f"A tag named {name} already exists"
+    return None
 
 
 def sanitize_ref_name(name: str) -> str:

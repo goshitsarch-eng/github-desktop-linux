@@ -33,6 +33,9 @@ from ..models import (
     WorkingDirectoryFileChange,
     format_commit_attribution,
     get_conflicted_files,
+    is_partially_committable_submodule,
+    is_uncommittable_submodule,
+    submodule_include_tooltip,
 )
 from ..push_pull import describe_push_pull, format_commit_relative_time, format_last_fetched
 from ..shells import open_external, open_in_default_program
@@ -164,10 +167,9 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self._banner.set_revealed(False)
         popup = self.store.popup
-        if popup:
-            current = popup
-            self.store.popup = None
-            present_popup(self, self.store, current.type, current.payload)
+        if popup or self.store.all_popups:
+            for current in self.store.take_popups():
+                present_popup(self, self.store, current.type, current.payload)
         self._apply_underline_links()
 
     def _apply_underline_links(self) -> None:
@@ -589,6 +591,14 @@ class MainWindow(Adw.ApplicationWindow):
             ),
             on_cherry_pick_pr=lambda pr, sha: self._repo_op(
                 lambda r: self.store.cherry_pick_onto_pull_request(r, pr, [s for s in str(sha).split(",") if s])
+            ),
+            on_cherry_pick_new_branch=lambda sha: self._repo_op(
+                lambda r: self.store.show_popup(
+                    PopupType.MULTI_COMMIT_OPERATION,
+                    kind=MultiCommitOperationKind.CHERRY_PICK,
+                    shas=[s for s in str(sha).split(",") if s],
+                    create_branch=True,
+                )
             ),
         )
         self._branch_btn.set_popover(self._branches_foldout)
@@ -1221,7 +1231,11 @@ class MainWindow(Adw.ApplicationWindow):
             self._repo_content.set_visible_child_name("content")
         state = self.store.state_for(repo)
         branch = state.status.current_branch if state.status else "detached"
-        self._branch_btn.set_label(branch or "detached HEAD")
+        if self.store.progress_kind == "checkout":
+            self._update_checkout_progress()
+        else:
+            self._branch_btn.set_label(branch or "detached HEAD")
+            self._branch_btn.set_sensitive(True)
         default_name = self.store.default_branch_name(repo)
         current_branch = state.status.current_branch if state.status else None
         self._branches_foldout.refresh(
@@ -1311,6 +1325,11 @@ class MainWindow(Adw.ApplicationWindow):
         if not hasattr(self, "_push_btn"):
             return
         kind = self.store.progress_kind
+        if kind == "checkout":
+            self._update_checkout_progress()
+            return
+        if hasattr(self, "_branch_btn") and not kind:
+            self._branch_btn.set_sensitive(True)
         if not kind:
             self._push_btn.set_sensitive(True)
             if hasattr(self, "_push_menu_btn"):
@@ -1392,7 +1411,23 @@ class MainWindow(Adw.ApplicationWindow):
                 self._push_icon.set_visible(True)
         self._push_btn.set_sensitive(sensitive)
 
+    def _update_checkout_progress(self) -> None:
+        """Desktop `updateCheckoutProgress` on the branch dropdown."""
+        if not hasattr(self, "_branch_btn"):
+            return
+        title = self.store.progress_title or "Checking out"
+        pct = int(self.store.progress_value * 100)
+        description = title
+        if pct:
+            description = f"{title} ({pct}%)"
+        self._branch_btn.set_label(description)
+        self._branch_btn.set_tooltip_text(title)
+        self._branch_btn.set_sensitive(False)
+
     def _update_push_label(self, state) -> None:
+        if self.store.progress_kind == "checkout":
+            self._update_checkout_progress()
+            return
         if self.store.progress_kind:
             self._update_network_progress()
             return
@@ -1632,6 +1667,8 @@ class MainWindow(Adw.ApplicationWindow):
                 for file in files:
                     self._file_list.append(self._file_row(file))
         include_all = state.status.working_directory.include_all if state.status else True
+        busy = bool(state.is_committing or state.is_generating_commit_message)
+        self._include_all.set_sensitive(not busy)
         self._include_all.set_inconsistent(include_all is None)
         self._include_all.set_active(bool(include_all))
         self._building = False
@@ -1857,8 +1894,19 @@ class MainWindow(Adw.ApplicationWindow):
         box = Gtk.Box(spacing=8)
         check = Gtk.CheckButton()
         kind = file.selection.get_selection_type()
-        check.set_active(kind != DiffSelectionType.NONE)
-        check.set_inconsistent(kind == DiffSelectionType.PARTIAL)
+        uncommittable = is_uncommittable_submodule(file)
+        partial_sub = is_partially_committable_submodule(file)
+        include = False if uncommittable else (kind != DiffSelectionType.NONE)
+        check.set_active(include)
+        check.set_inconsistent((kind == DiffSelectionType.PARTIAL) or (partial_sub and include))
+        repo = self.store.selected_repository
+        state = self.store.state_for(repo) if repo else None
+        busy = bool(state and (state.is_committing or state.is_generating_commit_message))
+        check.set_sensitive(not busy and not uncommittable)
+        tooltip = submodule_include_tooltip(file)
+        if tooltip:
+            check.set_tooltip_text(tooltip)
+            row.set_tooltip_text(tooltip)
         check.connect("toggled", lambda btn, p=file.path: self._toggle_file(p, btn.get_active()))
         label = Gtk.Label(label=file.path, xalign=0, hexpand=True)
         label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
@@ -3234,6 +3282,22 @@ class MainWindow(Adw.ApplicationWindow):
                     'Want to <a href="switch">switch branches</a>?'
                 )
             )
+        if repo.github:
+            msg_fail = state.repo_rules.commit_message_patterns.get_failed_rules(message)
+            if msg_fail.status != "pass":
+                action_rows.append(self._repo_rules_failure_list("This commit message", msg_fail, repo.github, branch))
+            if email:
+                email_fail = state.repo_rules.commit_author_email_patterns.get_failed_rules(email)
+                if email_fail.status != "pass":
+                    action_rows.append(
+                        self._repo_rules_failure_list("The email in your Git config", email_fail, repo.github, branch)
+                    )
+            if unpublished and branch:
+                name_fail = state.repo_rules.branch_name_patterns.get_failed_rules(branch)
+                if name_fail.status != "pass":
+                    action_rows.append(
+                        self._repo_rules_failure_list(f"The branch '{branch}'", name_fail, repo.github, branch)
+                    )
         if warnings or action_rows:
             extra = [
                 line
@@ -3243,6 +3307,8 @@ class MainWindow(Adw.ApplicationWindow):
                 and "Stop amending" not in line
                 and "requires signed commits" not in line
                 and "may prevent pushing" not in line
+                and not line.startswith("The commit message ")
+                and not line.startswith("The commit author email ")
             ]
             self._rules_warn.set_text("\n".join(extra) if extra else "\n".join(warnings))
             self._rules_warn.set_visible(bool(extra))
@@ -3304,6 +3370,40 @@ class MainWindow(Adw.ApplicationWindow):
         label.connect("activate-link", self._on_commit_warning_link)
         return label
 
+    def _repo_rules_failure_list(self, leading: str, failures, repository, branch: str | None) -> Gtk.Widget:
+        """Desktop `RepoRulesMetadataFailureList` with per-ruleset links."""
+        from ..github.repo_rules import repo_rules_failure_heading, ruleset_url, rulesets_url_for_branch
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.add_css_class("repo-rules-failure-list-component")
+        heading = repo_rules_failure_heading(leading, failures)
+        view_all = rulesets_url_for_branch(repository, branch) if branch else None
+        if view_all:
+            escaped = GLib.markup_escape_text(heading)
+            markup = f'{escaped} <a href="{GLib.markup_escape_text(view_all)}">View all rulesets for this branch.</a>'
+            box.append(self._commit_warning_markup(markup))
+        else:
+            label = Gtk.Label(label=heading, wrap=True, xalign=0)
+            label.add_css_class("repo-rules-warning")
+            box.append(label)
+        for group_name, items in (("Failed rules:", failures.failed), ("Bypassed rules:", failures.bypassed)):
+            if not items:
+                continue
+            group = Gtk.Label(label=group_name, xalign=0)
+            group.add_css_class("heading")
+            box.append(group)
+            for item in items:
+                href = ruleset_url(repository, item.ruleset_id) or ""
+                text = GLib.markup_escape_text(item.description)
+                if href:
+                    row = self._commit_warning_markup(f'<a href="{GLib.markup_escape_text(href)}">{text}</a>')
+                    row.add_css_class("repo-ruleset-link")
+                else:
+                    row = Gtk.Label(label=item.description, wrap=True, xalign=0)
+                    row.add_css_class("repo-rules-warning")
+                box.append(row)
+        return box
+
     def _on_commit_warning_link(self, _label: Gtk.Label, uri: str) -> bool:
         if uri == "fork":
             self.store.show_popup(PopupType.CREATE_FORK)
@@ -3329,6 +3429,9 @@ class MainWindow(Adw.ApplicationWindow):
                 href = rulesets_url_for_branch(repo.github, branch)
                 if href:
                     open_external(href)
+            return True
+        if uri.startswith("http://") or uri.startswith("https://"):
+            open_external(uri)
             return True
         return False
 

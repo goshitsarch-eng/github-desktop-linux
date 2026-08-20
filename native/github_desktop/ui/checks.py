@@ -132,6 +132,8 @@ def _runs_from_payload(store: AppStore, payload: dict[str, Any]) -> list[RefChec
                     html_url=item.get("html_url"),
                 )
             )
+    if coerced:
+        return coerced
     repo = store.selected_repository
     if repo:
         live = list(store.state_for(repo).check_runs or [])

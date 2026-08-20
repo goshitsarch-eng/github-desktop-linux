@@ -172,6 +172,9 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             from github_desktop.ui.dialogs import show_initialize_lfs
 
             show_initialize_lfs(win, store, {"paths": [str(git_repo)]})
+            from github_desktop.ui.dialogs import show_create_tag
+
+            show_create_tag(win, store, {"sha": "deadbeef"})
             from github_desktop.ui.dialogs import show_create_repository
 
             show_create_repository(win, store, "")
