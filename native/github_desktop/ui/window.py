@@ -1498,8 +1498,14 @@ class MainWindow(Adw.ApplicationWindow):
             if row is None:
                 break
             self._repo_list.remove(row)
-        github = [r for r in self.store.repositories if r.github]
-        other = [r for r in self.store.repositories if not r.github]
+        from ..group_repositories import group_repositories
+
+        groups = group_repositories(self.store.repositories, self.store.settings.recent_repository_ids)
+        disambiguation = {
+            item.repository.id: item.needs_disambiguation
+            for group in groups
+            for item in group.items
+        }
 
         def add_group(title: str, repos) -> None:
             if not repos:
@@ -1512,9 +1518,19 @@ class MainWindow(Adw.ApplicationWindow):
             header.set_child(label)
             self._repo_list.append(header)
             for repo in repos:
-                if needle and needle not in repo.display_name.lower() and needle not in repo.path.lower():
+                haystack = " ".join(
+                    [
+                        repo.display_name,
+                        repo.path,
+                        repo.github.full_name if repo.github else "",
+                    ]
+                ).lower()
+                if needle and needle not in haystack:
                     continue
-                row = Adw.ActionRow(title=repo.display_name, subtitle=repo.path)
+                title_text = repo.display_name
+                if disambiguation.get(repo.id) and repo.github:
+                    title_text = repo.github.full_name
+                row = Adw.ActionRow(title=title_text, subtitle=repo.path)
                 if repo.is_missing:
                     row.set_subtitle("Can't find this repository")
                 ab = self.store.state_for(repo).ahead_behind
@@ -1544,8 +1560,21 @@ class MainWindow(Adw.ApplicationWindow):
                 attach_right_click(row, lambda *_ , r=row, repository=repo: self._repo_list_menu(r, repository))
                 self._repo_list.append(row)
 
-        add_group("GitHub", github)
-        add_group("Other", other)
+        for group in groups:
+            visible = []
+            for item in group.items:
+                repo = item.repository
+                haystack = " ".join(
+                    [
+                        repo.display_name,
+                        repo.path,
+                        repo.github.full_name if repo.github else "",
+                    ]
+                ).lower()
+                if needle and needle not in haystack:
+                    continue
+                visible.append(repo)
+            add_group(group.label, visible)
         for cloning in self.store.cloning:
             pct = int((cloning.progress or 0) * 100)
             title = f"Cloning… {pct}%" if pct else "Cloning…"
@@ -2936,12 +2965,28 @@ class MainWindow(Adw.ApplicationWindow):
 
         name, email = get_author_identity(repo.path)
         account = self.store.account_for_repo(repo)
+        state = self.store.state_for(repo)
+        email_failures = state.repo_rules.commit_author_email_patterns.get_failed_rules(email or "")
+        disallowed = email_failures.status == "fail"
         clear_box(self._author_avatar_host)
-        avatar = Avatar(name or (account.login if account else "Git"), email or "", login=account.login if account else None, avatar_url=account.avatar_url if account else None, size=28)
+        avatar = Avatar(
+            name or (account.login if account else "Git"),
+            email or "",
+            login=account.login if account else None,
+            avatar_url=account.avatar_url if account else None,
+            size=28,
+            account=account,
+            endpoint=account.endpoint if account else None,
+        )
         self._author_avatar_host.append(avatar)
         misattributed = bool(account and email and not is_attributable_email_for(account, email))
         self._author_btn.remove_css_class("author-warning")
-        if misattributed:
+        self._author_btn.remove_css_class("author-error")
+        if disallowed:
+            self._author_btn.add_css_class("author-error")
+            self._author_warn.set_text("This email address is disallowed. View warning.")
+            self._author_warn.set_visible(True)
+        elif misattributed:
             self._author_btn.add_css_class("author-warning")
             self._author_warn.set_text("This email address doesn't match your GitHub account. Commits may not be attributed to you.")
             self._author_warn.set_visible(True)
@@ -2949,11 +2994,36 @@ class MainWindow(Adw.ApplicationWindow):
             self._author_warn.set_visible(False)
         self._author_btn.set_tooltip_text(f"{name or 'Unknown'} <{email or 'no email'}>")
         clear_box(self._author_popover_box)
-        heading = Gtk.Label(label="Commit author", xalign=0)
+        heading_text = "Commit author"
+        if disallowed:
+            heading_text = "This email address is disallowed"
+        elif misattributed:
+            heading_text = "This commit will be misattributed"
+        heading = Gtk.Label(label=heading_text, xalign=0)
         heading.add_css_class("heading")
         self._author_popover_box.append(heading)
         self._author_popover_box.append(Gtk.Label(label=f"{name or ''} <{email or ''}>", xalign=0, wrap=True))
-        if misattributed:
+        if disallowed:
+            total = len(email_failures.failed) + len(email_failures.bypassed)
+            warn = Gtk.Label(
+                label=(
+                    f"The email in your global Git config ({email}) fails {total} "
+                    f"rule{'s' if total != 1 else ''}."
+                ),
+                wrap=True,
+                xalign=0,
+            )
+            warn.add_css_class("warning")
+            self._author_popover_box.append(warn)
+            from ..github.repo_rules import rulesets_url_for_branch
+
+            branch = state.status.current_branch if state.status else None
+            uri = rulesets_url_for_branch(repo.github, branch) if repo.github else None
+            if uri:
+                link = Gtk.LinkButton(uri=uri, label="View repository rulesets")
+                link.set_halign(Gtk.Align.START)
+                self._author_popover_box.append(link)
+        elif misattributed:
             warn = Gtk.Label(
                 label="This commit may not be attributed to your GitHub account. Choose an email below or update Git config.",
                 wrap=True,
@@ -3126,7 +3196,7 @@ class MainWindow(Adw.ApplicationWindow):
                     'Want to <a href="fork">create a fork</a>?'
                 )
             )
-        elif branch and branch in (state.protected_branches or []):
+        elif branch and state.current_branch_protected:
             warnings.insert(0, f"{branch} is a protected branch. Want to switch branches?")
             action_rows.append(
                 self._commit_warning_markup(

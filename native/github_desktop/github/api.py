@@ -20,7 +20,8 @@ from ..models import (
     PullRequest,
     RefCheck,
 )
-from .ci_checks import annotation_from_api, duration_ms, get_check_run_short_description
+from .ci_checks import annotation_from_api, api_status_to_ref_check, duration_ms, get_check_run_short_description
+from .push_control import PushControl, default_push_control
 from ..version import APP_NAME, __version__
 
 log = get_logger()
@@ -332,7 +333,38 @@ class GitHubAPI:
             if len(runs) < 100:
                 break
             page += 1
-        return mapped
+        statuses: list[RefCheck] = []
+        try:
+            statuses = [api_status_to_ref_check(item) for item in self.fetch_combined_ref_status(owner, name, ref)]
+        except APIError:
+            statuses = []
+        return statuses + mapped
+
+    def fetch_combined_ref_status(self, owner: str, name: str, ref: str) -> list[dict[str, Any]]:
+        """Desktop `fetchCombinedRefStatus` (`GET /commits/{ref}/status`)."""
+        quoted = urllib.parse.quote(ref)
+        try:
+            data = self.get(
+                f"/repos/{owner}/{name}/commits/{quoted}/status",
+                query={"per_page": "100"},
+            )
+        except APIError:
+            return []
+        if not isinstance(data, dict):
+            return []
+        items = data.get("statuses") or []
+        return [item for item in items if isinstance(item, dict)]
+
+    def get_avatar_token(self) -> str | None:
+        """Desktop `getAvatarToken` (`GET /desktop/avatar-token`) for GHE email avatars."""
+        try:
+            data = self.get("/desktop/avatar-token")
+        except APIError:
+            return None
+        if isinstance(data, dict):
+            token = data.get("avatar_token")
+            return token if isinstance(token, str) and token else None
+        return None
 
     def fetch_workflow_jobs_for_sha(self, owner: str, name: str, sha: str) -> list[dict[str, Any]]:
         try:
@@ -430,6 +462,31 @@ class GitHubAPI:
             return [i.get("name") for i in items if i.get("name")]
         except APIError:
             return []
+
+    def fetch_push_control(self, owner: str, name: str, branch: str) -> PushControl:
+        """Desktop `fetchPushControl`. On failure, assume the user can push."""
+        path = f"/repos/{owner}/{name}/branches/{urllib.parse.quote(branch, safe='')}/push_control"
+        extra = {"Accept": "application/vnd.github.phandalin-preview"}
+        try:
+            data = self.get(path, extra_headers=extra)
+        except APIError:
+            log.info("fetchPushControl unable to check if branch is potentially pushable")
+            return default_push_control()
+        if not isinstance(data, dict):
+            return default_push_control()
+        checks = data.get("required_status_checks")
+        return PushControl(
+            required_status_checks=list(checks) if isinstance(checks, list) else [],
+            required_approving_review_count=int(data.get("required_approving_review_count") or 0),
+            allow_actor=data.get("allow_actor"),
+            pattern=data.get("pattern"),
+            required_signatures=bool(data.get("required_signatures")),
+            required_linear_history=bool(data.get("required_linear_history")),
+            allow_deletions=data.get("allow_deletions"),
+            allow_force_pushes=data.get("allow_force_pushes"),
+            required_conversation_resolution=bool(data.get("required_conversation_resolution")),
+            lock_branch=bool(data.get("lock_branch")),
+        )
 
     def fetch_repo_rules_for_branch(self, owner: str, name: str, branch: str) -> list[dict[str, Any]]:
         path = f"/repos/{owner}/{name}/rules/branches/{urllib.parse.quote(branch, safe='')}"

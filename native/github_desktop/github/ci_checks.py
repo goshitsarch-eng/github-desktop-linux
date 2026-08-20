@@ -130,6 +130,27 @@ def failing_checks(runs: Iterable[RefCheck]) -> list[RefCheck]:
     return [r for r in runs if r.conclusion in FAILING_CONCLUSIONS or is_failure(r)]
 
 
+def api_status_to_ref_check(api_status: dict) -> RefCheck:
+    """Desktop `apiStatusToRefCheck`: map a legacy combined commit status to `IRefCheck`."""
+    state = str(api_status.get("state") or "")
+    if state == "success":
+        status, conclusion = "completed", "success"
+    elif state == "pending":
+        status, conclusion = "in_progress", None
+    else:
+        status, conclusion = "completed", "failure"
+    return RefCheck(
+        id=int(api_status.get("id") or 0),
+        name=api_status.get("context") or "",
+        description=get_check_run_short_description(status, conclusion),
+        status=status,
+        conclusion=conclusion,
+        html_url=api_status.get("target_url"),
+        app_name="",
+        check_suite_id=None,
+    )
+
+
 def summarize_check_runs(runs: Sequence[RefCheck]) -> str:
     """Desktop `CIStatus` roll-up: success, failure, pending, or empty."""
     items = list(runs)

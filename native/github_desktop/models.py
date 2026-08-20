@@ -1412,9 +1412,42 @@ def parse_co_authors(text: str) -> list[Author]:
     return authors
 
 
+def is_dotcom_endpoint(endpoint: str | None) -> bool:
+    text = (endpoint or "").rstrip("/")
+    return "api.github.com" in text or text in {"https://github.com", "http://github.com"}
+
+
+def is_ghe_endpoint(endpoint: str | None) -> bool:
+    """Desktop `isGHE`: hostname ends with `.ghe.com`."""
+    from urllib.parse import urlparse
+
+    host = urlparse(endpoint or "").hostname or ""
+    return host.endswith(".ghe.com")
+
+
+def is_ghes_endpoint(endpoint: str | None) -> bool:
+    """Desktop `isGHES`: not github.com and not ghe.com."""
+    return bool(endpoint) and not is_dotcom_endpoint(endpoint) and not is_ghe_endpoint(endpoint)
+
+
+def has_write_permission(github: GitHubRepository | None) -> bool:
+    """Desktop `hasWritePermission`: unknown permissions are treated as writable."""
+    if github is None:
+        return True
+    return github.permissions is None or github.permissions != "read"
+
+
 def html_url_from_endpoint(endpoint: str) -> str:
     if endpoint.rstrip("/") == "https://api.github.com":
         return "https://github.com"
+    if is_ghe_endpoint(endpoint):
+        from urllib.parse import urlparse, urlunparse
+
+        parsed = urlparse(endpoint)
+        host = parsed.hostname or ""
+        if host.startswith("api."):
+            host = host[len("api.") :]
+        return urlunparse((parsed.scheme or "https", host, "/", "", "", "")).rstrip("/")
     return endpoint.replace("/api/v3", "").rstrip("/")
 
 

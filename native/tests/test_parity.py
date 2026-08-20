@@ -271,6 +271,13 @@ def test_window_actions_cover_menus() -> None:
 
     src += open(editors_mod.__file__, encoding="utf-8").read()
     src += open(dds_mod.__file__, encoding="utf-8").read()
+    from github_desktop import changed_range as changed_range_mod, group_repositories as group_repos_mod, avatars as avatars_mod
+    from github_desktop.github import push_control as push_control_mod
+
+    src += open(changed_range_mod.__file__, encoding="utf-8").read()
+    src += open(group_repos_mod.__file__, encoding="utf-8").read()
+    src += open(avatars_mod.__file__, encoding="utf-8").read()
+    src += open(push_control_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -565,5 +572,21 @@ def test_window_actions_cover_menus() -> None:
         "checkoutBranch",
         "Show diff",
         "pixbuf_from_dds",
+        "diff-add-inner",
+        "diff-delete-inner",
+        "relativeChanges",
+        "getDiffTokens",
+        "push_control",
+        "is_branch_pushable",
+        "fetchCombinedRefStatus",
+        "No newline at end of file",
+        "Unable to locate Git",
+        "Install Git",
+        "Open without Git",
+        "desktop/avatar-token",
+        "This email address is disallowed",
+        "group_repositories",
+        "recent_repository_ids",
+        "current_branch_protected",
     ]:
         assert phrase in src

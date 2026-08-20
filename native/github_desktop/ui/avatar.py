@@ -11,7 +11,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gdk, GLib, Gtk
 
-from ..avatars import avatar_urls, initials_for
+from ..avatars import avatar_urls, ensure_avatar_token, initials_for
 
 _CACHE: dict[str, Gdk.Texture] = {}
 _FAILED: set[str] = set()
@@ -35,6 +35,8 @@ class Avatar(Gtk.Overlay):
         login: str | None = None,
         avatar_url: str | None = None,
         size: int = 28,
+        endpoint: str | None = None,
+        account: object | None = None,
     ) -> None:
         super().__init__()
         self._size = max(16, int(size))
@@ -55,10 +57,23 @@ class Avatar(Gtk.Overlay):
         self._image.set_visible(False)
         self.add_overlay(self._image)
         self.set_tooltip_text(name or email or login or "Unknown author")
+        self._endpoint = endpoint or getattr(account, "endpoint", None)
+        self._account = account
         if not _offline():
-            urls = avatar_urls(email=email, login=login, avatar_url=avatar_url, size=self._size * 2)
-            if urls:
-                threading.Thread(target=self._fetch, args=(urls,), daemon=True).start()
+            def load() -> None:
+                token = ensure_avatar_token(account) if account is not None else None
+                urls = avatar_urls(
+                    email=email,
+                    login=login,
+                    avatar_url=avatar_url,
+                    size=self._size * 2,
+                    endpoint=self._endpoint,
+                    avatar_token=token,
+                )
+                if urls:
+                    self._fetch(urls)
+
+            threading.Thread(target=load, daemon=True).start()
 
     def _fetch(self, urls: list[str]) -> None:
         for url in urls:

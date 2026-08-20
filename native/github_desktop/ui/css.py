@@ -21,6 +21,16 @@ APP_CSS = """
 .diff-del {
   background-color: alpha(@error_color, 0.18);
 }
+.diff-add-inner {
+  background-color: alpha(@success_color, 0.45);
+}
+.diff-delete-inner {
+  background-color: alpha(@error_color, 0.45);
+}
+.diff-no-newline {
+  opacity: 0.55;
+  min-width: 1.2em;
+}
 .diff-hunk {
   background-color: alpha(@accent_bg_color, 0.18);
   font-weight: 600;
@@ -221,6 +231,10 @@ APP_CSS = """
 }
 .author-warning {
   border: 2px solid @warning_color;
+  border-radius: 999px;
+}
+.author-error {
+  border: 2px solid @error_color;
   border-radius: 999px;
 }
 .whitespace-hint {

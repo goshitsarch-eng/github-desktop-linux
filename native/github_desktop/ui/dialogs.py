@@ -299,12 +299,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
             on_confirm=lambda: _reset(store, payload),
         ),
         PopupType.START_PULL_REQUEST: lambda: show_start_pr(parent, store),
-        PopupType.INSTALL_GIT: lambda: _alert(
-            parent,
-            "Git not found",
-            "Install Git and restart GitHub Desktop.\n\nsudo apt install git",
-            cancel=None,
-        ),
+        PopupType.INSTALL_GIT: lambda: show_install_git(parent, store, payload),
         PopupType.CLI_INSTALLED: lambda: _alert(
             parent,
             "CLI installed",
@@ -2261,6 +2256,49 @@ def show_discard_retry(parent: Gtk.Window, store: AppStore, payload: dict[str, A
     )
 
 
+def show_install_git(parent: Gtk.Window, store: AppStore, payload: dict[str, Any] | None = None) -> None:
+    """Desktop `InstallGit`: locate Git, or open the set-up-git docs."""
+    payload = payload or {}
+    dialog = Adw.AlertDialog(
+        heading="Unable to locate Git",
+        body=(
+            "We were unable to locate Git on your system. This means you won't be "
+            "able to execute any Git commands in the terminal.\n\n"
+            "To help you get Git installed and configured for your operating "
+            "system, we have some external resources available."
+        ),
+    )
+    dialog.add_response("install", "Install Git")
+    dialog.add_response("ok", "Open without Git")
+    dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+    dialog.set_default_response("ok")
+    dialog.set_close_response("ok")
+
+    def done(d, result) -> None:
+        try:
+            response = d.choose_finish(result)
+        except Exception:
+            return
+        if response == "install":
+            open_external("https://help.github.com/articles/set-up-git/#setting-up-git")
+            return
+        repo = store.selected_repository
+        path = payload.get("path")
+        if repo:
+            store.open_in_shell(repo)
+        elif path:
+            from ..shells import find_shell, open_shell
+
+            shell = find_shell(store.settings.selected_shell)
+            if shell:
+                try:
+                    open_shell(shell, str(path))
+                except OSError:
+                    pass
+
+    dialog.choose(parent, None, done)
+
+
 def show_publish(parent: Gtk.Window, store: AppStore) -> None:
     repo = store.selected_repository
     if not repo:
@@ -2304,17 +2342,23 @@ def show_publish(parent: Gtk.Window, store: AppStore) -> None:
     from ..git.ops import read_description
     from ..github.api import GitHubAPI
 
+    selected = [account]
     dialog = Adw.Dialog()
     dialog.set_content_width(480)
     toolbar = Adw.ToolbarView()
     header = Adw.HeaderBar()
-    header.set_title_widget(Adw.WindowTitle(title="Publish repository", subtitle=f"Signed in as {account.login}"))
+    title = Adw.WindowTitle(title="Publish repository", subtitle=f"Signed in as {account.login}")
+    header.set_title_widget(title)
     publish_btn = Gtk.Button(label="Publish repository")
     publish_btn.add_css_class("suggested-action")
     header.pack_end(publish_btn)
     toolbar.add_top_bar(header)
     page = Adw.PreferencesPage()
     group = Adw.PreferencesGroup()
+    account_row = Adw.ComboRow(title="Account")
+    account_labels = [f"{item.login} ({item.friendly_endpoint})" for item in accounts]
+    account_row.set_model(Gtk.StringList.new(account_labels or [account.login]))
+    account_row.set_selected(0)
     name_row = Adw.EntryRow(title="Name")
     name_row.set_text(repo.name)
     sanitized_row = Adw.ActionRow(title="Will be created as")
@@ -2337,7 +2381,27 @@ def show_publish(parent: Gtk.Window, store: AppStore) -> None:
         else:
             sanitized_row.set_visible(False)
 
+    def load_orgs() -> None:
+        nonlocal org_logins
+        current = selected[0]
+        try:
+            fetched = GitHubAPI.from_account(current).fetch_orgs()
+        except Exception:
+            fetched = []
+        fetched = sorted(fetched, key=lambda item: str(item.get("login") or "").casefold())
+        org_logins = ["None"] + [str(item.get("login") or "") for item in fetched if item.get("login")]
+        org_row.set_model(Gtk.StringList.new(org_logins or ["None"]))
+        org_row.set_selected(0)
+
+    def on_account(*_a: Any) -> None:
+        idx = int(account_row.get_selected())
+        if 0 <= idx < len(accounts):
+            selected[0] = accounts[idx]
+            title.set_subtitle(f"Signed in as {selected[0].login}")
+            load_orgs()
+
     name_row.connect("changed", refresh_name)
+    account_row.connect("notify::selected", on_account)
 
     def submit(*_a: Any) -> None:
         raw = name_row.get_text().strip() or repo.name
@@ -2347,9 +2411,18 @@ def show_publish(parent: Gtk.Window, store: AppStore) -> None:
         if idx > 0 and idx < len(org_logins):
             org = org_logins[idx]
         dialog.close()
-        store.publish_repository(repo, name, desc_row.get_text().strip(), private_row.get_active(), org, account)
+        store.publish_repository(
+            repo,
+            name,
+            desc_row.get_text().strip(),
+            private_row.get_active(),
+            org,
+            selected[0],
+        )
 
     publish_btn.connect("clicked", submit)
+    if len(accounts) > 1:
+        group.add(account_row)
     group.add(name_row)
     group.add(sanitized_row)
     group.add(desc_row)
@@ -2360,14 +2433,7 @@ def show_publish(parent: Gtk.Window, store: AppStore) -> None:
     dialog.set_child(toolbar)
     dialog.present(parent)
     refresh_name()
-
-    try:
-        fetched = GitHubAPI.from_account(account).fetch_orgs()
-    except Exception:
-        fetched = []
-    fetched = sorted(fetched, key=lambda item: str(item.get("login") or "").casefold())
-    org_logins = ["None"] + [str(item.get("login") or "") for item in fetched if item.get("login")]
-    org_row.set_model(Gtk.StringList.new(org_logins or ["None"]))
+    load_orgs()
 
 
 def show_remove_repository(parent: Gtk.Window, store: AppStore) -> None:
@@ -2647,6 +2713,8 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
                 login=account.login,
                 avatar_url=account.avatar_url,
                 size=28,
+                account=account,
+                endpoint=account.endpoint,
             )
         )
         btn = Gtk.Button(label="Sign out")

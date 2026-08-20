@@ -1,4 +1,4 @@
-"""Avatar URL candidates and initials (no GTK). Matches Desktop's GitHub.com email avatars."""
+"""Avatar URL candidates and initials (no GTK). Matches Desktop `getAvatarUrlCandidates`."""
 
 from __future__ import annotations
 
@@ -6,9 +6,13 @@ import hashlib
 import re
 import urllib.parse
 
+from .models import Account, html_url_from_endpoint, is_dotcom_endpoint, is_ghe_endpoint, is_ghes_endpoint
+
 GITHUB_EMAIL_AVATAR = "https://avatars.githubusercontent.com/u/e"
 GITHUB_LOGIN_AVATAR = "https://avatars.githubusercontent.com"
 NOREPLY_RE = re.compile(r"^(?:(?P<id>\d+)\+)?(?P<login>[^@]+)@users\.noreply\.github\.com$", re.I)
+
+_AVATAR_TOKENS: dict[str, str] = {}
 
 
 def initials_for(name: str, email: str = "") -> str:
@@ -33,32 +37,74 @@ def login_from_email(email: str) -> str | None:
     return login
 
 
+def get_email_avatar_url(endpoint: str | None) -> str:
+    """Desktop `getEmailAvatarUrl` for github.com, GHES, and ghe.com."""
+    if not endpoint or is_dotcom_endpoint(endpoint):
+        return GITHUB_EMAIL_AVATAR
+    if is_ghe_endpoint(endpoint):
+        return html_url_from_endpoint(endpoint).rstrip("/") + "/avatars/u/e"
+    return endpoint.rstrip("/") + "/enterprise/avatars/u/e"
+
+
+def ensure_avatar_token(account: Account | None) -> str | None:
+    """Desktop `getAvatarToken` cache (GHE / ghe.com only). Safe to call off-thread."""
+    if account is None or not is_ghe_endpoint(account.endpoint):
+        return None
+    cached = _AVATAR_TOKENS.get(account.endpoint)
+    if cached:
+        return cached
+    try:
+        from .github.api import GitHubAPI
+
+        token = GitHubAPI.from_account(account).get_avatar_token()
+    except Exception:
+        return None
+    if token:
+        _AVATAR_TOKENS[account.endpoint] = token
+    return token
+
+
 def avatar_urls(
     *,
     email: str = "",
     login: str | None = None,
     avatar_url: str | None = None,
     size: int = 48,
+    endpoint: str | None = None,
+    avatar_token: str | None = None,
 ) -> list[str]:
-    """Ordered candidates, same idea as Desktop getAvatarUrlCandidates for github.com."""
+    """Ordered candidates, same idea as Desktop `getAvatarUrlCandidates`."""
     size = max(16, min(int(size), 256))
     urls: list[str] = []
-    if avatar_url:
+    ep = endpoint or "https://api.github.com"
+    if not is_ghes_endpoint(ep) and avatar_url:
         parsed = urllib.parse.urlparse(avatar_url)
         if parsed.scheme in ("http", "https"):
             query = urllib.parse.parse_qs(parsed.query)
             query["s"] = [str(size)]
             rebuilt = parsed._replace(query=urllib.parse.urlencode(query, doseq=True))
             urls.append(urllib.parse.urlunparse(rebuilt))
-    resolved_login = login or login_from_email(email)
-    if resolved_login:
-        urls.append(f"{GITHUB_LOGIN_AVATAR}/{urllib.parse.quote(resolved_login)}?s={size}")
+    if is_ghe_endpoint(ep) and not avatar_token:
+        seen: set[str] = set()
+        out: list[str] = []
+        for url in urls:
+            if url not in seen:
+                seen.add(url)
+                out.append(url)
+        return out
+    if is_dotcom_endpoint(ep):
+        resolved_login = login or login_from_email(email)
+        if resolved_login:
+            urls.append(f"{GITHUB_LOGIN_AVATAR}/{urllib.parse.quote(resolved_login)}?s={size}")
     if email:
-        qs = urllib.parse.urlencode({"email": email, "s": str(size)})
-        urls.append(f"{GITHUB_EMAIL_AVATAR}?{qs}")
-        digest = hashlib.md5(email.strip().lower().encode("utf-8")).hexdigest()
-        urls.append(f"https://www.gravatar.com/avatar/{digest}?s={size}&d=404")
-    # unique preserve order
+        params: dict[str, str] = {"email": email, "s": str(size)}
+        if is_ghe_endpoint(ep) and avatar_token:
+            params["token"] = avatar_token
+        qs = urllib.parse.urlencode(params)
+        urls.append(f"{get_email_avatar_url(ep)}?{qs}")
+        if is_dotcom_endpoint(ep):
+            digest = hashlib.md5(email.strip().lower().encode("utf-8")).hexdigest()
+            urls.append(f"https://www.gravatar.com/avatar/{digest}?s={size}&d=404")
     seen: set[str] = set()
     out: list[str] = []
     for url in urls:

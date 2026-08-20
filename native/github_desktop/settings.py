@@ -56,6 +56,7 @@ class Settings:
     sidebar_width: int = 320
     commit_summary_width: int = 360
     selected_repository_id: int | None = None
+    recent_repository_ids: list[int] = field(default_factory=list)
     repository_section: str = "Changes"
     ask_for_confirmation_on_force_push: bool = True
     zoom_factor: float = 1.0

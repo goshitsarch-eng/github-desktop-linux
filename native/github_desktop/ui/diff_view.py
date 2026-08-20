@@ -53,6 +53,7 @@ class RowSpec:
     index: int | None = None
     left_i: int | None = None
     right_i: int | None = None
+    paired: DiffLine | None = None
 
 
 class DiffRowItem(GObject.Object):
@@ -536,15 +537,29 @@ class DiffViewer(Gtk.Box):
                         )
                     )
                 continue
-            for line in hunk.lines:
+            for i, line in enumerate(hunk.lines):
                 idx = line.diff_line_number if line.diff_line_number is not None else start
                 if line.kind == DiffLineType.HUNK:
                     rows.append(
                         RowSpec("hunk", hunk_index, hunk.expansion_type, start, length, line=line)
                     )
                     continue
+                paired = None
+                if line.kind == DiffLineType.DELETE and i + 1 < len(hunk.lines) and hunk.lines[i + 1].kind == DiffLineType.ADD:
+                    paired = hunk.lines[i + 1]
+                elif line.kind == DiffLineType.ADD and i > 0 and hunk.lines[i - 1].kind == DiffLineType.DELETE:
+                    paired = hunk.lines[i - 1]
                 rows.append(
-                    RowSpec("unified", hunk_index, hunk.expansion_type, start, length, line=line, index=idx)
+                    RowSpec(
+                        "unified",
+                        hunk_index,
+                        hunk.expansion_type,
+                        start,
+                        length,
+                        line=line,
+                        index=idx,
+                        paired=paired,
+                    )
                 )
         return rows
 
@@ -572,7 +587,7 @@ class DiffViewer(Gtk.Box):
         elif spec.kind == "split":
             widget = self._split_row(spec, selection)
         elif spec.line is not None and spec.index is not None:
-            widget = self._unified_line(spec.line, spec.index, selection)
+            widget = self._unified_line(spec.line, spec.index, selection, paired=spec.paired)
         else:
             widget = Gtk.Box()
         self._decorate_search(widget, spec)
@@ -678,18 +693,56 @@ class DiffViewer(Gtk.Box):
             add_btn("▲", "Expand up", "up", hunk_index)
         return box
 
-    def _markup(self, line: DiffLine) -> str:
+    def _line_body(self, line: DiffLine) -> str:
+        body = line.text[1:] if line.text[:1] in "+- " else line.text
+        return body.replace("\t", " " * max(1, self._tab_size))
+
+    def _markup(self, line: DiffLine, paired: DiffLine | None = None) -> str:
         old_map = getattr(self._diff, "old_line_markup", None) if self._diff is not None else None
         new_map = getattr(self._diff, "new_line_markup", None) if self._diff is not None else None
-        return markup_for_diff_line(
+        markup = markup_for_diff_line(
             line,
             self._path,
             old_markup=old_map,
             new_markup=new_map,
             tab_size=self._tab_size,
         )
+        if paired is None:
+            return markup
+        from ..changed_range import apply_inner_highlight, get_diff_tokens, inner_highlight_background
 
-    def _unified_line(self, line: DiffLine, index: int, selection: DiffSelection | None) -> Gtk.Widget:
+        before = self._line_body(line if line.kind == DiffLineType.DELETE else paired)
+        after = self._line_body(line if line.kind == DiffLineType.ADD else paired)
+        if line.kind not in {DiffLineType.ADD, DiffLineType.DELETE}:
+            return markup
+        if line.kind == DiffLineType.DELETE and paired.kind != DiffLineType.ADD:
+            return markup
+        if line.kind == DiffLineType.ADD and paired.kind != DiffLineType.DELETE:
+            return markup
+        delete_range, add_range = get_diff_tokens(before, after)
+        span = add_range if line.kind == DiffLineType.ADD else delete_range
+        return apply_inner_highlight(
+            markup,
+            span.location,
+            span.length,
+            inner_highlight_background(line.kind == DiffLineType.ADD),
+        )
+
+    def _newline_marker(self, line: DiffLine | None) -> Gtk.Widget | None:
+        if line is None or not line.no_trailing_newline:
+            return None
+        mark = Gtk.Label(label="↵")
+        mark.add_css_class("diff-no-newline")
+        mark.set_tooltip_text("No newline at end of file")
+        return mark
+
+    def _unified_line(
+        self,
+        line: DiffLine,
+        index: int,
+        selection: DiffSelection | None,
+        paired: DiffLine | None = None,
+    ) -> Gtk.Widget:
         row = Gtk.Box(spacing=8)
         row.add_css_class("diff-line")
         if line.kind == DiffLineType.ADD:
@@ -716,18 +769,23 @@ class DiffViewer(Gtk.Box):
         text.set_selectable(True)
         text.set_ellipsize(Pango.EllipsizeMode.END)
         prefix = line.text[:1] if line.text[:1] in "+- " else " "
-        text.set_markup(f"{prefix}{self._markup(line)}")
+        text.set_markup(f"{prefix}{self._markup(line, paired)}")
+        if paired is not None:
+            text.add_css_class("diff-add-inner" if line.kind == DiffLineType.ADD else "diff-delete-inner")
         row.append(old)
         row.append(new)
         row.append(text)
+        marker = self._newline_marker(line)
+        if marker is not None:
+            row.append(marker)
         attach_right_click(row, lambda *_ , i=index: self._line_menu(i, selection, line))
         return row
 
     def _split_row(self, spec: RowSpec, selection: DiffSelection | None) -> Gtk.Widget:
         row = Gtk.Box(spacing=0)
         row.add_css_class("diff-line")
-        left_box = self._split_cell(spec.left, spec.left_i, selection, delete=True)
-        right_box = self._split_cell(spec.right, spec.right_i, selection, delete=False)
+        left_box = self._split_cell(spec.left, spec.left_i, selection, delete=True, paired=spec.right)
+        right_box = self._split_cell(spec.right, spec.right_i, selection, delete=False, paired=spec.left)
         left_box.set_hexpand(True)
         right_box.set_hexpand(True)
         row.append(left_box)
@@ -742,6 +800,7 @@ class DiffViewer(Gtk.Box):
         selection: DiffSelection | None,
         *,
         delete: bool,
+        paired: DiffLine | None = None,
     ) -> Gtk.Widget:
         box = Gtk.Box(spacing=6)
         box.add_css_class("diff-side")
@@ -769,9 +828,14 @@ class DiffViewer(Gtk.Box):
         text.set_use_markup(True)
         text.set_selectable(True)
         text.set_ellipsize(Pango.EllipsizeMode.END)
-        text.set_markup(self._markup(line))
+        text.set_markup(self._markup(line, paired))
+        if paired is not None and line.kind in {DiffLineType.ADD, DiffLineType.DELETE}:
+            text.add_css_class("diff-add-inner" if line.kind == DiffLineType.ADD else "diff-delete-inner")
         box.append(nlab)
         box.append(text)
+        marker = self._newline_marker(line)
+        if marker is not None:
+            box.append(marker)
         return box
 
     def _line_menu(self, index: int, selection: DiffSelection | None, line: DiffLine | None = None) -> None:

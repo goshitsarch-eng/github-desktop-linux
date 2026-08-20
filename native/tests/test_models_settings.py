@@ -47,6 +47,7 @@ def test_sanitize_ref() -> None:
 def test_html_url() -> None:
     assert html_url_from_endpoint("https://api.github.com") == "https://github.com"
     assert html_url_from_endpoint("https://github.example.com/api/v3") == "https://github.example.com"
+    assert html_url_from_endpoint("https://api.acme.ghe.com") == "https://acme.ghe.com"
 
 
 def test_parse_remotes() -> None:

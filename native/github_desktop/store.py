@@ -126,6 +126,7 @@ from .github.ci_checks import (
     summarize_check_runs,
 )
 from .github.repo_rules import RepoRulesInfo, parse_repo_rules, use_repo_rules_logic
+from .github.push_control import is_branch_pushable
 from .github.notifications import classify_notification, is_high_signal_notification, pull_request_from_payload
 from .github.oauth import (
     dotcom_endpoint,
@@ -193,6 +194,7 @@ from .models import (
     github_for_contribution,
     github_from_dict,
     github_to_dict,
+    has_write_permission,
     html_url_from_endpoint,
     sanitize_ref_name,
 )
@@ -279,6 +281,7 @@ class RepositoryViewState:
     diff_comments: list = field(default_factory=list)
     repo_rules: RepoRulesInfo = field(default_factory=RepoRulesInfo)
     protected_branches: list[str] = field(default_factory=list)
+    current_branch_protected: bool = False
     commit_to_amend: Commit | None = None
     recent_branches: list[str] = field(default_factory=list)
     undo_sha: str | None = None
@@ -505,6 +508,19 @@ class AppStore:
         self.settings.repository_section = self.section.value
         save_settings(self.settings)
 
+    def _remember_recent_repository(self, previous_id: int | None, current_id: int) -> None:
+        """Desktop `_updateRecentRepositories`: keep the last 3 previously selected ids."""
+        if previous_id == current_id:
+            return
+        recent = [
+            rid
+            for rid in self.settings.recent_repository_ids
+            if rid not in {current_id, previous_id}
+        ]
+        if previous_id is not None:
+            recent.insert(0, previous_id)
+        self.settings.recent_repository_ids = recent[:3]
+
     @property
     def selected_repository(self) -> Repository | None:
         if self.selected_repository_id is None:
@@ -542,6 +558,9 @@ class AppStore:
         self.emit()
 
     def select_repository(self, repo_id: int | None) -> None:
+        previous_id = self.selected_repository_id
+        if repo_id is not None:
+            self._remember_recent_repository(previous_id, repo_id)
         self.selected_repository_id = repo_id
         self.foldout = None
         self.persist_settings()
@@ -984,12 +1003,13 @@ class AppStore:
                 "pull_requests": [],
                 "current_pull_request": None,
                 "issues": [],
-                "check_runs": [],
+                                "check_runs": [],
                 "mentions": [],
                 "local_commit_shas": [],
                 "upstream_mismatch": None,
                 "pull_with_rebase": bool(get_boolean_config_value(repo.path, "pull.rebase") or False),
                 "last_fetched": get_last_fetched(repo.path),
+                "current_branch_protected": False,
             }
             payload["upstream_mismatch"] = upstream_mismatch
             if status and status.current_branch and status.current_upstream_branch:
@@ -1059,6 +1079,13 @@ class AppStore:
                             payload["protected_branches"] = api.fetch_protected_branches(repo.github.owner, repo.github.name)
                         except APIError:
                             payload["protected_branches"] = []
+                        branch_name = status.current_branch if status else None
+                        gh_repo = payload.get("github") or repo.github
+                        if branch_name and has_write_permission(gh_repo):
+                            control = api.fetch_push_control(repo.github.owner, repo.github.name, branch_name)
+                            payload["current_branch_protected"] = not is_branch_pushable(control)
+                        else:
+                            payload["current_branch_protected"] = False
                         try:
                             payload["repo_rules"] = self._load_repo_rules(api, repo, status)
                         except Exception as exc:
@@ -1128,6 +1155,8 @@ class AppStore:
                 state.repo_rules = data["repo_rules"]
             if "protected_branches" in data:
                 state.protected_branches = list(data.get("protected_branches") or [])
+            if "current_branch_protected" in data:
+                state.current_branch_protected = bool(data.get("current_branch_protected"))
             if "pull_with_rebase" in data:
                 state.pull_with_rebase = bool(data.get("pull_with_rebase"))
             if "last_fetched" in data:
