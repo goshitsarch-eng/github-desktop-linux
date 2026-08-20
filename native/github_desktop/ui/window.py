@@ -530,17 +530,47 @@ class MainWindow(Adw.ApplicationWindow):
             self._welcome_extra.remove(child)
             child = nxt
         if self.store.welcome_step == WelcomeStep.CONFIGURE_GIT:
-            name, email = __import__("github_desktop.git.ops", fromlist=["get_author_identity"]).get_author_identity()
+            # Desktop `ConfigureGit` / `ConfigureGitUser` with account email choices.
+            from ..git.ops import get_author_identity
+            from ..models import account_email_choices
+
+            name, email = get_author_identity()
             name_row = Adw.EntryRow(title="Name")
             name_row.set_text(name or "")
-            email_row = Adw.EntryRow(title="Email")
-            email_row.set_text(email or "")
+            email_choices: list[str] = []
+            for account in self.store.accounts:
+                for item in account_email_choices(account):
+                    if item not in email_choices:
+                        email_choices.append(item)
+            if email and email not in email_choices:
+                email_choices.insert(0, email)
+            email_choices.append("Other")
+            email_row = Adw.ComboRow(title="Email")
+            email_row.set_model(Gtk.StringList.new(email_choices or ["Other"]))
+            if email and email in email_choices:
+                email_row.set_selected(email_choices.index(email))
+            other_email = Adw.EntryRow(title="Other email")
+            other_email.set_text(email or "")
+            other_email.set_visible(False)
+
+            def sync_other(*_a: object) -> None:
+                idx = email_row.get_selected()
+                other_email.set_visible(idx >= 0 and idx == len(email_choices) - 1)
+
+            email_row.connect("notify::selected", sync_other)
+            sync_other()
             finish = Gtk.Button(label="Finish")
             finish.add_css_class("suggested-action")
 
             def done(*_a: object) -> None:
+                idx = email_row.get_selected()
+                if idx < 0 or idx >= len(email_choices) - 1:
+                    chosen = other_email.get_text().strip()
+                else:
+                    model = email_row.get_model()
+                    chosen = model.get_string(idx) if model is not None else other_email.get_text().strip()
                 try:
-                    self.store.save_git_user(name_row.get_text(), email_row.get_text())
+                    self.store.save_git_user(name_row.get_text(), chosen)
                 except Exception as exc:
                     self.store.show_popup(PopupType.ERROR, error=str(exc))
                     return
@@ -549,6 +579,7 @@ class MainWindow(Adw.ApplicationWindow):
             finish.connect("clicked", done)
             self._welcome_extra.append(name_row)
             self._welcome_extra.append(email_row)
+            self._welcome_extra.append(other_email)
             self._welcome_extra.append(finish)
 
     def _build_empty(self) -> Gtk.Widget:

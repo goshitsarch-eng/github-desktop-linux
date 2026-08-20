@@ -51,6 +51,7 @@ from ..models import (
     pr_base_branches,
     accounts_for_publish_tab,
     default_publish_tab,
+    uncommitted_changes_strategy_choices,
 )
 from ..shells import get_available_shells, open_external
 from ..store import AppStore
@@ -261,7 +262,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         PopupType.ADD_REPOSITORY: lambda: show_add_repository(parent, store, payload.get("path", "")),
         PopupType.CREATE_REPOSITORY: lambda: show_create_repository(parent, store, payload.get("path", "")),
         PopupType.CLONE_REPOSITORY: lambda: show_clone_repository(parent, store, payload),
-        PopupType.SIGN_IN: lambda: show_sign_in(parent, store, bool(payload.get("enterprise"))),
+        PopupType.SIGN_IN: lambda: show_sign_in(parent, store, bool(payload.get("enterprise")), payload),
         PopupType.CREATE_BRANCH: lambda: show_create_branch(parent, store, payload),
         PopupType.RENAME_BRANCH: lambda: show_rename_branch(parent, store, payload),
         PopupType.DELETE_BRANCH: lambda: show_delete_branch(parent, store, payload),
@@ -361,7 +362,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
             ),
         ),
         PopupType.PUSH_PROTECTION_ERROR: lambda: show_push_protection(parent, store, payload),
-        PopupType.CREATE_FORK: lambda: show_create_fork(parent, store),
+        PopupType.CREATE_FORK: lambda: show_create_fork(parent, store, payload),
         PopupType.CHOOSE_FORK_SETTINGS: lambda: show_fork_settings(parent, store),
         PopupType.CHANGE_REPOSITORY_ALIAS: lambda: show_alias(parent, store),
         PopupType.EXTERNAL_EDITOR_FAILED: lambda: show_editor_failed(parent, store, payload),
@@ -449,7 +450,18 @@ def show_error_dialog(parent: Gtk.Window, store: AppStore, payload: dict[str, An
         if name:
             body = f"{body}\n\nWould you like to retry cloning {name}?"
     if callable(retry):
-        _alert(parent, heading, body, confirm="Retry", cancel="Close", on_confirm=retry)
+        auth = bool(payload.get("open_preferences")) or is_auth_failure_error(payload.get("git_error"))
+        if not auth:
+            auth = "authentication failed" in body.lower() or "File > Options." in body
+        _alert(
+            parent,
+            heading,
+            body,
+            confirm="Retry",
+            cancel="Open options" if auth else "Close",
+            on_confirm=retry,
+            on_cancel=(lambda: show_preferences(parent, store, PreferencesTab.ACCOUNTS)) if auth else None,
+        )
         return
     auth = bool(payload.get("open_preferences")) or is_auth_failure_error(payload.get("git_error"))
     lower = body.lower()
@@ -1793,7 +1805,13 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
     dialog.present(parent)
 
 
-def show_sign_in(parent: Gtk.Window, store: AppStore, enterprise: bool) -> None:
+def show_sign_in(
+    parent: Gtk.Window,
+    store: AppStore,
+    enterprise: bool,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    payload = payload or {}
     dialog = Adw.Dialog()
     dialog.set_content_width(460)
     toolbar = Adw.ToolbarView()
@@ -1805,6 +1823,7 @@ def show_sign_in(parent: Gtk.Window, store: AppStore, enterprise: bool) -> None:
     box.set_margin_start(24)
     box.set_margin_end(24)
     box.set_margin_bottom(24)
+    helper_url = str(payload.get("credential_helper_url") or store.sign_in_credential_helper_url or "")
 
     def clear() -> None:
         while (child := box.get_first_child()) is not None:
@@ -1814,6 +1833,15 @@ def show_sign_in(parent: Gtk.Window, store: AppStore, enterprise: bool) -> None:
         clear()
         step = store.sign_in_step
         existing = store.sign_in_existing
+        if helper_url:
+            # Desktop SignIn `isCredentialHelperSignIn` / `credentialHelperUrl`
+            banner = Gtk.Label(
+                label=f"GitHub Desktop needs access to {helper_url}. Sign in to continue.",
+                wrap=True,
+                xalign=0,
+            )
+            banner.add_css_class("warning")
+            box.append(banner)
         if store.sign_in_error:
             err = Gtk.Label(label=store.sign_in_error, wrap=True, xalign=0)
             err.add_css_class("error")
@@ -3141,20 +3169,12 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
         row = Adw.SwitchRow(title=title, active=getattr(s, key))
         switches[key] = row
         p_group.add(row)
-    strategy = Adw.ComboRow(title="If I have changes and switch branches…")
-    strategy.set_model(Gtk.StringList.new([
-        UncommittedChangesStrategy.ASK_FOR_CONFIRMATION.value,
-        UncommittedChangesStrategy.STASH_ON_CURRENT_BRANCH.value,
-        UncommittedChangesStrategy.MOVE_TO_NEW_BRANCH.value,
-    ]))
+    strategy = Adw.ComboRow(title="If I have changes and I switch branches…")
+    strategy_choices = uncommitted_changes_strategy_choices()
+    strategy.set_model(Gtk.StringList.new([label for _kind, label in strategy_choices]))
     try:
-        strategy.set_selected(
-            [
-                UncommittedChangesStrategy.ASK_FOR_CONFIRMATION.value,
-                UncommittedChangesStrategy.STASH_ON_CURRENT_BRANCH.value,
-                UncommittedChangesStrategy.MOVE_TO_NEW_BRANCH.value,
-            ].index(s.uncommitted_changes_strategy)
-        )
+        current_strategy = UncommittedChangesStrategy(s.uncommitted_changes_strategy)
+        strategy.set_selected([kind for kind, _label in strategy_choices].index(current_strategy))
     except ValueError:
         strategy.set_selected(0)
     p_group.add(strategy)
@@ -3206,10 +3226,9 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
         s.spellcheck_enabled = spell.get_active()
         s.clone_default_directory = clone_row.get_text().strip()
         s.show_commit_length_warning = length_row.get_active()
-        model = strategy.get_model()
         idx = strategy.get_selected()
-        if model is not None and idx >= 0:
-            s.uncommitted_changes_strategy = model.get_string(idx)
+        if 0 <= idx < len(uncommitted_changes_strategy_choices()):
+            s.uncommitted_changes_strategy = uncommitted_changes_strategy_choices()[idx][0].value
         for key, row in switches.items():
             setattr(s, key, row.get_active())
         idx = editor_row.get_selected()
@@ -4118,16 +4137,42 @@ def show_bypass(parent: Gtk.Window, store: AppStore, payload: dict[str, Any], on
     dialog.present(parent)
 
 
-def show_create_fork(parent: Gtk.Window, store: AppStore) -> None:
+def show_create_fork(parent: Gtk.Window, store: AppStore, payload: dict[str, Any] | None = None) -> None:
     repo = store.selected_repository
     account = store.account_for_repo(repo) if repo else None
     if not repo or not repo.github or not account:
+        return
+    payload = payload or {}
+    html = repo.github.html_url
+    if payload.get("error"):
+        body = (
+            f"Creating your fork {account.login}/{repo.github.name} failed. "
+            "You can try creating the fork manually on GitHub."
+        )
+        _alert(
+            parent,
+            "Unable to create fork",
+            f"{payload.get('error')}\n\n{body}",
+            confirm="Close",
+            cancel="Open on GitHub" if html else None,
+            on_cancel=(lambda: open_external(html)) if html else None,
+        )
         return
 
     def confirm() -> None:
         store.create_fork(repo)
 
-    _alert(parent, "Create a fork?", f"Fork {repo.github.full_name} to {account.login}?", confirm="Fork", on_confirm=confirm)
+    _alert(
+        parent,
+        "Do you want to fork this repository?",
+        (
+            f"It looks like you don't have write access to {repo.github.full_name}. "
+            "If you should, please check with a repository administrator.\n\n"
+            f"Do you want to create a fork of this repository at {account.login}/{repo.github.name} to continue?"
+        ),
+        confirm="Fork this repository",
+        on_confirm=confirm,
+    )
 
 
 def show_fork_settings(parent: Gtk.Window, store: AppStore) -> None:

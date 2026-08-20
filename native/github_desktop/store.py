@@ -332,6 +332,7 @@ class AppStore:
         self.sign_in_endpoint: str = dotcom_endpoint()
         self.sign_in_error: str | None = None
         self.sign_in_existing: Account | None = None
+        self.sign_in_credential_helper_url: str | None = None
         self.oauth_state: str | None = None
         self.cloning: list[CloningRepository] = []
         self.selected_cloning_id: int | None = None
@@ -769,7 +770,7 @@ class AppStore:
         self.cloning.append(cloning)
         self.select_cloning(clone_id)
         account = account_for_remote(self.accounts, url)
-        env = env_for_remote(url, token=account.token) if account else None
+        env = self.env_for_url(url, account)
         holder: list = []
         cancel = threading.Event()
         self._clone_processes[clone_id] = holder
@@ -920,13 +921,11 @@ class AppStore:
         cloning = CloningRepository(id=clone_id, path=path, url=url)
         self.cloning.append(cloning)
         self.select_cloning(clone_id)
-        env = None
         account = account or account_for_remote(self.accounts, url)
         holder: list = []
         cancel = threading.Event()
         self._clone_processes[clone_id] = holder
         self._clone_cancels[clone_id] = cancel
-        helper = bool(self.settings.use_external_credential_helper)
 
         def work() -> None:
             clone_url = url
@@ -941,11 +940,7 @@ class AppStore:
                         cloning.url = clone_url
                 except APIError:
                     pass
-            env_local = env_for_remote(
-                clone_url,
-                token=account.token if account else None,
-                use_external_credential_helper=helper,
-            )
+            env_local = self.env_for_url(clone_url, account)
             clone_repository(
                 clone_url,
                 path,
@@ -1001,6 +996,14 @@ class AppStore:
             branch=branch,
             tutorial=tutorial,
         )
+        auth = isinstance(exc, GitError) and exc.is_auth_failure
+        github = bool(url) and is_github_host(url, self.accounts)
+        if auth and github and account_for_remote(self.accounts, url) is None:
+            parsed = parse_remote(url)
+            host = (parsed.hostname if parsed else "").lower()
+            enterprise = host not in ("", "github.com", "www.github.com", "gist.github.com", "api.github.com")
+            self.begin_sign_in(enterprise, credential_helper_url=url)
+            return
         self.show_popup(
             PopupType.ERROR,
             error=str(exc),
@@ -1008,6 +1011,8 @@ class AppStore:
             retry_clone=True,
             name=os.path.basename(path.rstrip("/")) or path,
             retry=self.retry_last_remote_action,
+            open_preferences=auth,
+            git_error=getattr(exc, "git_error", None),
         )
 
     def publish_repository(
@@ -1032,7 +1037,7 @@ class AppStore:
                 set_remote_url(repo.path, "origin", created.clone_url)
             else:
                 add_remote(repo.path, "origin", created.clone_url)
-            env = env_for_remote(created.clone_url, token=account.token)
+            env = self.env_for_url(created.clone_url, account)
             status = get_status(repo.path)
             branch = (status.current_branch if status else None) or get_default_branch()
             progress(f"Pushing repository to {account.friendly_endpoint}", 0.7)
@@ -1553,11 +1558,7 @@ class AppStore:
             git(["commit", "-m", "Initial commit"], path, name="tutorial:commit")
             add_remote(path, "origin", created.clone_url)
             progress(f"Pushing repository to {account.friendly_endpoint}", 0.3)
-            env = env_for_remote(
-                created.clone_url,
-                token=account.token,
-                use_external_credential_helper=bool(self.settings.use_external_credential_helper),
-            )
+            env = self.env_for_url(created.clone_url, account)
             push(path, "origin", branch, None, env=env)
             progress("Finalizing tutorial repository", 0.9)
 
@@ -1598,18 +1599,11 @@ class AppStore:
             return account_for_remote(self.accounts, remotes[0].url)
         return self.accounts[0] if self.accounts else None
 
-    def env_for_repo(self, repo: Repository, url: str | None = None) -> dict[str, str] | None:
+    def env_for_url(self, url: str, account: Account | None = None) -> dict[str, str]:
+        """Desktop `withTrampolineEnv`: askpass + GitHub token or generic HTTPS secrets."""
         helper = bool(self.settings.use_external_credential_helper)
-        if not url:
-            try:
-                remotes = get_remotes(repo.path)
-                url = remotes[0].url if remotes else None
-            except GitError:
-                url = None
-        if not url:
-            return None
-        account = account_for_remote(self.accounts, url) or self.account_for_repo(repo)
         extra = askpass_env()
+        account = account or account_for_remote(self.accounts, url)
         if account:
             return env_for_remote(
                 url,
@@ -1617,7 +1611,7 @@ class AppStore:
                 extra=extra or None,
                 use_external_credential_helper=helper,
             )
-        host = (parse_remote(url).hostname if parse_remote(url) else None)
+        host = parse_remote(url).hostname if parse_remote(url) else None
         if host:
             user, password = secrets.get_generic(host)
             if user and password:
@@ -1629,6 +1623,18 @@ class AppStore:
                     use_external_credential_helper=helper,
                 )
         return env_for_remote(url, extra=extra or None, use_external_credential_helper=helper)
+
+    def env_for_repo(self, repo: Repository, url: str | None = None) -> dict[str, str] | None:
+        if not url:
+            try:
+                remotes = get_remotes(repo.path)
+                url = remotes[0].url if remotes else None
+            except GitError:
+                url = None
+        if not url:
+            return None
+        account = account_for_remote(self.accounts, url) or self.account_for_repo(repo)
+        return self.env_for_url(url, account)
 
     def handle_askpass(self, prompt: str) -> str:
         """Show Desktop SSH dialogs on the GTK thread and return the answer."""
@@ -3686,7 +3692,7 @@ class AppStore:
 
         def done(exc: BaseException | None, fork: GitHubRepository | None = None) -> None:
             if exc:
-                self.show_popup(PopupType.ERROR, error=str(exc))
+                self.show_popup(PopupType.CREATE_FORK, error=str(exc))
                 return
             if fork:
                 self.convert_repository_to_fork(repo, fork)
@@ -3804,9 +3810,10 @@ class AppStore:
         popup, payload = stored
         self.show_popup(popup, **payload)
 
-    def begin_sign_in(self, enterprise: bool = False) -> None:
+    def begin_sign_in(self, enterprise: bool = False, *, credential_helper_url: str | None = None) -> None:
         self.sign_in_error = None
         self.sign_in_existing = None
+        self.sign_in_credential_helper_url = credential_helper_url
         if enterprise:
             self.sign_in_step = SignInStep.ENDPOINT_ENTRY
             self.sign_in_endpoint = ""
@@ -3818,7 +3825,11 @@ class AppStore:
                 self.sign_in_existing = existing
             else:
                 self.sign_in_step = SignInStep.AUTHENTICATION
-        self.show_popup(PopupType.SIGN_IN, enterprise=enterprise)
+        self.show_popup(
+            PopupType.SIGN_IN,
+            enterprise=enterprise,
+            credential_helper_url=credential_helper_url,
+        )
 
     def begin_sign_in_for_endpoint(self, endpoint: str) -> None:
         """Desktop `beginBrowserBasedSignIn(endpoint)` for SAML / workflow-scope retries."""

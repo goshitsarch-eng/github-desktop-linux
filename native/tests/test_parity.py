@@ -646,5 +646,12 @@ def test_window_actions_cover_menus() -> None:
         "accessibility-banner-dismissed",
         "link underlines and diff check marks",
         "PublishTab",
+        "Ask me where I want the changes to go",
+        "Always bring my changes to my new branch",
+        "Always stash and leave my changes on the current branch",
+        "creating the fork manually on GitHub",
+        "isCredentialHelperSignIn",
+        "withTrampolineEnv",
+        "ConfigureGitUser",
     ]:
         assert phrase in src

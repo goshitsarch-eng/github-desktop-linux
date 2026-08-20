@@ -214,3 +214,36 @@ def test_accessibility_banner_after_welcome(isolated_config) -> None:
     assert store.settings.accessibility_banner_dismissed is True
     store._maybe_show_accessibility_banner()
     assert store.banner is None
+
+
+def test_env_for_url_uses_generic_https_secrets(isolated_config) -> None:
+    from github_desktop import secrets
+
+    secrets.set_generic("example.com", "alice", "s3cret")
+    store = AppStore()
+    env = store.env_for_url("https://example.com/org/repo.git")
+    assert env["GIT_CONFIG_KEY_0"] == "http.extraHeader"
+    assert "AUTHORIZATION: basic " in env["GIT_CONFIG_VALUE_0"]
+
+
+def test_clone_auth_without_account_starts_credential_helper_sign_in(isolated_config) -> None:
+    store = AppStore()
+    store._show_clone_error(
+        GitError("denied", stderr="authentication failed"),
+        "https://github.com/acme/app.git",
+        "/tmp/app",
+    )
+    assert store.popup is not None
+    assert store.popup.type == PopupType.SIGN_IN
+    assert store.sign_in_credential_helper_url == "https://github.com/acme/app.git"
+    assert store._retry_action is not None
+    assert store._retry_action.type == RetryActionType.CLONE
+
+
+def test_uncommitted_changes_strategy_labels() -> None:
+    from github_desktop.models import uncommitted_changes_strategy_choices
+
+    labels = [label for _kind, label in uncommitted_changes_strategy_choices()]
+    assert "Ask me where I want the changes to go" in labels
+    assert "Always bring my changes to my new branch" in labels
+    assert "Always stash and leave my changes on the current branch" in labels

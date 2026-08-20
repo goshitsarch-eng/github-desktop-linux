@@ -1282,6 +1282,15 @@ class Account:
         return html_url_from_endpoint(self.endpoint)
 
 
+def uncommitted_changes_strategy_choices() -> list[tuple[UncommittedChangesStrategy, str]]:
+    """Desktop Prompts copy for `UncommittedChangesStrategy`."""
+    return [
+        (UncommittedChangesStrategy.ASK_FOR_CONFIRMATION, "Ask me where I want the changes to go"),
+        (UncommittedChangesStrategy.MOVE_TO_NEW_BRANCH, "Always bring my changes to my new branch"),
+        (UncommittedChangesStrategy.STASH_ON_CURRENT_BRANCH, "Always stash and leave my changes on the current branch"),
+    ]
+
+
 def accounts_for_publish_tab(accounts: Sequence[Account], tab: PublishTab | str) -> list[Account]:
     """Accounts shown on a Desktop Publish `GitHub.com` / `GitHub Enterprise` tab."""
     enterprise = tab in {PublishTab.ENTERPRISE, PublishTab.ENTERPRISE.value, "enterprise"}
