@@ -215,6 +215,11 @@ def test_window_actions_cover_menus() -> None:
 
     src += open(clone_groups_mod.__file__, encoding="utf-8").read()
     src += open(branches_mod.__file__, encoding="utf-8").read()
+    from github_desktop.ui import author_input as author_input_mod
+    from github_desktop.github import ci_checks as ci_checks_mod
+
+    src += open(author_input_mod.__file__, encoding="utf-8").read()
+    src += open(ci_checks_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -376,5 +381,21 @@ def test_window_actions_cover_menus() -> None:
         "Copy selected paths",
         "startCherryPickWithPullRequest",
         "openCreatePullRequestInBrowser",
+        "You're already signed in",
+        "Use my global Git config",
+        "Use a local Git config",
+        "For this repository I wish to",
+        "Publish this repository to GitHub",
+        "subscribeToCommitStatus",
+        "AuthorInput",
+        "AuthorHandle",
+        "Filter branches",
+        "Use the added file",
+        "Do not include this file",
+        "getLabelForManualResolutionOption",
+        "CIStatus",
+        "ExistingAccountWarning",
+        "aheadBehindStore",
+        "Co-Author",
     ]:
         assert phrase in src

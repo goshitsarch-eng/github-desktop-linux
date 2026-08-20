@@ -25,6 +25,7 @@ from ..git.ops import (
     get_default_branch,
     get_repository_type,
     read_gitignore,
+    remove_config_value,
     remove_remote,
     set_config_value,
     set_remote_url,
@@ -38,6 +39,7 @@ from ..models import (
     ForkContributionTarget,
     GitHubRepository,
     PopupType,
+    SignInStep,
     UncommittedChangesStrategy,
     git_author_name_is_valid,
 )
@@ -1574,26 +1576,67 @@ def show_sign_in(parent: Gtk.Window, store: AppStore, enterprise: bool) -> None:
     box.set_margin_start(24)
     box.set_margin_end(24)
     box.set_margin_bottom(24)
-    if enterprise:
-        endpoint = Adw.EntryRow(title="Enterprise URL")
-        box.append(endpoint)
 
-        def continue_ent(*_a: Any) -> None:
-            store.set_sign_in_endpoint(endpoint.get_text().strip())
-            store.request_browser_auth()
+    def clear() -> None:
+        while (child := box.get_first_child()) is not None:
+            box.remove(child)
 
-        btn = Gtk.Button(label="Continue with browser")
-        btn.add_css_class("suggested-action")
-        btn.connect("clicked", continue_ent)
-        box.append(btn)
-    else:
-        label = Gtk.Label(label="Sign in using your browser. GitHub Desktop will receive the token via the x-github-client protocol.")
-        label.set_wrap(True)
+    def render(*_a: Any) -> None:
+        clear()
+        step = store.sign_in_step
+        existing = store.sign_in_existing
+        if store.sign_in_error:
+            err = Gtk.Label(label=store.sign_in_error, wrap=True, xalign=0)
+            err.add_css_class("error")
+            box.append(err)
+        if step == SignInStep.ENDPOINT_ENTRY or (enterprise and not step):
+            endpoint = Adw.EntryRow(title="Enterprise URL")
+            if store.sign_in_endpoint:
+                endpoint.set_text(store.sign_in_endpoint)
+            box.append(endpoint)
+
+            def continue_ent(*_b: Any) -> None:
+                store.set_sign_in_endpoint(endpoint.get_text().strip())
+                render()
+
+            btn = Gtk.Button(label="Continue")
+            btn.add_css_class("suggested-action")
+            btn.connect("clicked", continue_ent)
+            box.append(btn)
+            return
+        if step == SignInStep.EXISTING_ACCOUNT_WARNING and existing:
+            warn = Gtk.Label(
+                label=(
+                    f"You're already signed in to {existing.friendly_endpoint} with the account "
+                    f"{existing.login}. If you continue, you will first be signed out."
+                ),
+                wrap=True,
+                xalign=0,
+            )
+            warn.add_css_class("warning")
+            box.append(warn)
+
+            def continue_warning(*_b: Any) -> None:
+                store.continue_existing_account_warning()
+                render()
+
+            btn = Gtk.Button(label="Continue")
+            btn.add_css_class("suggested-action")
+            btn.connect("clicked", continue_warning)
+            box.append(btn)
+            return
+        label = Gtk.Label(
+            label="Sign in using your browser. GitHub Desktop will receive the token via the x-github-client protocol.",
+            wrap=True,
+            xalign=0,
+        )
         box.append(label)
-        btn = Gtk.Button(label="Sign in with browser")
+        btn = Gtk.Button(label="Sign in with browser" if not enterprise else "Continue with browser")
         btn.add_css_class("suggested-action")
         btn.connect("clicked", lambda *_: store.request_browser_auth())
         box.append(btn)
+
+    render()
     toolbar.set_content(box)
     dialog.set_child(toolbar)
     dialog.present(parent)
@@ -1979,21 +2022,32 @@ def show_repository_settings(parent: Gtk.Window, store: AppStore) -> None:
     url_row = Adw.EntryRow(title="Primary remote URL (origin)")
     url_row.set_text(remotes[0].url if remotes else "")
     remote_group.add(url_row)
-    save_remote = Gtk.Button(label="Save remote")
-    save_remote.add_css_class("suggested-action")
+    if remotes:
+        save_remote = Gtk.Button(label="Save remote")
+        save_remote.add_css_class("suggested-action")
 
-    def save_r(*_a: Any) -> None:
-        url = url_row.get_text().strip()
-        if not url:
-            return
-        if remotes:
+        def save_r(*_a: Any) -> None:
+            url = url_row.get_text().strip()
+            if not url:
+                return
             set_remote_url(repo.path, remotes[0].name, url)
-        else:
-            add_remote(repo.path, "origin", url)
-        store.refresh_repository(repo)
+            store.refresh_repository(repo)
 
-    save_remote.connect("clicked", save_r)
-    remote_group.add(save_remote)
+        save_remote.connect("clicked", save_r)
+        remote_group.add(save_remote)
+    else:
+        publish_cta = Gtk.Button(label="Publish repository")
+        publish_cta.add_css_class("suggested-action")
+
+        def publish_now(*_a: Any) -> None:
+            dialog.close()
+            store.show_popup(PopupType.PUBLISH_REPOSITORY)
+
+        publish_cta.connect("clicked", publish_now)
+        hint = Adw.ActionRow(title="This repository has no remotes yet")
+        hint.set_subtitle("Publish this repository to GitHub to add an origin remote.")
+        remote_group.add(hint)
+        remote_group.add(publish_cta)
     remote_page.add(remote_group)
 
     ignore_group = Adw.PreferencesGroup(title=".gitignore")
@@ -2015,23 +2069,51 @@ def show_repository_settings(parent: Gtk.Window, store: AppStore) -> None:
     ignore_group.add(save_ignore)
     ignore_page.add(ignore_group)
 
-    git_group = Adw.PreferencesGroup(title="Local Git config")
+    git_group = Adw.PreferencesGroup(title="For this repository I wish to")
+    git_group.set_description("Use my global Git config or a local Git config.")
+    global_check = Gtk.CheckButton(label="Use my global Git config")
+    local_check = Gtk.CheckButton(label="Use a local Git config")
+    local_check.set_group(global_check)
+    local_n = get_config_value(repo.path, "user.name", local_only=True)
+    local_e = get_config_value(repo.path, "user.email", local_only=True)
+    global_n, global_e = get_author_identity(None)
+    use_local = bool(local_n or local_e)
+    (local_check if use_local else global_check).set_active(True)
+    git_group.add(global_check)
+    git_group.add(local_check)
     name_row = Adw.EntryRow(title="Name")
     email_row = Adw.EntryRow(title="Email")
-    n, e = get_author_identity(repo.path)
-    name_row.set_text(n or "")
-    email_row.set_text(e or "")
+    name_row.set_text((local_n if use_local else global_n) or "")
+    email_row.set_text((local_e if use_local else global_e) or "")
     git_group.add(name_row)
     git_group.add(email_row)
-    save_git = Gtk.Button(label="Save local Git config")
+    save_git = Gtk.Button(label="Save Git config")
+
+    def apply_location(*_a: Any) -> None:
+        local = local_check.get_active()
+        name_row.set_sensitive(local)
+        email_row.set_sensitive(local)
+        if local:
+            name_row.set_text(local_n or global_n or "")
+            email_row.set_text(local_e or global_e or "")
+        else:
+            name_row.set_text(global_n or "")
+            email_row.set_text(global_e or "")
 
     def save_g(*_a: Any) -> None:
-        set_config_value(repo.path, "user.name", name_row.get_text())
-        set_config_value(repo.path, "user.email", email_row.get_text())
+        if local_check.get_active():
+            set_config_value(repo.path, "user.name", name_row.get_text())
+            set_config_value(repo.path, "user.email", email_row.get_text())
+        else:
+            remove_config_value(repo.path, "user.name")
+            remove_config_value(repo.path, "user.email")
 
+    global_check.connect("toggled", apply_location)
+    local_check.connect("toggled", apply_location)
     save_git.connect("clicked", save_g)
     git_group.add(save_git)
     git_page.add(git_group)
+    apply_location()
 
     fork_group = Adw.PreferencesGroup(title="Contribute to")
     fork_group.set_description("When this repository is a fork, choose whether to contribute to the parent or the fork.")
@@ -2049,12 +2131,14 @@ def show_repository_settings(parent: Gtk.Window, store: AppStore) -> None:
         )
 
     parent_row.connect("notify::active", persist_fork)
-    fork_page.add(fork_group)
+    if repo.is_fork:
+        fork_page.add(fork_group)
 
     dialog.add(remote_page)
     dialog.add(ignore_page)
     dialog.add(git_page)
-    dialog.add(fork_page)
+    if repo.is_fork:
+        dialog.add(fork_page)
     dialog.present(parent)
 
 
@@ -2191,14 +2275,37 @@ def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
     git_page = Adw.PreferencesPage(title="Git", icon_name="utilities-terminal-symbolic")
     git_group = Adw.PreferencesGroup(title="Git author")
     name_row = Adw.EntryRow(title="Name")
-    email_row = Adw.EntryRow(title="Email")
     n, e = get_author_identity(None)
     name_row.set_text(n or "")
-    email_row.set_text(e or "")
+    from ..models import account_email_choices
+
+    email_choices: list[str] = []
+    for account in store.accounts:
+        for item in account_email_choices(account):
+            if item not in email_choices:
+                email_choices.append(item)
+    if e and e not in email_choices:
+        email_choices.insert(0, e)
+    email_choices.append("Other")
+    email_row = Adw.ComboRow(title="Email")
+    email_row.set_model(Gtk.StringList.new(email_choices or ["Other"]))
+    if e and e in email_choices:
+        email_row.set_selected(email_choices.index(e))
+    other_email = Adw.EntryRow(title="Other email")
+    other_email.set_text(e or "")
+    other_email.set_visible(False)
+
+    def sync_other(*_a: Any) -> None:
+        idx = email_row.get_selected()
+        other_email.set_visible(idx >= 0 and idx == len(email_choices) - 1)
+
+    email_row.connect("notify::selected", sync_other)
+    sync_other()
     branch_row = Adw.EntryRow(title="Default branch name")
     branch_row.set_text(get_default_branch())
     git_group.add(name_row)
     git_group.add(email_row)
+    git_group.add(other_email)
     git_group.add(branch_row)
     clone_row = Adw.EntryRow(title="Clone default directory")
     clone_row.set_text(s.clone_default_directory or os.path.expanduser("~/Documents/GitHub"))
@@ -2332,7 +2439,13 @@ def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
             s.use_custom_shell = False
             s.selected_shell = shells[idx].name
         try:
-            store.save_git_user(name_row.get_text(), email_row.get_text(), branch_row.get_text().strip() or None)
+            idx = email_row.get_selected()
+            if idx < 0 or idx >= len(email_choices) - 1:
+                email = other_email.get_text().strip()
+            else:
+                model = email_row.get_model()
+                email = model.get_string(idx) if model is not None else other_email.get_text().strip()
+            store.save_git_user(name_row.get_text(), email, branch_row.get_text().strip() or None)
         except ValidationError:
             pass
         store.persist_settings()
@@ -2921,14 +3034,17 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
         if cb:
             cb(values.get("summary") or "", values.get("description") or "")
 
+    fields = [
+        ("summary", "Summary", payload.get("summary") or ""),
+        ("description", "Description", payload.get("description") or ""),
+    ]
+    if payload.get("show_co_authors"):
+        fields.append(("co_authors", "Co-authors", payload.get("co_authors") or ""))
     _text_dialog(
         parent,
         payload.get("title") or "Commit message",
-        "",
-        [
-            ("summary", "Summary", payload.get("summary") or ""),
-            ("description", "Description", payload.get("description") or ""),
-        ],
+        payload.get("body") or "",
+        fields,
         submit,
         payload.get("button") or "Save",
     )

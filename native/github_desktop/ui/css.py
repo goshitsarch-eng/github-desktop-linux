@@ -73,7 +73,18 @@ APP_CSS = """
 }
 .co-author {
   font-size: 0.85rem;
-  opacity: 0.8;
+  opacity: 0.9;
+}
+.co-author-chip {
+  padding: 2px 8px;
+  border-radius: 12px;
+  background-color: alpha(@accent_bg_color, 0.22);
+}
+.co-author-chip.unknown {
+  background-color: alpha(@warning_color, 0.28);
+}
+.co-author-chips {
+  min-height: 0;
 }
 .checks-success { color: @success_color; }
 .checks-failure { color: @error_color; }

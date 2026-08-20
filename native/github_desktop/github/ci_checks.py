@@ -130,6 +130,18 @@ def failing_checks(runs: Iterable[RefCheck]) -> list[RefCheck]:
     return [r for r in runs if r.conclusion in FAILING_CONCLUSIONS or is_failure(r)]
 
 
+def summarize_check_runs(runs: Sequence[RefCheck]) -> str:
+    """Desktop `CIStatus` roll-up: success, failure, pending, or empty."""
+    items = list(runs)
+    if not items:
+        return ""
+    if failing_checks(items):
+        return "failure"
+    if any(item.status != "completed" for item in items):
+        return "pending"
+    return "success"
+
+
 def check_run_step_url(
     check: RefCheck,
     step: CheckStep,

@@ -52,6 +52,7 @@ from .git import (
     fetch_tags_to_push,
     format_commit_message,
     get_ahead_behind,
+    get_ahead_behind_range,
     get_all_tags,
     get_author_identity,
     get_branch_merge_base_changed_files,
@@ -115,7 +116,13 @@ from .git import (
 from .git.askpass import askpass_env, set_prompt_callback, start_askpass_server
 from .git.runner import find_git, resolve_repository_root
 from .github.api import GitHubAPI
-from .github.ci_checks import attach_workflow_jobs_to_checks, failing_checks, is_failure, split_rerunnable_checks
+from .github.ci_checks import (
+    attach_workflow_jobs_to_checks,
+    failing_checks,
+    is_failure,
+    split_rerunnable_checks,
+    summarize_check_runs,
+)
 from .github.repo_rules import RepoRulesInfo, parse_repo_rules, use_repo_rules_logic
 from .github.notifications import classify_notification, pull_request_from_payload
 from .github.oauth import (
@@ -241,6 +248,7 @@ class RepositoryViewState:
     image_diff_type: str = ImageDiffType.TWO_UP.value
     file_filter: str = ChangesListFilter.ALL.value
     check_runs: list = field(default_factory=list)
+    pr_check_status: dict[int, str] = field(default_factory=dict)
     selected_commits: list[Commit] = field(default_factory=list)
     compare_ahead: list[Commit] = field(default_factory=list)
     compare_behind: list[Commit] = field(default_factory=list)
@@ -297,6 +305,7 @@ class AppStore:
         self.sign_in_step: SignInStep | None = None
         self.sign_in_endpoint: str = dotcom_endpoint()
         self.sign_in_error: str | None = None
+        self.sign_in_existing: Account | None = None
         self.oauth_state: str | None = None
         self.cloning: list[CloningRepository] = []
         self._clone_processes: dict[int, list] = {}
@@ -319,6 +328,7 @@ class AppStore:
         self._next_id = 1
         self._background_fetch_interval = BACKGROUND_FETCH_DEFAULT_INTERVAL
         self._background_fetch_in_flight = False
+        self._ahead_behind_cache: dict[tuple[str, str, str], AheadBehind | None] = {}
         self._load_accounts()
         self._load_repositories()
         if not os.environ.get("PYTEST_CURRENT_TEST"):
@@ -1829,6 +1839,19 @@ class AppStore:
                 state.merge_tree = MergeTreeResult(kind=ComputedAction.INVALID)
         self.emit()
 
+    def ahead_behind_between(self, repo: Repository, from_sha: str | None, to_sha: str | None) -> AheadBehind | None:
+        """Desktop `aheadBehindStore.tryGetAheadBehind` cache keyed by commit SHAs."""
+        if not from_sha or not to_sha:
+            return None
+        if from_sha == to_sha:
+            return AheadBehind(ahead=0, behind=0)
+        key = (repo.path, from_sha, to_sha)
+        if key in self._ahead_behind_cache:
+            return self._ahead_behind_cache[key]
+        result = get_ahead_behind_range(repo.path, f"{from_sha}...{to_sha}")
+        self._ahead_behind_cache[key] = result
+        return result
+
     def set_compare_mode(self, repo: Repository, mode: ComparisonMode) -> None:
         state = self.state_for(repo)
         if state.compare_mode == mode:
@@ -3125,19 +3148,36 @@ class AppStore:
         self.show_popup(popup, **payload)
 
     def begin_sign_in(self, enterprise: bool = False) -> None:
+        self.sign_in_error = None
+        self.sign_in_existing = None
         if enterprise:
             self.sign_in_step = SignInStep.ENDPOINT_ENTRY
             self.sign_in_endpoint = ""
         else:
-            self.sign_in_step = SignInStep.AUTHENTICATION
             self.sign_in_endpoint = dotcom_endpoint()
-        self.sign_in_error = None
+            existing = next((a for a in self.accounts if a.is_dotcom), None)
+            if existing:
+                self.sign_in_step = SignInStep.EXISTING_ACCOUNT_WARNING
+                self.sign_in_existing = existing
+            else:
+                self.sign_in_step = SignInStep.AUTHENTICATION
         self.show_popup(PopupType.SIGN_IN, enterprise=enterprise)
+
+    def continue_existing_account_warning(self) -> None:
+        """Leave `ExistingAccountWarning` and continue to browser authentication."""
+        self.sign_in_step = SignInStep.AUTHENTICATION
+        self.sign_in_error = None
 
     def set_sign_in_endpoint(self, url: str) -> None:
         try:
             self.sign_in_endpoint = enterprise_endpoint_from_url(url)
-            self.sign_in_step = SignInStep.AUTHENTICATION
+            existing = next((a for a in self.accounts if a.endpoint == self.sign_in_endpoint), None)
+            if existing:
+                self.sign_in_step = SignInStep.EXISTING_ACCOUNT_WARNING
+                self.sign_in_existing = existing
+            else:
+                self.sign_in_step = SignInStep.AUTHENTICATION
+                self.sign_in_existing = None
             self.sign_in_error = None
         except Exception as exc:
             self.sign_in_error = str(exc)
@@ -3191,6 +3231,9 @@ class AppStore:
         threading.Thread(target=thread, daemon=True).start()
 
     def _add_account(self, account: Account) -> None:
+        if self.sign_in_existing and self.sign_in_existing.endpoint == account.endpoint:
+            self.sign_out(self.sign_in_existing)
+            self.sign_in_existing = None
         self.accounts = [a for a in self.accounts if not (a.endpoint == account.endpoint and a.login == account.login)]
         self.accounts.insert(0, account)
         self._save_accounts()
@@ -3710,6 +3753,46 @@ class AppStore:
             text = "" if exc else (result or "")
             if on_done:
                 on_done(text)
+
+        self._run(work, done)
+
+    def poll_commit_status(self, repo: Repository | None = None) -> None:
+        """Desktop `subscribeToCommitStatus` / `CIStatus`: refresh tip and open PR heads."""
+        repo = repo or self.selected_repository
+        if not repo or not repo.github:
+            return
+        account = self.account_for_repo(repo)
+        if not account:
+            return
+        state = self.state_for(repo)
+        sha = (state.status.current_tip if state.status else None) or (state.commits[0].sha if state.commits else None)
+        if not sha:
+            return
+        owner, name = repo.github.owner, repo.github.name
+        prs = [pr for pr in state.pull_requests if pr.head_sha][:15]
+
+        def work() -> dict:
+            api = GitHubAPI.from_account(account)
+            runs_by_ref: dict[str, list] = {}
+            runs_by_ref[sha] = api.fetch_check_runs(owner, name, sha)
+            pr_status: dict[int, str] = {}
+            for pr in prs:
+                ref = pr.head_sha
+                if ref not in runs_by_ref:
+                    try:
+                        runs_by_ref[ref] = api.fetch_check_runs(owner, name, ref)
+                    except Exception:
+                        runs_by_ref[ref] = []
+                pr_status[pr.number] = summarize_check_runs(runs_by_ref.get(ref) or [])
+            return {"tip": sha, "runs": runs_by_ref, "pr_status": pr_status}
+
+        def done(exc: BaseException | None, payload: dict | None = None) -> None:
+            if exc or not payload:
+                return
+            view = self.state_for(repo)
+            view.check_runs = payload["runs"].get(payload["tip"]) or []
+            view.pr_check_status = payload.get("pr_status") or {}
+            self.emit()
 
         self._run(work, done)
 

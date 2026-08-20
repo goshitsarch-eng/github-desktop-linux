@@ -125,6 +125,7 @@ class BranchesFoldout(Gtk.Popover):
         self.set_child(root)
         self._branches: list[Branch] = []
         self._prs: list[PullRequest] = []
+        self._pr_checks: dict[int, str] = {}
         self._default_name: str | None = None
         self._recent: list[str] = []
 
@@ -137,9 +138,11 @@ class BranchesFoldout(Gtk.Popover):
         default_name: str | None,
         recent: list[str],
         has_github: bool,
+        pr_checks: dict[int, str] | None = None,
     ) -> None:
         self._branches = list(branches)
         self._prs = list(pull_requests)
+        self._pr_checks = dict(pr_checks or {})
         self._current_name = current
         self._default_name = default_name
         self._recent = list(recent)
@@ -188,6 +191,17 @@ class BranchesFoldout(Gtk.Popover):
             return
         for pr in prs:
             row = Adw.ActionRow(title=f"#{pr.number} {pr.title}", subtitle=f"{pr.author} · {pr.head_ref}")
+            status = self._pr_checks.get(pr.number)
+            if status:
+                icons = {
+                    "success": "emblem-ok-symbolic",
+                    "failure": "dialog-error-symbolic",
+                    "pending": "emblem-synchronizing-symbolic",
+                }
+                img = Gtk.Image.new_from_icon_name(icons.get(status, "dialog-question-symbolic"))
+                img.add_css_class(f"checks-{status}")
+                img.set_tooltip_text(f"CIStatus: {status}")
+                row.add_suffix(img)
             if pr.draft:
                 row.add_suffix(Gtk.Label(label="Draft"))
             row.set_activatable(True)

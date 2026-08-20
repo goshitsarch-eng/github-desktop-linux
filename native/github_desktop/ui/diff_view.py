@@ -763,15 +763,21 @@ class DiffViewer(Gtk.Box):
         self._inner.append(toolbar)
         prev_tex = _texture_from_bytes(diff.previous)
         cur_tex = _texture_from_bytes(diff.current)
-        if mode == ImageDiffType.SWIPE.value:
+        if not prev_tex and cur_tex:
+            panels = ((cur_tex, diff.current, "New"),)
+        elif prev_tex and not cur_tex:
+            panels = ((prev_tex, diff.previous, "Deleted"),)
+        else:
+            panels = ((prev_tex, diff.previous, "Previous"), (cur_tex, diff.current, "Current"))
+        if mode == ImageDiffType.SWIPE.value and prev_tex and cur_tex:
             self._inner.append(_swipe_images(prev_tex, cur_tex))
-        elif mode == ImageDiffType.ONION.value:
+        elif mode == ImageDiffType.ONION.value and prev_tex and cur_tex:
             self._inner.append(_onion_images(prev_tex, cur_tex))
-        elif mode == ImageDiffType.DIFFERENCE.value:
+        elif mode == ImageDiffType.DIFFERENCE.value and prev_tex and cur_tex:
             self._inner.append(_difference_images(diff.previous, diff.current))
         else:
             box = Gtk.Box(spacing=12)
-            for tex, blob, title in ((prev_tex, diff.previous, "Previous"), (cur_tex, diff.current, "Current")):
+            for tex, blob, title in panels:
                 col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
                 meta = _image_dimensions_label(tex, blob)
                 col.append(Gtk.Label(label=title, xalign=0))

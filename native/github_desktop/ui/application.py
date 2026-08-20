@@ -72,6 +72,7 @@ class DesktopApplication(Adw.Application):
         if repo:
             self.store.refresh_repository(repo)
         GLib.timeout_add_seconds(30, self._poll_notifications)
+        GLib.timeout_add_seconds(3 * 60, self._poll_commit_status)
         GLib.idle_add(lambda: self.store.check_thank_you() or False)
         if not os.environ.get("PYTEST_CURRENT_TEST"):
             skew = 1 + (os.getpid() % 30)
@@ -80,6 +81,16 @@ class DesktopApplication(Adw.Application):
 
     def _poll_notifications(self) -> bool:
         self.store.poll_notifications()
+        return True
+
+    def _poll_commit_status(self) -> bool:
+        """Desktop `subscribeToCommitStatus`: refresh CI about every 3 minutes."""
+        if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("GITHUB_DESKTOP_OFFLINE"):
+            return False
+        try:
+            self.store.poll_commit_status()
+        except Exception as exc:
+            log.debug("commit status poll failed: %s", exc)
         return True
 
     def _background_fetch_tick(self) -> bool:

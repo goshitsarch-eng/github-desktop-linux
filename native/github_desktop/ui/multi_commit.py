@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import re
+from pathlib import Path
 from threading import Thread
 from typing import Any, Callable
 
@@ -26,6 +28,10 @@ from ..models import (
     ManualConflictResolution,
     MultiCommitOperationKind,
     WorkingDirectoryFileChange,
+    get_label_for_manual_resolution_option,
+    has_unresolved_conflicts,
+    is_conflict_with_markers,
+    is_manual_conflict,
 )
 from ..shells import open_in_default_program
 from ..store import AppStore
@@ -761,8 +767,8 @@ def show_conflicts_dialog(parent: Gtk.Window, store: AppStore, kind: str | None 
             kind = MultiCommitOperationKind.CHERRY_PICK
         else:
             kind = MultiCommitOperationKind.MERGE
-    files = [f for f in status.working_directory.files if f.status.is_conflicted]
-    resolved = [f for f in status.working_directory.files if not f.status.is_conflicted]
+    files = [f for f in status.working_directory.files if f.status.is_conflicted and has_unresolved_conflicts(f.status)]
+    resolved = [f for f in status.working_directory.files if f.status.is_conflicted and not has_unresolved_conflicts(f.status)]
     leftover = {}
     try:
         leftover = get_files_with_conflict_markers(repo.path)
@@ -784,6 +790,7 @@ def show_conflicts_dialog(parent: Gtk.Window, store: AppStore, kind: str | None 
     toolbar = Adw.ToolbarView()
     header = Adw.HeaderBar()
     our = status.current_branch or "this branch"
+    their = _their_branch(repo, status)
     header.set_title_widget(Adw.WindowTitle(title=f"Resolve {kind.lower()} conflicts", subtitle=our))
     toolbar.add_top_bar(header)
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -811,7 +818,20 @@ def show_conflicts_dialog(parent: Gtk.Window, store: AppStore, kind: str | None 
     listbox = Gtk.ListBox()
     listbox.add_css_class("boxed-list")
     for file in files:
-        row = _conflict_row(parent, store, repo, file, binary=file.path in binary_paths)
+        row = _conflict_row(
+            parent,
+            store,
+            repo,
+            file,
+            binary=file.path in binary_paths,
+            ours_label=get_label_for_manual_resolution_option(file.status.us, our),
+            theirs_label=get_label_for_manual_resolution_option(file.status.them, their),
+        )
+        listbox.append(row)
+    for file in resolved:
+        row = Adw.ActionRow(title=file.path, subtitle="Resolved")
+        ok = Gtk.Image.new_from_icon_name("emblem-ok-symbolic")
+        row.add_prefix(ok)
         listbox.append(row)
     scroller.set_child(listbox)
     box.append(scroller)
@@ -876,19 +896,48 @@ def show_conflicts_dialog(parent: Gtk.Window, store: AppStore, kind: str | None 
     toolbar.set_content(box)
     dialog.set_child(toolbar)
     dialog.present(parent)
-    _ = resolved
 
 
-def _conflict_row(parent: Gtk.Window, store: AppStore, repo, file: WorkingDirectoryFileChange, binary: bool = False) -> Adw.ActionRow:
-    subtitle = "Binary file" if binary else file.status.kind.value
+def _their_branch(repo, status) -> str:
+    if status.rebase_internal_state:
+        return status.rebase_internal_state.target_branch
+    merge_msg = os.path.join(repo.path, ".git", "MERGE_MSG")
+    try:
+        first = Path(merge_msg).read_text(encoding="utf-8").splitlines()[0]
+    except OSError:
+        return "theirs"
+    match = re.search(r"Merge (?:remote-tracking )?branch '([^']+)'", first)
+    if match:
+        return match.group(1).split("/")[-1]
+    return "theirs"
+
+
+def _conflict_row(
+    parent: Gtk.Window,
+    store: AppStore,
+    repo,
+    file: WorkingDirectoryFileChange,
+    binary: bool = False,
+    ours_label: str = "Use ours",
+    theirs_label: str = "Use theirs",
+) -> Adw.ActionRow:
+    if binary:
+        subtitle = "Binary file"
+    elif is_manual_conflict(file.status):
+        subtitle = file.status.unmerged_action.value if file.status.unmerged_action else "Manual conflict"
+    elif is_conflict_with_markers(file.status):
+        count = file.status.conflict_marker_count or 0
+        subtitle = f"{count} leftover conflict marker{'s' if count != 1 else ''}"
+    else:
+        subtitle = file.status.kind.value
     row = Adw.ActionRow(title=file.path, subtitle=subtitle)
-    ours = Gtk.Button(label="Use ours")
-    theirs = Gtk.Button(label="Use theirs")
+    ours = Gtk.Button(label=ours_label)
+    theirs = Gtk.Button(label=theirs_label)
     ours.add_css_class("flat")
     theirs.add_css_class("flat")
     ours.connect("clicked", lambda *_: store.resolve_conflict(repo, file.path, ManualConflictResolution.OURS))
     theirs.connect("clicked", lambda *_: store.resolve_conflict(repo, file.path, ManualConflictResolution.THEIRS))
-    open_btn = Gtk.Button(icon_name="document-open-symbolic")
+    open_btn = Gtk.Button(label="Open in editor")
     open_btn.add_css_class("flat")
     open_btn.set_tooltip_text("Open in editor")
     open_btn.connect("clicked", lambda *_: store.open_in_editor(repo, file.path))
@@ -903,9 +952,15 @@ def _conflict_row(parent: Gtk.Window, store: AppStore, repo, file: WorkingDirect
         "clicked",
         lambda *_: open_in_default_program(os.path.join(repo.path, file.path)),
     )
-    row.add_suffix(ours)
-    row.add_suffix(theirs)
-    row.add_suffix(open_btn)
+    if is_conflict_with_markers(file.status) and not binary:
+        open_btn.add_css_class("suggested-action")
+        row.add_suffix(open_btn)
+        row.add_suffix(ours)
+        row.add_suffix(theirs)
+    else:
+        row.add_suffix(ours)
+        row.add_suffix(theirs)
+        row.add_suffix(open_btn)
     row.add_suffix(reveal)
     row.add_suffix(default_app)
     return row

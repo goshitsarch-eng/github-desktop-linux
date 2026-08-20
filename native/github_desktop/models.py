@@ -521,6 +521,37 @@ class FileStatus:
         return self.is_conflicted and self.conflict_marker_count is not None
 
 
+def is_conflict_with_markers(status: FileStatus) -> bool:
+    """Desktop `isConflictWithMarkers`."""
+    return status.is_conflicted and status.conflict_marker_count is not None
+
+
+def is_manual_conflict(status: FileStatus) -> bool:
+    """Desktop `isManualConflict` (added/deleted by us/them, no markers)."""
+    return status.is_conflicted and status.conflict_marker_count is None
+
+
+def has_unresolved_conflicts(status: FileStatus) -> bool:
+    if not status.is_conflicted:
+        return False
+    if is_manual_conflict(status):
+        return True
+    return (status.conflict_marker_count or 0) > 0
+
+
+def get_label_for_manual_resolution_option(entry: GitStatusEntry | None, branch: str | None = None) -> str:
+    """Desktop `getLabelForManualResolutionOption`."""
+    suffix = f" from {branch}" if branch else ""
+    if entry == GitStatusEntry.ADDED:
+        return f"Use the added file{suffix}"
+    if entry == GitStatusEntry.DELETED:
+        delete_suffix = f" on {branch}" if branch else ""
+        return f"Do not include this file{delete_suffix}"
+    if entry == GitStatusEntry.UPDATED_BUT_UNMERGED:
+        return f"Use the modified file{suffix}"
+    return f"Use ours{suffix}" if not branch else f"Use {branch}"
+
+
 @dataclass
 class WorkingDirectoryFileChange:
     path: str
@@ -1024,6 +1055,23 @@ class Account:
         if self.is_dotcom:
             return "GitHub.com"
         return html_url_from_endpoint(self.endpoint)
+
+
+def stealth_email_for_account(account: Account) -> str:
+    """Desktop `getStealthEmailForAccount` (`{id}+{login}@users.noreply.github.com`)."""
+    from .email import legacy_stealth_email_for_user, stealth_email_for_user
+
+    if account.id:
+        return stealth_email_for_user(account.id, account.login, account.endpoint)
+    return legacy_stealth_email_for_user(account.login, account.endpoint)
+
+
+def account_email_choices(account: Account) -> list[str]:
+    emails = [str(item) for item in (account.emails or []) if item]
+    stealth = stealth_email_for_account(account)
+    if stealth not in emails:
+        emails.append(stealth)
+    return emails
 
 
 @dataclass

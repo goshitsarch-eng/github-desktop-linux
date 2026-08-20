@@ -35,6 +35,7 @@ from ..shells import open_external, open_in_default_program
 from ..store import AppStore
 from ..version import APP_NAME
 from .avatar import Avatar, AvatarStack, users_from_commit
+from .author_input import AuthorInput
 from .branches import BranchesFoldout
 from .checks import present_checks_popover
 from .dialogs import present_popup, show_preferences, show_reorder_commits
@@ -421,8 +422,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.store.set_section(RepositorySectionTab.HISTORY)
         if hasattr(self, "_view_stack"):
             self._view_stack.set_visible_child_name("history")
-        if hasattr(self, "_compare_dropdown"):
-            GLib.idle_add(self._compare_dropdown.grab_focus)
+        if hasattr(self, "_compare_search"):
+            GLib.idle_add(self._compare_search.grab_focus)
 
     def _refresh_empty(self) -> None:
         if not hasattr(self, "_empty_tutorial_btn"):
@@ -987,15 +988,10 @@ class MainWindow(Adw.ApplicationWindow):
         co = Gtk.CheckButton(label="Co-authors")
         co.connect("toggled", self._on_coauthors)
         self._coauthor_check = co
-        self._coauthor_entry = Gtk.Entry()
-        self._coauthor_entry.set_placeholder_text("Name <email> or @username")
-        self._coauthor_entry.set_visible(False)
-        self._coauthor_store = Gtk.ListStore(str)
-        co_completion = Gtk.EntryCompletion()
-        co_completion.set_model(self._coauthor_store)
-        co_completion.set_text_column(0)
-        co_completion.set_minimum_key_length(1)
-        self._coauthor_entry.set_completion(co_completion)
+        self._author_input = AuthorInput(on_changed=self._on_authors_changed)
+        self._author_input.set_visible(False)
+        self._coauthor_entry = self._author_input.entry
+        self._coauthor_store = self._author_input.store
         self._summary.set_completion(completion)
         self._spell = attach_spellcheck(self._description, enabled=self.store.settings.spellcheck_enabled)
         btn_row = Gtk.Box(spacing=6)
@@ -1023,7 +1019,7 @@ class MainWindow(Adw.ApplicationWindow):
         commit_box.append(self._rules_warn)
         commit_box.append(self._description)
         commit_box.append(co)
-        commit_box.append(self._coauthor_entry)
+        commit_box.append(self._author_input)
         commit_box.append(btn_row)
         self._conflict_bar = Gtk.Box(spacing=6)
         commit_box.append(self._conflict_bar)
@@ -1072,9 +1068,24 @@ class MainWindow(Adw.ApplicationWindow):
         left.set_size_request(300, -1)
         compare_row = Gtk.Box(spacing=6)
         compare_row.append(Gtk.Label(label="Compare to"))
-        self._compare_dropdown = Gtk.DropDown.new_from_strings(["History"])
-        self._compare_dropdown.connect("notify::selected", self._on_compare_changed)
-        compare_row.append(self._compare_dropdown)
+        compare_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        compare_col.set_hexpand(True)
+        self._compare_search = Gtk.SearchEntry()
+        self._compare_search.set_placeholder_text("Filter branches")
+        self._compare_search.set_hexpand(True)
+        self._compare_search.connect("search-changed", lambda *_: self._refresh_compare_list())
+        compare_col.append(self._compare_search)
+        compare_scroll = Gtk.ScrolledWindow()
+        compare_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        compare_scroll.set_min_content_height(120)
+        compare_scroll.set_max_content_height(200)
+        self._compare_list = Gtk.ListBox()
+        self._compare_list.add_css_class("boxed-list")
+        self._compare_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self._compare_list.connect("row-activated", self._on_compare_row)
+        compare_scroll.set_child(self._compare_list)
+        compare_col.append(compare_scroll)
+        compare_row.append(compare_col)
         left.append(compare_row)
         self._history_filter = Gtk.SearchEntry()
         self._history_filter.set_placeholder_text("Search commits…")
@@ -1164,6 +1175,7 @@ class MainWindow(Adw.ApplicationWindow):
             default_name=self.store.default_branch_name(repo),
             recent=list(state.recent_branches or self.store.settings.recent_branches.get(repo.path, [])),
             has_github=bool(repo.github),
+            pr_checks=getattr(state, "pr_check_status", None) or {},
         )
         if hasattr(self, "_filter_bar"):
             self._filter_bar.set_visible(self.store.settings.show_changes_filter)
@@ -1171,7 +1183,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._update_checks(state)
         self._update_tutorial_banner(repo, state)
         self._refresh_issue_completion(state)
-        self._refresh_compare_dropdown(state)
+        self._refresh_compare_list(state)
         self._refresh_repo_list()
         self._refresh_files()
         self._refresh_history()
@@ -1213,17 +1225,12 @@ class MainWindow(Adw.ApplicationWindow):
             self._coauthor_check.set_visible(bool(repo.github))
             if not repo.github:
                 self._coauthor_check.set_active(False)
-                self._coauthor_entry.set_visible(False)
+                self._author_input.set_visible(False)
             elif state.show_co_authors or state.co_authors:
                 self._coauthor_check.set_active(True)
-                self._coauthor_entry.set_visible(True)
-                if state.co_authors and not self._coauthor_entry.get_text():
-                    self._coauthor_entry.set_text(
-                        ", ".join(
-                            f"{a.name} <{a.email}>" if getattr(a, "email", None) else a.name
-                            for a in state.co_authors
-                        )
-                    )
+                self._author_input.set_visible(True)
+                if state.co_authors:
+                    self._author_input.set_authors(list(state.co_authors))
         if hasattr(self, "_spell"):
             self._spell.set_enabled(self.store.settings.spellcheck_enabled)
         self._refresh_author_avatar(repo)
@@ -1728,7 +1735,16 @@ class MainWindow(Adw.ApplicationWindow):
             self.store.select_file(repo, file)
 
     def _on_coauthors(self, btn: Gtk.CheckButton) -> None:
-        self._coauthor_entry.set_visible(btn.get_active())
+        self._author_input.set_visible(btn.get_active())
+        repo = self.store.selected_repository
+        if repo:
+            self.store.state_for(repo).show_co_authors = btn.get_active()
+
+    def _on_authors_changed(self, authors) -> None:
+        repo = self.store.selected_repository
+        if not repo or getattr(self, "_applying_commit_form", False):
+            return
+        self.store.state_for(repo).co_authors = list(authors)
 
     def _on_commit(self, *_args: object) -> None:
         repo = self.store.selected_repository
@@ -1745,10 +1761,13 @@ class MainWindow(Adw.ApplicationWindow):
             self._toast.add_toast(Adw.Toast(title="A commit summary is required"))
             return
         authors = []
-        if self._coauthor_entry.get_visible() and self._coauthor_entry.get_text().strip():
+        if self._coauthor_check.get_active():
             from ..models import parse_co_authors
 
-            authors = parse_co_authors(self._coauthor_entry.get_text())
+            self._author_input.commit_pending()
+            authors = self._author_input.get_authors()
+            pending = parse_co_authors(self._author_input.get_pending_text())
+            authors = authors + [a for a in pending if a not in authors]
         try:
             self.store.commit(repo, summary, description, co_authors=authors)
             self._summary.set_text("")
@@ -2443,36 +2462,54 @@ class MainWindow(Adw.ApplicationWindow):
             for short in matching_shortcodes(token):
                 self._issue_store.append([short])
 
-    def _refresh_compare_dropdown(self, state) -> None:
-        if not hasattr(self, "_compare_dropdown"):
+    def _refresh_compare_list(self, state=None) -> None:
+        if not hasattr(self, "_compare_list"):
             return
-        names = ["History"] + [b.name for b in state.branches]
-        current = 0
-        if state.compare_branch:
-            try:
-                current = names.index(state.compare_branch.name)
-            except ValueError:
-                current = 0
-        self._building = True
-        self._compare_dropdown.set_model(Gtk.StringList.new(names))
-        self._compare_dropdown.set_selected(current)
-        self._building = False
+        repo = self.store.selected_repository
+        if repo is None:
+            return
+        if state is None:
+            state = self.store.state_for(repo)
+        query = (self._compare_search.get_text() if hasattr(self, "_compare_search") else "").strip().lower()
+        current_tip = state.status.current_tip if state.status else None
+        current_name = state.status.current_branch if state.status else None
+        while (child := self._compare_list.get_first_child()) is not None:
+            self._compare_list.remove(child)
+        history = Gtk.ListBoxRow()
+        history.set_child(Gtk.Label(label="History", xalign=0))
+        history.branch_name = ""
+        self._compare_list.append(history)
+        shown = 0
+        for branch in state.branches:
+            if branch.name == current_name:
+                continue
+            if query and query not in branch.name.lower():
+                continue
+            if shown >= 40:
+                break
+            row = Gtk.ListBoxRow()
+            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            box.append(Gtk.Label(label=branch.name, xalign=0, hexpand=True))
+            ab = self.store.ahead_behind_between(repo, current_tip, branch.tip_sha)
+            if ab and (ab.ahead or ab.behind):
+                counts = Gtk.Label(label=f"{ab.ahead} ahead · {ab.behind} behind")
+                counts.add_css_class("ahead-behind")
+                box.append(counts)
+            row.set_child(box)
+            row.branch_name = branch.name
+            self._compare_list.append(row)
+            shown += 1
 
-    def _on_compare_changed(self, dropdown, *_args: object) -> None:
-        if self._building:
-            return
+    def _on_compare_row(self, _list: Gtk.ListBox, row: Gtk.ListBoxRow) -> None:
         repo = self.store.selected_repository
         if not repo:
             return
-        model = dropdown.get_model()
-        idx = dropdown.get_selected()
-        if model is None or idx < 0:
-            return
-        name = model.get_string(idx)
-        if name == "History":
+        name = getattr(row, "branch_name", "") or ""
+        if not name:
             self.store.compare_to_branch(repo, None)
         else:
             self.store.compare_to_branch(repo, name)
+        self._refresh_history()
 
     def _set_compare_mode(self, mode: ComparisonMode) -> None:
         if self._building:
@@ -2635,6 +2672,13 @@ class MainWindow(Adw.ApplicationWindow):
             description=self._description.get_buffer().get_text(start, end, True),
             timestamp=state.commit_message.timestamp,
         )
+        if hasattr(self, "_author_input") and hasattr(self, "_coauthor_check"):
+            if self._coauthor_check.get_active():
+                self._author_input.commit_pending()
+                state.co_authors = self._author_input.get_authors()
+                state.show_co_authors = True
+            else:
+                state.show_co_authors = False
 
     def _apply_commit_form(self, repo, state) -> None:
         if not hasattr(self, "_summary"):
@@ -2658,20 +2702,15 @@ class MainWindow(Adw.ApplicationWindow):
                     self._summary.set_text(msg.summary)
                     self._description.get_buffer().set_text(msg.description or "")
                     self._applied_commit_message_ts = msg.timestamp
-            if switched and hasattr(self, "_coauthor_entry"):
+            if switched and hasattr(self, "_author_input"):
                 if state.co_authors:
                     self._coauthor_check.set_active(True)
-                    self._coauthor_entry.set_visible(True)
-                    self._coauthor_entry.set_text(
-                        ", ".join(
-                            f"{a.name} <{a.email}>" if getattr(a, "email", None) else a.name
-                            for a in state.co_authors
-                        )
-                    )
+                    self._author_input.set_visible(True)
+                    self._author_input.set_authors(list(state.co_authors))
                 else:
                     self._coauthor_check.set_active(False)
-                    self._coauthor_entry.set_visible(False)
-                    self._coauthor_entry.set_text("")
+                    self._author_input.set_visible(False)
+                    self._author_input.set_authors([])
         finally:
             self._applying_commit_form = False
             self._form_repo_id = repo.id

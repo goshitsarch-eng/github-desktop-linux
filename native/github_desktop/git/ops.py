@@ -1980,10 +1980,14 @@ def get_all_tags(repo: str) -> dict[str, str]:
     return tags
 
 
-def get_config_value(repo: str | None, key: str, global_only: bool = False) -> str | None:
+def get_config_value(
+    repo: str | None, key: str, global_only: bool = False, local_only: bool = False
+) -> str | None:
     args = ["config"]
     if global_only or not repo:
         args.append("--global")
+    elif local_only:
+        args.append("--local")
     args += ["--get", key]
     cwd = repo or os.path.expanduser("~")
     result = git(args, cwd, success_exit_codes={0, 1}, name="getConfig")
