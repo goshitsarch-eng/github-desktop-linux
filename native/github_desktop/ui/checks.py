@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Callable, Sequence
 
 import gi
@@ -16,6 +17,7 @@ from ..github.ci_checks import (
     duration_ms,
     failing_checks,
     format_precise_duration,
+    get_check_status_count_map,
     get_combined_status_summary,
     group_check_runs_by_workflow,
     is_failure,
@@ -23,6 +25,94 @@ from ..github.ci_checks import (
 from ..models import CheckStep, PopupType, RefCheck
 from ..shells import open_external
 from ..store import AppStore
+
+
+DONUT_COLORS = {
+    "success": (0.22, 0.72, 0.44),
+    "neutral": (0.22, 0.72, 0.44),
+    "skipped": (0.22, 0.72, 0.44),
+    "failure": (0.86, 0.24, 0.29),
+    "cancelled": (0.86, 0.24, 0.29),
+    "canceled": (0.86, 0.24, 0.29),
+    "timed_out": (0.86, 0.24, 0.29),
+    "action_required": (0.86, 0.24, 0.29),
+    "in_progress": (0.90, 0.64, 0.12),
+    "queued": (0.55, 0.56, 0.58),
+    "pending": (0.55, 0.56, 0.58),
+    "stale": (0.55, 0.56, 0.58),
+}
+
+
+class CompletenessDonut(Gtk.DrawingArea):
+    """Desktop-style completeness donut for mixed check conclusions."""
+
+    def __init__(self, counts: dict[str, int], size: int = 28) -> None:
+        super().__init__()
+        self._counts = {k: v for k, v in counts.items() if v > 0}
+        self.set_content_width(size)
+        self.set_content_height(size)
+        self.set_size_request(size, size)
+        pending_keys = {"in_progress", "queued", "pending", "waiting"}
+        in_progress = counts.get("in_progress", 0)
+        queued = counts.get("queued", 0) + counts.get("pending", 0)
+        completed = sum(v for k, v in counts.items() if k not in pending_keys)
+        self.set_tooltip_text(
+            f"Completeness indicator. {completed} completed, {in_progress} in progress, {queued} queued."
+        )
+        self.add_css_class("completeness-indicator")
+        self.set_draw_func(self._draw)
+
+    def _draw(self, _area, cr, width: int, height: int) -> None:
+        total = sum(self._counts.values()) or 1
+        cx, cy = width / 2.0, height / 2.0
+        radius = max(1.0, min(width, height) / 2.0 - 1.5)
+        inner = radius * 0.55
+        angle = -math.pi / 2
+        for key, value in self._counts.items():
+            sweep = (value / total) * 2 * math.pi
+            color = DONUT_COLORS.get(key, (0.45, 0.47, 0.50))
+            cr.set_source_rgb(*color)
+            cr.move_to(cx, cy)
+            cr.arc(cx, cy, radius, angle, angle + sweep)
+            cr.close_path()
+            cr.fill()
+            angle += sweep
+        try:
+            from ..theme import is_dark
+
+            if is_dark():
+                cr.set_source_rgb(0.18, 0.18, 0.20)
+            else:
+                cr.set_source_rgb(0.97, 0.97, 0.98)
+        except Exception:
+            cr.set_source_rgb(0.96, 0.96, 0.97)
+        cr.arc(cx, cy, inner, 0, 2 * math.pi)
+        cr.fill()
+
+
+def _completeness_widget(runs: list[RefCheck], title: str, css: str) -> Gtk.Widget:
+    row = Gtk.Box(spacing=8)
+    row.set_valign(Gtk.Align.CENTER)
+    all_failure = title == "All checks have failed"
+    if css == "success":
+        img = Gtk.Image.new_from_icon_name("emblem-ok-symbolic")
+        img.add_css_class("completeness-indicator-success")
+        img.set_pixel_size(22)
+        row.append(img)
+    elif all_failure:
+        img = Gtk.Image.new_from_icon_name("dialog-error-symbolic")
+        img.add_css_class("completeness-indicator-error")
+        img.set_pixel_size(22)
+        row.append(img)
+    elif runs:
+        row.append(CompletenessDonut(get_check_status_count_map(runs)))
+    heading = Gtk.Label(label=title, xalign=0)
+    heading.add_css_class("heading")
+    if css:
+        heading.add_css_class(f"checks-{css}")
+    heading.set_hexpand(True)
+    row.append(heading)
+    return row
 
 
 def _runs_from_payload(store: AppStore, payload: dict[str, Any]) -> list[RefCheck]:
@@ -203,11 +293,7 @@ def _popover_body(
     box.set_margin_start(10)
     box.set_margin_end(10)
     title_text, css = checks_header_state(runs)
-    title = Gtk.Label(label=title_text, xalign=0)
-    title.add_css_class("heading")
-    if css:
-        title.add_css_class(f"checks-{css}")
-    box.append(title)
+    box.append(_completeness_widget(runs, title_text, css))
     summary = get_combined_status_summary(runs)
     if summary:
         sub = Gtk.Label(label=summary, xalign=0, wrap=True)

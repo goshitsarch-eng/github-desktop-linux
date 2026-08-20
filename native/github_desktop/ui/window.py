@@ -1834,6 +1834,11 @@ class MainWindow(Adw.ApplicationWindow):
             ahead_behind=state.ahead_behind,
             unpublished=unpublished,
         )
+        branch = state.status.current_branch if state.status else None
+        if repo.github and repo.github.permissions == "read":
+            warnings.insert(0, f"You don't have write access to {repo.name}. Want to create a fork?")
+        elif branch and branch in (state.protected_branches or []):
+            warnings.insert(0, f"{branch} is a protected branch. Want to switch branches?")
         if warnings:
             self._rules_warn.set_text("\n".join(warnings))
             self._rules_warn.set_visible(True)

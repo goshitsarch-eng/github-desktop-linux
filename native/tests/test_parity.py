@@ -180,5 +180,7 @@ def test_window_actions_cover_menus() -> None:
         "Do not show this message again",
         "repository rules",
         "Open with default program",
+        "Completeness indicator",
+        "protected branch",
     ]:
         assert phrase in src

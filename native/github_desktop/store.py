@@ -210,6 +210,7 @@ class RepositoryViewState:
     commit_summary_expanded: bool = False
     diff_comments: list = field(default_factory=list)
     repo_rules: RepoRulesInfo = field(default_factory=RepoRulesInfo)
+    protected_branches: list[str] = field(default_factory=list)
 
 
 class AppStore:
@@ -746,6 +747,10 @@ class AppStore:
                         except APIError:
                             pass
                         try:
+                            payload["protected_branches"] = api.fetch_protected_branches(repo.github.owner, repo.github.name)
+                        except APIError:
+                            payload["protected_branches"] = []
+                        try:
                             payload["repo_rules"] = self._load_repo_rules(api, repo, status)
                         except Exception as exc:
                             log.debug("repo rules fetch failed: %s", exc)
@@ -790,6 +795,8 @@ class AppStore:
             state.local_commit_shas = data.get("local_commit_shas") or []
             if "repo_rules" in data:
                 state.repo_rules = data["repo_rules"]
+            if "protected_branches" in data:
+                state.protected_branches = list(data.get("protected_branches") or [])
             if previous_selected and status:
                 state.selected_file = next((f for f in status.working_directory.files if f.path == previous_selected), None)
             if state.selected_file is None and status and status.working_directory.files:

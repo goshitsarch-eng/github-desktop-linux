@@ -11,6 +11,7 @@ from github_desktop.github.ci_checks import (
     checks_header_state,
     format_precise_duration,
     get_check_run_short_description,
+    get_check_status_count_map,
     get_combined_status_summary,
     group_check_runs_by_workflow,
     is_failure,
@@ -59,6 +60,18 @@ def test_group_by_workflow_and_header() -> None:
     assert "1 successful and 1 failed checks" == get_combined_status_summary([ci, failed]) or "failed" in get_combined_status_summary(
         [ci, failed]
     )
+
+
+def test_check_status_count_map() -> None:
+    mixed = [
+        _run(id=1, name="a", conclusion="success"),
+        _run(id=2, name="b", conclusion="failure"),
+        _run(id=3, name="c", status="in_progress", conclusion=None),
+    ]
+    counts = get_check_status_count_map(mixed)
+    assert counts["success"] == 1
+    assert counts["failure"] == 1
+    assert counts["in_progress"] == 1
 
 
 def test_attach_jobs_matches_by_id() -> None:

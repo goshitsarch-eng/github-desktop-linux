@@ -7,6 +7,7 @@ from .ci_checks import (
     checks_header_state,
     failing_checks,
     get_combined_status_summary,
+    get_check_status_count_map,
 )
 from .repo_rules import (
     RepoRulesInfo,

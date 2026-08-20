@@ -128,6 +128,9 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             show_warn_force_push(win, store, {"operation": "Rebase"})
             show_confirm_abort(win, "Merge", lambda: None)
             show_conflicts_dialog(win, store, "Merge")
+            from github_desktop.ui.checks import CompletenessDonut
+
+            CompletenessDonut({"success": 2, "failure": 1, "in_progress": 1})
             show_create_branch(win, store, {})
             repos[0].is_missing = True
             win._show_missing(repos[0])

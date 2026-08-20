@@ -168,10 +168,11 @@ APP_CSS = """
   border-radius: 8px;
 }
 
-.repo-rules-warning {
-  color: @warning_color;
-  font-size: 0.85rem;
-  padding: 4px 0;
+.completeness-indicator-success {
+  color: @success_color;
+}
+.completeness-indicator-error {
+  color: @error_color;
 }
 """
 
