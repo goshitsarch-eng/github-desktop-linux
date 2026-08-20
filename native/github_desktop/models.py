@@ -947,6 +947,28 @@ class Branch:
         return self.name.startswith(FORKED_REMOTE_PREFIX)
 
 
+def pr_base_branches(
+    branches: Sequence,
+    *,
+    remote: str | None,
+    current: str | None,
+) -> list[str]:
+    """Desktop `prBaseBranches`: only branches that exist on the contribution remote."""
+    names: list[str] = []
+    seen: set[str] = set()
+    for branch in branches:
+        if not remote:
+            continue
+        if branch.upstream_remote_name != remote and getattr(branch, "remote", None) != remote:
+            continue
+        name = branch.name_without_remote
+        if not name or name == current or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
+
+
 def group_pr_base_branches(
     branch_names: Sequence[str],
     recent_names: Sequence[str],

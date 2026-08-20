@@ -128,6 +128,77 @@ def test_token_mismatch_does_not_sign_out(isolated_config) -> None:
     assert store.popup is None
 
 
+def test_token_invalidated_matches_account_by_token(isolated_config) -> None:
+    store = AppStore()
+    first = Account(login="one", endpoint="https://api.github.com", token="aaa")
+    second = Account(login="two", endpoint="https://api.github.com", token="bbb")
+    store.accounts = [first, second]
+    store._on_token_invalidated("https://api.github.com", "bbb")
+    assert [a.login for a in store.accounts] == ["one"]
+    assert store.popup is not None
+    assert store.popup.type == PopupType.INVALIDATED_TOKEN
+
+
+def test_stash_overwrite_prompts_before_dropping(isolated_config, git_repo: Path, monkeypatch) -> None:
+    from github_desktop.git.ops import get_status
+    from github_desktop.models import Branch, BranchType
+
+    store = AppStore()
+    store.settings.uncommitted_changes_strategy = "StashOnCurrentBranch"
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    (git_repo / "dirty.txt").write_text("x\n", encoding="utf-8")
+    store.state_for(repo).status = get_status(str(git_repo))
+    monkeypatch.setattr(
+        "github_desktop.store.get_last_desktop_stash_entry_for_branch",
+        lambda *_a, **_k: type("S", (), {"stash_sha": "abc", "name": "stash@{0}"})(),
+    )
+    store.checkout(repo, Branch("topic", None, "deadbeef", BranchType.LOCAL))
+    assert store.popup is not None
+    assert store.popup.type == PopupType.CONFIRM_OVERWRITE_STASH
+
+
+def test_protected_branch_checkout_brings_changes(isolated_config, git_repo: Path, monkeypatch) -> None:
+    from github_desktop.git.ops import get_status
+    from github_desktop.models import Branch, BranchType
+
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    (git_repo / "dirty.txt").write_text("x\n", encoding="utf-8")
+    state = store.state_for(repo)
+    state.status = get_status(str(git_repo))
+    state.current_branch_protected = True
+    called: list[str] = []
+    monkeypatch.setattr(store, "checkout_and_bring_changes", lambda r, b: called.append(b.name))
+    store.checkout(repo, Branch("topic", None, "deadbeef", BranchType.LOCAL))
+    assert called == ["topic"]
+    assert store.popup is None
+
+
+def test_begin_sign_in_for_endpoint_skips_empty_ghe_prompt(isolated_config) -> None:
+    store = AppStore()
+    store.begin_sign_in_for_endpoint("https://github.example.com/api/v3")
+    assert store.sign_in_endpoint == "https://github.example.com/api/v3"
+    assert store.popup is not None
+    assert store.popup.type == PopupType.SIGN_IN
+    assert store.popup.payload.get("enterprise") is True
+
+
+def test_pr_base_branches_filters_to_contribution_remote() -> None:
+    from github_desktop.models import Branch, BranchType, pr_base_branches
+
+    origin_local = Branch("main", "origin/main", "a", BranchType.LOCAL, remote=None)
+    origin_remote = Branch("origin/topic", "origin/topic", "b", BranchType.REMOTE, remote="origin")
+    local_only = Branch("wip", None, "c", BranchType.LOCAL)
+    names = pr_base_branches([origin_local, origin_remote, local_only], remote="origin", current="feature")
+    assert "main" in names
+    assert "topic" in names
+    assert "wip" not in names
+
+
 def test_github_auth_failure_without_account_opens_sign_in(isolated_config, git_repo: Path) -> None:
     store = AppStore()
     store.add_repositories([str(git_repo)])

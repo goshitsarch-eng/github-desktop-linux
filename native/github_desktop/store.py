@@ -113,6 +113,7 @@ from .git import (
     stash_push,
     undo_commit,
     update_remote_head,
+    warn_about_remote_commits,
     write_gitignore,
 )
 from .git.askpass import askpass_env, set_prompt_callback, start_askpass_server
@@ -196,6 +197,7 @@ from .models import (
     github_to_dict,
     has_write_permission,
     html_url_from_endpoint,
+    is_dotcom_endpoint,
     sanitize_ref_name,
 )
 from .notifications import show_notification
@@ -2207,20 +2209,44 @@ class AppStore:
             return
         self.emit()
 
-    def squash_onto(self, repo: Repository, to_squash: Sequence[Commit], onto: Commit, message: str) -> None:
+    def squash_onto(
+        self,
+        repo: Repository,
+        to_squash: Sequence[Commit],
+        onto: Commit,
+        message: str,
+        *,
+        continue_with_force_push: bool = False,
+    ) -> None:
         last_retained = onto.parent_shas[0] if onto.parent_shas else None
         if self._merge_commits_block_rewrite(repo, last_retained, "squash"):
             return
+        targets = list(to_squash)
+        if self._confirm_rewrite_force_push(
+            repo,
+            last_retained,
+            "Squash",
+            lambda: self.squash_onto(repo, targets, onto, message, continue_with_force_push=True),
+            continue_with_force_push,
+        ):
+            return
         undo_sha = self._capture_undo(repo)
-        result = squash_commits(repo.path, list(to_squash), onto, last_retained, message)
+        result = squash_commits(repo.path, targets, onto, last_retained, message)
         if result == RebaseResult.COMPLETED_WITHOUT_ERROR:
             self.state_for(repo).pending_force_push_before = undo_sha
-            self.show_banner(Banner(BannerType.SUCCESSFUL_SQUASH, count=len(to_squash) + 1, undo_sha=undo_sha))
+            self.show_banner(Banner(BannerType.SUCCESSFUL_SQUASH, count=len(targets) + 1, undo_sha=undo_sha))
         elif result == RebaseResult.CONFLICTS_ENCOUNTERED:
             self.show_banner(Banner(BannerType.CONFLICTS_FOUND, operation_description="Squash", operation_kind=MultiCommitOperationKind.SQUASH.value))
         self.refresh_repository(repo)
 
-    def reorder_onto(self, repo: Repository, to_move: Sequence[Commit], before: Commit | None) -> None:
+    def reorder_onto(
+        self,
+        repo: Repository,
+        to_move: Sequence[Commit],
+        before: Commit | None,
+        *,
+        continue_with_force_push: bool = False,
+    ) -> None:
         last_retained = None
         if before and before.parent_shas:
             last_retained = before.parent_shas[0]
@@ -2228,14 +2254,46 @@ class AppStore:
             last_retained = to_move[-1].parent_shas[0] if to_move[-1].parent_shas else None
         if self._merge_commits_block_rewrite(repo, last_retained, "reorder"):
             return
+        moving = list(to_move)
+        if self._confirm_rewrite_force_push(
+            repo,
+            last_retained,
+            "Reorder",
+            lambda: self.reorder_onto(repo, moving, before, continue_with_force_push=True),
+            continue_with_force_push,
+        ):
+            return
         undo_sha = self._capture_undo(repo)
-        result = reorder_commits(repo.path, list(to_move), before, last_retained)
+        result = reorder_commits(repo.path, moving, before, last_retained)
         if result == RebaseResult.COMPLETED_WITHOUT_ERROR:
             self.state_for(repo).pending_force_push_before = undo_sha
-            self.show_banner(Banner(BannerType.SUCCESSFUL_REORDER, count=len(to_move), undo_sha=undo_sha))
+            self.show_banner(Banner(BannerType.SUCCESSFUL_REORDER, count=len(moving), undo_sha=undo_sha))
         elif result == RebaseResult.CONFLICTS_ENCOUNTERED:
             self.show_banner(Banner(BannerType.CONFLICTS_FOUND, operation_description="Reorder", operation_kind=MultiCommitOperationKind.REORDER.value))
         self.refresh_repository(repo)
+
+    def _confirm_rewrite_force_push(
+        self,
+        repo: Repository,
+        last_retained: str | None,
+        operation: str,
+        on_begin: Callable[[], None],
+        already: bool,
+    ) -> bool:
+        """Desktop dispatcher `warnAboutRemoteCommits` + `WarnForcePush` before squash/reorder."""
+        if already:
+            return False
+        if not (self.settings.confirm_force_push or self.settings.ask_for_confirmation_on_force_push):
+            return False
+        state = self.state_for(repo)
+        current = state.status.current_branch if state.status else None
+        branch = next((item for item in state.branches if item.name == current and item.type == BranchType.LOCAL), None)
+        if branch is None:
+            return False
+        if not warn_about_remote_commits(repo.path, branch, last_retained):
+            return False
+        self.show_popup(PopupType.WARN_FORCE_PUSH, operation=operation, on_begin=on_begin)
+        return True
 
     def _merge_commits_block_rewrite(self, repo: Repository, last_retained: str | None, operation: str) -> bool:
         try:
@@ -2894,7 +2952,11 @@ class AppStore:
                 )
                 return
             if exc.is_workflow_scope:
-                self.show_popup(PopupType.PUSH_REJECTED_WORKFLOW_SCOPE, error=str(exc))
+                self.show_popup(
+                    PopupType.PUSH_REJECTED_WORKFLOW_SCOPE,
+                    error=str(exc),
+                    endpoint=repo.github.endpoint if repo.github else "",
+                )
                 return
             if exc.is_auth_failure:
                 url = ""
@@ -2927,16 +2989,21 @@ class AppStore:
         status = state.status
         has_changes = bool(status and status.working_directory.files)
         strategy = UncommittedChangesStrategy(self.settings.uncommitted_changes_strategy)
-        if has_changes and strategy == UncommittedChangesStrategy.ASK_FOR_CONFIRMATION:
-            self.show_popup(PopupType.STASH_AND_SWITCH_BRANCH, branch=branch.name)
-            return
         name = branch.name_without_remote if branch.type == BranchType.REMOTE else branch.name
         if has_changes and strategy == UncommittedChangesStrategy.STASH_ON_CURRENT_BRANCH:
             current = status.current_branch if status else "unknown"
-            self.stash_and_drop_previous(repo, current or "unknown")
-        if has_changes and strategy == UncommittedChangesStrategy.MOVE_TO_NEW_BRANCH:
+            if get_last_desktop_stash_entry_for_branch(repo.path, current or "unknown"):
+                self.show_popup(PopupType.CONFIRM_OVERWRITE_STASH, branch=name)
+                return
+        if has_changes and (state.current_branch_protected or strategy == UncommittedChangesStrategy.MOVE_TO_NEW_BRANCH):
             self.checkout_and_bring_changes(repo, branch)
             return
+        if has_changes and strategy == UncommittedChangesStrategy.ASK_FOR_CONFIRMATION:
+            self.show_popup(PopupType.STASH_AND_SWITCH_BRANCH, branch=branch.name)
+            return
+        if has_changes and strategy == UncommittedChangesStrategy.STASH_ON_CURRENT_BRANCH:
+            current = status.current_branch if status else "unknown"
+            self.stash_and_drop_previous(repo, current or "unknown")
         title = f"Checking out {branch.name}"
 
         def work() -> None:
@@ -3349,6 +3416,27 @@ class AppStore:
                 self.sign_in_step = SignInStep.AUTHENTICATION
         self.show_popup(PopupType.SIGN_IN, enterprise=enterprise)
 
+    def begin_sign_in_for_endpoint(self, endpoint: str) -> None:
+        """Desktop `beginBrowserBasedSignIn(endpoint)` for SAML / workflow-scope retries."""
+        endpoint = (endpoint or "").rstrip("/")
+        if not endpoint or is_dotcom_endpoint(endpoint):
+            self.begin_sign_in(False)
+            if self.sign_in_step == SignInStep.AUTHENTICATION:
+                self.request_browser_auth()
+            return
+        self.sign_in_error = None
+        self.sign_in_existing = None
+        self.sign_in_endpoint = endpoint
+        existing = next((account for account in self.accounts if account.endpoint.rstrip("/") == endpoint), None)
+        if existing:
+            self.sign_in_step = SignInStep.EXISTING_ACCOUNT_WARNING
+            self.sign_in_existing = existing
+        else:
+            self.sign_in_step = SignInStep.AUTHENTICATION
+        self.show_popup(PopupType.SIGN_IN, enterprise=True)
+        if self.sign_in_step == SignInStep.AUTHENTICATION:
+            self.request_browser_auth()
+
     def continue_existing_account_warning(self) -> None:
         """Leave `ExistingAccountWarning` and continue to browser authentication."""
         self.sign_in_step = SignInStep.AUTHENTICATION
@@ -3434,11 +3522,25 @@ class AppStore:
         """Desktop `AppStore.onTokenInvalidated`: sign out the matching account and prompt."""
 
         def go() -> bool:
-            account = next((item for item in self.accounts if item.endpoint.rstrip("/") == (endpoint or "").rstrip("/")), None)
+            ep = (endpoint or "").rstrip("/")
+            account = next(
+                (
+                    item
+                    for item in self.accounts
+                    if item.endpoint.rstrip("/") == ep and item.token == token
+                ),
+                None,
+            )
             if account is None:
-                return False
-            if account.token and account.token != token:
-                log.error("Token for %s invalidated but token mismatch", endpoint)
+                account = next(
+                    (
+                        item
+                        for item in self.accounts
+                        if item.endpoint.rstrip("/") == ep and not item.token
+                    ),
+                    None,
+                )
+            if account is None:
                 return False
             self.sign_out(account)
             self.show_popup(PopupType.INVALIDATED_TOKEN, account=account)

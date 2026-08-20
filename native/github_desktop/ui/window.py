@@ -940,13 +940,6 @@ class MainWindow(Adw.ApplicationWindow):
         self._include_all = Gtk.CheckButton(label="Include all")
         self._include_all.connect("toggled", self._on_include_all)
         tools.append(self._include_all)
-        ignore_ws = Gtk.CheckButton(label="Hide whitespace")
-        ignore_ws.connect("toggled", self._on_hide_ws)
-        self._hide_ws = ignore_ws
-        tools.append(ignore_ws)
-        self._side_toggle = Gtk.CheckButton(label="Side-by-side")
-        self._side_toggle.connect("toggled", self._on_side_by_side)
-        tools.append(self._side_toggle)
         left.append(tools)
         self._changes_pages = Gtk.Stack()
         scroller = Gtk.ScrolledWindow(vexpand=True)
@@ -1260,12 +1253,6 @@ class MainWindow(Adw.ApplicationWindow):
             self._changes_stack.set_visible_child_name(
                 "stash" if state.stashed_visible and state.stashes else "working"
             )
-        if hasattr(self, "_side_toggle"):
-            self._building = True
-            self._side_toggle.set_active(state.side_by_side or self.store.settings.show_side_by_side_diff)
-            if hasattr(self, "_hide_ws"):
-                self._hide_ws.set_active(state.hide_whitespace or self.store.settings.hide_whitespace_in_diffs)
-            self._building = False
         page = self._view_stack.get_page(self._changes_page)
         n = len(state.status.working_directory.files) if state.status else 0
         try:

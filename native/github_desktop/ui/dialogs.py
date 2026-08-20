@@ -47,6 +47,7 @@ from ..models import (
     UncommittedChangesStrategy,
     git_author_name_is_valid,
     group_pr_base_branches,
+    pr_base_branches,
 )
 from ..shells import get_available_shells, open_external
 from ..store import AppStore
@@ -347,7 +348,14 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
             "In order to be able to push to workflow files GitHub Desktop needs to request additional permissions.\n\n"
             "Would you like to open a browser to grant GitHub Desktop permission to update workflow files?",
             confirm="Continue in browser",
-            on_confirm=lambda: store.begin_sign_in(False),
+            on_confirm=lambda: store.begin_sign_in_for_endpoint(
+                payload.get("endpoint")
+                or (
+                    store.selected_repository.github.endpoint
+                    if store.selected_repository and store.selected_repository.github
+                    else ""
+                )
+            ),
         ),
         PopupType.PUSH_PROTECTION_ERROR: lambda: show_push_protection(parent, store, payload),
         PopupType.CREATE_FORK: lambda: show_create_fork(parent, store),
@@ -801,10 +809,7 @@ def show_saml_reauth(parent: Gtk.Window, store: AppStore, payload: dict[str, Any
         except Exception:
             return
         if response == "ok":
-            enterprise = "github.com" not in html
-            store.begin_sign_in(enterprise)
-            if not enterprise:
-                store.request_browser_auth()
+            store.begin_sign_in_for_endpoint(payload.get("endpoint") or endpoint)
 
     dialog.choose(parent, None, done)
 
@@ -3203,6 +3208,9 @@ def show_stash_switch(parent: Gtk.Window, store: AppStore, payload: dict[str, An
         state = store.state_for(repo)
         current = state.status.current_branch if state.status else "unknown"
         if response == "stash":
+            if store._has_existing_desktop_stash(repo):
+                store.show_popup(PopupType.CONFIRM_OVERWRITE_STASH, branch=branch)
+                return
             store.stash_and_drop_previous(repo, current or "unknown")
             checkout_branch(repo.path, branch)
             store.remember_branch(repo, branch)
@@ -3226,10 +3234,15 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     store.load_pr_preview(repo)
     state = store.state_for(repo)
     current = state.status.current_branch if state.status else "?"
-    from ..models import github_for_contribution
+    from ..models import ForkContributionTarget, github_for_contribution, fork_contribution_target, UPSTREAM_REMOTE_NAME
 
     target = github_for_contribution(repo) or repo.github
-    base_names = [b.name for b in state.branches if b.name != current]
+    contribution_remote = (
+        UPSTREAM_REMOTE_NAME
+        if repo.is_fork and fork_contribution_target(repo) == ForkContributionTarget.PARENT
+        else "origin"
+    )
+    base_names = pr_base_branches(state.branches, remote=contribution_remote, current=current)
     default = state.pr_base_branch or (target.default_branch if target else repo.github.default_branch)
     recent_bases, other_bases = group_pr_base_branches(
         base_names,
@@ -3299,20 +3312,11 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     paned.set_end_child(viewer)
     root.append(paned)
 
-    title_row = Adw.EntryRow(title="Title")
-    title_row.set_text(state.commit_message.summary if state.commit_message else (state.pr_commits[0].summary if state.pr_commits else current or ""))
-    body_row = Adw.EntryRow(title="Description")
-    draft = Gtk.CheckButton(label="Create as draft")
-    root.append(title_row)
-    root.append(body_row)
-    root.append(draft)
+    # GitHub's /pull/new form includes "Create as draft"; Desktop preview only opens that page.
     actions = Gtk.Box(spacing=8)
     create_btn = Gtk.Button(label="Create pull request")
     create_btn.add_css_class("suggested-action")
-    view_btn = Gtk.Button(label="View pull request")
-    view_btn.set_visible(bool(state.current_pull_request))
     actions.append(create_btn)
-    actions.append(view_btn)
     root.append(actions)
 
     def _preview_kwargs():
@@ -3408,6 +3412,12 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
             viewer.render(diff, path=st.pr_files[0].path, **kwargs)
         else:
             viewer.render(None)
+        if st.current_pull_request:
+            create_btn.set_label("View pull request")
+            create_btn.set_sensitive(True)
+        else:
+            create_btn.set_label("Create pull request")
+            create_btn.set_sensitive(bool(st.pr_commits))
 
     def on_file(_l, row) -> None:
         file = getattr(row, "_file", None)
@@ -3431,18 +3441,17 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     base_list.connect("row-activated", on_base)
 
     def create(*_a: Any) -> None:
-        base = selected["name"] or default
+        st = store.state_for(repo)
         dialog.close()
+        if st.current_pull_request:
+            open_external(st.current_pull_request.html_url)
+            return
+        if not st.pr_commits:
+            return
+        base = selected["name"] or default
         store.create_pull_request_from_preview(repo, base)
 
-    def view(*_a: Any) -> None:
-        st = store.state_for(repo)
-        if st.current_pull_request:
-            dialog.close()
-            open_external(st.current_pull_request.html_url)
-
     create_btn.connect("clicked", create)
-    view_btn.connect("clicked", view)
 
     def on_pr_hide_ws(hidden: bool) -> None:
         store.set_hide_whitespace_in_pull_request_diff(repo, hidden)

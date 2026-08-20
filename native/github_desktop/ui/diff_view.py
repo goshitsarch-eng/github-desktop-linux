@@ -393,6 +393,7 @@ class DiffViewer(Gtk.Box):
         box.append(display_legend)
         unified = Gtk.CheckButton(label="Unified")
         split = Gtk.CheckButton(label="Split")
+        split.set_tooltip_text("Side-by-side")
         split.set_group(unified)
         unified.set_active(not self._side_by_side)
         split.set_active(self._side_by_side)

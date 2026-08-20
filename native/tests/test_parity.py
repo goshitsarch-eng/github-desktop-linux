@@ -600,5 +600,8 @@ def test_window_actions_cover_menus() -> None:
         "isGitHubHost",
         "create_pull_request_from_preview",
         "Hide whitespace changes",
+        "prBaseBranches",
+        "beginBrowserBasedSignIn",
+        "ConfirmOverwriteStash",
     ]:
         assert phrase in src
