@@ -247,3 +247,54 @@ def test_uncommitted_changes_strategy_labels() -> None:
     assert "Ask me where I want the changes to go" in labels
     assert "Always bring my changes to my new branch" in labels
     assert "Always stash and leave my changes on the current branch" in labels
+
+
+def test_create_fork_reports_progress_via_on_done(isolated_config, git_repo: Path, monkeypatch) -> None:
+    import threading
+
+    store = AppStore()
+    store.accounts = [Account(login="me", endpoint="https://api.github.com", token="t")]
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    repo.github = GitHubRepository(
+        "app",
+        "acme",
+        "https://github.com/acme/app",
+        "https://github.com/acme/app.git",
+        permissions="read",
+    )
+    fork = GitHubRepository(
+        "app",
+        "me",
+        "https://github.com/me/app",
+        "https://github.com/me/app.git",
+        fork=True,
+        parent=repo.github,
+    )
+
+    class FakeAPI:
+        def fork_repository(self, owner: str, name: str):
+            assert owner == "acme"
+            assert name == "app"
+            return fork
+
+    monkeypatch.setattr("github_desktop.store.GitHubAPI.from_account", lambda _account: FakeAPI())
+    seen: list[tuple] = []
+    event = threading.Event()
+
+    def on_done(exc, result) -> None:
+        seen.append((exc, result))
+        event.set()
+
+    store.create_fork(repo, on_done=on_done)
+    assert event.wait(timeout=5)
+    assert seen[0][0] is None
+    assert seen[0][1] is fork
+    assert store.popup is None or store.popup.type != PopupType.CHOOSE_FORK_SETTINGS
+    from github_desktop.models import uncommitted_changes_strategy_choices
+
+    labels = [label for _kind, label in uncommitted_changes_strategy_choices()]
+    assert "Ask me where I want the changes to go" in labels
+    assert "Always bring my changes to my new branch" in labels
+    assert "Always stash and leave my changes on the current branch" in labels

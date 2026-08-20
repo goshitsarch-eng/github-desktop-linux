@@ -4167,35 +4167,122 @@ def show_create_fork(parent: Gtk.Window, store: AppStore, payload: dict[str, Any
         return
     payload = payload or {}
     html = repo.github.html_url
-    if payload.get("error"):
-        body = (
-            f"Creating your fork {account.login}/{repo.github.name} failed. "
-            "You can try creating the fork manually on GitHub."
-        )
-        _alert(
-            parent,
-            "Unable to create fork",
-            f"{payload.get('error')}\n\n{body}",
-            confirm="Close",
-            cancel="Open on GitHub" if html else None,
-            on_cancel=(lambda: open_external(html)) if html else None,
-        )
-        return
+    full_name = repo.github.full_name
+    fork_name = f"{account.login}/{repo.github.name}"
 
-    def confirm() -> None:
-        store.create_fork(repo)
+    dialog = Adw.Dialog()
+    dialog.set_content_width(520)
+    try:
+        dialog.set_name("create-fork")
+    except Exception:
+        pass
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    title = Adw.WindowTitle(title="Do you want to fork this repository?")
+    header.set_title_widget(title)
+    cancel = Gtk.Button(label="Cancel")
+    ok = Gtk.Button(label="Fork this repository")
+    ok.add_css_class("destructive-action")
+    header.pack_start(cancel)
+    header.pack_end(ok)
+    toolbar.add_top_bar(header)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+    box.set_margin_top(18)
+    box.set_margin_bottom(18)
+    box.set_margin_start(18)
+    box.set_margin_end(18)
+    content = Gtk.Label(wrap=True, xalign=0)
+    content.set_wrap(True)
+    spinner_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+    spinner = Gtk.Spinner()
+    status = Gtk.Label(label="Creating fork…", xalign=0)
+    spinner_row.append(spinner)
+    spinner_row.append(status)
+    spinner_row.set_visible(False)
+    error_details = Gtk.Expander(label="Error details")
+    error_pre = Gtk.Label(wrap=True, xalign=0, selectable=True)
+    error_pre.add_css_class("error")
+    error_details.set_child(error_pre)
+    error_details.set_visible(False)
+    manual = Gtk.LinkButton(uri=html or "https://github.com", label="creating the fork manually on GitHub")
+    manual.set_halign(Gtk.Align.START)
+    manual.set_visible(False)
+    box.append(content)
+    box.append(spinner_row)
+    box.append(manual)
+    box.append(error_details)
+    toolbar.set_content(box)
+    dialog.set_child(toolbar)
+    state = {"loading": False, "error": bool(payload.get("error"))}
 
-    _alert(
-        parent,
-        "Do you want to fork this repository?",
-        (
-            f"It looks like you don't have write access to {repo.github.full_name}. "
+    def set_can_close(allow: bool) -> None:
+        try:
+            dialog.set_can_close(allow)
+        except Exception:
+            pass
+
+    def render_content() -> None:
+        if state["error"]:
+            title.set_title("Unable to create fork")
+            content.set_text(
+                f"Creating your fork {fork_name} failed. You can try creating the fork manually on GitHub."
+            )
+            manual.set_visible(bool(html))
+            err = str(payload.get("error") or "")
+            error_pre.set_text(err)
+            error_details.set_visible(bool(err))
+            ok.set_visible(False)
+            cancel.set_label("Close")
+            spinner_row.set_visible(False)
+            return
+        title.set_title("Do you want to fork this repository?")
+        content.set_text(
+            f"It looks like you don't have write access to {full_name}. "
             "If you should, please check with a repository administrator.\n\n"
-            f"Do you want to create a fork of this repository at {account.login}/{repo.github.name} to continue?"
-        ),
-        confirm="Fork this repository",
-        on_confirm=confirm,
-    )
+            f"Do you want to create a fork of this repository at {fork_name} to continue?"
+        )
+        manual.set_visible(False)
+        error_details.set_visible(False)
+        ok.set_visible(True)
+        cancel.set_label("Cancel")
+
+    def set_loading(loading: bool) -> None:
+        state["loading"] = loading
+        spinner_row.set_visible(loading)
+        if loading:
+            spinner.start()
+        else:
+            spinner.stop()
+        ok.set_sensitive(not loading)
+        cancel.set_sensitive(not loading)
+        set_can_close(not loading)
+
+    def close(*_a: Any) -> None:
+        if state["loading"]:
+            return
+        dialog.close()
+
+    def on_forked(exc: BaseException | None, fork: Any) -> None:
+        set_loading(False)
+        if exc:
+            payload["error"] = str(exc)
+            state["error"] = True
+            render_content()
+            return
+        dialog.close()
+        if fork is not None:
+            store.convert_repository_to_fork(repo, fork)
+
+    def submit(*_a: Any) -> None:
+        if state["loading"] or state["error"]:
+            return
+        set_loading(True)
+        store.create_fork(repo, on_done=on_forked)
+
+    cancel.connect("clicked", close)
+    ok.connect("clicked", submit)
+    render_content()
+    dialog.present(parent)
 
 
 def show_fork_settings(parent: Gtk.Window, store: AppStore) -> None:

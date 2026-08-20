@@ -3824,7 +3824,11 @@ class AppStore:
         self.show_popup(PopupType.CHOOSE_FORK_SETTINGS)
         self.refresh_repository(repo)
 
-    def create_fork(self, repo: Repository) -> None:
+    def create_fork(
+        self,
+        repo: Repository,
+        on_done: Callable[[BaseException | None, GitHubRepository | None], None] | None = None,
+    ) -> None:
         account = self.account_for_repo(repo)
         if not account or not repo.github:
             return
@@ -3833,6 +3837,9 @@ class AppStore:
             return GitHubAPI.from_account(account).fork_repository(repo.github.owner, repo.github.name)
 
         def done(exc: BaseException | None, fork: GitHubRepository | None = None) -> None:
+            if on_done is not None:
+                on_done(exc, fork)
+                return
             if exc:
                 self.show_popup(PopupType.CREATE_FORK, error=str(exc))
                 return

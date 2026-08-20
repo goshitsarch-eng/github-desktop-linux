@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import functools
 import os
+import platform
+import re
 import signal
 import shutil
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from typing import Callable, Mapping, Sequence
@@ -79,6 +83,28 @@ def find_git() -> str:
     if not path:
         raise GitNotFoundError("Git was not found on PATH")
     return path
+
+
+@functools.lru_cache(maxsize=1)
+def git_user_agent() -> str:
+    """Desktop `GitUserAgent` for `GIT_USER_AGENT`."""
+    from ..version import APP_NAME, __version__
+
+    version = "unknown"
+    try:
+        completed = subprocess.run(
+            [find_git(), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        match = re.search(r"git version ([^\s]+)", completed.stdout or "")
+        if match:
+            version = match.group(1)
+    except Exception:
+        pass
+    return f"git/{version} ({APP_NAME}/{__version__}; {sys.platform} {platform.machine()})"
 
 
 @dataclass
@@ -428,6 +454,7 @@ def env_for_remote(
     env: dict[str, str] = {
         "GIT_TERMINAL_PROMPT": "0",
         "GCM_INTERACTIVE": "Auto" if use_external_credential_helper else "Never",
+        "GIT_USER_AGENT": git_user_agent(),
     }
     env.update(env_for_proxy(remote_url))
     if extra:

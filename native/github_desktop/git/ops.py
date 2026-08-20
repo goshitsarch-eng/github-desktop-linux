@@ -104,6 +104,7 @@ from .runner import (
     find_git,
     git,
     git_path_is_repository,
+    git_user_agent,
     resolve_repository_root,
     _prepare_env,
 )
@@ -1182,6 +1183,7 @@ def env_for_authentication() -> dict[str, str]:
     return {
         "GIT_TERMINAL_PROMPT": "0",
         "GIT_TRACE": os.environ.get("GIT_TRACE") or "0",
+        "GIT_USER_AGENT": git_user_agent(),
     }
 
 

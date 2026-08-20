@@ -42,6 +42,8 @@ def test_push_set_upstream_and_force_with_lease_are_exclusive(monkeypatch) -> No
 def test_env_for_remote_gcm_interactive() -> None:
     never = env_for_remote("https://github.com/a/b.git", token="t")
     assert never["GCM_INTERACTIVE"] == "Never"
+    assert "GitHub Desktop/" in never["GIT_USER_AGENT"]
+    assert never["GIT_USER_AGENT"].startswith("git/")
     auto = env_for_remote(
         "https://github.com/a/b.git", token="t", use_external_credential_helper=True
     )

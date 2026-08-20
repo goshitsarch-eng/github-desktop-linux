@@ -659,5 +659,8 @@ def test_window_actions_cover_menus() -> None:
         "createCredentialHelperTrampolineHandler",
         "x-github-request-id",
         "GIT_CONFIG_PARAMETERS",
+        "GIT_USER_AGENT",
+        "create-fork",
+        "Creating fork…",
     ]:
         assert phrase in src

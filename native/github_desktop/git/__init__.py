@@ -204,7 +204,7 @@ from .ops import (
     write_description,
     write_gitignore,
 )
-from .runner import abort_git_process, env_for_proxy, env_for_remote, find_git, git, git_path_is_repository, resolve_repository_root
+from .runner import abort_git_process, env_for_proxy, env_for_remote, find_git, git, git_path_is_repository, git_user_agent, resolve_repository_root
 from .status import parse_porcelain_status
 
 __all__ = [
