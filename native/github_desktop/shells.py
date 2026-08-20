@@ -67,3 +67,8 @@ def open_file_manager(path: str) -> None:
 
 def open_external(url: str) -> None:
     subprocess.Popen(["xdg-open", url], start_new_session=True)
+
+
+def open_in_default_program(path: str) -> None:
+    """Open a working-tree file with the desktop's default handler (Desktop onOpenBinaryFile)."""
+    subprocess.Popen(["xdg-open", path], start_new_session=True)

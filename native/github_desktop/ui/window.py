@@ -28,9 +28,10 @@ from ..models import (
     WelcomeStep,
     WorkingDirectoryFileChange,
 )
-from ..shells import open_external
+from ..shells import open_external, open_in_default_program
 from ..store import AppStore
 from ..version import APP_NAME
+from .avatar import Avatar
 from .branches import BranchesFoldout
 from .dialogs import present_popup, show_preferences, show_reorder_commits
 from .diff_view import DiffViewer
@@ -169,6 +170,7 @@ class MainWindow(Adw.ApplicationWindow):
         add("open-pull-request", lambda: self._repo_op(self.store.open_pull_request))
         add("preview-pull-request", lambda: self.store.show_popup(PopupType.START_PULL_REQUEST))
         add("about", lambda: self.store.show_popup(PopupType.ABOUT))
+        add("release-notes", lambda: self.store.show_popup(PopupType.RELEASE_NOTES))
         add("show-logs", self._show_logs)
         add("find", self._find)
         add("toggle-stash", lambda: self._repo_op(self.store.toggle_stash))
@@ -464,9 +466,86 @@ class MainWindow(Adw.ApplicationWindow):
         self._view_stack.add_titled_with_icon(self._changes_page, "changes", "Changes", "document-edit-symbolic")
         self._view_stack.add_titled_with_icon(self._history_page, "history", "History", "view-list-symbolic")
         self._view_stack.connect("notify::visible-child-name", self._on_view_changed)
-        toolbar.set_content(self._view_stack)
+        self._repo_content = Gtk.Stack()
+        self._missing_page = self._build_missing()
+        self._repo_content.add_named(self._view_stack, "content")
+        self._repo_content.add_named(self._missing_page, "missing")
+        toolbar.set_content(self._repo_content)
         self._split.set_content(toolbar)
         return self._split
+
+    def _build_missing(self) -> Gtk.Widget:
+        page = Adw.StatusPage(icon_name="dialog-warning-symbolic")
+        page.set_title("Can't find this repository")
+        self._missing_title = page
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_halign(Gtk.Align.CENTER)
+        self._missing_path = Gtk.Label(xalign=0)
+        self._missing_path.set_wrap(True)
+        self._missing_path.add_css_class("dim-label")
+        box.append(self._missing_path)
+        locate = Gtk.Button(label="Locate…")
+        locate.add_css_class("suggested-action")
+        locate.add_css_class("pill")
+        locate.connect("clicked", lambda *_: self._locate_repository())
+        check = Gtk.Button(label="Check again")
+        check.add_css_class("pill")
+        check.connect("clicked", lambda *_: self._repo_op(self.store.check_repository_path))
+        clone_again = Gtk.Button(label="Clone again")
+        clone_again.add_css_class("pill")
+        clone_again.connect("clicked", lambda *_: self._repo_op(self.store.clone_again))
+        self._missing_clone_btn = clone_again
+        trust = Gtk.Button(label="Trust repository")
+        trust.add_css_class("pill")
+        trust.connect("clicked", lambda *_: self._repo_op(self.store.trust_repository))
+        self._missing_trust_btn = trust
+        remove = Gtk.Button(label="Remove")
+        remove.add_css_class("destructive-action")
+        remove.add_css_class("pill")
+        remove.connect("clicked", lambda *_: self.store.show_popup(PopupType.REMOVE_REPOSITORY))
+        box.append(locate)
+        box.append(check)
+        box.append(clone_again)
+        box.append(trust)
+        box.append(remove)
+        page.set_child(box)
+        return page
+
+    def _locate_repository(self) -> None:
+        repo = self.store.selected_repository
+        if not repo:
+            return
+        try:
+            dialog = Gtk.FileDialog(title="Locate repository")
+
+            def done(chooser, result) -> None:
+                try:
+                    folder = chooser.select_folder_finish(result)
+                    path = folder.get_path() if folder else None
+                    if path:
+                        self.store.relocate_repository(repo, path)
+                except Exception as exc:
+                    self.store.show_popup(PopupType.ERROR, error=str(exc))
+
+            dialog.select_folder(self, None, done)
+        except Exception:
+            from .dialogs import _text_dialog
+
+            def submit(values: dict[str, str]) -> None:
+                path = values.get("path", "").strip()
+                if path:
+                    try:
+                        self.store.relocate_repository(repo, path)
+                    except Exception as exc:
+                        self.store.show_popup(PopupType.ERROR, error=str(exc))
+
+            _text_dialog(self, "Locate repository", "Choose the folder that contains this repository.", [("path", "Path", repo.path)], submit, "Locate")
+
+    def _open_binary_file(self, rel_path: str) -> None:
+        repo = self.store.selected_repository
+        if not repo or not rel_path:
+            return
+        open_in_default_program(os.path.join(repo.path, rel_path))
 
     def _app_menu(self) -> Gio.Menu:
         menu = Gio.Menu()
@@ -531,6 +610,7 @@ class MainWindow(Adw.ApplicationWindow):
         help_m.append("Show user guides", "win.show-guides")
         help_m.append("Show keyboard shortcuts", "win.show-shortcuts")
         help_m.append("Show logs in file manager", "win.show-logs")
+        help_m.append("Release notes", "win.release-notes")
         help_m.append("About GitHub Desktop", "win.about")
         menu.append_submenu("Help", help_m)
         return menu
@@ -673,6 +753,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_collapse=self._on_collapse_diff,
             on_image_mode=self._on_image_mode,
             on_open_submodule=self._open_submodule,
+            on_open_binary=self._open_binary_file,
         )
         paned.set_end_child(self._diff_view)
         self._changes_stack = Gtk.Stack()
@@ -686,6 +767,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_collapse=self._on_collapse_diff,
             on_open_submodule=self._open_submodule,
             on_image_mode=self._on_image_mode,
+            on_open_binary=self._open_binary_file,
         )
         self._changes_stack.add_named(paned, "working")
         self._changes_stack.add_named(self._stash_viewer, "stash")
@@ -733,6 +815,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_expand_whole=self._on_expand_diff,
             on_collapse=self._on_collapse_diff,
             on_open_submodule=self._open_submodule,
+            on_open_binary=self._open_binary_file,
         )
         right.append(self._hist_diff_view)
         paned.set_end_child(right)
@@ -753,6 +836,13 @@ class MainWindow(Adw.ApplicationWindow):
             return
         self._repo_btn.set_label(repo.display_name)
         self.set_title(f"{repo.display_name} — {APP_NAME}")
+        if hasattr(self, "_repo_content"):
+            if repo.is_missing:
+                self._show_missing(repo)
+                self._repo_content.set_visible_child_name("missing")
+                self._refresh_repo_list()
+                return
+            self._repo_content.set_visible_child_name("content")
         state = self.store.state_for(repo)
         branch = state.status.current_branch if state.status else "detached"
         self._branch_btn.set_label(branch or "detached HEAD")
@@ -799,6 +889,21 @@ class MainWindow(Adw.ApplicationWindow):
             self._summary.set_text(state.commit_message.summary)
         if state.commit_message.description:
             self._description.get_buffer().set_text(state.commit_message.description)
+
+    def _show_missing(self, repo) -> None:
+        if repo.unsafe:
+            self._missing_title.set_title(f"{repo.display_name} is potentially unsafe")
+            self._missing_path.set_text(
+                f"The Git repository at {repo.path} appears to be owned by another user. "
+                "Trust the directory to add a safe.directory exception."
+            )
+            self._missing_trust_btn.set_visible(True)
+            self._missing_clone_btn.set_visible(False)
+        else:
+            self._missing_title.set_title(f'Can\'t find "{repo.display_name}"')
+            self._missing_path.set_text(f"It was last seen at {repo.path}.")
+            self._missing_trust_btn.set_visible(False)
+            self._missing_clone_btn.set_visible(bool(repo.github and repo.github.clone_url))
 
     def _update_push_label(self, state) -> None:
         status = state.status
@@ -1074,7 +1179,9 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _commit_row(self, commit) -> Gtk.ListBoxRow:
         row = Gtk.ListBoxRow()
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box = Gtk.Box(spacing=8)
+        box.append(Avatar(commit.author.name, commit.author.email, size=28))
+        texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         summary = Gtk.Label(label=commit.summary, xalign=0)
         summary.add_css_class("commit-summary")
         tags = (" · " + ", ".join(commit.tags)) if commit.tags else ""
@@ -1083,8 +1190,9 @@ class MainWindow(Adw.ApplicationWindow):
             xalign=0,
         )
         meta.add_css_class("commit-sha")
-        box.append(summary)
-        box.append(meta)
+        texts.append(summary)
+        texts.append(meta)
+        box.append(texts)
         row.set_child(box)
         row._commit = commit  # type: ignore[attr-defined]
         attach_right_click(row, lambda *_ , r=row: self._commit_item_menu(r))

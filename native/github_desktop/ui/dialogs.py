@@ -11,6 +11,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, Gtk
 
+from ..changelog import load_release_notes
 from ..editors import get_available_editors
 from ..errors import ValidationError
 from ..git.ops import (
@@ -36,6 +37,8 @@ from ..models import (
 from ..shells import get_available_shells, open_external
 from ..store import AppStore
 from ..version import APP_NAME, __version__
+from .avatar import Avatar
+from .diff_view import DiffViewer
 
 
 def _alert(
@@ -271,7 +274,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         PopupType.MULTI_COMMIT_OPERATION: lambda: show_multi_commit(parent, store, payload),
         PopupType.UNREACHABLE_COMMITS: lambda: show_unreachable_commits(parent, store, payload),
         PopupType.RELEASE_NOTES: lambda: show_release_notes(parent),
-        PopupType.THANK_YOU: lambda: _alert(parent, "Thank you", "Thanks for contributing to GitHub Desktop.", cancel=None),
+        PopupType.THANK_YOU: lambda: show_thank_you(parent),
         PopupType.PUSH_BRANCH_COMMITS: lambda: _alert(
             parent,
             "Publish branch?",
@@ -336,8 +339,8 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
             confirm="Continue",
             on_confirm=lambda: payload.get("on_begin") and payload["on_begin"](),
         ),
-        PopupType.PULL_REQUEST_REVIEW: lambda: _open_payload_url(payload),
-        PopupType.PULL_REQUEST_COMMENT: lambda: _open_payload_url(payload),
+        PopupType.PULL_REQUEST_REVIEW: lambda: show_pull_request_review(parent, store, payload),
+        PopupType.PULL_REQUEST_COMMENT: lambda: show_pull_request_comment(parent, store, payload),
         PopupType.INSTALLING_UPDATE: lambda: _alert(parent, "Installing update", "The update will be applied shortly.", cancel=None),
         PopupType.BYPASS_PUSH_PROTECTION: lambda: show_bypass(parent, store, payload),
     }
@@ -481,7 +484,69 @@ def show_terms(parent: Gtk.Window) -> None:
 
 
 def show_release_notes(parent: Gtk.Window) -> None:
-    open_external("https://github.com/goshitsarch-eng/github-desktop-linux/releases")
+    version, notes = load_release_notes()
+    dialog = Adw.Dialog()
+    dialog.set_content_width(520)
+    dialog.set_content_height(480)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(Adw.WindowTitle(title="Release notes", subtitle=f"GitHub Desktop {version}"))
+    toolbar.add_top_bar(header)
+    scroller = Gtk.ScrolledWindow(vexpand=True)
+    listbox = Gtk.ListBox()
+    listbox.add_css_class("boxed-list")
+    for note in notes:
+        row = Adw.ActionRow(title=note)
+        listbox.append(row)
+    scroller.set_child(listbox)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+    box.set_margin_top(12)
+    box.set_margin_bottom(12)
+    box.set_margin_start(12)
+    box.set_margin_end(12)
+    box.append(scroller)
+    web = Gtk.Button(label="View releases on GitHub")
+    web.connect("clicked", lambda *_: open_external("https://github.com/goshitsarch-eng/github-desktop-linux/releases"))
+    box.append(web)
+    toolbar.set_content(box)
+    dialog.set_child(toolbar)
+    dialog.present(parent)
+
+
+def show_thank_you(parent: Gtk.Window) -> None:
+    version, notes = load_release_notes()
+    dialog = Adw.Dialog()
+    dialog.set_content_width(460)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(Adw.WindowTitle(title="Thank you", subtitle=f"GitHub Desktop {version}"))
+    toolbar.add_top_bar(header)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+    box.set_margin_top(16)
+    box.set_margin_bottom(16)
+    box.set_margin_start(16)
+    box.set_margin_end(16)
+    label = Gtk.Label(
+        label="Thanks for contributing to GitHub Desktop. This unofficial Linux port keeps the Desktop workflows on GTK 4 and libadwaita.",
+        wrap=True,
+        xalign=0,
+    )
+    box.append(label)
+    if notes:
+        preview = Gtk.Label(label="\n".join(notes[:4]), wrap=True, xalign=0)
+        preview.add_css_class("dim-label")
+        box.append(preview)
+    links = Gtk.Box(spacing=8)
+    desktop = Gtk.Button(label="desktop/desktop")
+    desktop.connect("clicked", lambda *_: open_external("https://github.com/desktop/desktop"))
+    linux = Gtk.Button(label="Linux fork")
+    linux.connect("clicked", lambda *_: open_external("https://github.com/goshitsarch-eng/github-desktop-linux"))
+    links.append(desktop)
+    links.append(linux)
+    box.append(links)
+    toolbar.set_content(box)
+    dialog.set_child(toolbar)
+    dialog.present(parent)
 
 
 def show_add_repository(parent: Gtk.Window, store: AppStore, initial: str) -> None:
@@ -953,6 +1018,7 @@ def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
     acc_group = Adw.PreferencesGroup(title="GitHub accounts")
     for account in store.accounts:
         row = Adw.ActionRow(title=account.login, subtitle=account.friendly_endpoint)
+        row.add_prefix(Avatar(account.name or account.login, account.emails[0] if account.emails else "", login=account.login, avatar_url=account.avatar_url, size=28))
         btn = Gtk.Button(label="Sign out")
         btn.connect("clicked", lambda _b, a=account: (store.sign_out(a), dialog.close()))
         row.add_suffix(btn)
@@ -1590,6 +1656,100 @@ def show_tutorial(parent: Gtk.Window, store: AppStore) -> None:
         store.clone(created.clone_url, path, account=account, tutorial=True)
 
     _alert(parent, "Create tutorial repository?", f"A private repository will be created for {account.login} and cloned to {path}.", confirm="Create", on_confirm=confirm)
+
+
+def _pr_event_dialog(
+    parent: Gtk.Window,
+    store: AppStore,
+    payload: dict[str, Any],
+    *,
+    event: dict[str, Any],
+    verb: str,
+    title: str,
+) -> None:
+    user = event.get("user") if isinstance(event.get("user"), dict) else {}
+    login = str(user.get("login") or payload.get("author") or "Someone")
+    pr = payload.get("pull_request") if isinstance(payload.get("pull_request"), dict) else {}
+    number = pr.get("number") or payload.get("number") or ""
+    pr_title = pr.get("title") or payload.get("title") or "pull request"
+    body = str(event.get("body") or payload.get("body") or "")
+    html_url = str(event.get("html_url") or payload.get("html_url") or payload.get("url") or "")
+    heading = f"{login} {verb}"
+    if number:
+        heading = f"{login} {verb} #{number}"
+    dialog = Adw.Dialog()
+    dialog.set_content_width(480)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(Adw.WindowTitle(title=title, subtitle=pr_title))
+    toolbar.add_top_bar(header)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+    box.set_margin_top(16)
+    box.set_margin_bottom(16)
+    box.set_margin_start(16)
+    box.set_margin_end(16)
+    ident = Gtk.Box(spacing=10)
+    ident.append(
+        Avatar(login, "", login=login, avatar_url=user.get("avatar_url"), size=40)
+    )
+    who = Gtk.Label(label=heading, xalign=0, wrap=True)
+    who.add_css_class("heading")
+    ident.append(who)
+    box.append(ident)
+    if body.strip():
+        body_label = Gtk.Label(label=body, xalign=0, wrap=True)
+        box.append(body_label)
+    buttons = Gtk.Box(spacing=8)
+    if html_url:
+        browser = Gtk.Button(label="Open in browser")
+        browser.connect("clicked", lambda *_: open_external(html_url))
+        buttons.append(browser)
+    state = str(event.get("state") or "").upper()
+    should_switch = payload.get("should_checkout", state != "APPROVED")
+    if should_switch:
+        switch = Gtk.Button(label="Switch to pull request")
+        switch.add_css_class("suggested-action")
+
+        def go(*_a: Any) -> None:
+            store.switch_to_pull_request(payload)
+            dialog.close()
+
+        switch.connect("clicked", go)
+        buttons.append(switch)
+    dismiss = Gtk.Button(label="Dismiss")
+    dismiss.connect("clicked", lambda *_: dialog.close())
+    buttons.append(dismiss)
+    box.append(buttons)
+    toolbar.set_content(box)
+    dialog.set_child(toolbar)
+    dialog.present(parent)
+
+
+def show_pull_request_review(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    from ..github.notifications import review_verb
+
+    review = payload.get("review") if isinstance(payload.get("review"), dict) else payload
+    state = str(review.get("state") or "COMMENTED")
+    _pr_event_dialog(
+        parent,
+        store,
+        payload,
+        event=review,
+        verb=review_verb(state),
+        title="Pull request review",
+    )
+
+
+def show_pull_request_comment(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    comment = payload.get("comment") if isinstance(payload.get("comment"), dict) else payload
+    _pr_event_dialog(
+        parent,
+        store,
+        payload,
+        event=comment,
+        verb="commented on",
+        title="Pull request comment",
+    )
 
 
 def show_checks(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:

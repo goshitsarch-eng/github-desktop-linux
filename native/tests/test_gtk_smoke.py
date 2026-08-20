@@ -23,7 +23,7 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
     from github_desktop.store import AppStore
     from github_desktop.theme import apply_theme
     from github_desktop.ui.css import load_css
-    from github_desktop.ui.dialogs import show_about, show_preferences
+    from github_desktop.ui.dialogs import show_about, show_preferences, show_release_notes, show_pull_request_review
     from github_desktop.ui.window import MainWindow
 
     errors: list[str] = []
@@ -60,7 +60,7 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             show_preferences(win, store)
             from github_desktop.ui.diff_view import DiffViewer
             from github_desktop.git.diff import parse_unified_diff
-            from github_desktop.models import DiffSelection, DiffSelectionType
+            from github_desktop.models import BinaryDiff, DiffSelection, DiffSelectionType
 
             sample = parse_unified_diff(
                 "@@ -10,3 +10,4 @@\n hello\n-world\n+world!\n line\n"
@@ -78,13 +78,34 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             )
             viewer.render(sample, path="README.md", selection=selection, side_by_side=True)
             viewer.render(sample, path="README.md", selection=selection, side_by_side=False)
+            viewer.render(BinaryDiff(), path="photo.bin")
             viewer.start_search()
             viewer.close_search()
             assert hasattr(win, "_stash_viewer")
             assert hasattr(win, "_commit_summary")
             assert hasattr(win, "_history_filter")
+            assert hasattr(win, "_repo_content")
+            assert hasattr(win, "_missing_page")
             win._commit_summary.bind([], None)
             win._find()
+            show_release_notes(win)
+            show_pull_request_review(
+                win,
+                store,
+                {
+                    "review": {
+                        "state": "COMMENTED",
+                        "body": "Looks good",
+                        "html_url": "https://github.com/example/repo/pull/1",
+                        "user": {"login": "octocat"},
+                    },
+                    "pull_request": {"number": 1, "title": "Demo", "html_url": "https://github.com/example/repo/pull/1"},
+                    "should_checkout": False,
+                },
+            )
+            repos[0].is_missing = True
+            win._show_missing(repos[0])
+            win._repo_content.set_visible_child_name("missing")
             win._branches_foldout.refresh([], [], current="main", default_name="main", recent=[], has_github=False)
             win.close()
         except Exception as exc:

@@ -46,6 +46,8 @@ REQUIRED_GIT_FUNCS = [
     "write_gitignore",
     "lfs_track",
     "get_submodules",
+    "get_repository_kind",
+    "add_safe_directory",
     "stage_files",
     "apply_patch_to_index",
 ]
@@ -110,6 +112,9 @@ def test_window_actions_cover_menus() -> None:
     src += open(stash.__file__, encoding="utf-8").read()
     src += open(history.__file__, encoding="utf-8").read()
     src += open(diff_view.__file__, encoding="utf-8").read()
+    from github_desktop.ui import dialogs as dialogs_mod
+
+    src += open(dialogs_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -130,6 +135,7 @@ def test_window_actions_cover_menus() -> None:
         "toggle-changes-filter",
         "zoom-in",
         "update-from-default",
+        "release-notes",
     ]:
         assert action in src
     for phrase in [
@@ -143,5 +149,9 @@ def test_window_actions_cover_menus() -> None:
         "Modified",
         "Stashed changes",
         "Search commits",
+        "Can't find this repository",
+        "Open in default program",
+        "Switch to pull request",
+        "Release notes",
     ]:
         assert phrase in src

@@ -19,6 +19,7 @@ from .git import (
     abort_merge,
     abort_rebase,
     add_remote,
+    add_safe_directory,
     append_ignore_rule,
     checkout_branch,
     checkout_commit,
@@ -52,6 +53,7 @@ from .git import (
     get_config_value,
     get_default_branch,
     get_remotes,
+    get_repository_kind,
     get_stashes,
     get_status,
     get_blob_lines,
@@ -81,6 +83,7 @@ from .git import (
 )
 from .git.runner import find_git, resolve_repository_root
 from .github.api import GitHubAPI
+from .github.notifications import classify_notification, pull_request_from_payload
 from .github.oauth import (
     dotcom_endpoint,
     enterprise_endpoint_from_url,
@@ -305,13 +308,15 @@ class AppStore:
                     endpoint=gh.get("endpoint", dotcom_endpoint()),
                 )
             path_str = item.get("path", "")
-            missing = not os.path.isdir(path_str)
+            kind = get_repository_kind(path_str)
+            missing = kind != "regular"
             self.repositories.append(
                 Repository(
                     id=repo_id,
                     path=path_str,
                     name=item.get("name") or os.path.basename(path_str),
                     is_missing=missing,
+                    unsafe=kind == "unsafe",
                     alias=item.get("alias"),
                     github=github,
                     tutorial=bool(item.get("tutorial")),
@@ -413,8 +418,14 @@ class AppStore:
         self.persist_settings()
         self.emit()
         repo = self.selected_repository
-        if repo and not repo.is_missing:
-            self.refresh_repository(repo)
+        if repo:
+            kind = get_repository_kind(repo.path)
+            repo.is_missing = kind != "regular"
+            repo.unsafe = kind == "unsafe"
+            if not repo.is_missing:
+                self.refresh_repository(repo)
+            else:
+                self.emit()
 
     def add_repositories(self, paths: Sequence[str]) -> list[Repository]:
         added: list[Repository] = []
@@ -477,6 +488,73 @@ class AppStore:
                 log.warning("Failed to delete %s: %s", repo.path, exc)
         self._save_repositories()
         self.emit()
+
+    def relocate_repository(self, repo: Repository, new_path: str) -> None:
+        path = os.path.abspath(os.path.expanduser(new_path))
+        if not git_path_is_repository(path):
+            root = resolve_repository_root(path)
+            if not root:
+                raise NotARepositoryError(f"{path} isn't a Git repository.")
+            path = root
+        repo.path = path
+        repo.name = os.path.basename(path)
+        repo.is_missing = False
+        repo.unsafe = False
+        self._save_repositories()
+        self.refresh_repository(repo)
+        self.emit()
+
+    def check_repository_path(self, repo: Repository) -> None:
+        kind = get_repository_kind(repo.path)
+        repo.is_missing = kind != "regular"
+        repo.unsafe = kind == "unsafe"
+        if not repo.is_missing:
+            self.refresh_repository(repo)
+        self.emit()
+
+    def trust_repository(self, repo: Repository) -> None:
+        add_safe_directory(repo.path)
+        self.check_repository_path(repo)
+
+    def clone_again(self, repo: Repository) -> None:
+        url = repo.github.clone_url if repo.github else ""
+        if not url:
+            self.show_popup(PopupType.ERROR, error="This repository has no GitHub clone URL.")
+            return
+        dest = repo.path
+        parent = os.path.dirname(dest)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        if os.path.isdir(dest) and os.listdir(dest):
+            self.show_popup(
+                PopupType.ERROR,
+                error="The original folder exists and is not empty. Locate the repository instead.",
+            )
+            return
+        clone_id = -abs(int(uuid.uuid4().int % 10_000_000) or 1)
+        cloning = CloningRepository(id=clone_id, path=dest, url=url)
+        self.cloning.append(cloning)
+        self.emit()
+        account = account_for_remote(self.accounts, url)
+        env = env_for_remote(url, token=account.token) if account else None
+
+        def work() -> None:
+            try:
+                clone_repository(url, dest, default_branch=get_default_branch(), env=env)
+            finally:
+                self.cloning = [c for c in self.cloning if c.id != clone_id]
+
+        def done(exc: BaseException | None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+            else:
+                repo.is_missing = False
+                repo.unsafe = False
+                self._save_repositories()
+                self.refresh_repository(repo)
+            self.emit()
+
+        self._run(work, done)
 
     def create_repository(self, path: str, description: str = "", default_branch: str | None = None) -> Repository:
         os.makedirs(path, exist_ok=True)
@@ -569,7 +647,13 @@ class AppStore:
 
     def refresh_repository(self, repo: Repository | None = None) -> None:
         repo = repo or self.selected_repository
-        if not repo or repo.is_missing:
+        if not repo:
+            return
+        kind = get_repository_kind(repo.path)
+        repo.is_missing = kind != "regular"
+        repo.unsafe = kind == "unsafe"
+        if repo.is_missing:
+            self.emit()
             return
         state = self.state_for(repo)
         previous_files = list(state.status.working_directory.files) if state.status else []
@@ -715,7 +799,7 @@ class AppStore:
     def _prepare_text_diff(self, repo: Repository, path: str, diff: FileDiff, commitish: str | None = None) -> FileDiff:
         if not isinstance(diff, TextDiff) or not diff.hunks:
             return diff
-        from .git.expansion import MAX_DIFF_EXPANSION_CONTENT, apply_expansion_metadata
+        from .git.expansion import apply_expansion_metadata
 
         state = self.state_for(repo)
         if commitish:
@@ -726,10 +810,18 @@ class AppStore:
             old_lines = get_blob_lines(repo.path, "HEAD", path)
         state.diff_new_content = new_lines
         state.original_diff = None
-        content_len = sum(len(line) + 1 for line in new_lines)
-        if content_len > MAX_DIFF_EXPANSION_CONTENT:
-            return apply_expansion_metadata(diff, old_line_count=len(old_lines), new_line_count=len(new_lines))
-        return apply_expansion_metadata(diff, old_line_count=len(old_lines), new_line_count=len(new_lines))
+        prepared = apply_expansion_metadata(diff, old_line_count=len(old_lines), new_line_count=len(new_lines))
+        if isinstance(prepared, TextDiff):
+            from .ui.syntax import MAX_HIGHLIGHT_CONTENT, highlight_file
+
+            tab = self.settings.tab_size
+            old_bytes = sum(len(line) + 1 for line in old_lines)
+            new_bytes = sum(len(line) + 1 for line in new_lines)
+            if old_bytes <= MAX_HIGHLIGHT_CONTENT:
+                prepared.old_line_markup = highlight_file(old_lines, path, tab_size=tab)
+            if new_bytes <= MAX_HIGHLIGHT_CONTENT:
+                prepared.new_line_markup = highlight_file(new_lines, path, tab_size=tab)
+        return prepared
 
     def expand_hunk(self, repo: Repository, hunk_index: int, kind: str) -> None:
         from .git.diff import selectable_line_indices
@@ -1084,6 +1176,27 @@ class AppStore:
             self.checkout(repo, branch)
             return
         open_external(pr.html_url)
+
+    def switch_to_pull_request(self, payload: dict[str, Any]) -> None:
+        full_name = str(payload.get("repository") or payload.get("full_name") or "")
+        repo = self.selected_repository
+        if full_name:
+            match = next(
+                (
+                    candidate
+                    for candidate in self.repositories
+                    if candidate.github and candidate.github.full_name.lower() == full_name.lower()
+                ),
+                None,
+            )
+            if match:
+                self.select_repository(match.id)
+                repo = match
+        pr = pull_request_from_payload(
+            payload.get("pull_request") if isinstance(payload.get("pull_request"), dict) else payload
+        )
+        if repo and pr:
+            self.checkout_pull_request(repo, pr)
 
     def discard_selection(self, repo: Repository, path: str) -> None:
         state = self.state_for(repo)
@@ -1937,20 +2050,36 @@ class AppStore:
         account = self.accounts[0]
 
         def work() -> list:
-            return GitHubAPI.from_account(account).fetch_notifications()
+            api = GitHubAPI.from_account(account)
+            notes = api.fetch_notifications()
+            enriched: list[tuple[dict, dict | None]] = []
+            for note in notes[:8]:
+                subject = note.get("subject") or {}
+                latest = subject.get("latest_comment_url") or subject.get("url")
+                payload = None
+                if latest:
+                    try:
+                        fetched = api.get("", raw_url=str(latest))
+                        payload = fetched if isinstance(fetched, dict) else None
+                    except Exception:
+                        payload = None
+                enriched.append((note, payload))
+            return enriched
 
         def done(exc: BaseException | None, result: list | None = None) -> None:
             if exc or not result:
                 return
-            for note in result[:8]:
+            shown_popup = False
+            for note, payload in result:
                 ident = str(note.get("id") or "")
                 if not ident or ident in self._seen_notifications:
                     continue
                 self._seen_notifications.add(ident)
-                subject = note.get("subject") or {}
-                title = subject.get("title") or "GitHub notification"
-                repo_name = ((note.get("repository") or {}).get("full_name")) or "GitHub"
-                show_notification(repo_name, title, enabled=True)
+                action = classify_notification(note, payload)
+                show_notification(action.title, action.body, enabled=True)
+                if action.popup and not shown_popup:
+                    shown_popup = True
+                    self.show_popup(action.popup, **action.payload)
 
         self._run(work, done)
 

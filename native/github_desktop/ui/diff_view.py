@@ -24,7 +24,7 @@ from ..models import (
     TextDiff,
 )
 from .menus import MenuItem, attach_right_click, clear_box, copy_text, show_context_menu
-from .syntax import highlight_diff_line
+from .syntax import markup_for_diff_line
 
 try:
     gi.require_version("GdkPixbuf", "2.0")
@@ -72,6 +72,7 @@ class DiffViewer(Gtk.Box):
         on_expand: Callable[[], None] | None = None,
         on_image_mode: Callable[[str], None] | None = None,
         on_open_submodule: Callable[[str], None] | None = None,
+        on_open_binary: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.add_css_class("diff-view")
@@ -85,6 +86,7 @@ class DiffViewer(Gtk.Box):
         self.on_expand = on_expand
         self.on_image_mode = on_image_mode
         self.on_open_submodule = on_open_submodule
+        self.on_open_binary = on_open_binary
         self._toolbar = Gtk.Box(spacing=6)
         self._toolbar.add_css_class("diff-toolbar")
         self.append(self._toolbar)
@@ -133,6 +135,7 @@ class DiffViewer(Gtk.Box):
         self._search_query = ""
         self._search_matches: list[int] = []
         self._search_cursor = 0
+        self._diff: FileDiff | None = None
         self.set_focusable(True)
         key = Gtk.EventControllerKey()
         key.connect("key-pressed", self._on_key)
@@ -163,18 +166,33 @@ class DiffViewer(Gtk.Box):
         self._scroll.set_child(self._inner)
         clear_box(self._inner)
         self._list_store = None
+        self._diff = diff
         if diff is None:
             self._inner.append(Adw.StatusPage(title="No file selected", icon_name="document-symbolic"))
             return
         kind = getattr(diff, "kind", None)
         if kind == DiffType.BINARY:
-            self._inner.append(Adw.StatusPage(title="Binary file", description="This file can't be displayed as text."))
+            page = Adw.StatusPage(title="Binary file", description="This file can't be displayed as text.")
+            if self.on_open_binary and path:
+                btn = Gtk.Button(label="Open in default program")
+                btn.add_css_class("pill")
+                btn.add_css_class("suggested-action")
+                btn.set_halign(Gtk.Align.CENTER)
+                btn.connect("clicked", lambda *_: self.on_open_binary and self.on_open_binary(self._path))
+                page.set_child(btn)
+            self._inner.append(page)
             return
         if kind == DiffType.IMAGE and isinstance(diff, ImageDiff):
             self._render_image(diff, image_mode)
             return
         if kind in (DiffType.LARGE_TEXT, DiffType.UNRENDERABLE):
-            self._inner.append(Adw.StatusPage(title="Diff too large to display"))
+            page = Adw.StatusPage(title="Diff too large to display")
+            if self.on_open_binary and path:
+                btn = Gtk.Button(label="Open in default program")
+                btn.add_css_class("pill")
+                btn.connect("clicked", lambda *_: self.on_open_binary and self.on_open_binary(self._path))
+                page.set_child(btn)
+            self._inner.append(page)
             return
         if kind == DiffType.SUBMODULE:
             self._render_submodule(diff)
@@ -491,6 +509,17 @@ class DiffViewer(Gtk.Box):
             add_btn("▲", "Expand up", "up", hunk_index)
         return box
 
+    def _markup(self, line: DiffLine) -> str:
+        old_map = getattr(self._diff, "old_line_markup", None) if self._diff is not None else None
+        new_map = getattr(self._diff, "new_line_markup", None) if self._diff is not None else None
+        return markup_for_diff_line(
+            line,
+            self._path,
+            old_markup=old_map,
+            new_markup=new_map,
+            tab_size=self._tab_size,
+        )
+
     def _unified_line(self, line: DiffLine, index: int, selection: DiffSelection | None) -> Gtk.Widget:
         row = Gtk.Box(spacing=8)
         row.add_css_class("diff-line")
@@ -513,14 +542,12 @@ class DiffViewer(Gtk.Box):
         new = Gtk.Label(label=str(line.new_line_number or ""))
         old.add_css_class("diff-num")
         new.add_css_class("diff-num")
-        body = line.text[1:] if line.text[:1] in "+- " else line.text
-        body = body.replace("\t", " " * self._tab_size)
         text = Gtk.Label(xalign=0, hexpand=True)
         text.set_use_markup(True)
         text.set_selectable(True)
         text.set_ellipsize(Pango.EllipsizeMode.END)
         prefix = line.text[:1] if line.text[:1] in "+- " else " "
-        text.set_markup(f"{prefix}{highlight_diff_line(body, self._path)}")
+        text.set_markup(f"{prefix}{self._markup(line)}")
         row.append(old)
         row.append(new)
         row.append(text)
@@ -569,13 +596,11 @@ class DiffViewer(Gtk.Box):
         num = line.old_line_number if delete else line.new_line_number
         nlab = Gtk.Label(label=str(num or ""))
         nlab.add_css_class("diff-num")
-        body = line.text[1:] if line.text[:1] in "+- " else line.text
-        body = body.replace("\t", " " * self._tab_size)
         text = Gtk.Label(xalign=0, hexpand=True)
         text.set_use_markup(True)
         text.set_selectable(True)
         text.set_ellipsize(Pango.EllipsizeMode.END)
-        text.set_markup(highlight_diff_line(body, self._path))
+        text.set_markup(self._markup(line))
         box.append(nlab)
         box.append(text)
         return box

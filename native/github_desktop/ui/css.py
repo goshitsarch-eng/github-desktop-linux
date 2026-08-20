@@ -117,6 +117,23 @@ APP_CSS = """
   padding: 8px 12px;
 }
 
+.avatar {
+  min-width: 28px;
+  min-height: 28px;
+}
+.avatar-initials {
+  background-color: @accent_bg_color;
+  color: @accent_fg_color;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.7rem;
+  min-width: 28px;
+  min-height: 28px;
+}
+.avatar-image {
+  border-radius: 999px;
+}
+
 .whitespace-hint {
   padding: 6px 8px;
   font-size: 0.85rem;

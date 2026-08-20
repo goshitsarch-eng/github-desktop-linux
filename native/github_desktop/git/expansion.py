@@ -38,6 +38,19 @@ def get_hunk_header_expansion_type(
     return DiffHunkExpansionType.BOTH
 
 
+def _text_diff_from(src: TextDiff, hunks: list[DiffHunk], text: str | None = None) -> TextDiff:
+    return TextDiff(
+        text=src.text if text is None else text,
+        hunks=hunks,
+        line_endings_change=src.line_endings_change,
+        max_line_number=src.max_line_number,
+        has_hidden_bidi_chars=src.has_hidden_bidi_chars,
+        is_binary=src.is_binary,
+        old_line_markup=dict(src.old_line_markup),
+        new_line_markup=dict(src.new_line_markup),
+    )
+
+
 def _copy_line(line: DiffLine) -> DiffLine:
     return DiffLine(
         line.text,
@@ -275,13 +288,7 @@ def expand_text_diff_hunk(
                 )
             )
     new_hunks = [*previous_hunks, updated, *following]
-    result = TextDiff(
-        text=_diff_text_from_hunks(new_hunks),
-        hunks=new_hunks,
-        line_endings_change=diff.line_endings_change,
-        has_hidden_bidi_chars=diff.has_hidden_bidi_chars,
-        is_binary=diff.is_binary,
-    )
+    result = _text_diff_from(diff, new_hunks, text=_diff_text_from_hunks(new_hunks))
     return _renumber(result)
 
 
@@ -323,14 +330,7 @@ def copy_text_diff(diff: TextDiff) -> TextDiff:
         hunks.append(
             DiffHunk(header, lines, hunk.unified_diff_start, hunk.unified_diff_end, hunk.expansion_type)
         )
-    return TextDiff(
-        text=diff.text,
-        hunks=hunks,
-        line_endings_change=diff.line_endings_change,
-        max_line_number=diff.max_line_number,
-        has_hidden_bidi_chars=diff.has_hidden_bidi_chars,
-        is_binary=diff.is_binary,
-    )
+    return _text_diff_from(diff, hunks)
 
 
 def line_identity(line: DiffLine) -> tuple:

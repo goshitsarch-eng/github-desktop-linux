@@ -1,10 +1,17 @@
-"""Pygments-backed Pango markup highlighting, with a regex fallback."""
+"""Pygments-backed Pango markup highlighting, with a regex fallback.
+
+Desktop lexes the full old/new file (`highlightContents`) then maps tokens onto
+diff lines by 1-based line number. Per-line lexing is only the fallback for
+when file contents are unavailable.
+"""
 
 from __future__ import annotations
 
 import html
 import re
 from functools import lru_cache
+
+from ..models import DiffLine, DiffLineType
 
 _STRING = re.compile(r"(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*')")
 _NUMBER = re.compile(r"\b\d+(?:\.\d+)?\b")
@@ -37,6 +44,9 @@ DARK = {
     "name": "#62a0ea",
     "builtin": "#dc8add",
 }
+
+# Desktop MaxHighlightContentLength
+MAX_HIGHLIGHT_CONTENT = 256 * 1024
 
 
 def _colors() -> dict[str, str]:
@@ -87,6 +97,13 @@ def _token_color(ttype, colors: dict[str, str]) -> str | None:
     return None
 
 
+def _span(value: str, color: str | None) -> str:
+    escaped = html.escape(value)
+    if color:
+        return f'<span foreground="{color}">{escaped}</span>'
+    return escaped
+
+
 def highlight_diff_line(text: str, path: str) -> str:
     """Return Pango markup for a single diff line body (without +/- prefix)."""
     lexer = _lexer_for(path)
@@ -97,16 +114,77 @@ def highlight_diff_line(text: str, path: str) -> str:
             colors = _colors()
             parts: list[str] = []
             for ttype, value in lex(text, lexer):
-                escaped = html.escape(value)
-                color = _token_color(ttype, colors)
-                if color:
-                    parts.append(f'<span foreground="{color}">{escaped}</span>')
-                else:
-                    parts.append(escaped)
+                parts.append(_span(value, _token_color(ttype, colors)))
             return "".join(parts)
         except Exception:
             pass
     return _regex_highlight(text, path)
+
+
+def highlight_file(contents: list[str], path: str, tab_size: int = 4) -> dict[int, str]:
+    """Lex the whole file and return 1-based line number → Pango markup.
+
+    Tab characters are expanded the same way DiffViewer displays them so tokens
+    line up with the rendered diff body.
+    """
+    tab_size = max(1, int(tab_size or 4))
+    expanded = [line.replace("\t", " " * tab_size) for line in contents]
+    if not expanded:
+        return {}
+    blob = "\n".join(expanded)
+    if len(blob.encode("utf-8", errors="replace")) > MAX_HIGHLIGHT_CONTENT:
+        return {index + 1: highlight_diff_line(line, path) for index, line in enumerate(expanded)}
+    lexer = _lexer_for(path)
+    if lexer is None:
+        return {index + 1: _regex_highlight(line, path) for index, line in enumerate(expanded)}
+    try:
+        from pygments import lex
+
+        colors = _colors()
+        line_parts: dict[int, list[str]] = {1: []}
+        lineno = 1
+        for ttype, value in lex(blob, lexer):
+            color = _token_color(ttype, colors)
+            chunks = value.split("\n")
+            for i, chunk in enumerate(chunks):
+                if i:
+                    lineno += 1
+                    line_parts.setdefault(lineno, [])
+                if chunk:
+                    line_parts[lineno].append(_span(chunk, color))
+        markup = {n: "".join(parts) for n, parts in line_parts.items()}
+        for index, line in enumerate(expanded, start=1):
+            markup.setdefault(index, html.escape(line))
+        return markup
+    except Exception:
+        return {index + 1: _regex_highlight(line, path) for index, line in enumerate(expanded)}
+
+
+def markup_for_diff_line(
+    line: DiffLine,
+    path: str,
+    *,
+    old_markup: dict[int, str] | None = None,
+    new_markup: dict[int, str] | None = None,
+    tab_size: int = 4,
+) -> str:
+    """Prefer file-level tokens (Desktop getTokens), else per-line lex."""
+    if line.kind == DiffLineType.ADD and new_markup and line.new_line_number:
+        mapped = new_markup.get(line.new_line_number)
+        if mapped is not None:
+            return mapped
+    if line.kind == DiffLineType.DELETE and old_markup and line.old_line_number:
+        mapped = old_markup.get(line.old_line_number)
+        if mapped is not None:
+            return mapped
+    if line.kind == DiffLineType.CONTEXT:
+        if old_markup and line.old_line_number and line.old_line_number in old_markup:
+            return old_markup[line.old_line_number]
+        if new_markup and line.new_line_number and line.new_line_number in new_markup:
+            return new_markup[line.new_line_number]
+    body = line.text[1:] if line.text[:1] in "+- " else line.text
+    body = body.replace("\t", " " * max(1, tab_size))
+    return highlight_diff_line(body, path)
 
 
 def _regex_highlight(text: str, path: str) -> str:

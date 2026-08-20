@@ -11,6 +11,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Gtk
 
 from ..models import ChangesetData, Commit
+from .avatar import Avatar
 from .menus import copy_text
 
 
@@ -46,8 +47,15 @@ class ExpandableCommitSummary(Gtk.Box):
         self._sha_btn.connect("clicked", lambda *_: self._sha and self._on_copy_sha(self._sha))
         self._on_unreachable: Callable[[], None] | None = None
         self._unreachable_btn.connect("clicked", lambda *_: self._on_unreachable and self._on_unreachable())
-        self.append(self._summary)
-        self.append(self._meta)
+        self._header = Gtk.Box(spacing=10)
+        self._avatar_slot = Gtk.Box()
+        texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        texts.set_hexpand(True)
+        texts.append(self._summary)
+        texts.append(self._meta)
+        self._header.append(self._avatar_slot)
+        self._header.append(texts)
+        self.append(self._header)
         self.append(self._stats)
         self.append(actions)
         self.append(self._body)
@@ -74,10 +82,12 @@ class ExpandableCommitSummary(Gtk.Box):
             self._body.set_visible(False)
             self._unreachable_btn.set_visible(False)
             self._sha = ""
+            self._set_avatar("", "")
             return
         primary = commits[0]
         self._sha = primary.sha
         self._body_text = primary.body
+        self._set_avatar(primary.author.name, primary.author.email)
         if len(commits) == 1:
             summary = primary.summary or "Empty commit message"
             self._summary.set_text(summary)
@@ -115,6 +125,15 @@ class ExpandableCommitSummary(Gtk.Box):
             self._unreachable_btn.set_visible(True)
         else:
             self._unreachable_btn.set_visible(False)
+
+    def _set_avatar(self, name: str, email: str) -> None:
+        child = self._avatar_slot.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            self._avatar_slot.remove(child)
+            child = nxt
+        if name or email:
+            self._avatar_slot.append(Avatar(name, email, size=32))
 
     def _on_toggle(self, *_args: object) -> None:
         self._expanded = not self._expanded

@@ -1387,3 +1387,34 @@ def ensure_repository(path: str) -> str:
     if not root:
         raise NotARepositoryError(f"{path} is not a Git repository")
     return root
+
+
+def get_repository_kind(path: str) -> str:
+    """Return 'regular', 'missing', or 'unsafe' (dubious ownership / safe.directory)."""
+    if not path or not os.path.isdir(path):
+        return "missing"
+    try:
+        result = git(
+            ["rev-parse", "--is-inside-work-tree"],
+            path,
+            success_exit_codes={0, 128},
+            name="repoKind",
+        )
+    except GitError:
+        return "missing"
+    if result.exit_code == 0 and "true" in (result.stdout or "").lower():
+        return "regular"
+    combined = f"{result.stderr}\n{result.stdout}".lower()
+    if "dubious ownership" in combined or "safe.directory" in combined:
+        return "unsafe"
+    if git_path_is_repository(path):
+        return "regular"
+    return "missing"
+
+
+def add_safe_directory(path: str) -> None:
+    git(
+        ["config", "--global", "--add", "safe.directory", path],
+        os.path.expanduser("~"),
+        name="addSafeDirectory",
+    )

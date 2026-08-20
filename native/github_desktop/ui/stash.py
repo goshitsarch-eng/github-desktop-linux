@@ -28,6 +28,7 @@ class StashDiffViewer(Gtk.Box):
         on_collapse: Callable[[], None] | None = None,
         on_open_submodule: Callable[[str], None] | None = None,
         on_image_mode: Callable[[str], None] | None = None,
+        on_open_binary: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.add_css_class("stash-diff-viewer")
@@ -74,6 +75,7 @@ class StashDiffViewer(Gtk.Box):
             on_collapse=on_collapse,
             on_open_submodule=on_open_submodule,
             on_image_mode=on_image_mode,
+            on_open_binary=on_open_binary,
         )
         paned.set_end_child(self.diff_view)
         self.append(paned)
