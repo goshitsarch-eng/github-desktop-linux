@@ -6,6 +6,8 @@ import os
 import shutil
 from dataclasses import dataclass
 
+from .linux import path_exists, spawn
+
 
 @dataclass(frozen=True)
 class Editor:
@@ -161,7 +163,7 @@ def first_existing_editor_path(paths: tuple[str, ...]) -> str | None:
     """Desktop `getAvailablePath`: first candidate that exists, then `PATH`."""
     for raw in paths:
         candidate = expand_editor_path(raw)
-        if os.path.isfile(candidate):
+        if path_exists(candidate):
             return candidate
     for raw in paths:
         found = shutil.which(os.path.basename(raw))
@@ -197,11 +199,14 @@ def open_in_editor(
     *,
     append_path: bool = True,
 ) -> None:
-    import subprocess
-
     cmd = [editor.executable, *editor.args, *extra_args]
     if append_path:
         cmd.append(path)
-    if not os.path.isfile(editor.executable) and not shutil.which(editor.executable):
+    if not os.path.isfile(editor.executable) and not shutil.which(editor.executable) and not path_exists(editor.executable):
         raise FileNotFoundError(f"Couldn't find the executable '{editor.executable}' for editor '{editor.name}'")
-    subprocess.Popen(cmd, cwd=os.path.dirname(path) if os.path.isfile(path) else path, start_new_session=True)
+    spawn(
+        cmd[0],
+        cmd[1:],
+        cwd=os.path.dirname(path) if os.path.isfile(path) else path,
+        start_new_session=True,
+    )

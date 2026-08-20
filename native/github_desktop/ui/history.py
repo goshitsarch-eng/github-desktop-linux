@@ -10,7 +10,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk
 
-from ..models import ChangesetData, Commit
+from ..models import ChangesetData, Commit, GitHubRepository
 from .avatar import AvatarStack, users_from_commits
 from .menus import copy_text
 
@@ -86,6 +86,7 @@ class ExpandableCommitSummary(Gtk.Box):
         shas_in_diff: list[str] | None = None,
         on_unreachable: Callable[[], None] | None = None,
         on_highlight: Callable[[list[str]], None] | None = None,
+        github: GitHubRepository | None = None,
     ) -> None:
         self._expanded = expanded
         self._on_unreachable = on_unreachable
@@ -99,26 +100,37 @@ class ExpandableCommitSummary(Gtk.Box):
             self._unreachable_btn.set_visible(False)
             self._reachable_btn.set_visible(False)
             self._sha = ""
-            self._set_avatar(users_from_commits(commits))
+            self._set_avatar(users_from_commits(commits, github))
             return
         primary = commits[0]
         self._sha = primary.sha
         self._body_text = primary.body
-        self._set_avatar(users_from_commits(commits))
+        self._set_avatar(users_from_commits(commits, github))
         if len(commits) == 1:
             from .emoji import expand_shortcodes
             from ..models import format_commit_attribution
             from ..push_pull import format_commit_relative_time
+            from ..text_tokens import Tokenizer, tokens_as_text, wrap_rich_text_commit_message
 
             has_empty = not (primary.summary or "").strip()
-            summary = "Empty commit message" if has_empty else expand_shortcodes(primary.summary)
+            if has_empty:
+                summary = "Empty commit message"
+                self._body_text = primary.body
+            else:
+                wrapped = wrap_rich_text_commit_message(
+                    primary.summary,
+                    primary.body,
+                    Tokenizer(github=github),
+                )
+                summary = expand_shortcodes(tokens_as_text(wrapped.summary))
+                self._body_text = expand_shortcodes(tokens_as_text(wrapped.body))
             self._summary.set_text(summary)
             if has_empty:
                 self._summary.add_css_class("empty-summary")
             else:
                 self._summary.remove_css_class("empty-summary")
             tags = (" · " + ", ".join(primary.tags)) if primary.tags else ""
-            attribution = format_commit_attribution(primary)
+            attribution = format_commit_attribution(primary, github)
             relative = format_commit_relative_time(primary.author.date)
             self._meta.set_text(
                 f"{attribution} • {relative} · {primary.author.email} · {primary.short_sha}{tags}"

@@ -1034,7 +1034,7 @@ def _conflict_row(
     open_btn.connect("clicked", lambda *_: store.open_in_editor(repo, file.path))
     reveal = Gtk.Button(icon_name="folder-symbolic")
     reveal.add_css_class("flat")
-    reveal.set_tooltip_text("Show in file manager")
+    reveal.set_tooltip_text("Show in your File Manager")
     reveal.connect("clicked", lambda *_: store.reveal_in_file_manager(repo, file.path))
     default_app = Gtk.Button(icon_name="application-x-executable-symbolic")
     default_app.add_css_class("flat")

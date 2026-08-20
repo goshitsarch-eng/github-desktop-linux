@@ -171,6 +171,7 @@ from .models import (
     DiffSelectionType,
     FetchType,
     FileDiff,
+    FileStatus,
     FoldoutType,
     ForcePushBranchState,
     ForkContributionTarget,
@@ -207,6 +208,7 @@ from .models import (
     github_for_contribution,
     github_from_dict,
     github_to_dict,
+    get_old_path_or_default,
     has_write_permission,
     html_url_from_endpoint,
     is_dotcom_endpoint,
@@ -1343,7 +1345,7 @@ class AppStore:
             return
         try:
             diff = get_working_directory_diff(repo.path, file, self._hide_ws_changes(state), state.diff_context)
-            diff = self._prepare_text_diff(repo, file.path, diff)
+            diff = self._prepare_text_diff(repo, file.path, diff, file=file)
             state.current_diff = diff
             if isinstance(diff, TextDiff):
                 from .git.diff import selectable_line_indices
@@ -1359,18 +1361,28 @@ class AppStore:
         except GitError as exc:
             state.error = str(exc)
 
-    def _prepare_text_diff(self, repo: Repository, path: str, diff: FileDiff, commitish: str | None = None) -> FileDiff:
+    def _prepare_text_diff(
+        self,
+        repo: Repository,
+        path: str,
+        diff: FileDiff,
+        commitish: str | None = None,
+        *,
+        file: object | None = None,
+        status: FileStatus | None = None,
+    ) -> FileDiff:
         if not isinstance(diff, TextDiff) or not diff.hunks:
             return diff
         from .git.expansion import apply_expansion_metadata
 
         state = self.state_for(repo)
+        old_path = get_old_path_or_default(file, path=path, status=status)
         if commitish:
             new_lines = get_partial_blob_lines(repo.path, commitish, path)
-            old_lines = get_partial_blob_lines(repo.path, f"{commitish}^", path)
+            old_lines = get_partial_blob_lines(repo.path, f"{commitish}^", old_path)
         else:
             new_lines = get_working_directory_lines(repo.path, path)
-            old_lines = get_partial_blob_lines(repo.path, "HEAD", path)
+            old_lines = get_partial_blob_lines(repo.path, "HEAD", old_path)
         state.diff_new_content = new_lines
         state.original_diff = None
         prepared = apply_expansion_metadata(diff, old_line_count=len(old_lines), new_line_count=len(new_lines))
@@ -1381,7 +1393,7 @@ class AppStore:
             old_bytes = sum(len(line) + 1 for line in old_lines)
             new_bytes = sum(len(line) + 1 for line in new_lines)
             if old_bytes <= MAX_HIGHLIGHT_CONTENT:
-                prepared.old_line_markup = highlight_file(old_lines, path, tab_size=tab)
+                prepared.old_line_markup = highlight_file(old_lines, old_path, tab_size=tab)
             if new_bytes <= MAX_HIGHLIGHT_CONTENT:
                 prepared.new_line_markup = highlight_file(new_lines, path, tab_size=tab)
         return prepared
@@ -2448,6 +2460,7 @@ class AppStore:
                         repo.path, file.path, file.commitish, file.status, self._hide_ws_changes(state), state.diff_context
                     ),
                     commitish=file.commitish,
+                    file=file,
                 )
             except GitError:
                 state.current_diff = None
@@ -2529,7 +2542,7 @@ class AppStore:
                 return None
         except GitError:
             return None
-        return self._prepare_text_diff(repo, file.path, diff, commitish=latest)
+        return self._prepare_text_diff(repo, file.path, diff, commitish=latest, file=file)
 
     def add_dropped_paths(self, paths: Sequence[str]) -> None:
         dirs = []
@@ -2578,7 +2591,7 @@ class AppStore:
                     diff = get_commit_range_diff(
                         repo.path, f.path, oldest.sha, newest.sha, f.status, self._hide_ws_history(), state.diff_context
                     )
-                    state.current_diff = self._prepare_text_diff(repo, f.path, diff, commitish=newest.sha)
+                    state.current_diff = self._prepare_text_diff(repo, f.path, diff, commitish=newest.sha, file=f)
                 except GitError:
                     state.current_diff = None
         else:
@@ -2945,6 +2958,11 @@ class AppStore:
         full = os.path.join(repo.path, relpath)
         open_file_manager(full if os.path.exists(full) else repo.path)
 
+    def remove_repository_alias(self, repo: Repository) -> None:
+        repo.alias = None
+        self._save_repositories()
+        self.emit()
+
     def open_file_default(self, repo: Repository, relpath: str) -> None:
         full = os.path.join(repo.path, relpath)
         if os.path.exists(full):
@@ -3002,6 +3020,7 @@ class AppStore:
                         repo.path, f.path, commit.sha, f.status, self._hide_ws_history(), state.diff_context
                     ),
                     commitish=commit.sha,
+                    file=f,
                 )
             else:
                 state.current_diff = None
@@ -3023,10 +3042,10 @@ class AppStore:
             diff = get_commit_range_diff(
                 repo.path, path, oldest.sha, newest.sha, status, self._hide_ws_history(), state.diff_context
             )
-            prepared = self._prepare_text_diff(repo, path, diff, commitish=newest.sha)
+            prepared = self._prepare_text_diff(repo, path, diff, commitish=newest.sha, status=status)
         else:
             diff = get_commit_diff(repo.path, path, sha, status, self._hide_ws_history(), state.diff_context)
-            prepared = self._prepare_text_diff(repo, path, diff, commitish=sha)
+            prepared = self._prepare_text_diff(repo, path, diff, commitish=sha, status=status)
         state.current_diff = prepared
         return prepared
 

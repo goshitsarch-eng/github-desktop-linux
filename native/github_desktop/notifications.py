@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 
+from .linux import spawn
 from .logging import get_logger
 
 log = get_logger()
@@ -29,9 +30,9 @@ def get_notification_settings_command() -> list[str] | None:
 def open_notification_settings() -> None:
     cmd = get_notification_settings_command()
     if cmd:
-        subprocess.Popen(cmd, start_new_session=True)
+        spawn(cmd[0], cmd[1:], start_new_session=True)
         return
-    subprocess.Popen(["xdg-open", "settings://"], start_new_session=True)
+    spawn("xdg-open", ["settings://"], start_new_session=True)
 
 
 def get_notifications_permission() -> str:

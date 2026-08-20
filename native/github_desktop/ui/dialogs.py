@@ -4511,12 +4511,15 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
     box.append(scrolled)
     attach_spellcheck(summary, description, enabled=store.settings.spellcheck_enabled)
     author_input = None
-    if payload.get("show_co_authors"):
+    if payload.get("show_co_authors") or payload.get("co_authors"):
         author_input = AuthorInput()
-        if payload.get("co_authors"):
+        raw = payload.get("co_authors")
+        if isinstance(raw, list):
+            author_input.set_authors(list(raw))
+        elif raw:
             from ..models import parse_co_authors
 
-            author_input.set_authors(parse_co_authors(payload.get("co_authors") or ""))
+            author_input.set_authors(parse_co_authors(str(raw)))
         box.append(author_input)
     save = Gtk.Button(label=payload.get("button") or "Save")
     save.add_css_class("suggested-action")
@@ -4529,8 +4532,12 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
         start, end = description.get_buffer().get_bounds()
         desc = description.get_buffer().get_text(start, end, True)
         cb = payload.get("on_submit")
+        authors = author_input.get_authors() if author_input is not None else []
         if cb:
-            cb(summary.get_text(), desc)
+            try:
+                cb(summary.get_text(), desc, authors)
+            except TypeError:
+                cb(summary.get_text(), desc)
         dialog.close()
 
     save.connect("clicked", submit)

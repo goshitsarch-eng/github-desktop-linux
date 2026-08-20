@@ -49,7 +49,22 @@ from .dialogs import present_popup, show_preferences, show_reorder_commits
 from .diff_view import DiffViewer
 from .emoji import matching_shortcodes
 from .history import ExpandableCommitSummary
-from .menus import attach_right_click, clear_box, copy_text, show_context_menu
+from .menus import (
+    CopyFilePathLabel,
+    CopyRelativeFilePathLabel,
+    CopySelectedPathsLabel,
+    CopySelectedRelativePathsLabel,
+    OpenWithDefaultProgramLabel,
+    RevealInFileManagerLabel,
+    alias_verb,
+    attach_right_click,
+    clear_box,
+    copy_text,
+    open_in_editor_label,
+    open_in_shell_label,
+    remove_repository_label,
+    show_context_menu,
+)
 from .multi_commit import MERGE_OPTIONS, merge_cta_message, show_confirm_abort, show_conflicts_dialog
 from .spellcheck import attach_spellcheck
 from .stash import StashDiffViewer
@@ -957,11 +972,11 @@ class MainWindow(Adw.ApplicationWindow):
         repo.append(self._push_menu_label(), self._push_menu_action())
         repo.append("Pull", "win.pull")
         repo.append("Fetch", "win.fetch")
-        repo.append("Remove…", "win.remove-repository")
+        repo.append(self._remove_repository_label(), "win.remove-repository")
         repo.append("View on GitHub", "win.view-on-github")
-        repo.append("Open in shell", "win.open-in-shell")
-        repo.append("Show in file manager", "win.open-working-directory")
-        repo.append("Open in external editor", "win.open-external-editor")
+        repo.append(self._open_in_shell_label(), "win.open-in-shell")
+        repo.append(RevealInFileManagerLabel, "win.open-working-directory")
+        repo.append(self._open_in_editor_label(), "win.open-external-editor")
         repo.append("Create issue on GitHub", "win.create-issue")
         repo.append("Repository settings…", "win.repository-settings")
         menu.append_submenu("Repository", repo)
@@ -1025,6 +1040,15 @@ class MainWindow(Adw.ApplicationWindow):
         name = self.store.default_branch_name(repo) if repo else None
         return f"Update from {name or self.store.settings.default_branch or 'default branch'}"
 
+    def _open_in_editor_label(self) -> str:
+        return open_in_editor_label(self.store.settings.selected_external_editor)
+
+    def _open_in_shell_label(self) -> str:
+        return open_in_shell_label(self.store.settings.selected_shell)
+
+    def _remove_repository_label(self) -> str:
+        return remove_repository_label(self.store.settings.confirm_repository_removal)
+
     def _rebuild_app_menu(self) -> None:
         if not hasattr(self, "_menu_btn"):
             return
@@ -1034,6 +1058,9 @@ class MainWindow(Adw.ApplicationWindow):
             self._pull_request_menu_label(),
             self._stash_menu_label(),
             self._update_from_default_label(),
+            self._open_in_editor_label(),
+            self._open_in_shell_label(),
+            self._remove_repository_label(),
             bool(state and state.current_pull_request),
         )
         if getattr(self, "_menu_sig", None) == sig:
@@ -2021,7 +2048,7 @@ class MainWindow(Adw.ApplicationWindow):
             self._suggested_card(
                 "View the files of your repository in your File Manager",
                 "",
-                "Show in file manager",
+                RevealInFileManagerLabel,
                 lambda: self.store.open_working_directory(repo),
                 discoverability="Always available from the Repository menu or Ctrl+Shift+F",
             )
@@ -2270,7 +2297,9 @@ class MainWindow(Adw.ApplicationWindow):
         row = Gtk.ListBoxRow()
         row.add_css_class("history-commit")
         box = Gtk.Box(spacing=8)
-        box.append(AvatarStack(users_from_commit(commit), size=28))
+        repo = self.store.selected_repository
+        github = repo.github if repo else None
+        box.append(AvatarStack(users_from_commit(commit, github), size=28))
         texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         texts.set_hexpand(True)
         from .emoji import expand_shortcodes
@@ -2281,7 +2310,7 @@ class MainWindow(Adw.ApplicationWindow):
         summary.add_css_class("commit-summary")
         if has_empty_summary:
             summary.add_css_class("empty-summary")
-        attribution = format_commit_attribution(commit)
+        attribution = format_commit_attribution(commit, github)
         relative = format_commit_relative_time(commit.author.date)
         byline = Gtk.Label(label=f"{attribution} • {relative}", xalign=0)
         byline.add_css_class("commit-sha")
@@ -2302,7 +2331,6 @@ class MainWindow(Adw.ApplicationWindow):
                 more.set_tooltip_text(", ".join(commit.tags[1:]))
                 tag_box.append(more)
             indicators.append(tag_box)
-        repo = self.store.selected_repository
         state = self.store.state_for(repo) if repo else None
         local_shas = set(getattr(state, "local_commit_shas", None) or [])
         tags_to_push = set(getattr(state, "local_tags_to_push", None) or [])
@@ -2356,6 +2384,7 @@ class MainWindow(Adw.ApplicationWindow):
                 shas_in_diff=list(state.shas_in_diff),
                 on_unreachable=lambda: self.store.show_popup(PopupType.UNREACHABLE_COMMITS),
                 on_highlight=self._highlight_history_shas,
+                github=repo.github if repo else None,
             )
         clear_box(self._hist_files)
         for f in state.selected_commit_files:
@@ -2682,16 +2711,17 @@ class MainWindow(Adw.ApplicationWindow):
             items.append((f"Ignore {len(paths)} selected files", lambda: [self.store.ignore_path(repo, p) for p in paths], True))
             items.append(("Include selected files", lambda: self.store.set_files_included(repo, paths, True), True))
             items.append(("Exclude selected files", lambda: self.store.set_files_included(repo, paths, False), True))
-            items.append(("Copy selected paths", lambda: copy_text("\n".join(os.path.join(repo.path, p) for p in paths)), True))
+            items.append((CopySelectedPathsLabel, lambda: copy_text("\n".join(os.path.join(repo.path, p) for p in paths)), True))
+            items.append((CopySelectedRelativePathsLabel, lambda: copy_text("\n".join(paths)), True))
         items.extend(
             [
                 None,
-                ("Copy path", lambda: copy_text(os.path.join(repo.path, file.path)), True),
-                ("Copy relative path", lambda: copy_text(file.path), True),
+                (CopyFilePathLabel, lambda: copy_text(os.path.join(repo.path, file.path)), True),
+                (CopyRelativeFilePathLabel, lambda: copy_text(file.path), True),
                 None,
-                ("Show in file manager", lambda: self.store.reveal_in_file_manager(repo, file.path), file.status.kind != AppFileStatusKind.DELETED),
-                ("Open in external editor", lambda: self.store.open_in_editor(repo, os.path.join(repo.path, file.path)), file.status.kind != AppFileStatusKind.DELETED),
-                ("Open with default program", lambda: self.store.open_file_default(repo, file.path), file.status.kind != AppFileStatusKind.DELETED),
+                (RevealInFileManagerLabel, lambda: self.store.reveal_in_file_manager(repo, file.path), file.status.kind != AppFileStatusKind.DELETED),
+                (self._open_in_editor_label(), lambda: self.store.open_in_editor(repo, os.path.join(repo.path, file.path)), file.status.kind != AppFileStatusKind.DELETED),
+                (OpenWithDefaultProgramLabel, lambda: self.store.open_file_default(repo, file.path), file.status.kind != AppFileStatusKind.DELETED),
             ]
         )
         if file.status.is_conflicted:
@@ -2713,11 +2743,11 @@ class MainWindow(Adw.ApplicationWindow):
         state = self.store.state_for(repo)
         commit = state.selected_commit
         items = [
-            ("Copy path", lambda: copy_text(full), True),
-            ("Copy relative path", lambda: copy_text(file.path), True),
-            ("Open with default program", lambda: self.store.open_file_default(repo, file.path), exists),
-            ("Show in file manager", lambda: self.store.reveal_in_file_manager(repo, file.path), exists),
-            ("Open in external editor", lambda: self.store.open_in_editor(repo, full), exists),
+            (CopyFilePathLabel, lambda: copy_text(full), True),
+            (CopyRelativeFilePathLabel, lambda: copy_text(file.path), True),
+            (OpenWithDefaultProgramLabel, lambda: self.store.open_file_default(repo, file.path), exists),
+            (RevealInFileManagerLabel, lambda: self.store.reveal_in_file_manager(repo, file.path), exists),
+            (self._open_in_editor_label(), lambda: self.store.open_in_editor(repo, full), exists),
         ]
         if repo.github and commit:
             items.append(
@@ -2784,13 +2814,28 @@ class MainWindow(Adw.ApplicationWindow):
         others = [c for c in selected if c.sha != onto.sha]
         if not others:
             return
+        from ..git.ops import co_author_trailers, format_commit_message
+        from ..models import get_squashed_commit_description, get_unique_coauthors_as_authors
+
+        all_commits = [*others, onto]
+        co_authors = get_unique_coauthors_as_authors(all_commits)
+        description = get_squashed_commit_description(others, onto)
+        count = len(all_commits)
+        title = f"Squash {count} Commits"
+
+        def submit(summary: str, body: str, authors=()) -> None:
+            message = format_commit_message(summary, body, co_author_trailers(authors), repo=repo.path)
+            self.store.squash_onto(repo, others, onto, message)
+
         self.store.show_popup(
             PopupType.COMMIT_MESSAGE,
-            title="Squash commits",
+            title=title,
             summary=onto.summary,
-            description=onto.body,
-            button="Squash",
-            on_submit=lambda summary, description: self.store.squash_onto(repo, others, onto, f"{summary}\n\n{description}".strip()),
+            description=description,
+            button=title,
+            show_co_authors=bool(co_authors),
+            co_authors=list(co_authors),
+            on_submit=submit,
         )
 
     def _install_commit_dnd(self, row: Gtk.ListBoxRow, commit) -> None:
@@ -2831,7 +2876,7 @@ class MainWindow(Adw.ApplicationWindow):
                     others = [c for c in moving if c.sha != target.sha]
                     if not others:
                         return False
-                    self.store.squash_onto(repo, others, target, target.summary)
+                    self._squash_selected([*others, target], target)
                     return True
                 idx = next((i for i, c in enumerate(state.commits) if c.sha == target.sha), None)
                 if idx is None:
@@ -3203,19 +3248,25 @@ class MainWindow(Adw.ApplicationWindow):
         self._compare_cta.append(ops)
 
     def _repo_list_menu(self, widget: Gtk.Widget, repo) -> None:
-        show_context_menu(
-            widget,
+        items = [
+            (f"{alias_verb(repo.alias)} alias…", lambda: (self.store.select_repository(repo.id), self.store.show_popup(PopupType.CHANGE_REPOSITORY_ALIAS)), True),
+        ]
+        if repo.alias:
+            items.append(("Remove alias", lambda: self.store.remove_repository_alias(repo), True))
+        items.extend(
             [
-                ("Change alias…", lambda: (self.store.select_repository(repo.id), self.store.show_popup(PopupType.CHANGE_REPOSITORY_ALIAS)), True),
-                ("Copy path", lambda: copy_text(repo.path), True),
-                ("View on GitHub", lambda: self.store.view_on_github(repo), bool(repo.github)),
-                ("Open in shell", lambda: self.store.open_in_shell(repo), True),
-                ("Show in file manager", lambda: self.store.reveal_in_file_manager(repo, ""), True),
-                ("Open in external editor", lambda: self.store.open_in_editor(repo, repo.path), True),
+                ("Copy repo name", lambda: copy_text(repo.name), True),
+                ("Copy repo path", lambda: copy_text(repo.path), True),
                 None,
-                ("Remove…", lambda: (self.store.select_repository(repo.id), self.store.show_popup(PopupType.REMOVE_REPOSITORY)), True),
-            ],
+                ("View on GitHub", lambda: self.store.view_on_github(repo), bool(repo.github)),
+                (self._open_in_shell_label(), lambda: self.store.open_in_shell(repo), True),
+                (RevealInFileManagerLabel, lambda: self.store.reveal_in_file_manager(repo, ""), True),
+                (self._open_in_editor_label(), lambda: self.store.open_in_editor(repo, repo.path), True),
+                None,
+                (self._remove_repository_label(), lambda: (self.store.select_repository(repo.id), self.store.show_popup(PopupType.REMOVE_REPOSITORY)), True),
+            ]
         )
+        show_context_menu(widget, items)
 
     def _refresh_author_avatar(self, repo) -> None:
         if not hasattr(self, "_author_avatar_host"):
@@ -3813,7 +3864,7 @@ class MainWindow(Adw.ApplicationWindow):
                         ("Pull", "<Control><Shift>p"),
                         ("Fetch", "<Control><Shift>t"),
                         ("Open in shell", "<Control>grave"),
-                        ("Show in file manager", "<Control><Shift>f"),
+                        ("Show in your File Manager", "<Control><Shift>f"),
                         ("Open in editor", "<Control><Shift>a"),
                     ],
                 ),

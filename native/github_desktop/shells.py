@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 from dataclasses import dataclass
 from collections.abc import Sequence
+
+from .linux import path_exists, spawn
 
 
 @dataclass(frozen=True)
@@ -66,14 +67,14 @@ LINUX_SHELL_PATHS: dict[str, tuple[str, ...]] = {
 
 def first_existing_shell_path(name: str, bins: tuple[str, ...]) -> str | None:
     for path in LINUX_SHELL_PATHS.get(name, ()):
-        if os.path.isfile(path):
+        if path_exists(path):
             return path
     for binary in bins:
         path = shutil.which(binary)
         if path:
             return path
         candidate = f"/usr/bin/{binary}"
-        if os.path.isfile(candidate):
+        if path_exists(candidate):
             return candidate
     return None
 
@@ -100,21 +101,21 @@ def find_shell(name: str | None) -> Shell | None:
 
 def open_shell(shell: Shell, cwd: str, extra_args: tuple[str, ...] = ()) -> None:
     args = [arg.format(cwd=cwd) for arg in shell.args]
-    subprocess.Popen([shell.executable, *args, *extra_args], cwd=cwd, start_new_session=True)
+    spawn(shell.executable, [*args, *extra_args], cwd=cwd, start_new_session=True)
 
 
 def open_custom_shell(executable: str, argv: Sequence[str], cwd: str) -> None:
-    subprocess.Popen([executable, *argv], cwd=cwd, start_new_session=True)
+    spawn(executable, list(argv), cwd=cwd, start_new_session=True)
 
 
 def open_file_manager(path: str) -> None:
-    subprocess.Popen(["xdg-open", path], start_new_session=True)
+    spawn("xdg-open", [path], start_new_session=True)
 
 
 def open_external(url: str) -> None:
-    subprocess.Popen(["xdg-open", url], start_new_session=True)
+    spawn("xdg-open", [url], start_new_session=True)
 
 
 def open_in_default_program(path: str) -> None:
     """Open a working-tree file with the desktop's default handler (Desktop onOpenBinaryFile)."""
-    subprocess.Popen(["xdg-open", path], start_new_session=True)
+    spawn("xdg-open", [path], start_new_session=True)

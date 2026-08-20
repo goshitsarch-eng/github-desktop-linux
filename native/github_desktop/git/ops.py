@@ -71,6 +71,7 @@ from ..models import (
     WorkingDirectoryFileChange,
     WorkingDirectoryStatus,
     format_as_local_ref,
+    get_old_path_or_default,
 )
 from .diff import (
     format_discard_patch,
@@ -372,6 +373,12 @@ def _diff_flags(hide_whitespace: bool = False, context_lines: int | None = None)
     return args
 
 
+def _append_old_path(args: list[str], path: str, status: FileStatus | None) -> None:
+    old = get_old_path_or_default(path=path, status=status)
+    if old and old != path:
+        args.append(old)
+
+
 def get_working_directory_diff(
     repo: str,
     file: WorkingDirectoryFileChange,
@@ -505,6 +512,7 @@ def get_commit_diff(
 ) -> FileDiff:
     args = _diff_flags(hide_whitespace, context_lines)
     args += [f"{commitish}^", commitish, "--", path]
+    _append_old_path(args, path, status)
     result = git(args, repo, success_exit_codes={0, 1, 128}, name="commitDiff")
     if result.exit_code == 128:
         # root commit
@@ -556,8 +564,9 @@ def _diff_from_result(
 def _image_diff(repo: str, path: str, status: FileStatus, commitish: str | None) -> ImageDiff:
     previous = current = None
     full = os.path.join(repo, path)
+    old_path = get_old_path_or_default(path=path, status=status)
     if status.kind not in (AppFileStatusKind.NEW, AppFileStatusKind.UNTRACKED):
-        spec = f"{commitish or 'HEAD'}:{path}"
+        spec = f"{commitish or 'HEAD'}:{old_path}"
         try:
             previous = git(["show", spec], repo, name="showImage", success_exit_codes={0, 128}).stdout_bytes
         except GitError:
@@ -1012,6 +1021,7 @@ def get_commit_range_diff(
 ) -> FileDiff:
     parent = NULL_TREE_SHA if use_null_tree else f"{oldest_sha}^"
     args = _diff_flags(hide_whitespace, context_lines) + [parent, newest_sha, "--", path]
+    _append_old_path(args, path, status)
     result = git(args, repo, success_exit_codes={0, 1, 128}, name="commitRangeDiff")
     if result.exit_code == 128 and not use_null_tree:
         return get_commit_range_diff(
@@ -2909,8 +2919,7 @@ def get_branch_merge_base_diff(
     if context_lines is not None:
         args.append(f"-U{int(context_lines)}")
     args += ["--", path]
-    if status and status.old_path:
-        args.append(status.old_path)
+    _append_old_path(args, path, status)
     result = git(args, repo, success_exit_codes={0, 1, 128}, name="getBranchMergeBaseDiff")
     commitish = latest_sha or comparison_branch
     return _diff_from_result(repo, path, status or FileStatus(AppFileStatusKind.MODIFIED), result, commitish)

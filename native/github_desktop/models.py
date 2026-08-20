@@ -916,11 +916,33 @@ class Commit:
         return authors
 
     @property
+    def body_no_co_authors(self) -> str:
+        """Desktop `Commit.bodyNoCoAuthors` / `trimCoAuthorsTrailers`."""
+        trimmed = self.body
+        for token, value in self.trailers:
+            if token.lower() == "co-authored-by":
+                trimmed = trimmed.replace(f"{token}: {value}", "")
+        return trimmed
+
+    @property
     def is_merge_commit(self) -> bool:
         return len(self.parent_shas) > 1
 
 
-def format_commit_attribution(commit: Commit) -> str:
+def is_web_flow_committer(commit: Commit, github: GitHubRepository | None) -> bool:
+    """Desktop `isWebFlowCommitter` (GitHub / GitHub Enterprise merge committers)."""
+    if github is None:
+        return False
+    name = commit.committer.name
+    email = commit.committer.email
+    if is_dotcom_endpoint(github.endpoint) and name == "GitHub" and email == "noreply@github.com":
+        return True
+    if not is_dotcom_endpoint(github.endpoint) and name == "GitHub Enterprise":
+        return True
+    return False
+
+
+def format_commit_attribution(commit: Commit, github: GitHubRepository | None = None) -> str:
     """Desktop `CommitAttribution` for a single commit (author, committer, co-authors)."""
     names: list[str] = []
 
@@ -929,7 +951,7 @@ def format_commit_attribution(commit: Commit) -> str:
             names.append(name)
 
     add(commit.author.name)
-    if not commit.authored_by_committer:
+    if not commit.authored_by_committer and not is_web_flow_committer(commit, github):
         add(commit.committer.name)
     for author in commit.co_authors:
         add(author.name)
@@ -938,6 +960,43 @@ def format_commit_attribution(commit: Commit) -> str:
     if len(names) == 2:
         return f"{names[0]}, {names[1]}"
     return f"{len(names)} people"
+
+
+def get_unique_coauthors_as_authors(commits: Sequence[Commit]) -> list[Author]:
+    """Desktop `getUniqueCoauthorsAsAuthors`."""
+    unique: list[Author] = []
+    seen: set[tuple[str, str]] = set()
+    for commit in commits:
+        for author in commit.co_authors:
+            key = (author.name, author.email)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(Author(name=author.name, email=author.email, username=None))
+    return unique
+
+
+def get_squashed_commit_description(commits: Sequence[Commit], squash_onto: Commit) -> str:
+    """Desktop `getSquashedCommitDescription`."""
+    commit_messages = [f"{commit.summary.strip()}\n\n{commit.body_no_co_authors.strip()}" for commit in commits]
+    descriptions = [squash_onto.body_no_co_authors.strip(), *commit_messages]
+    return "\n\n".join(item for item in descriptions if item.strip() != "")
+
+
+def get_old_path_or_default(
+    file: object | None = None,
+    *,
+    path: str | None = None,
+    status: FileStatus | None = None,
+) -> str:
+    """Desktop `getOldPathOrDefault`: renamed/copied `oldPath`, else `file.path`."""
+    resolved_path = path if path is not None else str(getattr(file, "path", "") or "")
+    resolved_status = status if status is not None else getattr(file, "status", None)
+    kind = getattr(resolved_status, "kind", None)
+    old = getattr(resolved_status, "old_path", None)
+    if kind in (AppFileStatusKind.RENAMED, AppFileStatusKind.COPIED) and old:
+        return old
+    return resolved_path
 
 
 @dataclass

@@ -12,6 +12,32 @@ from gi.repository import Gdk, Gtk
 
 MenuItem = tuple[str, Callable[[], None], bool] | None
 
+# Desktop `ui/lib/context-menu.ts` Linux labels.
+CopyFilePathLabel = "Copy file path"
+CopyRelativeFilePathLabel = "Copy relative file path"
+CopySelectedPathsLabel = "Copy paths"
+CopySelectedRelativePathsLabel = "Copy relative paths"
+DefaultEditorLabel = "Open in external editor"
+DefaultShellLabel = "Open in shell"
+RevealInFileManagerLabel = "Show in your File Manager"
+OpenWithDefaultProgramLabel = "Open with default program"
+
+
+def open_in_editor_label(editor_name: str | None) -> str:
+    return f"Open in {editor_name}" if editor_name else DefaultEditorLabel
+
+
+def open_in_shell_label(shell_name: str | None) -> str:
+    return f"Open in {shell_name}" if shell_name else DefaultShellLabel
+
+
+def remove_repository_label(confirm: bool) -> str:
+    return "Remove…" if confirm else "Remove"
+
+
+def alias_verb(alias: str | None) -> str:
+    return "Change" if alias else "Create"
+
 
 def clear_box(box: Gtk.Widget) -> None:
     child = box.get_first_child()

@@ -289,6 +289,12 @@ def test_window_actions_cover_menus() -> None:
 
     src += open(remote_parsing_mod.__file__, encoding="utf-8").read()
     src += open(settings_mod.__file__, encoding="utf-8").read()
+    from github_desktop import linux as linux_mod, text_tokens as text_tokens_mod
+    from github_desktop.ui import menus as menus_mod
+
+    src += open(linux_mod.__file__, encoding="utf-8").read()
+    src += open(text_tokens_mod.__file__, encoding="utf-8").read()
+    src += open(menus_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -388,7 +394,7 @@ def test_window_actions_cover_menus() -> None:
         "detached HEAD",
         "Selecting lines is disabled when hiding whitespace changes",
         "Return to in progress tutorial",
-        "Copy relative path",
+        "Copy relative file path",
         "This email address doesn't match your GitHub account",
         "with rebase",
         "rebase.backend=merge",
@@ -454,7 +460,7 @@ def test_window_actions_cover_menus() -> None:
         "getPartialBlobContents",
         "addGlobalConfigValueIfMissing",
         "popStashEntry",
-        "Copy selected paths",
+        "Copy paths",
         "startCherryPickWithPullRequest",
         "openCreatePullRequestInBrowser",
         "You're already signed in",
@@ -686,5 +692,21 @@ def test_window_actions_cover_menus() -> None:
         "window-zoom-info",
         "toast-notification-container",
         "This operating system is no longer supported",
+        "isWebFlowCommitter",
+        "wrapRichTextCommitMessage",
+        "getOldPathOrDefault",
+        "getUniqueCoauthorsAsAuthors",
+        "getSquashedCommitDescription",
+        "bodyNoCoAuthors",
+        "convertToFlatpakPath",
+        "isFlatpakBuild",
+        "Show in your File Manager",
+        "Copy file path",
+        "Copy relative paths",
+        "Copy repo name",
+        "Copy repo path",
+        "Remove alias",
+        "MaxSummaryLength",
+        "Squash {count} Commits",
     ]:
         assert phrase in src
