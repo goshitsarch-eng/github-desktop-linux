@@ -2860,9 +2860,15 @@ class AppStore:
         self.remember_branch(repo, new)
         self.refresh_repository(repo)
 
-    def create_branch_and_checkout(self, repo: Repository, name: str, start_point: str | None = None) -> None:
+    def create_branch_and_checkout(
+        self,
+        repo: Repository,
+        name: str,
+        start_point: str | None = None,
+        no_track: bool = False,
+    ) -> None:
         name = sanitize_ref_name(name)
-        create_branch(repo.path, name, start_point)
+        create_branch(repo.path, name, start_point, no_track=no_track)
         checkout_branch(repo.path, name)
         self.remember_branch(repo, name)
         self.refresh_repository(repo)

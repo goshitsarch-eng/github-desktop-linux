@@ -131,6 +131,12 @@ REQUIRED_GIT_FUNCS = [
     "is_config_file_lock_error",
     "parse_config_lock_file_path_from_error",
     "env_for_proxy",
+    "git_rebase_arguments",
+    "env_for_authentication",
+    "env_for_remote_operation",
+    "get_fallback_url_for_proxy_resolve",
+    "get_partial_blob_contents_catch_path_not_in_ref",
+    "parse_commit_sha",
 ]
 
 
@@ -251,6 +257,10 @@ def test_window_actions_cover_menus() -> None:
 
     src += open(git_runner_mod.__file__, encoding="utf-8").read()
     src += open(notifications_mod.__file__, encoding="utf-8").read()
+    from github_desktop import create_branch as create_branch_mod, email as email_mod
+
+    src += open(create_branch_mod.__file__, encoding="utf-8").read()
+    src += open(email_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -499,5 +509,23 @@ def test_window_actions_cover_menus() -> None:
         "getMergeOptions",
         "CloseKeywordFilter",
         "IssueMentionFilter",
+        "getStartPoint",
+        "--no-track",
+        "gitRebaseArguments",
+        "envForAuthentication",
+        "envForRemoteOperation",
+        "getPartialBlobContentsCatchPathNotInRef",
+        "getFallbackUrlForProxyResolve",
+        "Your commits will be wrongly attributed",
+        "already exists on the remote",
+        "The default branch in your repository",
+        "Always available in the toolbar",
+        "When a stash exists",
+        "Publish your branch",
+        "Learn more about commit signing",
+        "create a fork",
+        "switch branches",
+        "GitEmailNotFoundWarning",
+        "parseCommitSHA",
     ]:
         assert phrase in src

@@ -50,3 +50,35 @@ def is_attributable_email_for(account: Account, email: str) -> bool:
         stealth_email_for_user(account.id, account.login, account.endpoint).lower(),
         legacy_stealth_email_for_user(account.login, account.endpoint).lower(),
     }
+
+
+COMMIT_ATTRIBUTION_DOCS = (
+    "https://docs.github.com/en/github/committing-changes-to-your-project/"
+    "why-are-my-commits-linked-to-the-wrong-user"
+)
+
+
+def git_email_account_type_description(accounts: list[Account]) -> str:
+    """Desktop `GitEmailNotFoundWarning.getAccountTypeDescription`."""
+    if len(accounts) == 1:
+        kind = "GitHub" if accounts[0].is_dotcom else "GitHub Enterprise"
+        return f"your {kind} account"
+    return "either of your GitHub.com nor GitHub Enterprise accounts"
+
+
+def git_email_attribution_warning(accounts: list[Account], email: str) -> tuple[str | None, bool]:
+    """Desktop `GitEmailNotFoundWarning` copy.
+
+    Returns ``(message, is_mismatch)``. ``message`` is ``None`` when Desktop
+    would hide the warning (no accounts, or empty email).
+    """
+    if not accounts or not (email or "").strip():
+        return None, False
+    attributable = any(is_attributable_email_for(account, email) for account in accounts)
+    desc = git_email_account_type_description(accounts)
+    if attributable:
+        return f"This email address matches {desc}.", False
+    return (
+        f"This email address does not match {desc}. Your commits will be wrongly attributed.",
+        True,
+    )

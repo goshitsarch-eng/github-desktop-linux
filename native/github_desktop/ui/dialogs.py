@@ -1794,13 +1794,43 @@ def show_create_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, A
     repo = store.selected_repository
     if not repo:
         return
+    from ..create_branch import get_start_point, upstream_default_branch_for
     from ..github.repo_rules import use_repo_rules_logic
-    from ..models import test_for_invalid_chars
+    from ..models import (
+        BranchType,
+        StartPoint,
+        TipState,
+        sanitize_ref_name,
+        test_for_invalid_chars,
+    )
 
     state = store.state_for(repo)
-    start = (payload or {}).get("start") or (state.status.current_branch if state.status else "")
+    payload = payload or {}
+    target_sha = str(payload.get("start") or "")
+    current = state.status.current_branch if state.status else None
+    current_tip = state.status.current_tip if state.status else None
+    default_name = store.default_branch_name(repo)
+    default_branch = next((b for b in state.branches if b.name == default_name and b.type == BranchType.LOCAL), None)
+    if default_branch is None and default_name:
+        default_branch = next((b for b in state.branches if b.name_without_remote == default_name), None)
+    upstream_default = upstream_default_branch_for(repo, list(state.branches), default_name)
+    detached = bool(state.status and state.status.current_tip and not current)
+    unborn = bool(state.status and not state.status.current_tip)
+    tip_kind = TipState.DETACHED if detached else TipState.UNBORN if unborn else TipState.VALID
+    if target_sha and (not current or target_sha != current):
+        # History "Create branch from commit" passes a SHA in `start`.
+        if len(target_sha) >= 7 and all(c in "0123456789abcdefABCDEF" for c in target_sha[:7]):
+            pass
+        else:
+            target_sha = ""
+    selected = {"point": get_start_point(
+        tip_kind=tip_kind,
+        default_branch=default_branch,
+        upstream_default_branch=upstream_default,
+    )}
+
     dialog = Adw.Dialog()
-    dialog.set_content_width(460)
+    dialog.set_content_width(480)
     toolbar = Adw.ToolbarView()
     header = Adw.HeaderBar()
     header.set_title_widget(Adw.WindowTitle(title="Create a branch", subtitle="The new branch will be checked out."))
@@ -1817,45 +1847,143 @@ def show_create_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, A
     box.set_margin_start(18)
     box.set_margin_end(18)
     name_row = Adw.EntryRow(title="Name")
-    start_row = Adw.EntryRow(title="Create from")
-    start_row.set_text(start or "")
     warn = Gtk.Label(wrap=True, xalign=0)
     warn.add_css_class("repo-rules-warning")
     warn.set_visible(False)
+    remote_warn = Gtk.Label(wrap=True, xalign=0)
+    remote_warn.add_css_class("warning")
+    remote_warn.set_visible(False)
+    start_info = Gtk.Label(wrap=True, xalign=0)
+    start_info.add_css_class("dim-label")
+    start_choices = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
     box.append(name_row)
-    box.append(start_row)
     box.append(warn)
+    box.append(remote_warn)
+    box.append(start_info)
+    box.append(start_choices)
     toolbar.set_content(box)
     dialog.set_child(toolbar)
 
+    def _set_point(point: StartPoint) -> None:
+        selected["point"] = point
+
+    def render_start(*_a: object) -> None:
+        while (child := start_choices.get_first_child()) is not None:
+            start_choices.remove(child)
+        if target_sha:
+            short = target_sha[:7]
+            summary = next((c.summary for c in state.commits if c.sha == target_sha), "")
+            extra = f" '{summary}'" if summary else ""
+            start_info.set_text(
+                f"Your new branch will be based on the commit{extra} ({short}) from your repository."
+            )
+            start_info.set_visible(True)
+            return
+        if unborn:
+            start_info.set_text(
+                "Your current branch is unborn (does not contain any commits). Creating a new branch will rename the current branch."
+            )
+            start_info.set_visible(True)
+            return
+        if detached:
+            sha = (current_tip or "")[:7]
+            start_info.set_text(
+                f"You do not currently have any branch checked out (your HEAD reference is detached). As such your new branch will be based on your currently checked out commit ({sha})."
+            )
+            start_info.set_visible(True)
+            return
+        current_name = current or "HEAD"
+        if upstream_default is not None:
+            parent = repo.github.parent if repo.github else None
+            full = f"{parent.owner}/{parent.name}" if parent else "upstream"
+            if current_name == upstream_default.name_without_remote:
+                start_info.set_text(
+                    f"Your new branch will be based on {full}'s default branch ({upstream_default.name_without_remote})."
+                )
+                start_info.set_visible(True)
+                return
+            start_info.set_visible(False)
+            up = Gtk.CheckButton(
+                label=f"{upstream_default.name}\nThe default branch of the upstream repository. Pick this to start on something new that's not dependent on your current branch."
+            )
+            cur = Gtk.CheckButton(
+                label=f"{current_name}\nThe currently checked out branch. Pick this if you need to build on work done on this branch."
+            )
+            cur.set_group(up)
+            up.set_active(selected["point"] == StartPoint.UPSTREAM_DEFAULT_BRANCH)
+            cur.set_active(selected["point"] != StartPoint.UPSTREAM_DEFAULT_BRANCH)
+            up.connect("toggled", lambda b: b.get_active() and _set_point(StartPoint.UPSTREAM_DEFAULT_BRANCH))
+            cur.connect("toggled", lambda b: b.get_active() and _set_point(StartPoint.CURRENT_BRANCH))
+            start_choices.append(up)
+            start_choices.append(cur)
+            return
+        if default_branch is None or default_branch.name == current_name:
+            extra = ""
+            if default_branch is not None and default_branch.name == current_name:
+                extra = f" {current_name} is the default branch for your repository."
+            start_info.set_text(
+                f"Your new branch will be based on your currently checked out branch ({current_name}).{extra}"
+            )
+            start_info.set_visible(True)
+            return
+        start_info.set_visible(False)
+        dflt = Gtk.CheckButton(
+            label=(
+                f"{default_branch.name}\n"
+                "The default branch in your repository. Pick this to start on something new that's not dependent on your current branch."
+            )
+        )
+        cur = Gtk.CheckButton(
+            label=f"{current_name}\nThe currently checked out branch. Pick this if you need to build on work done on this branch."
+        )
+        cur.set_group(dflt)
+        dflt.set_active(selected["point"] == StartPoint.DEFAULT_BRANCH)
+        cur.set_active(selected["point"] != StartPoint.DEFAULT_BRANCH)
+        dflt.connect("toggled", lambda b: b.get_active() and _set_point(StartPoint.DEFAULT_BRANCH))
+        cur.connect("toggled", lambda b: b.get_active() and _set_point(StartPoint.CURRENT_BRANCH))
+        start_choices.append(dflt)
+        start_choices.append(cur)
+
     def refresh_warning(*_a: object) -> None:
-        name = name_row.get_text().strip()
-        if not name:
+        raw = name_row.get_text().strip()
+        name = sanitize_ref_name(raw) if raw else ""
+        if not raw:
             create.set_sensitive(False)
             warn.set_visible(False)
+            remote_warn.set_visible(False)
             return
-        if test_for_invalid_chars(name):
+        if test_for_invalid_chars(raw) and name != raw:
             warn.set_text("Branch names can't contain spaces or Git special characters.")
             warn.set_visible(True)
             create.set_sensitive(False)
+            remote_warn.set_visible(False)
             return
+        exists = any(b.name == name and b.type == BranchType.LOCAL for b in state.branches)
+        if exists:
+            warn.set_text(f"A branch named {name} already exists.")
+            warn.set_visible(True)
+            create.set_sensitive(False)
+            remote_warn.set_visible(False)
+            return
+        on_remote = any(
+            b.name_without_remote == name and b.type == BranchType.REMOTE for b in state.branches
+        )
+        if on_remote:
+            remote_warn.set_text(f"A branch named {name} already exists on the remote.")
+            remote_warn.set_visible(True)
+        else:
+            remote_warn.set_visible(False)
         rules = state.repo_rules
         if repo.github and use_repo_rules_logic(store.account_for_repo(repo), repo):
             name_fail = rules.branch_name_patterns.get_failed_rules(name)
             if rules.creation_restricted is True or name_fail.status == "fail":
-                extra = ", ".join(f.description for f in name_fail.failed)
-                warn.set_text(
-                    "Repository rules prevent creating this branch"
-                    + (f" ({extra})." if extra else ".")
-                )
+                warn.set_text(f"Branch name '{name}' is restricted by repo rules.")
                 warn.set_visible(True)
                 create.set_sensitive(False)
                 return
             if rules.creation_restricted == "bypass" or name_fail.status == "bypass":
-                extra = ", ".join(f.description for f in name_fail.bypassed)
                 warn.set_text(
-                    "Repository rules restrict this branch name. You can bypass this rule"
-                    + (f" ({extra})." if extra else ".")
+                    f"Branch name '{name}' is restricted by repo rules, but you can bypass them. Proceed with caution!"
                 )
                 warn.set_visible(True)
                 create.set_sensitive(True)
@@ -1864,15 +1992,26 @@ def show_create_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, A
         create.set_sensitive(True)
 
     def submit(*_a: object) -> None:
-        name = name_row.get_text().strip()
-        start_point = start_row.get_text().strip() or None
+        name = sanitize_ref_name(name_row.get_text().strip())
         if not name or not create.get_sensitive():
             return
+        start_point = None
+        no_track = False
+        if target_sha:
+            start_point = target_sha
+        elif selected["point"] == StartPoint.DEFAULT_BRANCH and default_branch:
+            start_point = default_branch.name
+        elif selected["point"] == StartPoint.UPSTREAM_DEFAULT_BRANCH and upstream_default:
+            start_point = upstream_default.name
+            no_track = True
+        elif selected["point"] == StartPoint.HEAD and current_tip:
+            start_point = current_tip
         dialog.close()
-        store.create_branch_and_checkout(repo, name, start_point)
+        store.create_branch_and_checkout(repo, name, start_point, no_track=no_track)
 
     name_row.connect("notify::text", refresh_warning)
     create.connect("clicked", submit)
+    render_start()
     refresh_warning()
     dialog.present(parent)
 
@@ -1881,15 +2020,53 @@ def show_rename_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, A
     repo = store.selected_repository
     if not repo:
         return
+    from ..models import sanitize_ref_name
+
     state = store.state_for(repo)
     current = (payload or {}).get("branch") or (state.status.current_branch if state.status else "")
+    branch = next((b for b in state.branches if b.name == current), None)
+    dialog = Adw.Dialog()
+    dialog.set_content_width(420)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(Adw.WindowTitle(title="Rename branch"))
+    cancel = Gtk.Button(label="Cancel")
+    cancel.connect("clicked", lambda *_: dialog.close())
+    rename = Gtk.Button(label=f"Rename {current}" if current else "Rename")
+    rename.add_css_class("suggested-action")
+    header.pack_start(cancel)
+    header.pack_end(rename)
+    toolbar.add_top_bar(header)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+    box.set_margin_top(18)
+    box.set_margin_bottom(18)
+    box.set_margin_start(18)
+    box.set_margin_end(18)
+    if branch and branch.upstream:
+        remote_note = Gtk.Label(
+            label=(
+                f"This branch is tracking {branch.upstream} and renaming this "
+                "branch will not change the branch name on the remote."
+            ),
+            wrap=True,
+            xalign=0,
+        )
+        remote_note.add_css_class("warning")
+        box.append(remote_note)
+    name_row = Adw.EntryRow(title="Name")
+    name_row.set_text(current or "")
+    box.append(name_row)
+    toolbar.set_content(box)
+    dialog.set_child(toolbar)
 
-    def submit(values: dict[str, str]) -> None:
-        new = values.get("name", "").strip()
+    def submit(*_a: object) -> None:
+        new = sanitize_ref_name(name_row.get_text().strip())
         if new and current:
+            dialog.close()
             store.rename_current_branch(repo, current, new)
 
-    _text_dialog(parent, "Rename branch", f"Rename {current}", [("name", "New name", current or "")], submit, "Rename")
+    rename.connect("clicked", submit)
+    dialog.present(parent)
 
 
 def show_delete_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, Any], remote: bool = False) -> None:
@@ -2182,6 +2359,43 @@ def show_remove_repository(parent: Gtk.Window, store: AppStore) -> None:
     dialog.choose(parent, None, done)
 
 
+def attach_git_email_not_found_warning(
+    group: Adw.PreferencesGroup,
+    accounts: list[Any],
+    get_email: Callable[[], str],
+) -> Callable[[], None]:
+    """Desktop `GitEmailNotFoundWarning` under Git Config email fields."""
+    from ..email import COMMIT_ATTRIBUTION_DOCS, git_email_attribution_warning
+
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+    box.add_css_class("git-email-not-found-warning")
+    box.set_margin_top(6)
+    box.set_margin_bottom(6)
+    label = Gtk.Label(wrap=True, xalign=0)
+    link = Gtk.LinkButton(label="Learn more.", uri=COMMIT_ATTRIBUTION_DOCS)
+    link.set_halign(Gtk.Align.START)
+    link.set_tooltip_text("Learn more about commit attribution")
+    box.append(label)
+    box.append(link)
+
+    def refresh(*_a: object) -> None:
+        msg, mismatch = git_email_attribution_warning(list(accounts), get_email())
+        if not msg:
+            box.set_visible(False)
+            return
+        box.set_visible(True)
+        label.set_text(msg)
+        if mismatch:
+            label.add_css_class("warning")
+        else:
+            label.remove_css_class("warning")
+        link.set_visible(mismatch)
+
+    refresh()
+    group.add(box)
+    return refresh
+
+
 def show_repository_settings(parent: Gtk.Window, store: AppStore) -> None:
     repo = store.selected_repository
     if not repo:
@@ -2307,6 +2521,14 @@ def show_repository_settings(parent: Gtk.Window, store: AppStore) -> None:
         model = email_row.get_model()
         return model.get_string(idx) if model is not None else other_email.get_text().strip()
 
+    refresh_email_warning = attach_git_email_not_found_warning(
+        git_group,
+        [account] if account else [],
+        _selected_email,
+    )
+    email_row.connect("notify::selected", lambda *_a: refresh_email_warning())
+    other_email.connect("notify::text", lambda *_a: refresh_email_warning())
+
     def apply_location(*_a: Any) -> None:
         local = local_check.get_active()
         name_row.set_sensitive(local)
@@ -2317,6 +2539,7 @@ def show_repository_settings(parent: Gtk.Window, store: AppStore) -> None:
         else:
             name_row.set_text(global_n or "")
         sync_other()
+        refresh_email_warning()
 
     def save_g(*_a: Any) -> None:
         def apply_config() -> None:
@@ -2576,6 +2799,17 @@ def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
     git_group.add(name_row)
     git_group.add(email_row)
     git_group.add(other_email)
+
+    def _prefs_email() -> str:
+        idx = email_row.get_selected()
+        if idx < 0 or idx >= len(email_choices) - 1:
+            return other_email.get_text().strip()
+        model = email_row.get_model()
+        return model.get_string(idx) if model is not None else other_email.get_text().strip()
+
+    refresh_email_warning = attach_git_email_not_found_warning(git_group, list(store.accounts), _prefs_email)
+    email_row.connect("notify::selected", lambda *_a: refresh_email_warning())
+    other_email.connect("notify::text", lambda *_a: refresh_email_warning())
     git_group.add(branch_row)
     clone_row = Adw.EntryRow(title="Clone default directory")
     clone_row.set_text(s.clone_default_directory or os.path.expanduser("~/Documents/GitHub"))

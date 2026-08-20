@@ -1613,21 +1613,28 @@ class MainWindow(Adw.ApplicationWindow):
         repo = self.store.selected_repository
         if not repo:
             return
+        current = state.status.current_branch if state.status else None
+        remotes = list(state.remotes or [])
+        remote_name = remotes[0].name if remotes else "origin"
+        is_github = bool(repo.github)
+        ahead_behind = state.ahead_behind
+        tags = list(state.local_tags_to_push or [])
         stashes = list(state.stashes or [])
+        # Desktop NoChanges: stash card replaces the remote action, not stacks with it.
         if stashes:
+            count = len(stashes[0].files) if stashes[0].files is not None else (state.stash_count or 1)
+            noun = "change" if count == 1 else "changes"
             self._suggested.append(
                 self._suggested_card(
                     "View your stashed changes",
-                    f"You have {len(stashes[0].files) if stashes[0].files is not None else state.stash_count} change(s) in progress that you have not yet committed.",
+                    f"You have {count} {noun} in progress that you have not yet committed.",
                     "View stash",
                     lambda: self.store.toggle_stash(repo),
                     primary=True,
+                    discoverability="When a stash exists, access it at the bottom of the Changes tab to the left.",
                 )
             )
-        remotes = list(state.remotes or [])
-        ahead_behind = state.ahead_behind
-        tags = list(state.local_tags_to_push or [])
-        if not remotes:
+        elif not remotes:
             self._suggested.append(
                 self._suggested_card(
                     "Publish your repository to GitHub",
@@ -1635,59 +1642,89 @@ class MainWindow(Adw.ApplicationWindow):
                     "Publish repository",
                     lambda: self.store.show_popup(PopupType.PUBLISH_REPOSITORY),
                     primary=True,
+                    discoverability="Always available in the toolbar for local repositories or Ctrl+P",
                 )
             )
         elif ahead_behind is None:
+            dest = "to GitHub " if is_github else ""
+            pr = "open a pull request, " if is_github else ""
             self._suggested.append(
                 self._suggested_card(
-                    "Publish your branch to GitHub",
-                    "The current branch is only on this computer. Publish it to back it up and open a pull request.",
+                    "Publish your branch",
+                    (
+                        f"The current branch ({current or 'HEAD'}) hasn't been published "
+                        f"to the remote yet. By publishing it {dest}you can share it, "
+                        f"{pr}and collaborate with others."
+                    ),
                     "Publish branch",
                     lambda: self.store.push_repo(repo),
                     primary=True,
+                    discoverability="Always available in the toolbar or Ctrl+P",
                 )
             )
+        elif self.store.current_branch_force_push_state(repo) == ForcePushBranchState.RECOMMENDED:
+            # Desktop hides the remote suggested action after a rewrite that needs force-push.
+            pass
         elif ahead_behind.behind > 0:
+            behind = ahead_behind.behind
+            commit_word = "a commit" if behind == 1 else "commits"
+            verb = "does not" if behind == 1 else "do not"
+            where = "GitHub" if is_github else "the remote"
+            noun = "commit" if behind == 1 else "commits"
             self._suggested.append(
                 self._suggested_card(
-                    "Pull from the remote",
-                    f"Your branch is behind by {ahead_behind.behind} commit(s). Pull to integrate the latest work.",
-                    "Pull",
+                    f"Pull {behind} {noun} from the {remote_name} remote",
+                    (
+                        f"The current branch ({current or 'HEAD'}) has {commit_word} on "
+                        f"{where} that {verb} exist on your machine."
+                    ),
+                    f"Pull {remote_name}",
                     lambda: self.store.pull_repo(repo),
                     primary=True,
+                    discoverability="Always available in the toolbar when there are remote changes or Ctrl+Shift+P",
                 )
             )
         elif ahead_behind.ahead > 0 or tags:
-            extra = f" and {len(tags)} tag(s)" if tags else ""
+            kinds: list[str] = []
+            descriptions: list[str] = []
+            if ahead_behind.ahead > 0:
+                kinds.append("commits")
+                descriptions.append(
+                    "1 local commit" if ahead_behind.ahead == 1 else f"{ahead_behind.ahead} local commits"
+                )
+            if tags:
+                kinds.append("tags")
+                descriptions.append("1 tag" if len(tags) == 1 else f"{len(tags)} tags")
+            dest = "GitHub" if is_github else "the remote"
             self._suggested.append(
                 self._suggested_card(
-                    "Push your commits to GitHub",
-                    f"You have {ahead_behind.ahead} local commit(s){extra} ready to push.",
-                    "Push",
+                    f"Push {' and '.join(kinds)} to the {remote_name} remote",
+                    f"You have {' and '.join(descriptions)} waiting to be pushed to {dest}.",
+                    f"Push {remote_name}",
                     lambda: self.store.push_repo(repo),
                     primary=True,
+                    discoverability="Always available in the toolbar when there are local commits waiting to be pushed or Ctrl+P",
                 )
             )
         elif repo.github and not state.current_pull_request:
-            current = state.status.current_branch if state.status else None
             default = self.store.default_branch_name(repo)
             if current and current != default:
                 action = self.store.settings.pull_request_suggested_next_action
                 if action == PullRequestSuggestedNextAction.PREVIEW_PULL_REQUEST.value:
                     self._suggested.append(
                         self._suggested_pr_card(
-                            "Preview the pull request from your current branch",
+                            "Preview the Pull Request from your current branch",
                             f"The current branch ({current}) is already published to GitHub. Preview the changes this pull request will have before proposing your changes.",
-                            "Preview pull request",
+                            "Preview Pull Request",
                             lambda: self.store.preview_pull_request(repo),
                         )
                     )
                 else:
                     self._suggested.append(
                         self._suggested_pr_card(
-                            "Create a pull request from your current branch",
+                            "Create a Pull Request from your current branch",
                             f"The current branch ({current}) is already published to GitHub. Create a pull request to propose and collaborate on your changes.",
-                            "Create pull request",
+                            "Create Pull Request",
                             lambda: self.store.open_pull_request(repo),
                         )
                     )
@@ -1697,40 +1734,58 @@ class MainWindow(Adw.ApplicationWindow):
                 "Select your editor in Preferences → Integrations.",
                 "Open in editor",
                 lambda: self.store.open_in_editor(repo),
+                discoverability="Always available from the Repository menu or Ctrl+Shift+A",
             )
         )
         self._suggested.append(
             self._suggested_card(
                 "View the files of your repository in your File Manager",
-                "Always available from the Repository menu.",
+                "",
                 "Show in file manager",
                 lambda: self.store.open_working_directory(repo),
+                discoverability="Always available from the Repository menu or Ctrl+Shift+F",
             )
         )
         if repo.github:
             self._suggested.append(
                 self._suggested_card(
                     "Open the repository page on GitHub in your browser",
-                    "Always available from the Repository menu.",
+                    "",
                     "View on GitHub",
                     lambda: self.store.view_on_github(repo),
+                    discoverability="Always available from the Repository menu or Ctrl+Shift+G",
                 )
             )
 
-    def _suggested_card(self, title: str, description: str, button: str, callback, *, primary: bool = False) -> Gtk.Widget:
+    def _suggested_card(
+        self,
+        title: str,
+        description: str,
+        button: str,
+        callback,
+        *,
+        primary: bool = False,
+        discoverability: str | None = None,
+    ) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         box.add_css_class("suggested-action-card")
         heading = Gtk.Label(label=title, xalign=0, wrap=True)
         heading.add_css_class("heading")
-        body = Gtk.Label(label=description, xalign=0, wrap=True)
-        body.add_css_class("dim-label")
+        box.append(heading)
+        if description:
+            body = Gtk.Label(label=description, xalign=0, wrap=True)
+            body.add_css_class("dim-label")
+            box.append(body)
         btn = Gtk.Button(label=button, halign=Gtk.Align.START)
         if primary:
             btn.add_css_class("suggested-action")
         btn.connect("clicked", lambda *_: callback())
-        box.append(heading)
-        box.append(body)
         box.append(btn)
+        if discoverability:
+            hint = Gtk.Label(label=discoverability, xalign=0, wrap=True)
+            hint.add_css_class("dim-label")
+            hint.add_css_class("suggested-action-discoverability")
+            box.append(hint)
         return box
 
     def _suggested_pr_card(self, title: str, description: str, button: str, callback) -> Gtk.Widget:
@@ -2938,6 +2993,7 @@ class MainWindow(Adw.ApplicationWindow):
                 self._rules_link.set_visible(False)
             if hasattr(self, "_rules_box"):
                 self._rules_box.set_visible(False)
+            self._clear_commit_warning_links()
 
         if not repo:
             hide_rules()
@@ -2948,40 +3004,88 @@ class MainWindow(Adw.ApplicationWindow):
         from ..git.ops import get_author_identity
 
         state = self.store.state_for(repo)
-        if not use_repo_rules_logic(self.store.account_for_repo(repo), repo):
-            hide_rules()
-            if hasattr(self, "_commit_btn"):
-                self._commit_btn.set_sensitive(True)
-            return
         start, end = self._description.get_buffer().get_bounds()
         description = self._description.get_buffer().get_text(start, end, True).strip()
         message = "\n\n".join(part for part in (text.strip(), description) if part)
         _name, email = get_author_identity(repo.path)
         unpublished = state.ahead_behind is None
-        warnings, hard = commit_rule_warnings(
-            state.repo_rules,
-            message=message,
-            author_email=email,
-            branch=state.status.current_branch if state.status else None,
-            ahead_behind=state.ahead_behind,
-            unpublished=unpublished,
-        )
+        warnings: list[str] = []
+        hard = False
+        if use_repo_rules_logic(self.store.account_for_repo(repo), repo):
+            warnings, hard = commit_rule_warnings(
+                state.repo_rules,
+                message=message,
+                author_email=email,
+                branch=state.status.current_branch if state.status else None,
+                ahead_behind=state.ahead_behind,
+                unpublished=unpublished,
+            )
+        branch = state.status.current_branch if state.status else None
+        self._clear_commit_warning_links()
+        action_rows: list[Gtk.Widget] = []
         if state.commit_to_amend is not None:
             warnings.insert(
                 0,
                 "Your changes will modify your most recent commit. Stop amending to make these changes as a new commit.",
             )
-        branch = state.status.current_branch if state.status else None
+            action_rows.append(
+                self._commit_warning_markup(
+                    "Your changes will modify your <b>most recent commit</b>. "
+                    '<a href="stop-amend">Stop amending</a> to make these changes as a new commit.'
+                )
+            )
         if repo.github and repo.github.permissions == "read":
             warnings.insert(0, f"You don't have write access to {repo.name}. Want to create a fork?")
+            action_rows.append(
+                self._commit_warning_markup(
+                    f"You don't have write access to <b>{GLib.markup_escape_text(repo.name)}</b>. "
+                    'Want to <a href="fork">create a fork</a>?'
+                )
+            )
         elif branch and branch in (state.protected_branches or []):
             warnings.insert(0, f"{branch} is a protected branch. Want to switch branches?")
-        if warnings:
-            self._rules_warn.set_text("\n".join(warnings))
-            self._rules_warn.set_visible(True)
+            action_rows.append(
+                self._commit_warning_markup(
+                    f"<b>{GLib.markup_escape_text(branch)}</b> is a protected branch. "
+                    'Want to <a href="switch">switch branches</a>?'
+                )
+            )
+        if state.repo_rules.signed_commits_required is True:
+            action_rows.append(
+                self._commit_warning_markup(
+                    f'<a href="rulesets">One or more rules</a> apply to the branch '
+                    f"<b>{GLib.markup_escape_text(branch or '')}</b> that require signed commits. "
+                    '<a href="https://docs.github.com/authentication/managing-commit-signature-verification/signing-commits">'
+                    "Learn more about commit signing.</a>"
+                )
+            )
+        elif state.repo_rules.basic_commit_warning is True and branch:
+            action_rows.append(
+                self._commit_warning_markup(
+                    f'<a href="rulesets">One or more rules</a> apply to the branch '
+                    f"<b>{GLib.markup_escape_text(branch)}</b> that will prevent pushing. "
+                    'Want to <a href="switch">switch branches</a>?'
+                )
+            )
+        if warnings or action_rows:
+            extra = [
+                line
+                for line in warnings
+                if "Want to create a fork" not in line
+                and "Want to switch branches" not in line
+                and "Stop amending" not in line
+                and "requires signed commits" not in line
+                and "may prevent pushing" not in line
+            ]
+            self._rules_warn.set_text("\n".join(extra) if extra else "\n".join(warnings))
+            self._rules_warn.set_visible(bool(extra))
             if hasattr(self, "_rules_box"):
                 self._rules_box.set_visible(True)
-            uri = rulesets_url_for_branch(repo.github, branch)
+                sibling = self._rules_warn
+                for row in action_rows:
+                    self._rules_box.insert_child_after(row, sibling)
+                    sibling = row
+            uri = rulesets_url_for_branch(repo.github, branch) if repo.github else None
             if hasattr(self, "_rules_link"):
                 if uri:
                     self._rules_link.set_uri(uri)
@@ -2992,6 +3096,51 @@ class MainWindow(Adw.ApplicationWindow):
             hide_rules()
         if hasattr(self, "_commit_btn"):
             self._commit_btn.set_sensitive(not hard)
+
+    def _clear_commit_warning_links(self) -> None:
+        if not hasattr(self, "_rules_box"):
+            return
+        child = self._rules_box.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            if child not in {self._rules_warn, getattr(self, "_rules_link", None)}:
+                self._rules_box.remove(child)
+            child = nxt
+
+    def _commit_warning_markup(self, markup: str) -> Gtk.Label:
+        label = Gtk.Label(wrap=True, xalign=0, use_markup=True)
+        label.set_markup(markup)
+        label.add_css_class("repo-rules-warning")
+        label.connect("activate-link", self._on_commit_warning_link)
+        return label
+
+    def _on_commit_warning_link(self, _label: Gtk.Label, uri: str) -> bool:
+        if uri == "fork":
+            self.store.show_popup(PopupType.CREATE_FORK)
+            return True
+        if uri == "switch":
+            if hasattr(self, "_branches_foldout"):
+                self._branches_foldout.popup_and_focus()
+            return True
+        if uri == "stop-amend":
+            repo = self.store.selected_repository
+            if repo:
+                self.store.stop_amending(repo)
+            return True
+        if uri == "rulesets":
+            repo = self.store.selected_repository
+            if repo and repo.github:
+                from ..github.repo_rules import rulesets_url_for_branch
+
+                branch = None
+                state = self.store.state_for(repo)
+                if state.status:
+                    branch = state.status.current_branch
+                href = rulesets_url_for_branch(repo.github, branch)
+                if href:
+                    open_external(href)
+            return True
+        return False
 
     def _generate_commit_message(self) -> None:
         has_text = bool(self._summary.get_text().strip()) if hasattr(self, "_summary") else False

@@ -100,6 +100,15 @@ class BranchType(StrEnum):
     REMOTE = "Remote"
 
 
+class StartPoint(StrEnum):
+    """Desktop `StartPoint` for Create Branch."""
+
+    CURRENT_BRANCH = "CurrentBranch"
+    DEFAULT_BRANCH = "DefaultBranch"
+    HEAD = "Head"
+    UPSTREAM_DEFAULT_BRANCH = "UpstreamDefaultBranch"
+
+
 class RepositorySectionTab(StrEnum):
     CHANGES = "Changes"
     HISTORY = "History"

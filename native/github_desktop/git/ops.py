@@ -430,6 +430,16 @@ def get_partial_blob_contents(
     return data
 
 
+def get_partial_blob_contents_catch_path_not_in_ref(
+    repo: str,
+    commitish: str,
+    path: str,
+    length: int = MAX_PARTIAL_BLOB_BYTES,
+) -> bytes:
+    """Desktop `getPartialBlobContentsCatchPathNotInRef`."""
+    return get_partial_blob_contents(repo, commitish, path, length)
+
+
 def get_working_directory_lines(repo: str, path: str) -> list[str]:
     full = os.path.join(repo, path)
     try:
@@ -735,6 +745,11 @@ def remove_conflicted_file(repo: str, file: str | WorkingDirectoryFileChange) ->
     """Desktop `removeConflictedFile`."""
     path = file.path if isinstance(file, WorkingDirectoryFileChange) else file
     git(["rm", "--", path], repo, name="removeConflictedFile")
+
+
+def parse_commit_sha(result: GitResult, repo: str | None = None) -> str:
+    """Desktop `parseCommitSHA`."""
+    return _parse_commit_sha(result, repo)
 
 
 def _parse_commit_sha(result: GitResult, repo: str | None = None) -> str:
@@ -1118,10 +1133,46 @@ def get_branches(repo: str, *prefixes: str) -> list[Branch]:
     return branches
 
 
-def create_branch(repo: str, name: str, start_point: str | None = None) -> None:
-    args = ["branch", "--", name]
-    if start_point:
-        args = ["branch", "--", name, start_point]
+def git_rebase_arguments() -> list[str]:
+    """Desktop `gitRebaseArguments`: force the merge rebase backend."""
+    return list(GIT_REBASE_ARGUMENTS)
+
+
+def env_for_authentication() -> dict[str, str]:
+    """Desktop `envForAuthentication`."""
+    return {
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_TRACE": os.environ.get("GIT_TRACE") or "0",
+    }
+
+
+def env_for_remote_operation(remote_url: str) -> dict[str, str]:
+    """Desktop `envForRemoteOperation`: auth defaults plus proxy env."""
+    env = env_for_authentication()
+    env.update(env_for_proxy(remote_url))
+    return env
+
+
+def get_fallback_url_for_proxy_resolve(repo: str | None = None, remote_url: str | None = None) -> str:
+    """Desktop `getFallbackUrlForProxyResolve`."""
+    if remote_url:
+        return remote_url
+    if repo:
+        try:
+            remotes = get_remotes(repo)
+            if remotes:
+                return remotes[0].url
+        except Exception:
+            pass
+    return "https://github.com"
+
+
+def create_branch(repo: str, name: str, start_point: str | None = None, no_track: bool = False) -> None:
+    args = ["branch", name] if not start_point else ["branch", name, start_point]
+    # Desktop: when branching from a remote (fork upstream), `--no-track` so we
+    # don't push to the upstream default.
+    if no_track:
+        args.append("--no-track")
     git(args, repo, name="createBranch")
 
 
