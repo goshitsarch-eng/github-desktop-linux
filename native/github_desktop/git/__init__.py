@@ -159,6 +159,7 @@ from .ops import (
     undo_first_commit,
     unstage_all,
     update_index,
+    move_item_to_trash,
     update_remote_head,
     update_submodules,
     warn_about_remote_commits,

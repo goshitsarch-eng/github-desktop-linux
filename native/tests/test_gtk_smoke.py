@@ -164,6 +164,9 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             from github_desktop.ui.dialogs import show_create_repository
 
             show_create_repository(win, store, "")
+            from github_desktop.ui.dialogs import show_add_repository
+
+            show_add_repository(win, store, str(git_repo))
             repos[0].is_missing = True
             win._show_missing(repos[0])
             win._repo_content.set_visible_child_name("missing")

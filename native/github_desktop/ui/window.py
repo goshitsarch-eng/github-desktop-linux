@@ -243,7 +243,7 @@ class MainWindow(Adw.ApplicationWindow):
         add("create-branch", lambda: self.store.show_popup(PopupType.CREATE_BRANCH))
         add("rename-branch", lambda: self.store.show_popup(PopupType.RENAME_BRANCH))
         add("delete-branch", self._delete_branch)
-        add("discard-all", lambda: self.store.show_popup(PopupType.CONFIRM_DISCARD_CHANGES))
+        add("discard-all", lambda: self.store.show_popup(PopupType.CONFIRM_DISCARD_CHANGES, discarding_all=True))
         add("stash-all", self._stash_all)
         add("merge-branch", lambda: self.store.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind="Merge"))
         add("squash-merge", lambda: self.store.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind="Squash"))
@@ -2107,7 +2107,7 @@ class MainWindow(Adw.ApplicationWindow):
         show_context_menu(
             self._file_list,
             [
-                ("Discard all changes…", lambda: self.store.show_popup(PopupType.CONFIRM_DISCARD_CHANGES), has),
+                ("Discard all changes…", lambda: self.store.show_popup(PopupType.CONFIRM_DISCARD_CHANGES, discarding_all=True), has),
                 ("Stash all changes…", self._stash_all, has),
             ],
         )

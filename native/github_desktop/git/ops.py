@@ -1632,8 +1632,45 @@ def checkout_index(repo: str, paths: Sequence[str]) -> None:
     )
 
 
-def discard_working_files(repo: str, files: Sequence[WorkingDirectoryFileChange]) -> None:
-    """Desktop `discardChanges`: reset index paths, then checkout-index."""
+def _delete_working_path(path: str) -> bool:
+    try:
+        if os.path.isdir(path) and not os.path.islink(path):
+            import shutil
+
+            shutil.rmtree(path)
+        elif os.path.lexists(path):
+            os.remove(path)
+        return True
+    except OSError as exc:
+        log.warning("Failed to discard %s: %s", path, exc)
+        return False
+
+
+def move_item_to_trash(path: str) -> bool:
+    """Desktop `moveItemToTrash`. Permanently deletes if no trash backend exists."""
+    if not os.path.lexists(path):
+        return True
+    try:
+        from gi.repository import Gio
+    except Exception:
+        return _delete_working_path(path)
+    try:
+        Gio.File.new_for_path(path).trash(None)
+        return True
+    except Exception:
+        return False
+
+
+def discard_working_files(
+    repo: str,
+    files: Sequence[WorkingDirectoryFileChange],
+    *,
+    move_to_trash: bool = True,
+    ask_permanent: bool = False,
+) -> None:
+    """Desktop `discardChanges`: trash working copies, reset index paths, then checkout-index."""
+    from ..errors import DiscardChangesError
+
     if not files:
         return
     submodules = set(get_submodules(repo))
@@ -1641,17 +1678,19 @@ def discard_working_files(repo: str, files: Sequence[WorkingDirectoryFileChange]
     paths_to_reset: list[str] = []
     untracked: list[str] = []
 
-    def remove_wt(rel: str) -> None:
+    def remove_wt(rel: str, *, untracked_file: bool = False) -> None:
         full = os.path.join(repo, rel)
-        try:
-            if os.path.isdir(full) and not os.path.islink(full):
-                import shutil
-
-                shutil.rmtree(full)
-            elif os.path.exists(full):
-                os.remove(full)
-        except OSError as exc:
-            log.warning("Failed to discard %s: %s", rel, exc)
+        if move_to_trash:
+            if move_item_to_trash(full):
+                return
+            if ask_permanent:
+                raise DiscardChangesError(
+                    f"Failed to discard changes to Trash for {rel}",
+                    files=list(files),
+                )
+            if not untracked_file:
+                return
+        _delete_working_path(full)
 
     for file in files:
         if file.status.kind == AppFileStatusKind.UNTRACKED:
@@ -1667,7 +1706,7 @@ def discard_working_files(repo: str, files: Sequence[WorkingDirectoryFileChange]
             paths_to_checkout.append(file.path)
             paths_to_reset.append(file.path)
     for path in untracked:
-        remove_wt(path)
+        remove_wt(path, untracked_file=True)
     changed = get_index_changes(repo)
     necessary_reset = [p for p in paths_to_reset if p in changed]
     submodule_paths = [p for p in paths_to_checkout if p in submodules]

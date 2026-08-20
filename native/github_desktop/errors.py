@@ -102,6 +102,14 @@ class NotARepositoryError(DesktopError):
     pass
 
 
+class DiscardChangesError(DesktopError):
+    """Desktop `DiscardChangesError`: trash failed and the user should confirm a permanent discard."""
+
+    def __init__(self, message: str, files: list | None = None) -> None:
+        super().__init__(message)
+        self.files = files or []
+
+
 class AuthenticationError(DesktopError):
     pass
 

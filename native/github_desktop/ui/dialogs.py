@@ -19,9 +19,11 @@ from ..editors import get_available_editors
 from ..errors import ValidationError
 from ..git.ops import (
     add_remote,
+    add_safe_directory,
     get_author_identity,
     get_config_value,
     get_default_branch,
+    get_repository_type,
     read_gitignore,
     remove_remote,
     set_config_value,
@@ -324,13 +326,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
             confirm="Stash and continue",
             on_confirm=lambda: _stash_and_retry(store, payload),
         ),
-        PopupType.DISCARD_CHANGES_RETRY: lambda: _alert(
-            parent,
-            "Discard failed",
-            "Some files could not be discarded. Retry?",
-            confirm="Retry",
-            on_confirm=lambda: payload.get("retry") and payload["retry"](),
-        ),
+        PopupType.DISCARD_CHANGES_RETRY: lambda: show_discard_retry(parent, store, payload),
         PopupType.CONFIRM_DISCARD_SELECTION: lambda: _alert(
             parent,
             "Discard selected lines?",
@@ -904,15 +900,116 @@ def show_thank_you(parent: Gtk.Window, payload: dict[str, Any] | None = None) ->
 
 
 def show_add_repository(parent: Gtk.Window, store: AppStore, initial: str) -> None:
-    def submit(values: dict[str, str]) -> None:
-        path = values.get("path", "").strip()
-        if path:
-            try:
-                store.add_repositories([path])
-            except Exception as exc:
-                store.show_popup(PopupType.ERROR, error=str(exc))
+    dialog = Adw.Dialog()
+    dialog.set_content_width(520)
+    dialog.set_content_height(360)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(
+        Adw.WindowTitle(
+            title="Add local repository",
+            subtitle="Choose a Git repository on this computer.",
+        )
+    )
+    add_btn = Gtk.Button(label="Add")
+    add_btn.add_css_class("suggested-action")
+    header.pack_end(add_btn)
+    toolbar.add_top_bar(header)
 
-    _text_dialog(parent, "Add local repository", "Choose a Git repository on this computer.", [("path", "Path", initial or os.path.expanduser("~/"))], submit, "Add")
+    page = Adw.PreferencesPage()
+    group = Adw.PreferencesGroup()
+    path_row = Adw.EntryRow(title="Local path")
+    path_row.set_text(initial or os.path.expanduser("~/"))
+    choose = Gtk.Button(label="Choose…")
+    choose.set_valign(Gtk.Align.CENTER)
+
+    def choose_folder(*_a: Any) -> None:
+        picker = Gtk.FileDialog(title="Add local repository")
+
+        def done(d, result) -> None:
+            try:
+                folder = d.select_folder_finish(result)
+            except Exception:
+                return
+            if folder:
+                path_row.set_text(folder.get_path() or path_row.get_text())
+
+        picker.select_folder(parent, None, done)
+
+    choose.connect("clicked", choose_folder)
+    path_row.add_suffix(choose)
+
+    missing_row = Adw.ActionRow(title="This directory does not appear to be a Git repository.")
+    missing_row.set_subtitle("Would you like to create a repository here instead?")
+    create_here = Gtk.Button(label="Create a repository")
+    create_here.set_valign(Gtk.Align.CENTER)
+    missing_row.add_suffix(create_here)
+    missing_row.set_activatable(False)
+    missing_row.set_visible(False)
+
+    bare_row = Adw.ActionRow(title="This directory appears to be a bare repository.")
+    bare_row.set_subtitle("Bare repositories are not currently supported.")
+    bare_row.set_activatable(False)
+    bare_row.set_visible(False)
+
+    unsafe_row = Adw.ActionRow(title="This Git repository appears to be owned by another user on your machine.")
+    unsafe_row.set_subtitle("Adding untrusted repositories may automatically execute files in the repository.")
+    trust_btn = Gtk.Button(label="add an exception for this directory")
+    trust_btn.set_valign(Gtk.Align.CENTER)
+    unsafe_row.add_suffix(trust_btn)
+    unsafe_row.set_activatable(False)
+    unsafe_row.set_visible(False)
+
+    def expanded_path() -> str:
+        return os.path.abspath(os.path.expanduser(path_row.get_text().strip() or ""))
+
+    def refresh(*_a: Any) -> None:
+        raw = path_row.get_text().strip()
+        if not raw:
+            missing_row.set_visible(False)
+            bare_row.set_visible(False)
+            unsafe_row.set_visible(False)
+            add_btn.set_sensitive(False)
+            return
+        info = get_repository_type(expanded_path())
+        kind = info.get("kind")
+        missing_row.set_visible(kind == "missing")
+        bare_row.set_visible(kind == "bare")
+        unsafe_row.set_visible(kind == "unsafe")
+        add_btn.set_sensitive(kind == "regular")
+
+    def create_instead(*_a: Any) -> None:
+        dialog.close()
+        store.show_popup(PopupType.CREATE_REPOSITORY, path=expanded_path())
+
+    def trust_directory(*_a: Any) -> None:
+        info = get_repository_type(expanded_path())
+        add_safe_directory(info.get("path") or expanded_path())
+        refresh()
+
+    def submit(*_a: Any) -> None:
+        path = expanded_path()
+        if not path:
+            return
+        try:
+            store.add_repositories([path])
+            dialog.close()
+        except Exception as exc:
+            store.show_popup(PopupType.ERROR, error=str(exc))
+
+    create_here.connect("clicked", create_instead)
+    trust_btn.connect("clicked", trust_directory)
+    path_row.connect("changed", refresh)
+    add_btn.connect("clicked", submit)
+    group.add(path_row)
+    group.add(missing_row)
+    group.add(bare_row)
+    group.add(unsafe_row)
+    page.add(group)
+    toolbar.set_content(page)
+    dialog.set_child(toolbar)
+    refresh()
+    dialog.present(parent)
 
 
 def show_create_repository(parent: Gtk.Window, store: AppStore, initial: str) -> None:
@@ -1628,21 +1725,61 @@ def show_discard(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -
     state = store.state_for(repo)
     if not files:
         files = state.status.working_directory.files if state.status else []
+    discarding_all = bool(payload.get("discarding_all") or (not payload.get("files") and files))
 
     def confirm() -> None:
         store.discard_files(repo, files)
 
-    names = ", ".join(getattr(f, "path", str(f)) for f in files[:8])
-    if not store.settings.confirm_discard_changes and not store.settings.confirm_discard_changes_permanently:
+    if not store.settings.confirm_discard_changes:
         confirm()
         return
-    _alert(
+    names = [getattr(f, "path", str(f)) for f in files]
+    if len(names) > 10:
+        listing = f"Are you sure you want to discard all {len(names)} changed files?"
+    elif names:
+        listing = "Are you sure you want to discard all changes to:\n" + "\n".join(f"• {n}" for n in names)
+    else:
+        listing = "Are you sure you want to discard these changes?"
+    heading = "Confirm discard all changes" if discarding_all else "Confirm discard changes"
+    body = (
+        f"{listing}\n\n"
+        "Changes can be restored by retrieving them from the Trash."
+    )
+
+    def on_confirm(skip: bool) -> None:
+        if skip:
+            store.settings.confirm_discard_changes = False
+            store.persist_settings()
+        confirm()
+
+    _alert_with_check(
         parent,
-        "Discard changes?",
-        f"Discard changes in {names or 'selected files'}? These files will be discarded permanently and cannot be recovered.",
+        heading,
+        body,
         destructive=True,
-        confirm="Discard",
-        on_confirm=confirm,
+        confirm="Discard all changes" if discarding_all else "Discard changes",
+        on_confirm=on_confirm,
+    )
+
+
+def show_discard_retry(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    def on_confirm(skip: bool) -> None:
+        if skip:
+            store.settings.confirm_discard_changes_permanently = False
+            store.persist_settings()
+        retry = payload.get("retry")
+        if retry:
+            retry()
+
+    _alert_with_check(
+        parent,
+        "Discarded changes will be unrecoverable",
+        "Failed to discard changes to Trash.\n\n"
+        "Common reasons are that the file is locked or the Trash is full. "
+        "Retrying will leave the files discarded permanently.",
+        destructive=True,
+        confirm="Discard changes permanently",
+        on_confirm=on_confirm,
     )
 
 

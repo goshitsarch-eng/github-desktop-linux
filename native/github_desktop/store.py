@@ -15,7 +15,7 @@ from typing import Any, Callable, Sequence
 from . import secrets
 from .custom_integration import command_for_custom_integration
 from .editors import Editor, find_editor, get_available_editors, open_in_editor
-from .errors import APIError, CopilotError, GitError, GitNotFoundError, NotARepositoryError, ValidationError, extract_secret_scanning_results, overwritten_files_from_error, parse_saml_organization
+from .errors import APIError, CopilotError, DiscardChangesError, GitError, GitNotFoundError, NotARepositoryError, ValidationError, extract_secret_scanning_results, overwritten_files_from_error, parse_saml_organization
 from .git import (
     abort_cherry_pick,
     abort_merge,
@@ -2355,8 +2355,27 @@ class AppStore:
         state.current_diff = prepared
         return prepared
 
-    def discard_files(self, repo: Repository, files: Sequence[WorkingDirectoryFileChange]) -> None:
-        discard_working_files(repo.path, files)
+    def discard_files(
+        self,
+        repo: Repository,
+        files: Sequence[WorkingDirectoryFileChange],
+        *,
+        move_to_trash: bool = True,
+    ) -> None:
+        try:
+            discard_working_files(
+                repo.path,
+                files,
+                move_to_trash=move_to_trash,
+                ask_permanent=self.settings.confirm_discard_changes_permanently,
+            )
+        except DiscardChangesError:
+            self.show_popup(
+                PopupType.DISCARD_CHANGES_RETRY,
+                files=list(files),
+                retry=lambda: self.discard_files(repo, files, move_to_trash=False),
+            )
+            return
         self.refresh_repository(repo)
 
     def _network_remote(self, repo: Repository, remotes: Sequence[Remote] | None = None, *, prefer_upstream: bool = False) -> Remote | None:

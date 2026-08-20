@@ -105,6 +105,7 @@ REQUIRED_GIT_FUNCS = [
     "list_submodules",
     "reset_submodule_paths",
     "get_upstream_ref_for_ref",
+    "move_item_to_trash",
 ]
 
 
@@ -343,5 +344,11 @@ def test_window_actions_cover_menus() -> None:
         "getRepositoryType",
         "listSubmodules",
         "abort_clone",
+        "This directory does not appear to be a Git repository",
+        "Bare repositories are not currently supported",
+        "add an exception for this directory",
+        "Changes can be restored by retrieving them from the Trash",
+        "Discarded changes will be unrecoverable",
+        "moveItemToTrash",
     ]:
         assert phrase in src

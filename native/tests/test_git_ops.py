@@ -342,3 +342,16 @@ def test_abort_git_process_kills_child() -> None:
         time.sleep(0.05)
     assert proc.poll() is not None
 
+
+def test_discard_untracked_file_permanently(git_repo: Path) -> None:
+    from github_desktop.git.ops import discard_working_files, get_status
+
+    target = git_repo / "gone.txt"
+    target.write_text("x\n", encoding="utf-8")
+    status = get_status(str(git_repo))
+    assert status is not None
+    files = [f for f in status.working_directory.files if f.path == "gone.txt"]
+    assert files
+    discard_working_files(str(git_repo), files, move_to_trash=False)
+    assert not target.exists()
+
