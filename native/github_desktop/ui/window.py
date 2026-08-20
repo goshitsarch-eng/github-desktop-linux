@@ -39,6 +39,7 @@ from .emoji import matching_shortcodes
 from .history import ExpandableCommitSummary
 from .menus import attach_right_click, clear_box, copy_text, show_context_menu
 from .stash import StashDiffViewer
+from .tutorial import TutorialPanel
 
 
 STATUS_CLASS = {
@@ -466,9 +467,24 @@ class MainWindow(Adw.ApplicationWindow):
         self._view_stack.add_titled_with_icon(self._changes_page, "changes", "Changes", "document-edit-symbolic")
         self._view_stack.add_titled_with_icon(self._history_page, "history", "History", "view-list-symbolic")
         self._view_stack.connect("notify::visible-child-name", self._on_view_changed)
+        self._tutorial_panel = TutorialPanel(
+            on_open_editor=lambda: self._repo_op(
+                lambda r: self.store.open_in_editor(r, os.path.join(r.path, "README.md"))
+            ),
+            on_open_pr=lambda: self._repo_op(self.store.open_pull_request),
+            on_skip_editor=self.store.complete_tutorial_editor_step,
+            on_skip_pr=self.store.skip_tutorial_pull_request,
+            on_preferences=lambda: show_preferences(self, self.store),
+            on_exit=lambda: self.store.show_popup(PopupType.CONFIRM_EXIT_TUTORIAL),
+        )
+        self._tutorial_panel.set_visible(False)
+        self._work_area = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        self._view_stack.set_hexpand(True)
+        self._work_area.append(self._view_stack)
+        self._work_area.append(self._tutorial_panel)
         self._repo_content = Gtk.Stack()
         self._missing_page = self._build_missing()
-        self._repo_content.add_named(self._view_stack, "content")
+        self._repo_content.add_named(self._work_area, "content")
         self._repo_content.add_named(self._missing_page, "missing")
         toolbar.set_content(self._repo_content)
         self._split.set_content(toolbar)
@@ -1142,10 +1158,9 @@ class MainWindow(Adw.ApplicationWindow):
             return
         authors = []
         if self._coauthor_entry.get_visible() and self._coauthor_entry.get_text().strip():
-            from ..models import Author, parse_name_email
+            from ..models import parse_co_authors
 
-            n, e = parse_name_email(self._coauthor_entry.get_text())
-            authors.append(Author(n, e))
+            authors = parse_co_authors(self._coauthor_entry.get_text())
         try:
             self.store.commit(repo, summary, description, co_authors=authors)
             self._summary.set_text("")
@@ -1340,6 +1355,7 @@ class MainWindow(Adw.ApplicationWindow):
             hide_whitespace=state.hide_whitespace or self.store.settings.hide_whitespace_in_diffs,
             can_collapse=state.original_diff is not None,
             tab_size=self.store.settings.tab_size,
+            comments=list(state.diff_comments),
         )
 
     def _render_history_diff(self, state) -> None:
@@ -1355,6 +1371,7 @@ class MainWindow(Adw.ApplicationWindow):
             hide_whitespace=state.hide_whitespace or self.store.settings.hide_whitespace_in_diffs,
             can_collapse=state.original_diff is not None,
             tab_size=self.store.settings.tab_size,
+            comments=list(state.diff_comments),
         )
 
     def _on_line_toggle(self, path: str, index: int, included: bool) -> None:
@@ -1700,26 +1717,22 @@ class MainWindow(Adw.ApplicationWindow):
         popover.popup()
 
     def _update_tutorial_banner(self, repo, state) -> None:
+        if hasattr(self, "_tutorial_panel"):
+            active = bool(repo.tutorial) and self.store.tutorial_step not in {
+                TutorialStep.NOT_APPLICABLE,
+                TutorialStep.PAUSED,
+            }
+            self._tutorial_panel.set_visible(active)
+            if active:
+                editor = self.store.settings.selected_external_editor
+                self._tutorial_panel.refresh(self.store.tutorial_step, editor)
         if not hasattr(self, "_tutorial_banner"):
             return
-        if not repo.tutorial or self.store.tutorial_step in {TutorialStep.NOT_APPLICABLE, TutorialStep.ALL_COMPLETE, TutorialStep.PAUSED}:
+        # The side panel is the Desktop tutorial UI; keep the banner for the first editor nudge only
+        # when the panel is unavailable.
+        if hasattr(self, "_tutorial_panel"):
             self._tutorial_banner.set_revealed(False)
             return
-        messages = {
-            TutorialStep.PICK_EDITOR: ("Install an editor, then open this repository in it.", "Mark done"),
-            TutorialStep.CREATE_BRANCH: ("Create a branch using Branch → New branch.", None),
-            TutorialStep.EDIT_FILE: ("Edit a file in this repository, then come back.", None),
-            TutorialStep.MAKE_COMMIT: ("Write a summary and commit your changes.", None),
-            TutorialStep.PUSH_BRANCH: ("Publish this branch to GitHub.", None),
-            TutorialStep.OPEN_PULL_REQUEST: ("Create a pull request for this branch.", None),
-        }
-        title, button = messages.get(self.store.tutorial_step, ("", None))
-        self._tutorial_banner.set_title(title)
-        self._tutorial_banner.set_button_label(button)
-        self._tutorial_banner.set_revealed(True)
-        if self.store.tutorial_step == TutorialStep.PICK_EDITOR and not getattr(self, "_tutorial_bound", False):
-            self._tutorial_bound = True
-            self._tutorial_banner.connect("button-clicked", lambda *_: self.store.complete_tutorial_editor_step())
 
     def _refresh_issue_completion(self, state) -> None:
         if not hasattr(self, "_issue_store"):

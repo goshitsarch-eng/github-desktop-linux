@@ -112,6 +112,7 @@ from .models import (
     Commit,
     CommitMessage,
     CommittedFileChange,
+    DiffComment,
     DiffSelectionType,
     FetchType,
     FileDiff,
@@ -205,6 +206,7 @@ class RepositoryViewState:
     pr_changeset: ChangesetData | None = None
     shas_in_diff: list[str] = field(default_factory=list)
     commit_summary_expanded: bool = False
+    diff_comments: list = field(default_factory=list)
 
 
 class AppStore:
@@ -705,6 +707,27 @@ class AppStore:
                         payload["pull_requests"] = prs
                         current = status.current_branch if status else None
                         payload["current_pull_request"] = next((pr for pr in prs if pr.head_ref == current), None)
+                        pr = payload["current_pull_request"]
+                        if pr:
+                            try:
+                                raw_comments = api.fetch_pull_request_comments(
+                                    repo.github.owner, repo.github.name, pr.number
+                                )
+                                payload["diff_comments"] = [
+                                    DiffComment(
+                                        path=item.get("path") or "",
+                                        body=item.get("body") or "",
+                                        user=((item.get("user") or {}).get("login") or ""),
+                                        html_url=item.get("html_url") or "",
+                                        line=item.get("line"),
+                                        original_line=item.get("original_line"),
+                                        side=item.get("side") or "RIGHT",
+                                        diff_hunk=item.get("diff_hunk") or "",
+                                    )
+                                    for item in raw_comments
+                                ]
+                            except APIError:
+                                payload["diff_comments"] = []
                         try:
                             payload["issues"] = [(i.number, i.title) for i in api.fetch_issues(repo.github.owner, repo.github.name)[:80]]
                         except APIError:
@@ -752,6 +775,7 @@ class AppStore:
             state.ahead_behind = data.get("ahead_behind")
             state.pull_requests = data.get("pull_requests") or []
             state.current_pull_request = data.get("current_pull_request")
+            state.diff_comments = data.get("diff_comments") or []
             state.issues = data.get("issues") or []
             state.check_runs = data.get("check_runs") or []
             state.mentions = data.get("mentions") or []
@@ -919,6 +943,19 @@ class AppStore:
             self.tutorial_step = TutorialStep.CREATE_BRANCH
             self.emit()
 
+    def skip_tutorial_pull_request(self) -> None:
+        if self.tutorial_step == TutorialStep.OPEN_PULL_REQUEST:
+            self.tutorial_step = TutorialStep.ALL_COMPLETE
+            self.emit()
+
+    def exit_tutorial(self) -> None:
+        repo = self.selected_repository
+        if repo:
+            repo.tutorial = False
+            self._save_repositories()
+        self.tutorial_step = TutorialStep.NOT_APPLICABLE
+        self.emit()
+
     def account_for_repo(self, repo: Repository) -> Account | None:
         if repo.github:
             for account in self.accounts:
@@ -979,7 +1016,40 @@ class AppStore:
                 on_commit=lambda: self._commit_now(repo, summary, description, amend=amend, co_authors=co_authors),
             )
             return
+        if co_authors:
+            resolved, unknown = self.resolve_co_authors(list(co_authors))
+            if unknown:
+                self.show_popup(
+                    PopupType.UNKNOWN_AUTHORS,
+                    on_commit=lambda: self._commit_now(repo, summary, description, amend=amend, co_authors=resolved),
+                )
+                return
+            co_authors = resolved
         self._commit_now(repo, summary, description, amend=amend, co_authors=co_authors)
+
+    def resolve_co_authors(self, authors: Sequence[Author]) -> tuple[list[Author], list[Author]]:
+        resolved: list[Author] = []
+        unknown: list[Author] = []
+        api = GitHubAPI.from_account(self.accounts[0]) if self.accounts else None
+        for author in authors:
+            login = author.username
+            if login and api is not None:
+                user = api.fetch_user_by_login(login)
+                if user and user.get("login"):
+                    handle = str(user["login"])
+                    resolved.append(
+                        Author(
+                            name=str(user.get("name") or handle),
+                            email=str(user.get("email") or f"{handle}@users.noreply.github.com"),
+                            username=handle,
+                        )
+                    )
+                    continue
+            if not author.email:
+                unknown.append(author)
+                continue
+            resolved.append(author)
+        return resolved, unknown
 
     def _commit_now(
         self,

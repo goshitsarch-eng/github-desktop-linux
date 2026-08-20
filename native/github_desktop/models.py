@@ -881,6 +881,18 @@ class Issue:
 
 
 @dataclass
+class DiffComment:
+    path: str
+    body: str
+    user: str = ""
+    html_url: str = ""
+    line: int | None = None
+    original_line: int | None = None
+    side: str = "RIGHT"
+    diff_hunk: str = ""
+
+
+@dataclass
 class CheckStep:
     name: str
     number: int = 0
@@ -966,6 +978,28 @@ def parse_name_email(value: str) -> tuple[str, str]:
         email = rest.split(">", 1)[0]
         return name.strip(), email.strip()
     return value, ""
+
+
+def parse_co_authors(text: str) -> list[Author]:
+    """Parse comma/newline-separated co-authors (`Name <email>` or `@login`)."""
+    import re
+
+    authors: list[Author] = []
+    for raw in re.split(r"[,;\n]+", text or ""):
+        token = raw.strip()
+        if not token:
+            continue
+        handle = token.startswith("@") and "<" not in token
+        name, email = parse_name_email(token)
+        authors.append(
+            Author(
+                name=name,
+                email=email,
+                username=token[1:].strip() if handle else None,
+                unknown=not bool(email),
+            )
+        )
+    return authors
 
 
 def html_url_from_endpoint(endpoint: str) -> str:

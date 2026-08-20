@@ -133,6 +133,17 @@ APP_CSS = """
 .avatar-image {
   border-radius: 999px;
 }
+.tutorial-panel {
+  padding: 12px;
+  min-width: 260px;
+  border-left: 1px solid alpha(@window_fg_color, 0.12);
+}
+.diff-comment {
+  margin: 0 12px 8px 48px;
+  padding: 8px;
+  background-color: alpha(@accent_bg_color, 0.12);
+  border-radius: 8px;
+}
 
 .whitespace-hint {
   padding: 6px 8px;

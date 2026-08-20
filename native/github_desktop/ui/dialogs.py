@@ -319,7 +319,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
             "Exit tutorial?",
             "You can resume later from the repository list.",
             confirm="Exit",
-            on_confirm=lambda: store.finish_welcome(),
+            on_confirm=lambda: store.exit_tutorial(),
         ),
         PopupType.UPSTREAM_ALREADY_EXISTS: lambda: _alert(
             parent, "Upstream exists", "This fork already has an upstream remote.", cancel=None

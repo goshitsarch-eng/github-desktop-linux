@@ -7,7 +7,7 @@ from github_desktop.changelog import CURRENT_NOTES, load_release_notes
 from github_desktop.git.expansion import copy_text_diff
 from github_desktop.git.ops import get_repository_kind
 from github_desktop.github.notifications import classify_notification
-from github_desktop.models import PopupType, TextDiff
+from github_desktop.models import PopupType, TextDiff, parse_co_authors
 from github_desktop.store import AppStore
 from tests.conftest import run_git
 
@@ -91,6 +91,14 @@ def test_copy_text_diff_keeps_syntax_maps() -> None:
 def test_get_repository_kind(git_repo, tmp_path) -> None:
     assert get_repository_kind(str(git_repo)) == "regular"
     assert get_repository_kind(str(tmp_path / "missing")) == "missing"
+
+
+def test_parse_co_authors_handles_handles_and_emails() -> None:
+    authors = parse_co_authors("@octocat, Jane Doe <jane@example.com>\nNameless")
+    assert authors[0].username == "octocat"
+    assert authors[0].email.endswith("users.noreply.github.com")
+    assert authors[1].email == "jane@example.com"
+    assert authors[2].unknown is True
 
 
 def test_relocate_repository(isolated_config, git_repo, tmp_path) -> None:

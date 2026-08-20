@@ -136,6 +136,7 @@ class DiffViewer(Gtk.Box):
         self._search_matches: list[int] = []
         self._search_cursor = 0
         self._diff: FileDiff | None = None
+        self._comments: list = []
         self.set_focusable(True)
         key = Gtk.EventControllerKey()
         key.connect("key-pressed", self._on_key)
@@ -153,11 +154,13 @@ class DiffViewer(Gtk.Box):
         hide_whitespace: bool = False,
         can_collapse: bool = False,
         tab_size: int = 4,
+        comments: list | None = None,
     ) -> None:
         self._path = path
         self._show_checks = show_checks
         self._tab_size = max(1, tab_size)
         self._selection = selection
+        self._comments = list(comments or [])
         self._row_specs = []
         self._row_widgets = []
         self._list_view = None
@@ -450,7 +453,50 @@ class DiffViewer(Gtk.Box):
         else:
             widget = Gtk.Box()
         self._decorate_search(widget, spec)
-        return widget
+        comments = self._comments_for(spec)
+        if not comments:
+            return widget
+        wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        wrap.append(widget)
+        for comment in comments:
+            wrap.append(self._comment_bubble(comment))
+        return wrap
+
+    def _comments_for(self, spec: RowSpec) -> list:
+        line = spec.line or spec.right or spec.left
+        if line is None or not self._comments:
+            return []
+        matched = []
+        for comment in self._comments:
+            path = getattr(comment, "path", "")
+            if path and path != self._path:
+                continue
+            line_no = getattr(comment, "line", None)
+            original = getattr(comment, "original_line", None)
+            if line_no and line.new_line_number == line_no:
+                matched.append(comment)
+            elif original and line.old_line_number == original:
+                matched.append(comment)
+        return matched
+
+    def _comment_bubble(self, comment) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        box.add_css_class("diff-comment")
+        user = getattr(comment, "user", "") or "comment"
+        header = Gtk.Label(label=f"{user} commented", xalign=0)
+        header.add_css_class("heading")
+        body = Gtk.Label(label=getattr(comment, "body", "") or "", xalign=0, wrap=True)
+        box.append(header)
+        box.append(body)
+        url = getattr(comment, "html_url", "")
+        if url:
+            from ..shells import open_external
+
+            link = Gtk.Button(label="View on GitHub")
+            link.add_css_class("flat")
+            link.connect("clicked", lambda *_ , u=url: open_external(u))
+            box.append(link)
+        return box
 
     def _hunk_header(
         self,

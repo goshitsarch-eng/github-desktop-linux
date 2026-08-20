@@ -312,6 +312,20 @@ class GitHubAPI:
             return []
         return []
 
+    def fetch_user_by_login(self, login: str) -> dict[str, Any] | None:
+        try:
+            data = self.get(f"/users/{urllib.parse.quote(login)}")
+            return data if isinstance(data, dict) else None
+        except APIError:
+            return None
+
+    def fetch_pull_request_comments(self, owner: str, name: str, number: int) -> list[dict[str, Any]]:
+        try:
+            items = self._paginate(f"/repos/{owner}/{name}/pulls/{number}/comments")
+            return items if isinstance(items, list) else []
+        except APIError:
+            return []
+
     def create_issue(self, owner: str, name: str, title: str, body: str = "") -> dict[str, Any]:
         return self.post(f"/repos/{owner}/{name}/issues", {"title": title, "body": body})
 

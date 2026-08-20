@@ -19,7 +19,7 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
     gi.require_version("Adw", "1")
     from gi.repository import Adw, GLib
 
-    from github_desktop.models import ApplicationTheme
+    from github_desktop.models import ApplicationTheme, TutorialStep
     from github_desktop.store import AppStore
     from github_desktop.theme import apply_theme
     from github_desktop.ui.css import load_css
@@ -86,6 +86,8 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             assert hasattr(win, "_history_filter")
             assert hasattr(win, "_repo_content")
             assert hasattr(win, "_missing_page")
+            assert hasattr(win, "_tutorial_panel")
+            win._tutorial_panel.refresh(TutorialStep.PICK_EDITOR, "GNOME Text Editor")
             win._commit_summary.bind([], None)
             win._find()
             show_release_notes(win)
