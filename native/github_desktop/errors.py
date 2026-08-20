@@ -115,3 +115,52 @@ class ConfigLockError(DesktopError):
     def __init__(self, message: str, lock_path: str | None = None) -> None:
         super().__init__(message)
         self.lock_path = lock_path
+
+
+def remote_message(stderr: str) -> str:
+    needle = "remote: "
+    return "\n".join(line[len(needle) :] for line in stderr.splitlines() if line.startswith(needle))
+
+
+def extract_secret_scanning_results(text: str) -> list:
+    """Parse GH013 / secret-scanning push output the way Desktop does."""
+    import re
+
+    from .models import SecretLocation, SecretScanResult
+
+    secrets_re = re.compile(
+        r"—— (?P<description>.*?) —+[\s\S]*?locations:(?P<locationsGroup>(?:\s+- commit: [a-f0-9]{40}\s+path: [\s\S]*?)+).*?(?P<bypassURL>https[\s\S]*?) ",
+        re.MULTILINE,
+    )
+    loc_re = re.compile(
+        r"- commit: (?P<commitSha>[a-f0-9]{40})\s+path: (?P<path>.*?):(?P<lineNumber>\d+)"
+    )
+    results = []
+    blob = remote_message(text) or text
+    for match in secrets_re.finditer(blob):
+        groups = match.groupdict()
+        locations = []
+        for loc in loc_re.finditer(groups.get("locationsGroup") or ""):
+            lg = loc.groupdict()
+            locations.append(
+                SecretLocation(
+                    commit_sha=lg["commitSha"],
+                    path=lg["path"],
+                    line_number=int(lg["lineNumber"]),
+                )
+            )
+        bypass = (groups.get("bypassURL") or "").strip()
+        first = locations[0] if locations else None
+        results.append(
+            SecretScanResult(
+                id=bypass.rstrip("/").split("/")[-1] if bypass else "",
+                description=groups.get("description") or "",
+                bypass_url=bypass,
+                locations=locations,
+                requires_approval="request an exemption" in (match.group(0) or ""),
+                secret_type=groups.get("description") or "",
+                path=first.path if first else "",
+                line=first.line_number if first else None,
+            )
+        )
+    return results

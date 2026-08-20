@@ -13,7 +13,7 @@ from typing import Any, Callable, Sequence
 
 from . import secrets
 from .editors import Editor, find_editor, get_available_editors, open_in_editor
-from .errors import APIError, CopilotError, GitError, GitNotFoundError, NotARepositoryError, ValidationError
+from .errors import APIError, CopilotError, GitError, GitNotFoundError, NotARepositoryError, ValidationError, extract_secret_scanning_results
 from .git import (
     abort_cherry_pick,
     abort_merge,
@@ -103,6 +103,7 @@ from .models import (
     BranchType,
     ChangesListFilter,
     ChangesetData,
+    CheckStep,
     CherryPickResult,
     CloningRepository,
     Commit,
@@ -199,6 +200,7 @@ class RepositoryViewState:
     pr_commits: list[Commit] = field(default_factory=list)
     pr_files: list[CommittedFileChange] = field(default_factory=list)
     pr_changeset: ChangesetData | None = None
+    shas_in_diff: list[str] = field(default_factory=list)
     commit_summary_expanded: bool = False
 
 
@@ -1294,6 +1296,7 @@ class AppStore:
         if contiguous and len(ordered_newest_first) >= 2:
             newest = ordered_newest_first[0]
             oldest = ordered_newest_first[-1]
+            state.shas_in_diff = [c.sha for c in ordered_newest_first]
             try:
                 state.changeset = get_commit_range_changed_files(repo.path, oldest.sha, newest.sha)
             except GitError:
@@ -1310,6 +1313,8 @@ class AppStore:
                     state.current_diff = None
         else:
             self.select_commit(repo, state.selected_commit)
+            state.shas_in_diff = [state.selected_commit.sha] if state.selected_commit else []
+            self.emit()
             return
         self.emit()
 
@@ -1398,6 +1403,7 @@ class AppStore:
         if commit and commit not in state.selected_commits:
             state.selected_commits = [commit]
         if commit:
+            state.shas_in_diff = [commit.sha]
             try:
                 state.changeset = get_changeset_data(repo.path, commit.sha)
             except GitError:
@@ -1419,6 +1425,7 @@ class AppStore:
             state.changeset = None
             state.selected_commit_files = []
             state.current_diff = None
+            state.shas_in_diff = []
         self.emit()
 
     def load_history_diff(self, repo: Repository, path: str, sha: str, status) -> FileDiff:
@@ -1522,7 +1529,8 @@ class AppStore:
     def _handle_remote_error(self, repo: Repository, exc: BaseException) -> None:
         if isinstance(exc, GitError):
             if exc.is_push_protection:
-                self.show_popup(PopupType.PUSH_PROTECTION_ERROR, error=str(exc))
+                secrets = extract_secret_scanning_results(f"{exc.stderr}\n{exc.stdout}\n{exc}")
+                self.show_popup(PopupType.PUSH_PROTECTION_ERROR, error=str(exc), secrets=secrets)
                 return
             if exc.is_saml_reauth:
                 self.show_popup(PopupType.SAML_REAUTH_REQUIRED, error=str(exc))
@@ -1881,6 +1889,44 @@ class AppStore:
                 self.show_popup(PopupType.ERROR, error=str(exc))
             else:
                 self.refresh_repository(repo)
+            self.emit()
+
+        self._run(work, done)
+
+    def load_check_steps(self, repo: Repository) -> None:
+        account = self.account_for_repo(repo)
+        if not account or not repo.github:
+            return
+        state = self.state_for(repo)
+        sha = (state.status.current_tip if state.status else None) or (state.commits[0].sha if state.commits else None)
+        if not sha:
+            return
+        api = GitHubAPI.from_account(account)
+        owner, name = repo.github.owner, repo.github.name
+
+        def work() -> list:
+            return api.fetch_workflow_jobs_for_sha(owner, name, sha)
+
+        def done(exc: BaseException | None, jobs: list | None = None) -> None:
+            if exc or not jobs:
+                return
+            by_name = {job.get("name"): job for job in jobs if job.get("name")}
+            for run in state.check_runs:
+                job = by_name.get(run.name)
+                if not job:
+                    continue
+                steps = []
+                for step in job.get("steps") or []:
+                    steps.append(
+                        CheckStep(
+                            name=step.get("name") or "",
+                            number=int(step.get("number") or 0),
+                            status=step.get("status") or "",
+                            conclusion=step.get("conclusion"),
+                            html_url=job.get("html_url"),
+                        )
+                    )
+                run.steps = steps
             self.emit()
 
         self._run(work, done)

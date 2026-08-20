@@ -877,6 +877,15 @@ class Issue:
 
 
 @dataclass
+class CheckStep:
+    name: str
+    number: int = 0
+    status: str = ""
+    conclusion: str | None = None
+    html_url: str | None = None
+
+
+@dataclass
 class RefCheck:
     id: int
     name: str
@@ -885,6 +894,8 @@ class RefCheck:
     conclusion: str | None
     html_url: str | None = None
     app_name: str | None = None
+    check_suite_id: int | None = None
+    steps: list[CheckStep] = field(default_factory=list)
 
 
 @dataclass
@@ -914,12 +925,22 @@ class Popup:
 
 
 @dataclass
-class SecretScanResult:
-    secret_type: str
+class SecretLocation:
+    commit_sha: str
     path: str
-    line: int | None
+    line_number: int = 0
+
+
+@dataclass
+class SecretScanResult:
+    secret_type: str = ""
+    path: str = ""
+    line: int | None = None
     bypass_url: str | None = None
     description: str = ""
+    id: str = ""
+    locations: list[SecretLocation] = field(default_factory=list)
+    requires_approval: bool = False
 
 
 @dataclass

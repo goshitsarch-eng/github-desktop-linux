@@ -269,9 +269,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
             on_confirm=lambda: payload.get("on_commit") and payload["on_commit"](),
         ),
         PopupType.MULTI_COMMIT_OPERATION: lambda: show_multi_commit(parent, store, payload),
-        PopupType.UNREACHABLE_COMMITS: lambda: _alert(
-            parent, "Unreachable commits", "Some selected commits are not reachable from the current comparison.", cancel=None
-        ),
+        PopupType.UNREACHABLE_COMMITS: lambda: show_unreachable_commits(parent, store, payload),
         PopupType.RELEASE_NOTES: lambda: show_release_notes(parent),
         PopupType.THANK_YOU: lambda: _alert(parent, "Thank you", "Thanks for contributing to GitHub Desktop.", cancel=None),
         PopupType.PUSH_BRANCH_COMMITS: lambda: _alert(
@@ -1371,13 +1369,95 @@ def show_lfs(parent: Gtk.Window, store: AppStore) -> None:
 
 
 def show_push_protection(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
-    _alert(
-        parent,
-        "Secret scanning blocked the push",
-        str(payload.get("error") or "GitHub detected a secret in this push."),
-        confirm="View docs",
-        on_confirm=lambda: open_external("https://docs.github.com/code-security/secret-scanning"),
+    secrets = list(payload.get("secrets") or [])
+    dialog = Adw.Dialog()
+    dialog.set_content_width(560)
+    dialog.set_content_height(420)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(
+        Adw.WindowTitle(title="Push blocked: secret detected", subtitle="GitHub secret scanning prevented this push")
     )
+    toolbar.add_top_bar(header)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+    box.set_margin_top(12)
+    box.set_margin_start(12)
+    box.set_margin_end(12)
+    box.set_margin_bottom(12)
+    if not secrets:
+        box.append(Gtk.Label(label=str(payload.get("error") or "GitHub detected a secret in this push."), xalign=0, wrap=True))
+    for secret in secrets:
+        title = getattr(secret, "description", None) or getattr(secret, "secret_type", None) or "Secret"
+        locs = getattr(secret, "locations", None) or []
+        if locs:
+            loc = locs[0]
+            subtitle = f"{loc.path}:{loc.line_number}"
+        else:
+            subtitle = getattr(secret, "path", "") or ""
+        row = Adw.ActionRow(title=title, subtitle=subtitle)
+        url = getattr(secret, "bypass_url", None)
+        if url:
+            open_btn = Gtk.Button(label="Bypass…")
+            open_btn.connect(
+                "clicked",
+                lambda *_ , s=secret, u=url: (
+                    dialog.close(),
+                    store.show_popup(PopupType.BYPASS_PUSH_PROTECTION, secret=s, bypass_url=u),
+                ),
+            )
+            row.add_suffix(open_btn)
+        box.append(row)
+    docs = Gtk.Button(label="Remediation docs")
+    docs.connect("clicked", lambda *_: open_external("https://docs.github.com/code-security/secret-scanning"))
+    box.append(docs)
+    scroll = Gtk.ScrolledWindow(vexpand=True)
+    scroll.set_child(box)
+    toolbar.set_content(scroll)
+    dialog.set_child(toolbar)
+    dialog.present(parent)
+
+
+def show_unreachable_commits(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    repo = store.selected_repository
+    if not repo:
+        return
+    state = store.state_for(repo)
+    selected = list(state.selected_commits)
+    in_diff = set(state.shas_in_diff or payload.get("shas_in_diff") or [])
+    reachable = [c for c in selected if c.sha in in_diff] or selected[:1]
+    unreachable = [c for c in selected if c.sha not in in_diff]
+    dialog = Adw.Dialog()
+    dialog.set_content_width(520)
+    dialog.set_content_height(420)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    stack = Adw.ViewStack()
+    switcher = Adw.ViewSwitcher()
+    switcher.set_stack(stack)
+    header.set_title_widget(switcher)
+    toolbar.add_top_bar(header)
+
+    def list_commits(commits) -> Gtk.Widget:
+        scroller = Gtk.ScrolledWindow(vexpand=True)
+        lst = Gtk.ListBox()
+        lst.add_css_class("boxed-list")
+        if not commits:
+            lst.append(Adw.ActionRow(title="None"))
+        for commit in commits:
+            lst.append(
+                Adw.ActionRow(
+                    title=commit.summary or "Empty commit message",
+                    subtitle=f"{commit.short_sha} · {commit.author.name}",
+                )
+            )
+        scroller.set_child(lst)
+        return scroller
+
+    stack.add_titled(list_commits(unreachable), "unreachable", f"Unreachable ({len(unreachable)})")
+    stack.add_titled(list_commits(reachable), "reachable", f"Reachable ({len(reachable)})")
+    toolbar.set_content(stack)
+    dialog.set_child(toolbar)
+    dialog.present(parent)
 
 
 def show_bypass(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:

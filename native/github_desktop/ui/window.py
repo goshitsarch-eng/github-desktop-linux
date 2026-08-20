@@ -1117,6 +1117,8 @@ class MainWindow(Adw.ApplicationWindow):
                 list(state.selected_commits) or ([commit] if commit else []),
                 state.changeset,
                 expanded=state.commit_summary_expanded,
+                shas_in_diff=list(state.shas_in_diff),
+                on_unreachable=lambda: self.store.show_popup(PopupType.UNREACHABLE_COMMITS),
             )
         clear_box(self._hist_files)
         for f in state.selected_commit_files:
@@ -1534,6 +1536,7 @@ class MainWindow(Adw.ApplicationWindow):
         repo = self.store.selected_repository
         if not repo:
             return
+        self.store.load_check_steps(repo)
         state = self.store.state_for(repo)
         runs = list(state.check_runs or [])
         popover = Gtk.Popover()
@@ -1543,17 +1546,25 @@ class MainWindow(Adw.ApplicationWindow):
         box.set_margin_bottom(8)
         box.set_margin_start(8)
         box.set_margin_end(8)
-        box.set_size_request(280, -1)
+        box.set_size_request(320, -1)
         if not runs:
             box.append(Gtk.Label(label="No checks for this branch", xalign=0))
         for run in runs[:20]:
             status = run.conclusion or run.status or "unknown"
-            row = Adw.ActionRow(title=run.name or "check", subtitle=status)
+            row = Adw.ExpanderRow(title=run.name or "check", subtitle=status)
             if run.html_url:
                 open_btn = Gtk.Button(icon_name="web-browser-symbolic")
                 open_btn.add_css_class("flat")
                 open_btn.connect("clicked", lambda *_ , url=run.html_url: open_external(url))
                 row.add_suffix(open_btn)
+            steps = getattr(run, "steps", None) or []
+            if steps:
+                for step in steps:
+                    step_status = step.conclusion or step.status or ""
+                    step_row = Adw.ActionRow(title=step.name or "step", subtitle=step_status)
+                    row.add_row(step_row)
+            else:
+                row.add_row(Adw.ActionRow(title="No job steps loaded yet"))
             box.append(row)
         failed = [r for r in runs if r.conclusion in {"failure", "timed_out", "cancelled"}]
         if failed:
@@ -1573,7 +1584,11 @@ class MainWindow(Adw.ApplicationWindow):
             pr = Gtk.Button(label="View checks on GitHub")
             pr.connect("clicked", lambda *_: open_external(state.current_pull_request.html_url + "/checks"))
             box.append(pr)
-        popover.set_child(box)
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_min_content_height(120)
+        scroller.set_max_content_height(360)
+        scroller.set_child(box)
+        popover.set_child(scroller)
         popover.popup()
 
     def _update_tutorial_banner(self, repo, state) -> None:

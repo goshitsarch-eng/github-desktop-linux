@@ -13,6 +13,7 @@ from ..errors import APIError, CopilotError
 from ..logging import get_logger
 from ..models import (
     Account,
+    CheckStep,
     GitHubRepository,
     Issue,
     PullRequest,
@@ -266,9 +267,28 @@ class GitHubAPI:
                 conclusion=r.get("conclusion"),
                 html_url=r.get("html_url"),
                 app_name=(r.get("app") or {}).get("name"),
+                check_suite_id=(r.get("check_suite") or {}).get("id"),
             )
             for r in runs
         ]
+
+    def fetch_workflow_jobs_for_sha(self, owner: str, name: str, sha: str) -> list[dict[str, Any]]:
+        try:
+            data = self.get(f"/repos/{owner}/{name}/actions/runs", query={"head_sha": sha})
+        except APIError:
+            return []
+        runs = (data or {}).get("workflow_runs") if isinstance(data, dict) else []
+        jobs: list[dict[str, Any]] = []
+        for run in runs or []:
+            run_id = run.get("id")
+            if not run_id:
+                continue
+            try:
+                payload = self.get(f"/repos/{owner}/{name}/actions/runs/{run_id}/jobs")
+            except APIError:
+                continue
+            jobs.extend((payload or {}).get("jobs") or [])
+        return jobs
 
     def rerequest_check_suite(self, owner: str, name: str, suite_id: int) -> None:
         self.post(f"/repos/{owner}/{name}/check-suites/{suite_id}/rerequest")

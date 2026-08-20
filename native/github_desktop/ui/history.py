@@ -36,10 +36,16 @@ class ExpandableCommitSummary(Gtk.Box):
         self._toggle.connect("clicked", self._on_toggle)
         self._sha_btn = Gtk.Button(label="Copy SHA")
         self._sha_btn.add_css_class("flat")
+        self._unreachable_btn = Gtk.Button(label="")
+        self._unreachable_btn.add_css_class("flat")
+        self._unreachable_btn.set_visible(False)
         actions = Gtk.Box(spacing=6)
         actions.append(self._toggle)
         actions.append(self._sha_btn)
+        actions.append(self._unreachable_btn)
         self._sha_btn.connect("clicked", lambda *_: self._sha and self._on_copy_sha(self._sha))
+        self._on_unreachable: Callable[[], None] | None = None
+        self._unreachable_btn.connect("clicked", lambda *_: self._on_unreachable and self._on_unreachable())
         self.append(self._summary)
         self.append(self._meta)
         self.append(self._stats)
@@ -55,14 +61,18 @@ class ExpandableCommitSummary(Gtk.Box):
         changeset: ChangesetData | None,
         *,
         expanded: bool = False,
+        shas_in_diff: list[str] | None = None,
+        on_unreachable: Callable[[], None] | None = None,
     ) -> None:
         self._expanded = expanded
+        self._on_unreachable = on_unreachable
         if not commits:
             self._summary.set_text("No commit selected")
             self._meta.set_text("")
             self._stats.set_text("")
             self._body.set_text("")
             self._body.set_visible(False)
+            self._unreachable_btn.set_visible(False)
             self._sha = ""
             return
         primary = commits[0]
@@ -95,6 +105,16 @@ class ExpandableCommitSummary(Gtk.Box):
         self._body.set_visible(self._expanded and bool(self._body_text))
         self._toggle.set_visible(bool(self._body_text) or len(commits) > 1)
         self._toggle.set_label("Collapse" if self._expanded else "Expand")
+        unreachable = 0
+        if len(commits) > 1:
+            in_diff = set(shas_in_diff or [])
+            unreachable = sum(1 for c in commits if c.sha not in in_diff)
+        if unreachable:
+            noun = "commit" if unreachable == 1 else "commits"
+            self._unreachable_btn.set_label(f"{unreachable} {noun} not in this diff")
+            self._unreachable_btn.set_visible(True)
+        else:
+            self._unreachable_btn.set_visible(False)
 
     def _on_toggle(self, *_args: object) -> None:
         self._expanded = not self._expanded
