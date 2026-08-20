@@ -72,6 +72,7 @@ from .progress import (
     GitProgressParser,
     GitRebaseParser,
     MultiCommitProgress,
+    format_rebase_value,
 )
 from .runner import GitResult, env_for_remote, git, git_path_is_repository, resolve_repository_root
 from .status import (
@@ -219,6 +220,36 @@ def is_binary_path(repo: str, path: str) -> bool:
     except GitError:
         pass
     return False
+
+
+_BINARY_LIST_RE = re.compile(r"-\t-\t(?:\0.+\0)?([^\0]*)", re.I)
+
+
+def get_binary_paths(repo: str, ref: str, conflicted_paths: Sequence[str] = ()) -> list[str]:
+    """Desktop `getBinaryPaths`: git-detected binaries plus `merge=binary` files."""
+    result = git(["diff", "--numstat", "-z", ref], repo, success_exit_codes={0, 1}, name="getBinaryPaths")
+    detected = [m.group(1) for m in _BINARY_LIST_RE.finditer(result.stdout)]
+    using_binary_driver: list[str] = []
+    paths = [p for p in conflicted_paths if p]
+    if paths:
+        check = git(
+            ["check-attr", "--stdin", "-z", "merge"],
+            repo,
+            stdin="\0".join(paths) + "\0",
+            name="getConflictedFilesUsingBinaryMergeDriver",
+        )
+        tokens = check.stdout.split("\0")
+        for i in range(0, len(tokens) - 2, 3):
+            path, attr, value = tokens[i], tokens[i + 1], tokens[i + 2]
+            if attr == "merge" and value == "binary" and path:
+                using_binary_driver.append(path)
+    seen: set[str] = set()
+    out: list[str] = []
+    for path in [*detected, *using_binary_driver]:
+        if path and path not in seen:
+            seen.add(path)
+            out.append(path)
+    return out
 
 
 def _diff_flags(hide_whitespace: bool = False, context_lines: int | None = None) -> list[str]:
@@ -975,6 +1006,22 @@ def fetch(
     git(args, repo, **kwargs)
 
 
+def fetch_refspec(
+    repo: str,
+    remote: str,
+    refspec: str,
+    *,
+    env: dict[str, str] | None = None,
+) -> None:
+    git(
+        ["fetch", remote, refspec],
+        repo,
+        env=env,
+        success_exit_codes={0, 128},
+        name="fetchRefspec",
+    )
+
+
 def pull(
     repo: str,
     remote: str = "origin",
@@ -1169,6 +1216,61 @@ def continue_cherry_pick(
 
 def abort_cherry_pick(repo: str) -> None:
     git(["cherry-pick", "--abort"], repo, name="abortCherry")
+
+
+def get_cherry_pick_snapshot(repo: str) -> dict[str, object] | None:
+    """Desktop `getCherryPickSnapshot` for resume progress after conflicts."""
+    if not _path_exists(repo, ".git/CHERRY_PICK_HEAD"):
+        return None
+    sequencer = os.path.join(repo, ".git", "sequencer")
+
+    def _read(name: str) -> str:
+        try:
+            return Path(os.path.join(sequencer, name)).read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+
+    abort_safety = _read("abort-safety")
+    head_sha = _read("head")
+    remaining_raw = _read("todo")
+    remaining: list[CommitOneLine] = []
+    if remaining_raw:
+        for line in remaining_raw.splitlines():
+            line = re.sub(r"^pick ", "", line).strip()
+            if " " not in line:
+                continue
+            sha, summary = line.split(" ", 1)
+            remaining.append(CommitOneLine(sha=sha, summary=summary))
+    if remaining:
+        already: list[CommitOneLine] = []
+        if abort_safety and head_sha and abort_safety != head_sha:
+            between = get_commits_between(repo, head_sha, abort_safety) or []
+            already = list(between)
+        commits = [*already, *remaining]
+        position = len(already) + 1
+        total = len(commits) or 1
+        return {
+            "commits": commits,
+            "remaining": remaining,
+            "position": position,
+            "total": total,
+            "value": format_rebase_value(position / total),
+            "current_commit_summary": remaining[0].summary,
+        }
+    try:
+        sha = Path(os.path.join(repo, ".git", "CHERRY_PICK_HEAD")).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    commit = get_commit(repo, sha)
+    summary = commit.summary if commit else ""
+    return {
+        "commits": [CommitOneLine(sha=sha, summary=summary)],
+        "remaining": [],
+        "position": 1,
+        "total": 1,
+        "value": 1.0,
+        "current_commit_summary": summary,
+    }
 
 
 def revert(repo: str, sha: str) -> None:
@@ -1468,6 +1570,8 @@ def interactive_rebase_todo(
     last_retained: str | None,
     todo_lines: Sequence[str],
     message_path: str | None = None,
+    *,
+    progress: Callable[[MultiCommitProgress], None] | None = None,
 ) -> RebaseResult:
     """Run `git rebase -i` with a pre-written todo list (squash / reorder)."""
     git_dir = _git_dir(repo)
@@ -1487,14 +1591,28 @@ def interactive_rebase_todo(
         Path(msg_editor).write_text(f"#!/bin/sh\ncp '{message_path}' \"$1\"\n", encoding="utf-8")
         os.chmod(msg_editor, 0o755)
         env["GIT_EDITOR"] = msg_editor
-    args = ["rebase", "-i", "--autosquash"]
     args = ["rebase", "-i"]
     if last_retained:
         args.append(last_retained)
     else:
         args.append("--root")
+    kwargs: dict = {"env": env, "name": "rebaseInteractive", "timeout": 60}
+    if progress is not None:
+        commits = []
+        for line in todo_lines:
+            parts = line.split(" ", 2)
+            if len(parts) >= 3:
+                commits.append(CommitOneLine(sha=parts[1], summary=parts[2]))
+        parser = GitRebaseParser(commits)
+
+        def on_line(line: str) -> None:
+            event = parser.parse(line)
+            if event is not None:
+                progress(event)
+
+        kwargs["on_stderr_line"] = on_line
     try:
-        git(args, repo, env=env, name="rebaseInteractive", timeout=60)
+        git(args, repo, **kwargs)
         return RebaseResult.COMPLETED_WITHOUT_ERROR
     except GitError:
         if get_rebase_internal_state(repo) is not None:
@@ -1508,6 +1626,8 @@ def squash_commits(
     squash_onto: Commit,
     last_retained: str | None,
     message: str,
+    *,
+    progress: Callable[[MultiCommitProgress], None] | None = None,
 ) -> RebaseResult:
     if not to_squash:
         raise GitError("No commits provided to squash.")
@@ -1551,7 +1671,7 @@ def squash_commits(
         # Rewrite first pick of squash group: after pick onto, subsequent squash
         # Use GIT_EDITOR to set the combined message when squash stops
         env_editor_file = msg_path
-        result = interactive_rebase_todo(repo, last_retained, todo, env_editor_file)
+        result = interactive_rebase_todo(repo, last_retained, todo, env_editor_file, progress=progress)
         return result
     finally:
         try:
@@ -1565,6 +1685,8 @@ def reorder_commits(
     to_move: Sequence[Commit],
     before: Commit | None,
     last_retained: str | None,
+    *,
+    progress: Callable[[MultiCommitProgress], None] | None = None,
 ) -> RebaseResult:
     move_shas = {c.sha for c in to_move}
     rev = f"{last_retained}..HEAD" if last_retained else None
@@ -1581,7 +1703,7 @@ def reorder_commits(
     if not inserted:
         insertion.extend(to_move)
     todo = [f"pick {c.sha} {c.summary}" for c in insertion]
-    return interactive_rebase_todo(repo, last_retained, todo)
+    return interactive_rebase_todo(repo, last_retained, todo, progress=progress)
 
 
 def get_ahead_behind(repo: str, upstream: str, branch: str | None = None) -> AheadBehind | None:

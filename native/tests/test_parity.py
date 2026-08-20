@@ -68,6 +68,9 @@ REQUIRED_GIT_FUNCS = [
     "parse_credential",
     "format_credential",
     "get_branch_checkouts",
+    "fetch_refspec",
+    "get_binary_paths",
+    "get_cherry_pick_snapshot",
 ]
 
 
@@ -220,5 +223,10 @@ def test_window_actions_cover_menus() -> None:
         "leftover conflict marker",
         "Leftover conflict markers remain",
         "Open Your Card",
+        "Explore projects on GitHub",
+        "You're done!",
+        "Explore GitHub",
+        "The branch also exists on the remote",
+        "Yes, delete this branch on the remote",
     ]:
         assert phrase in src

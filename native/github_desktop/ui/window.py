@@ -207,6 +207,7 @@ class MainWindow(Adw.ApplicationWindow):
         add("report-issue", lambda: open_external("https://github.com/goshitsarch-eng/github-desktop-linux/issues/new"))
         add("contact-support", lambda: open_external("https://github.com/contact?from_desktop_app=1"))
         add("show-guides", lambda: open_external("https://docs.github.com/en/desktop"))
+        add("github-explore", lambda: self._repo_op(self.store.show_github_explore))
         add("show-shortcuts", lambda: open_external("https://docs.github.com/en/desktop/installing-and-configuring-github-desktop/overview/keyboard-shortcuts"))
         add("cut", lambda: self._edit_action("cut"))
         add("copy", lambda: self._edit_action("copy"))
@@ -490,6 +491,9 @@ class MainWindow(Adw.ApplicationWindow):
             on_skip_pr=self.store.skip_tutorial_pull_request,
             on_preferences=lambda: show_preferences(self, self.store),
             on_exit=lambda: self.store.show_popup(PopupType.CONFIRM_EXIT_TUTORIAL),
+            on_explore=lambda: self._repo_op(self.store.show_github_explore),
+            on_create_repository=lambda: self.store.show_popup(PopupType.CREATE_REPOSITORY),
+            on_add_repository=lambda: self.store.show_popup(PopupType.ADD_REPOSITORY),
         )
         self._tutorial_panel.set_visible(False)
         self._work_area = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
@@ -638,6 +642,7 @@ class MainWindow(Adw.ApplicationWindow):
         help_m.append("Report issue…", "win.report-issue")
         help_m.append("Contact GitHub support…", "win.contact-support")
         help_m.append("Show user guides", "win.show-guides")
+        help_m.append("Explore GitHub", "win.github-explore")
         help_m.append("Show keyboard shortcuts", "win.show-shortcuts")
         help_m.append("Show logs in file manager", "win.show-logs")
         help_m.append("Release notes", "win.release-notes")

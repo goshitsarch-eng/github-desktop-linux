@@ -53,6 +53,7 @@ from .git import (
     get_commit_range_diff,
     get_commits,
     get_commits_between,
+    get_cherry_pick_snapshot,
     get_boolean_config_value,
     get_config_value,
     get_default_branch,
@@ -2047,7 +2048,9 @@ class AppStore:
                     commits = get_commits_between(repo.path, state.base_branch_tip, state.original_branch_tip) or []
                 return continue_rebase(repo.path, progress=progress, commits=commits), get_status(repo.path)
             if kind == MultiCommitOperationKind.CHERRY_PICK:
-                return continue_cherry_pick(repo.path, progress=progress), get_status(repo.path)
+                snapshot = get_cherry_pick_snapshot(repo.path)
+                commits = list(snapshot["commits"]) if snapshot else []
+                return continue_cherry_pick(repo.path, progress=progress, commits=commits), get_status(repo.path)
             files = self.state_for(repo).status.working_directory.files if self.state_for(repo).status else []
             create_merge_commit(repo.path, files)
             return None, get_status(repo.path)
@@ -2263,6 +2266,16 @@ class AppStore:
 
     def open_working_directory(self, repo: Repository) -> None:
         open_file_manager(repo.path)
+
+    def show_github_explore(self, repo: Repository | None = None) -> None:
+        repo = repo or self.selected_repository
+        if repo and repo.github and repo.github.html_url:
+            from urllib.parse import urlparse, urlunparse
+
+            parsed = urlparse(repo.github.html_url)
+            open_external(urlunparse((parsed.scheme, parsed.netloc, "/explore", "", "", "")))
+            return
+        open_external("https://github.com/explore")
 
     def view_on_github(self, repo: Repository) -> None:
         if repo.github:

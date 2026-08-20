@@ -32,6 +32,9 @@ class TutorialPanel(Gtk.Box):
         on_skip_pr: Callable[[], None],
         on_preferences: Callable[[], None],
         on_exit: Callable[[], None],
+        on_explore: Callable[[], None] | None = None,
+        on_create_repository: Callable[[], None] | None = None,
+        on_add_repository: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.add_css_class("tutorial-panel")
@@ -42,6 +45,9 @@ class TutorialPanel(Gtk.Box):
         self._on_skip_pr = on_skip_pr
         self._on_preferences = on_preferences
         self._on_exit = on_exit
+        self._on_explore = on_explore
+        self._on_create_repository = on_create_repository
+        self._on_add_repository = on_add_repository
         self._expanders: dict[TutorialStep, Gtk.Expander] = {}
         title = Gtk.Label(label="Get started", xalign=0)
         title.add_css_class("title-4")
@@ -49,8 +55,28 @@ class TutorialPanel(Gtk.Box):
         subtitle = Gtk.Label(label="Complete these steps to learn GitHub Desktop.", xalign=0, wrap=True)
         subtitle.add_css_class("dim-label")
         self.append(subtitle)
-        self._done = Gtk.Label(xalign=0, wrap=True)
-        self._done.add_css_class("heading")
+        self._done = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        done_heading = Gtk.Label(label="You're done!", xalign=0)
+        done_heading.add_css_class("heading")
+        done_copy = Gtk.Label(
+            label="You’ve learned the basics on how to use GitHub Desktop. Here are some suggestions for what to do next.",
+            wrap=True,
+            xalign=0,
+        )
+        self._done.append(done_heading)
+        self._done.append(done_copy)
+        explore = Gtk.Button(label="Explore projects on GitHub")
+        explore.add_css_class("pill")
+        explore.connect("clicked", lambda *_: self._on_explore and self._on_explore())
+        create = Gtk.Button(label="Create a new repository")
+        create.add_css_class("pill")
+        create.connect("clicked", lambda *_: self._on_create_repository and self._on_create_repository())
+        add_local = Gtk.Button(label="Add a local repository")
+        add_local.add_css_class("pill")
+        add_local.connect("clicked", lambda *_: self._on_add_repository and self._on_add_repository())
+        self._done.append(explore)
+        self._done.append(create)
+        self._done.append(add_local)
         self._done.set_visible(False)
         self.append(self._done)
         steps = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -137,8 +163,6 @@ class TutorialPanel(Gtk.Box):
     def refresh(self, current: TutorialStep, editor_name: str | None = None) -> None:
         done = current == TutorialStep.ALL_COMPLETE
         self._done.set_visible(done)
-        if done:
-            self._done.set_text("You're done! You can keep using this repository or exit the tutorial.")
         try:
             current_index = ORDERED.index(current)
         except ValueError:

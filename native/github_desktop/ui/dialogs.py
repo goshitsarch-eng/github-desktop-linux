@@ -12,8 +12,10 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, Gtk
 
+from ..changelog import load_release_notes
 from ..thank_you import thank_you_note
 from ..custom_integration import TARGET_PATH_ARGUMENT
+from ..editors import get_available_editors
 from ..errors import ValidationError
 from ..git.ops import (
     add_remote,
@@ -1218,19 +1220,50 @@ def show_delete_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, A
     name = payload.get("branch") or (state.status.current_branch if state.status else "")
     if not name:
         return
+    branch = next((b for b in state.branches if b.name == name or b.name_without_remote == name), None)
+    exists_on_remote = bool(branch and branch.upstream) and not remote
+    dialog = Adw.AlertDialog(
+        heading="Delete branch?",
+        body=f"Delete branch {name}?\n\nThis action cannot be undone.",
+    )
+    include_remote = Gtk.CheckButton(label="Yes, delete this branch on the remote")
+    if exists_on_remote:
+        extra = Gtk.Label(
+            label="The branch also exists on the remote, do you wish to delete it there as well?",
+            wrap=True,
+            xalign=0,
+        )
+        extra.add_css_class("dim-label")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.append(extra)
+        box.append(include_remote)
+        dialog.set_extra_child(box)
+    dialog.add_response("cancel", "Cancel")
+    dialog.add_response("delete", "Delete")
+    dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+    dialog.set_default_response("cancel")
 
-    def confirm() -> None:
+    def done(_d, response: str) -> None:
+        if response != "delete":
+            return
         from ..git.ops import delete_local_branch, delete_remote_branch
 
-        if remote:
+        if remote or include_remote.get_active():
             remotes = state.remotes
+            remote_name = (branch.upstream.split("/", 1)[0] if branch and branch.upstream and "/" in branch.upstream else None)
             if remotes:
-                delete_remote_branch(repo.path, remotes[0].name, name, store.env_for_repo(repo, remotes[0].url))
-        else:
+                rname = remote_name or remotes[0].name
+                local = name if not remote else name
+                try:
+                    delete_remote_branch(repo.path, rname, local, store.env_for_repo(repo, remotes[0].url))
+                except Exception:
+                    pass
+        if not remote:
             delete_local_branch(repo.path, name)
         store.refresh_repository(repo)
 
-    _alert(parent, "Delete branch?", f"Delete {name}? This cannot be undone.", destructive=True, confirm="Delete", on_confirm=confirm)
+    dialog.connect("response", done)
+    dialog.present(parent)
 
 
 def show_discard(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:

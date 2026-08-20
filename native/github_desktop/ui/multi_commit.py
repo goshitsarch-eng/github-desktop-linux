@@ -15,6 +15,7 @@ from gi.repository import Adw, GLib, Gtk
 from ..git.ops import (
     determine_mergeability,
     get_ahead_behind_range,
+    get_binary_paths,
     get_commits_between,
     get_files_with_conflict_markers,
     warn_about_remote_commits,
@@ -768,6 +769,15 @@ def show_conflicts_dialog(parent: Gtk.Window, store: AppStore, kind: str | None 
     except Exception:
         leftover = {}
     leftover_count = sum(leftover.values())
+    ref = "HEAD"
+    if status.merge_head_found:
+        ref = "MERGE_HEAD"
+    elif status.rebase_internal_state:
+        ref = "REBASE_HEAD"
+    try:
+        binary_paths = set(get_binary_paths(repo.path, ref, [f.path for f in files]))
+    except Exception:
+        binary_paths = set()
     dialog = Adw.Dialog()
     dialog.set_content_width(520)
     dialog.set_content_height(480)
@@ -801,7 +811,7 @@ def show_conflicts_dialog(parent: Gtk.Window, store: AppStore, kind: str | None 
     listbox = Gtk.ListBox()
     listbox.add_css_class("boxed-list")
     for file in files:
-        row = _conflict_row(parent, store, repo, file)
+        row = _conflict_row(parent, store, repo, file, binary=file.path in binary_paths)
         listbox.append(row)
     scroller.set_child(listbox)
     box.append(scroller)
@@ -869,8 +879,9 @@ def show_conflicts_dialog(parent: Gtk.Window, store: AppStore, kind: str | None 
     _ = resolved
 
 
-def _conflict_row(parent: Gtk.Window, store: AppStore, repo, file: WorkingDirectoryFileChange) -> Adw.ActionRow:
-    row = Adw.ActionRow(title=file.path, subtitle=file.status.kind.value)
+def _conflict_row(parent: Gtk.Window, store: AppStore, repo, file: WorkingDirectoryFileChange, binary: bool = False) -> Adw.ActionRow:
+    subtitle = "Binary file" if binary else file.status.kind.value
+    row = Adw.ActionRow(title=file.path, subtitle=subtitle)
     ours = Gtk.Button(label="Use ours")
     theirs = Gtk.Button(label="Use theirs")
     ours.add_css_class("flat")

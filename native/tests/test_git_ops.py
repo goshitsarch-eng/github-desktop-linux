@@ -269,3 +269,11 @@ def test_recent_branches_from_reflog(git_repo: Path) -> None:
     assert "branch-1" in limited
     assert "branch-2" in limited
 
+
+def test_binary_paths_and_fetch_refspec(git_repo: Path) -> None:
+    from github_desktop.git.ops import fetch_refspec, get_binary_paths, get_cherry_pick_snapshot
+
+    assert get_binary_paths(str(git_repo), "HEAD") == []
+    assert get_cherry_pick_snapshot(str(git_repo)) is None
+    fetch_refspec(str(git_repo), "origin", "refs/heads/main")
+

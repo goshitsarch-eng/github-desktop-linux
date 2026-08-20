@@ -125,6 +125,7 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
                 show_acknowledgements,
                 show_copilot_disclaimer,
                 show_create_branch,
+                show_delete_branch,
                 show_filtered_commit,
                 show_lfs_mismatch,
                 show_thank_you,
@@ -147,6 +148,7 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
 
             CompletenessDonut({"success": 2, "failure": 1, "in_progress": 1})
             show_create_branch(win, store, {})
+            show_delete_branch(win, store, {"branch": "main"})
             show_acknowledgements(win)
             show_copilot_disclaimer(win, store)
             show_warn_undo(win, store, {"is_working_directory_clean": False})
