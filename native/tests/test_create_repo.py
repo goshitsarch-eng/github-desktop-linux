@@ -90,6 +90,20 @@ def test_gitignore_names_include_desktop_github_templates() -> None:
     assert len(names) >= 100
 
 
+def test_license_templates_include_choosealicense_set() -> None:
+    from github_desktop.create_repo import license_templates
+
+    licenses = license_templates()
+    names = [item.name for item in licenses]
+    assert names[0] in {"MIT License", "Apache License 2.0", "GNU General Public License v3.0"}
+    assert "MIT License" in names
+    assert "Apache License 2.0" in names
+    assert "GNU General Public License v3.0" in names
+    assert "BSD 3-Clause \"New\" or \"Revised\" License" in names
+    assert len(licenses) >= 40
+    assert any(item.featured for item in licenses)
+
+
 def test_create_repository_skips_readme_by_default(isolated_config, tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("GIT_AUTHOR_NAME", "Test User")
     monkeypatch.setenv("GIT_AUTHOR_EMAIL", "test@example.com")

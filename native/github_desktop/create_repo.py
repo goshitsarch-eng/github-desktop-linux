@@ -322,6 +322,43 @@ class LicenseTemplate:
     name: str
     featured: bool
     body: str
+    hidden: bool = False
+
+
+LICENSE_DATA_DIR = Path(__file__).resolve().parent / "data" / "licenses"
+
+
+def _parse_license_file(path: Path) -> LicenseTemplate | None:
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        return None
+    rest = text[3:]
+    end = rest.find("\n---")
+    if end < 0:
+        return None
+    header, body = rest[:end], rest[end + 4 :].lstrip("\n")
+    meta: dict[str, str] = {}
+    for line in header.splitlines():
+        if not line or line[0] in " \t-" or ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        meta[key.strip()] = value.strip()
+    name = meta.get("title") or path.stem
+    featured = meta.get("featured", "false").lower() == "true"
+    hidden = meta.get("hidden", "false").lower() == "true"
+    return LicenseTemplate(name=name, featured=featured, body=body, hidden=hidden)
+
+
+def _licenses_from_disk() -> list[LicenseTemplate]:
+    """Load choosealicense.com `_licenses` files vendored under data/licenses."""
+    if not LICENSE_DATA_DIR.is_dir():
+        return []
+    licenses = []
+    for path in sorted(LICENSE_DATA_DIR.glob("*.txt")):
+        parsed = _parse_license_file(path)
+        if parsed is not None:
+            licenses.append(parsed)
+    return licenses
 
 
 LICENSE_TEMPLATES: tuple[LicenseTemplate, ...] = (
@@ -466,8 +503,10 @@ For more information, please refer to <https://unlicense.org>
 
 
 def license_templates() -> list[LicenseTemplate]:
-    featured = [item for item in LICENSE_TEMPLATES if item.featured]
-    rest = sorted((item for item in LICENSE_TEMPLATES if not item.featured), key=lambda item: item.name)
+    """Desktop `getLicenses`: featured first, then remaining by name."""
+    licenses = _licenses_from_disk() or list(LICENSE_TEMPLATES)
+    featured = [item for item in licenses if item.featured]
+    rest = sorted((item for item in licenses if not item.featured), key=lambda item: item.name)
     return featured + rest
 
 
