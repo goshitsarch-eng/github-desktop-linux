@@ -1436,14 +1436,25 @@ class AppStore:
         files = [f for f in state.status.working_directory.files if f.include]
         if not files and not amend:
             raise ValidationError("No files selected for commit")
-        filtered = (
-            state.file_filter != ChangesListFilter.ALL.value
-            or state.filter_new
-            or state.filter_modified
-            or state.filter_deleted
-            or bool(state.filter_text)
+        from .filter_changes import (
+            file_list_filter_state_from_view,
+            filter_changed_files,
+            is_committing_file_hidden_by_filter,
         )
-        if filtered and self.settings.confirm_commit_filtered_changes and not amend:
+
+        all_files = list(state.status.working_directory.files)
+        filters = file_list_filter_state_from_view(state)
+        visible = filter_changed_files(all_files, filters)
+        if (
+            self.settings.confirm_commit_filtered_changes
+            and not amend
+            and is_committing_file_hidden_by_filter(
+                [f.path for f in files],
+                [f.path for f in visible],
+                len(all_files),
+                filters,
+            )
+        ):
             self.show_popup(
                 PopupType.CONFIRM_COMMIT_FILTERED_CHANGES,
                 on_commit=lambda: self._commit_now(repo, summary, description, amend=amend, co_authors=co_authors),

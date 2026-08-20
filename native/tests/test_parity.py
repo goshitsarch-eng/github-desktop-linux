@@ -235,6 +235,9 @@ def test_window_actions_cover_menus() -> None:
 
     src += open(author_input_mod.__file__, encoding="utf-8").read()
     src += open(ci_checks_mod.__file__, encoding="utf-8").read()
+    from github_desktop import filter_changes as filter_changes_mod
+
+    src += open(filter_changes_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -446,5 +449,10 @@ def test_window_actions_cover_menus() -> None:
         "You can only open pull requests against remote branches.",
         "Sorry, I can't find that repository",
         "push-last-fetched",
+        "isCommittingFileHiddenByFilter",
+        "getNoResultsMessage",
+        "Sorry, I can't find any changed files matching the following filters:",
+        "isIncludedInCommit",
+        "Included in commit",
     ]:
         assert phrase in src

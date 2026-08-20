@@ -184,3 +184,66 @@ def test_format_commit_attribution_includes_committer_and_coauthors() -> None:
     from github_desktop.push_pull import format_commit_relative_time
 
     assert format_commit_relative_time(when, now=when) == "just now"
+
+
+def test_filter_changes_no_results_and_hidden_commit() -> None:
+    from github_desktop.filter_changes import (
+        FileListFilterState,
+        apply_filters,
+        get_no_results_message,
+        has_active_filters,
+        is_committing_file_hidden_by_filter,
+    )
+    from github_desktop.models import WorkingDirectoryFileChange
+
+    new = WorkingDirectoryFileChange("new.txt", FileStatus(AppFileStatusKind.NEW))
+    modified = WorkingDirectoryFileChange("old.txt", FileStatus(AppFileStatusKind.MODIFIED))
+    excluded = modified.with_include(False)
+    filters = FileListFilterState(filter_text="nope", is_new_file=True)
+    assert has_active_filters(filters)
+    assert get_no_results_message(filters) == (
+        'Sorry, I can\'t find any changed files matching the following filters: "nope" and New files'
+    )
+    assert apply_filters(new, FileListFilterState(is_new_file=True))
+    assert not apply_filters(modified, FileListFilterState(is_new_file=True))
+    assert not apply_filters(new, FileListFilterState(is_new_file=True, is_modified_file=True))
+    assert excluded.is_excluded_from_commit()
+    assert new.is_included_in_commit()
+    assert is_committing_file_hidden_by_filter(
+        ["new.txt", "old.txt"],
+        ["new.txt"],
+        2,
+        FileListFilterState(is_new_file=True),
+    )
+    assert not is_committing_file_hidden_by_filter(
+        ["new.txt"],
+        ["new.txt"],
+        2,
+        FileListFilterState(is_new_file=True),
+    )
+
+
+def test_commit_warns_only_when_included_files_are_hidden(isolated_config, git_repo) -> None:
+    from github_desktop.git.ops import get_status
+    from github_desktop.models import PopupType, WorkingDirectoryStatus
+
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    (git_repo / "new.txt").write_text("n\n", encoding="utf-8")
+    (git_repo / "README.md").write_text("hello\nchanged\n", encoding="utf-8")
+    state = store.state_for(repo)
+    state.status = get_status(str(git_repo))
+    state.filter_new = True
+    store.commit(repo, "hidden files")
+    assert store.popup is not None
+    assert store.popup.type == PopupType.CONFIRM_COMMIT_FILTERED_CHANGES
+    store.close_popup()
+    updated = [
+        file if file.is_new() or file.is_untracked() else file.with_include(False)
+        for file in state.status.working_directory.files
+    ]
+    state.status.working_directory = WorkingDirectoryStatus.from_files(updated)
+    store.commit(repo, "only visible")
+    assert store.popup is None

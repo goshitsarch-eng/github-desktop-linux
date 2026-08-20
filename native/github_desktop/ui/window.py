@@ -894,7 +894,7 @@ class MainWindow(Adw.ApplicationWindow):
         left.set_size_request(280, -1)
         self._filter = Gtk.SearchEntry()
         self._filter.set_placeholder_text("Filter changed files")
-        self._filter.connect("search-changed", lambda *_: self._refresh_files())
+        self._filter.connect("search-changed", self._on_changes_filter_text)
         left.append(self._filter)
         chips = Gtk.Box(spacing=4)
         chips.add_css_class("filter-bar")
@@ -1491,45 +1491,47 @@ class MainWindow(Adw.ApplicationWindow):
         if not repo or not hasattr(self, "_file_list"):
             return
         state = self.store.state_for(repo)
-        files = list(state.status.working_directory.files) if state.status else []
-        needle = self._filter.get_text().lower()
-        if needle:
-            files = [f for f in files if needle in f.path.lower()]
-        mode = state.file_filter
-        if mode == ChangesListFilter.INCLUDED.value:
-            files = [f for f in files if f.include]
-        elif mode == ChangesListFilter.EXCLUDED.value:
-            files = [f for f in files if not f.include]
-        if state.filter_new or state.filter_modified or state.filter_deleted:
-            allowed = set()
-            if state.filter_new:
-                allowed |= {AppFileStatusKind.NEW, AppFileStatusKind.UNTRACKED}
-            if state.filter_modified:
-                allowed |= {
-                    AppFileStatusKind.MODIFIED,
-                    AppFileStatusKind.RENAMED,
-                    AppFileStatusKind.COPIED,
-                    AppFileStatusKind.CONFLICTED,
-                }
-            if state.filter_deleted:
-                allowed |= {AppFileStatusKind.DELETED}
-            files = [f for f in files if f.status.kind in allowed]
+        from ..filter_changes import (
+            file_list_filter_state_from_view,
+            filter_changed_files,
+            get_no_results_message,
+        )
+
         self._building = True
-        clear_box(self._file_list)
+        if hasattr(self, "_filter") and self._filter.get_text() != (state.filter_text or ""):
+            self._filter.set_text(state.filter_text or "")
         all_files = list(state.status.working_directory.files) if state.status else []
+        filters = file_list_filter_state_from_view(state)
+        files = filter_changed_files(all_files, filters)
+        clear_box(self._file_list)
         if not all_files and hasattr(self, "_changes_pages"):
             self._changes_pages.set_visible_child_name("suggested")
             self._populate_suggested_actions(state)
         else:
             if hasattr(self, "_changes_pages"):
                 self._changes_pages.set_visible_child_name("files")
-            for file in files:
-                self._file_list.append(self._file_row(file))
+            if not files:
+                msg = get_no_results_message(filters) or "No matching files"
+                empty = Adw.ActionRow(title=msg)
+                empty.set_activatable(False)
+                empty.set_selectable(False)
+                self._file_list.append(empty)
+            else:
+                for file in files:
+                    self._file_list.append(self._file_row(file))
         include_all = state.status.working_directory.include_all if state.status else True
         self._include_all.set_inconsistent(include_all is None)
         self._include_all.set_active(bool(include_all))
         self._building = False
         self._render_working_diff(state)
+
+    def _on_changes_filter_text(self, *_args: object) -> None:
+        if self._building:
+            return
+        repo = self.store.selected_repository
+        if repo:
+            self.store.state_for(repo).filter_text = self._filter.get_text()
+        self._refresh_files()
 
     def _populate_suggested_actions(self, state) -> None:
         if not hasattr(self, "_suggested"):

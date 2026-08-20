@@ -587,6 +587,26 @@ class WorkingDirectoryFileChange:
     def include(self) -> bool:
         return self.selection.get_selection_type() != DiffSelectionType.NONE
 
+    def is_included_in_commit(self) -> bool:
+        """Desktop `isIncludedInCommit` (fully selected)."""
+        return self.selection.get_selection_type() == DiffSelectionType.ALL
+
+    def is_excluded_from_commit(self) -> bool:
+        """Desktop `isExcludedFromCommit`."""
+        return self.selection.get_selection_type() == DiffSelectionType.NONE
+
+    def is_new(self) -> bool:
+        return self.status.kind == AppFileStatusKind.NEW
+
+    def is_untracked(self) -> bool:
+        return self.status.kind == AppFileStatusKind.UNTRACKED
+
+    def is_modified(self) -> bool:
+        return self.status.kind == AppFileStatusKind.MODIFIED
+
+    def is_deleted(self) -> bool:
+        return self.status.kind == AppFileStatusKind.DELETED
+
     def with_include(self, include: bool) -> "WorkingDirectoryFileChange":
         selection = self.selection.with_select_all() if include else self.selection.with_select_none()
         return replace(self, selection=selection)
