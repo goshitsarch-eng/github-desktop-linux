@@ -80,6 +80,53 @@ def test_askpass_parses_host_and_auto_accepts_github_rsa() -> None:
     assert user.kind == "password" and user.username == "git@github.com"
 
 
+def test_delete_most_recent_ssh_credential(isolated_config) -> None:
+    from github_desktop import secrets
+    from github_desktop.git.askpass import (
+        SSH_SERVICE,
+        delete_most_recent_ssh_credential,
+        remove_most_recent_ssh_credential,
+        set_most_recent_ssh_credential,
+    )
+
+    secrets.set_password(SSH_SERVICE, "/tmp/id_rsa", "wrong")
+    set_most_recent_ssh_credential("/tmp/id_rsa")
+    remove_most_recent_ssh_credential()
+    assert secrets.get_password(SSH_SERVICE, "/tmp/id_rsa") == "wrong"
+    set_most_recent_ssh_credential("/tmp/id_rsa")
+    delete_most_recent_ssh_credential()
+    assert secrets.get_password(SSH_SERVICE, "/tmp/id_rsa") is None
+
+
+def test_git_ssh_auth_failure_deletes_recent_credential(isolated_config, monkeypatch) -> None:
+    import subprocess
+
+    import pytest
+
+    from github_desktop import secrets
+    from github_desktop.errors import GitError
+    from github_desktop.git.askpass import SSH_SERVICE, set_most_recent_ssh_credential
+    from github_desktop.git.runner import git
+
+    secrets.set_password(SSH_SERVICE, "git@github.com", "bad")
+    set_most_recent_ssh_credential("git@github.com")
+    monkeypatch.setattr("github_desktop.git.runner.find_git", lambda: "/usr/bin/git")
+
+    def fake_run(*_a, **_k):
+        return subprocess.CompletedProcess(
+            ["git", "fetch"],
+            128,
+            stdout=b"",
+            stderr=b"Permission denied (publickey).\n",
+        )
+
+    monkeypatch.setattr("github_desktop.git.runner.subprocess.run", fake_run)
+    with pytest.raises(GitError) as exc:
+        git(["fetch"], "/tmp", name="fetch")
+    assert exc.value.git_error == "SSHAuthenticationFailed"
+    assert secrets.get_password(SSH_SERVICE, "git@github.com") is None
+
+
 def test_forked_remote_prune_keeps_pr_and_branch_remotes() -> None:
     remotes = [
         Remote("origin", "https://github.com/desktop/desktop.git"),

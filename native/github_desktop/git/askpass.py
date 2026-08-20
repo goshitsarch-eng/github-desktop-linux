@@ -39,6 +39,7 @@ _USER_RE = r"^(.+@.+)'s password:\s*$"
 _prompt_callback: Callable[[str], str] | None = None
 _server_thread: threading.Thread | None = None
 _server_sock: socket.socket | None = None
+_most_recent_ssh_account: str | None = None
 
 
 @dataclass
@@ -89,6 +90,7 @@ def auto_answer(parsed: AskpassRequest) -> str | None:
 
             stored = secrets.get_password(SSH_SERVICE, parsed.key_path)
             if stored:
+                set_most_recent_ssh_credential(parsed.key_path)
                 return stored
         except Exception:
             pass
@@ -98,10 +100,38 @@ def auto_answer(parsed: AskpassRequest) -> str | None:
 
             stored = secrets.get_password(SSH_SERVICE, parsed.username)
             if stored:
+                set_most_recent_ssh_credential(parsed.username)
                 return stored
         except Exception:
             pass
     return None
+
+
+def set_most_recent_ssh_credential(account: str) -> None:
+    """Desktop `setMostRecentSSHCredential` for this git operation."""
+    global _most_recent_ssh_account
+    _most_recent_ssh_account = account
+
+
+def remove_most_recent_ssh_credential() -> None:
+    """Desktop `removeMostRecentSSHCredential` (keep stored secret)."""
+    global _most_recent_ssh_account
+    _most_recent_ssh_account = None
+
+
+def delete_most_recent_ssh_credential() -> None:
+    """Desktop `deleteMostRecentSSHCredential` after SSH auth failure."""
+    global _most_recent_ssh_account
+    account = _most_recent_ssh_account
+    _most_recent_ssh_account = None
+    if not account:
+        return
+    try:
+        from .. import secrets
+
+        secrets.delete_password(SSH_SERVICE, account)
+    except Exception:
+        log.debug("could not delete rejected SSH credential", exc_info=True)
 
 
 def socket_path() -> Path:

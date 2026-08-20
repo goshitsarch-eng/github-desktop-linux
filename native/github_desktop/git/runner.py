@@ -354,8 +354,13 @@ def git(
     if result.exit_code not in success:
         message = result.stderr.strip() or result.stdout.strip() or f"git {name} failed"
         from ..errors import classify_git_error, get_description_for_error
+        from .askpass import delete_most_recent_ssh_credential, remove_most_recent_ssh_credential
 
         git_error = classify_git_error(result.stderr, result.stdout)
+        if git_error in {"SSHAuthenticationFailed", "SSHPermissionDenied"}:
+            delete_most_recent_ssh_credential()
+        else:
+            remove_most_recent_ssh_credential()
         friendly = get_description_for_error(git_error, result.stderr)
         if friendly:
             message = friendly
@@ -368,6 +373,9 @@ def git(
             git_error=git_error,
             path=str(cwd),
         )
+    from .askpass import remove_most_recent_ssh_credential
+
+    remove_most_recent_ssh_credential()
     return result
 
 

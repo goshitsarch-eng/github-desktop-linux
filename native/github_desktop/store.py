@@ -1796,6 +1796,9 @@ class AppStore:
                     account = parsed.key_path or parsed.username
                     if account:
                         secrets.set_password("GitHub Desktop SSH", account, value)
+                        from .git.askpass import set_most_recent_ssh_credential
+
+                        set_most_recent_ssh_credential(account)
                 event.set()
 
             if parsed.kind == "host":

@@ -662,5 +662,7 @@ def test_window_actions_cover_menus() -> None:
         "GIT_USER_AGENT",
         "create-fork",
         "Creating fork…",
+        "deleteMostRecentSSHCredential",
+        "setMostRecentSSHCredential",
     ]:
         assert phrase in src
