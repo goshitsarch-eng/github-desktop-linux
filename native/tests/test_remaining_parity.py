@@ -7,6 +7,7 @@ from pathlib import Path
 from github_desktop.errors import overwritten_files_from_error, parse_saml_organization
 from github_desktop.git.ops import ensure_upstream_remote, get_remotes
 from github_desktop.models import (
+    AheadBehind,
     Banner,
     BannerType,
     ForkContributionTarget,
@@ -114,6 +115,85 @@ def test_open_pull_request_gates_unpublished_branch(isolated_config, git_repo: P
     assert store.popup is not None
     assert store.popup.type == PopupType.PUSH_BRANCH_COMMITS
     assert store.popup.payload.get("unpublished") is True
+
+
+def test_create_pull_request_opens_browser(isolated_config, git_repo: Path, monkeypatch) -> None:
+    opened: list[str] = []
+    monkeypatch.setattr("github_desktop.store.open_external", lambda url: opened.append(url))
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    repo.github = GitHubRepository("app", "me", "https://github.com/me/app", "https://github.com/me/app.git")
+    store.state_for(repo).ahead_behind = AheadBehind(ahead=0, behind=0)
+    store.open_pull_request(repo)
+    assert any("/pull/new/" in url for url in opened)
+    assert store.popup is None
+
+
+def test_preview_pull_request_stays_in_app(isolated_config, git_repo: Path) -> None:
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    repo.github = GitHubRepository("app", "me", "https://github.com/me/app", "https://github.com/me/app.git")
+    store.state_for(repo).ahead_behind = AheadBehind(ahead=0, behind=0)
+    store.preview_pull_request(repo)
+    assert store.popup is not None
+    assert store.popup.type == PopupType.START_PULL_REQUEST
+
+
+def test_push_branch_commits_payload_has_create_without_pushing(isolated_config, git_repo: Path) -> None:
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    repo.github = GitHubRepository("app", "me", "https://github.com/me/app", "https://github.com/me/app.git")
+    store.state_for(repo).ahead_behind = AheadBehind(ahead=2, behind=0)
+    store.open_pull_request(repo)
+    assert store.popup is not None
+    assert store.popup.type == PopupType.PUSH_BRANCH_COMMITS
+    assert callable(store.popup.payload.get("on_skip"))
+
+
+def test_retry_clone_action(isolated_config, monkeypatch) -> None:
+    called: list[tuple] = []
+
+    def fake_clone(self, url, path, branch=None, account=None, tutorial=False):
+        called.append((url, path, branch, tutorial))
+
+    monkeypatch.setattr(AppStore, "clone", fake_clone)
+    store = AppStore()
+    store._retry_action = {
+        "kind": "clone",
+        "url": "https://github.com/acme/app.git",
+        "path": "/tmp/app",
+        "branch": "dev",
+        "tutorial": False,
+    }
+    store.retry_last_remote_action()
+    assert called == [("https://github.com/acme/app.git", "/tmp/app", "dev", False)]
+
+
+def test_ignore_path_escapes_gitignore_specials(isolated_config, git_repo: Path) -> None:
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    store.ignore_path(repo, "[never]!gonna*give#you?_.up")
+    text = (git_repo / ".gitignore").read_text(encoding="utf-8")
+    assert "\\[never\\]\\!gonna\\*give\\#you\\?_.up" in text
+
+
+def test_group_cloneable_repositories() -> None:
+    from github_desktop.clone_groups import YOUR_REPOSITORIES, group_cloneable_repositories
+
+    mine = GitHubRepository("mine", "octocat", "https://github.com/octocat/mine", "https://github.com/octocat/mine.git")
+    org = GitHubRepository("lib", "acme", "https://github.com/acme/lib", "https://github.com/acme/lib.git")
+    other = GitHubRepository("tools", "widgets", "https://github.com/widgets/tools", "https://github.com/widgets/tools.git")
+    grouped = group_cloneable_repositories([org, mine, other], "octocat")
+    assert [name for name, _items in grouped] == [YOUR_REPOSITORIES, "acme", "widgets"]
+    assert grouped[0][1][0].name == "mine"
 
 
 def test_sanitize_remote_url_strips_userinfo() -> None:

@@ -581,6 +581,9 @@ class MainWindow(Adw.ApplicationWindow):
             on_cherry_pick=lambda b, sha: self._repo_op(
                 lambda r: self.store.cherry_pick_commits(r, [s for s in str(sha).split(",") if s], target_branch=b.name)
             ),
+            on_cherry_pick_pr=lambda pr, sha: self._repo_op(
+                lambda r: self.store.cherry_pick_onto_pull_request(r, pr, [s for s in str(sha).split(",") if s])
+            ),
         )
         self._branch_btn.set_popover(self._branches_foldout)
         header.pack_start(self._branch_btn)
@@ -2136,6 +2139,7 @@ class MainWindow(Adw.ApplicationWindow):
             items.append((f"Ignore {len(paths)} selected files", lambda: [self.store.ignore_path(repo, p) for p in paths], True))
             items.append(("Include selected files", lambda: self.store.set_files_included(repo, paths, True), True))
             items.append(("Exclude selected files", lambda: self.store.set_files_included(repo, paths, False), True))
+            items.append(("Copy selected paths", lambda: copy_text("\n".join(os.path.join(repo.path, p) for p in paths)), True))
         items.extend(
             [
                 None,
@@ -2213,6 +2217,14 @@ class MainWindow(Adw.ApplicationWindow):
                     None,
                     ("Create branch from commit", lambda: self.store.show_popup(PopupType.CREATE_BRANCH, start=commit.sha), True),
                     ("Create tag…", lambda: self.store.show_popup(PopupType.CREATE_TAG, sha=commit.sha), True),
+                    *[
+                        (
+                            f"Delete tag {name}…",
+                            lambda n=name: self.store.show_popup(PopupType.DELETE_TAG, tag=n),
+                            True,
+                        )
+                        for name in (commit.tags or [])
+                    ],
                     ("Cherry-pick commit…", lambda: self.store.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind="Cherry-pick", shas=[commit.sha]), True),
                     None,
                     ("Copy SHA", lambda: copy_text(commit.sha), True),

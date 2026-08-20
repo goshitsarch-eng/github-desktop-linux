@@ -22,6 +22,7 @@ from .git import (
     abort_rebase,
     add_remote,
     add_safe_directory,
+    append_ignore_file,
     append_ignore_rule,
     checkout_branch,
     checkout_commit,
@@ -81,7 +82,7 @@ from .git import (
     get_rebase_internal_state,
     get_stashes,
     get_status,
-    get_blob_lines,
+    get_partial_blob_lines,
     get_working_directory_diff,
     is_using_lfs,
     get_working_directory_lines,
@@ -684,7 +685,7 @@ class AppStore:
                 self.emit()
                 return
             if exc:
-                self.show_popup(PopupType.ERROR, error=str(exc))
+                self._show_clone_error(exc, url, dest)
             else:
                 repo.is_missing = False
                 repo.unsafe = False
@@ -829,17 +830,40 @@ class AppStore:
                 self.emit()
                 return
             if exc:
-                self.show_popup(PopupType.ERROR, error=str(exc))
+                self._show_clone_error(exc, url, path, branch=branch, tutorial=tutorial)
             else:
                 repos = self.add_repositories([path])
+                for item in repos:
+                    item.is_missing = False
+                    item.unsafe = False
                 if tutorial and repos:
                     repos[0].tutorial = True
                     self.settings.tutorial_paused = False
                     self.tutorial_step = TutorialStep.PICK_EDITOR
                     self._save_repositories()
+                elif repos:
+                    self._save_repositories()
             self.emit()
 
         self._run(work, done)
+
+    def _show_clone_error(
+        self,
+        exc: BaseException,
+        url: str,
+        path: str,
+        branch: str | None = None,
+        tutorial: bool = False,
+    ) -> None:
+        self._retry_action = {"kind": "clone", "url": url, "path": path, "branch": branch, "tutorial": tutorial}
+        self.show_popup(
+            PopupType.ERROR,
+            error=str(exc),
+            title="Clone failed",
+            retry_clone=True,
+            name=os.path.basename(path.rstrip("/")) or path,
+            retry=self.retry_last_remote_action,
+        )
 
     def publish_repository(
         self,
@@ -1155,11 +1179,11 @@ class AppStore:
 
         state = self.state_for(repo)
         if commitish:
-            new_lines = get_blob_lines(repo.path, commitish, path)
-            old_lines = get_blob_lines(repo.path, f"{commitish}^", path)
+            new_lines = get_partial_blob_lines(repo.path, commitish, path)
+            old_lines = get_partial_blob_lines(repo.path, f"{commitish}^", path)
         else:
             new_lines = get_working_directory_lines(repo.path, path)
-            old_lines = get_blob_lines(repo.path, "HEAD", path)
+            old_lines = get_partial_blob_lines(repo.path, "HEAD", path)
         state.diff_new_content = new_lines
         state.original_diff = None
         prepared = apply_expansion_metadata(diff, old_line_count=len(old_lines), new_line_count=len(new_lines))
@@ -2276,7 +2300,7 @@ class AppStore:
             open_external(full)
 
     def ignore_path(self, repo: Repository, path: str) -> None:
-        append_ignore_rule(repo.path, "/" + path.lstrip("/"))
+        append_ignore_file(repo.path, path)
         self.refresh_repository(repo)
 
     def resolve_conflict(self, repo: Repository, path: str, resolution: ManualConflictResolution) -> None:
@@ -2683,6 +2707,7 @@ class AppStore:
                     files=files,
                     retry_kind=self.progress_kind or "checkout",
                     repo_id=repo.id,
+                    has_existing_stash=self._has_existing_desktop_stash(repo),
                 )
                 return
             if exc.is_workflow_scope:
@@ -2727,6 +2752,7 @@ class AppStore:
                     retry_kind="checkout",
                     branch=name,
                     repo_id=repo.id,
+                    has_existing_stash=self._has_existing_desktop_stash(repo),
                 )
                 return
             raise
@@ -2744,6 +2770,13 @@ class AppStore:
             drop_desktop_stash_entry(repo.path, previous.stash_sha)
         return created
 
+    def _has_existing_desktop_stash(self, repo: Repository) -> bool:
+        state = self.state_for(repo)
+        branch = state.status.current_branch if state.status else None
+        if not branch:
+            return False
+        return get_last_desktop_stash_entry_for_branch(repo.path, branch) is not None
+
     def checkout_and_bring_changes(self, repo: Repository, branch: Branch) -> None:
         name = branch.name_without_remote if branch.type == BranchType.REMOTE else branch.name
         try:
@@ -2759,6 +2792,7 @@ class AppStore:
                     retry_kind="checkout",
                     branch=name,
                     repo_id=repo.id,
+                    has_existing_stash=self._has_existing_desktop_stash(repo),
                 )
                 return
             checkout_branch(repo.path, name)
@@ -2974,6 +3008,30 @@ class AppStore:
 
         self._run(work, done)
 
+    def cherry_pick_onto_pull_request(self, repo: Repository, pr: PullRequest, shas: Sequence[str]) -> None:
+        """Desktop `startCherryPickWithPullRequest`: drop commits onto a PR row."""
+        state = self.state_for(repo)
+        current = state.current_pull_request
+        if current is not None and current.number == pr.number:
+            return
+
+        def work() -> Branch | None:
+            return self._find_pull_request_branch(repo, pr)
+
+        def done(exc: BaseException | None, branch: Branch | None = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            if branch is None:
+                self.show_popup(
+                    PopupType.ERROR,
+                    error=f"Couldn't find branch '{pr.head_ref}' in the pull request remote.",
+                )
+                return
+            self.cherry_pick_commits(repo, shas, target_branch=branch.name)
+
+        self._run(work, done)
+
     def set_fork_contribution_target(self, repo: Repository, target: ForkContributionTarget | str) -> None:
         value = target.value if isinstance(target, ForkContributionTarget) else target
         repo.workflow_preferences["fork_target"] = value
@@ -3040,10 +3098,18 @@ class AppStore:
         self._retry_action = None
         if not action:
             return
+        kind = action.get("kind")
+        if kind == "clone":
+            self.clone(
+                str(action.get("url") or ""),
+                str(action.get("path") or ""),
+                branch=action.get("branch"),
+                tutorial=bool(action.get("tutorial")),
+            )
+            return
         repo = next((r for r in self.repositories if r.id == action.get("repo_id")), None)
         if not repo:
             return
-        kind = action.get("kind")
         if kind == "push":
             self.push_repo(repo, force=bool(action.get("force")))
         elif kind == "pull":
@@ -3296,19 +3362,45 @@ class AppStore:
         if state.current_pull_request:
             open_external(state.current_pull_request.html_url)
             return
-        self._create_pull_request_flow(repo)
+        self._create_pull_request_flow(repo, preview=False)
 
     def preview_pull_request(self, repo: Repository) -> None:
-        self._create_pull_request_flow(repo)
+        self._create_pull_request_flow(repo, preview=True)
 
-    def _create_pull_request_flow(self, repo: Repository) -> None:
+    def open_create_pull_request_in_browser(self, repo: Repository, base_branch: str | None = None) -> None:
+        """Desktop `_openCreatePullRequestInBrowser`: open `{htmlURL}/pull/new/{compare}`."""
+        from urllib.parse import quote
+
+        gh = repo.github
+        if not gh:
+            return
+        state = self.state_for(repo)
+        compare_branch = (state.status.current_branch if state.status else None) or ""
+        parent = gh.parent
+        is_fork_parent = bool(repo.is_fork and parent and fork_contribution_target(repo) == ForkContributionTarget.PARENT)
+        base_fork_preface = f"{parent.owner}:{parent.name}:" if is_fork_parent and parent else ""
+        encoded_base = ""
+        if base_branch:
+            encoded_base = base_fork_preface + quote(base_branch, safe="") + "..."
+        compare_fork_preface = f"{gh.owner}:{gh.name}:" if is_fork_parent else ""
+        encoded_compare = compare_fork_preface + quote(compare_branch, safe="")
+        open_external(f"{gh.html_url}/pull/new/{encoded_base}{encoded_compare}")
+
+    def _after_push_for_pull_request(self, repo: Repository, preview: bool) -> None:
+        if preview:
+            self.show_popup(PopupType.START_PULL_REQUEST)
+        else:
+            self.open_create_pull_request_in_browser(repo)
+
+    def _create_pull_request_flow(self, repo: Repository, preview: bool = False) -> None:
         state = self.state_for(repo)
         ahead_behind = state.ahead_behind
+        continue_pr = lambda: self._after_push_for_pull_request(repo, preview)
         if ahead_behind is None:
             self.show_popup(
                 PopupType.PUSH_BRANCH_COMMITS,
                 unpublished=True,
-                on_confirm=lambda: self.push_repo(repo, on_success=lambda: self.show_popup(PopupType.START_PULL_REQUEST)),
+                on_confirm=lambda: self.push_repo(repo, on_success=continue_pr),
             )
             return
         if ahead_behind.ahead > 0:
@@ -3316,10 +3408,11 @@ class AppStore:
                 PopupType.PUSH_BRANCH_COMMITS,
                 unpublished=False,
                 unpushed=ahead_behind.ahead,
-                on_confirm=lambda: self.push_repo(repo, on_success=lambda: self.show_popup(PopupType.START_PULL_REQUEST)),
+                on_confirm=lambda: self.push_repo(repo, on_success=continue_pr),
+                on_skip=continue_pr,
             )
             return
-        self.show_popup(PopupType.START_PULL_REQUEST)
+        continue_pr()
 
     def create_pull_request(self, repo: Repository, title: str, base: str, body: str = "", draft: bool = False) -> None:
         account = self.account_for_repo(repo)

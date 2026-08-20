@@ -191,7 +191,7 @@ def _text_dialog(
 def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, payload: dict[str, Any]) -> None:
     repo = store.selected_repository
     mapping: dict[PopupType, Callable[..., None]] = {
-        PopupType.ERROR: lambda: _alert(parent, "Error", str(payload.get("error") or "Something went wrong"), cancel=None),
+        PopupType.ERROR: lambda: show_error_dialog(parent, store, payload),
         PopupType.ABOUT: lambda: show_about(parent),
         PopupType.ACKNOWLEDGEMENTS: lambda: show_acknowledgements(parent),
         PopupType.TERMS_AND_CONDITIONS: lambda: show_terms(parent),
@@ -319,13 +319,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         PopupType.THANK_YOU: lambda: show_thank_you(parent, payload),
         PopupType.PUSH_BRANCH_COMMITS: lambda: show_push_branch_commits(parent, store, payload),
         PopupType.DELETE_PULL_REQUEST: lambda: show_delete_pull_request(parent, store, payload),
-        PopupType.LOCAL_CHANGES_OVERWRITTEN: lambda: _alert(
-            parent,
-            "Local changes would be overwritten",
-            "Stash or commit your changes before continuing.\n" + "\n".join(payload.get("files") or []),
-            confirm="Stash and continue",
-            on_confirm=lambda: _stash_and_retry(store, payload),
-        ),
+        PopupType.LOCAL_CHANGES_OVERWRITTEN: lambda: show_local_changes_overwritten(parent, store, payload),
         PopupType.DISCARD_CHANGES_RETRY: lambda: show_discard_retry(parent, store, payload),
         PopupType.CONFIRM_DISCARD_SELECTION: lambda: _alert(
             parent,
@@ -358,6 +352,44 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         handler()
     else:
         _alert(parent, popup_type.value, "This dialog is available.", cancel=None)
+
+
+def show_error_dialog(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    heading = str(payload.get("title") or "Error")
+    body = str(payload.get("error") or "Something went wrong")
+    retry = payload.get("retry")
+    if payload.get("retry_clone"):
+        heading = "Clone failed"
+        name = payload.get("name") or ""
+        if name:
+            body = f"{body}\n\nWould you like to retry cloning {name}?"
+    if callable(retry):
+        _alert(parent, heading, body, confirm="Retry", cancel="Close", on_confirm=retry)
+        return
+    _alert(parent, heading, body, cancel=None)
+
+
+def show_local_changes_overwritten(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    files = [str(path) for path in (payload.get("files") or []) if path]
+    has_existing = bool(payload.get("has_existing_stash"))
+    kind = str(payload.get("retry_kind") or "checkout")
+    listing = "\n".join(files)
+    overwritten = " The following files would be overwritten:" if files else ""
+    body = f"Unable to {kind} when changes are present on your branch.{overwritten}"
+    if listing:
+        body = f"{body}\n{listing}"
+    if has_existing:
+        _alert(parent, "Error", body, confirm="Close", cancel=None)
+        return
+    body = f"{body}\n\nYou can stash your changes now and recover them afterwards."
+    _alert(
+        parent,
+        "Error",
+        body,
+        confirm="Stash changes and continue",
+        cancel="Close",
+        on_confirm=lambda: _stash_and_retry(store, payload),
+    )
 
 
 def _open_payload_url(payload: dict[str, Any]) -> None:
@@ -698,7 +730,7 @@ def show_push_branch_commits(parent: Gtk.Window, store: AppStore, payload: dict[
         body = "This branch hasn't been published yet. Publish it to create a pull request."
         confirm = "Publish branch"
     else:
-        heading = "Push commits?"
+        heading = "Push local changes?"
         noun = "commit" if unpushed == 1 else "commits"
         body = f"You have {unpushed} unpushed {noun}. Push them before creating a pull request?"
         confirm = "Push commits"
@@ -712,7 +744,28 @@ def show_push_branch_commits(parent: Gtk.Window, store: AppStore, payload: dict[
             if repo:
                 store.push_repo(repo)
 
-    _alert(parent, heading, body, confirm=confirm, on_confirm=confirm_cb)
+    dialog = Adw.AlertDialog(heading=heading, body=body)
+    dialog.add_response("cancel", "Cancel")
+    if not unpublished:
+        dialog.add_response("skip", "Create without pushing")
+    dialog.add_response("ok", confirm)
+    dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+    dialog.set_default_response("ok")
+    dialog.set_close_response("cancel")
+
+    def done(d, result) -> None:
+        try:
+            response = d.choose_finish(result)
+        except Exception:
+            return
+        if response == "ok":
+            confirm_cb()
+        elif response == "skip":
+            skip = payload.get("on_skip")
+            if skip:
+                skip()
+
+    dialog.choose(parent, None, done)
 
 
 def show_upstream_exists(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
@@ -1228,6 +1281,66 @@ def _decorate_clone_row(row: Adw.ActionRow, gh: GitHubRepository) -> None:
         row.add_suffix(badge)
 
 
+def _clear_listbox(listbox: Gtk.ListBox) -> None:
+    while True:
+        row = listbox.get_first_child()
+        if row is None:
+            break
+        listbox.remove(row)
+
+
+def _render_grouped_clone_list(
+    listbox: Gtk.ListBox,
+    repos: list,
+    login: str,
+    needle: str,
+    *,
+    selected_clone_url: dict[str, str],
+    url_row: Adw.EntryRow,
+    path_row: Adw.EntryRow,
+    default_dir: str,
+    empty_title: str,
+) -> None:
+    from ..clone_groups import group_cloneable_repositories
+
+    _clear_listbox(listbox)
+    shown = 0
+    any_shown = False
+    needle = needle.strip().lower()
+    for title, items in group_cloneable_repositories(list(repos), login):
+        filtered = [
+            gh
+            for gh in items
+            if not needle or needle in f"{gh.full_name} {gh.html_url} {gh.name}".lower()
+        ]
+        if not filtered:
+            continue
+        header = Adw.ActionRow(title=title)
+        header.set_sensitive(False)
+        listbox.append(header)
+        for gh in filtered:
+            row = Adw.ActionRow(title=gh.full_name, subtitle=gh.clone_url)
+            row.set_activatable(True)
+            _decorate_clone_row(row, gh)
+
+            def pick(_r, g=gh) -> None:
+                selected_clone_url["url"] = g.clone_url
+                selected_clone_url["name"] = g.name
+                url_row.set_text(g.clone_url)
+                path_row.set_text(os.path.join(default_dir, g.name))
+
+            row.connect("activated", pick)
+            listbox.append(row)
+            shown += 1
+            any_shown = True
+            if shown >= 300:
+                break
+        if shown >= 300:
+            break
+    if not any_shown:
+        listbox.append(Adw.ActionRow(title=empty_title))
+
+
 def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
     dialog = Adw.Dialog()
     dialog.set_content_width(640)
@@ -1348,35 +1461,19 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
         return next((a for a in store.accounts if a.is_dotcom), store.accounts[0] if store.accounts else None)
 
     def render_github_list() -> None:
-        while True:
-            row = repo_list.get_first_child()
-            if row is None:
-                break
-            repo_list.remove(row)
-        needle = gh_filter.get_text().strip().lower()
-        shown = 0
-        for gh in loaded:
-            hay = f"{gh.full_name} {gh.html_url}".lower()
-            if needle and needle not in hay:
-                continue
-            row = Adw.ActionRow(title=gh.full_name, subtitle=gh.clone_url)
-            row.set_activatable(True)
-            _decorate_clone_row(row, gh)
-
-            def pick(_r, g=gh) -> None:
-                selected_clone_url["url"] = g.clone_url
-                selected_clone_url["name"] = g.name
-                url_row.set_text(g.clone_url)
-                path_row.set_text(os.path.join(default_dir, g.name))
-
-            row.connect("activated", pick)
-            repo_list.append(row)
-            shown += 1
-            if shown >= 300:
-                break
-        if shown == 0:
-            title = "Sign in to GitHub.com to see your repositories" if not selected_account() else "No matching repositories"
-            repo_list.append(Adw.ActionRow(title=title))
+        account = selected_account()
+        empty = "Sign in to GitHub.com to see your repositories" if not account else "No matching repositories"
+        _render_grouped_clone_list(
+            repo_list,
+            loaded,
+            account.login if account else "",
+            gh_filter.get_text(),
+            selected_clone_url=selected_clone_url,
+            url_row=url_row,
+            path_row=path_row,
+            default_dir=default_dir,
+            empty_title=empty,
+        )
 
     def fill_github(*_a: Any) -> None:
         account = selected_account()
@@ -1390,11 +1487,7 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
             loaded.extend(GitHubAPI.from_account(account).fetch_repos())
         except Exception as exc:
             loaded.clear()
-            while True:
-                row = repo_list.get_first_child()
-                if row is None:
-                    break
-                repo_list.remove(row)
+            _clear_listbox(repo_list)
             repo_list.append(Adw.ActionRow(title="Could not load repositories", subtitle=str(exc)))
             return
         render_github_list()
@@ -1408,39 +1501,23 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
     loaded_ent: list = []
 
     def render_enterprise_list() -> None:
-        while True:
-            row = ent_list.get_first_child()
-            if row is None:
-                break
-            ent_list.remove(row)
-        needle = ent_filter.get_text().strip().lower()
-        shown = 0
-        for gh in loaded_ent:
-            hay = f"{gh.full_name} {gh.html_url}".lower()
-            if needle and needle not in hay:
-                continue
-            row = Adw.ActionRow(title=gh.full_name, subtitle=gh.clone_url)
-            row.set_activatable(True)
-            _decorate_clone_row(row, gh)
-
-            def pick_ent(_r, g=gh) -> None:
-                selected_clone_url["url"] = g.clone_url
-                selected_clone_url["name"] = g.name
-                url_row.set_text(g.clone_url)
-                path_row.set_text(os.path.join(default_dir, g.name))
-
-            row.connect("activated", pick_ent)
-            ent_list.append(row)
-            shown += 1
-            if shown >= 300:
-                break
-        if shown == 0:
-            title = (
-                "Sign in to GitHub Enterprise to see your repositories"
-                if not selected_account(True)
-                else "No matching repositories"
-            )
-            ent_list.append(Adw.ActionRow(title=title))
+        account = selected_account(True)
+        empty = (
+            "Sign in to GitHub Enterprise to see your repositories"
+            if not account
+            else "No matching repositories"
+        )
+        _render_grouped_clone_list(
+            ent_list,
+            loaded_ent,
+            account.login if account else "",
+            ent_filter.get_text(),
+            selected_clone_url=selected_clone_url,
+            url_row=url_row,
+            path_row=path_row,
+            default_dir=default_dir,
+            empty_title=empty,
+        )
 
     def fill_enterprise(*_a: Any) -> None:
         account = selected_account(True)
@@ -1454,11 +1531,7 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
             loaded_ent.extend(GitHubAPI.from_account(account).fetch_repos())
         except Exception as exc:
             loaded_ent.clear()
-            while True:
-                row = ent_list.get_first_child()
-                if row is None:
-                    break
-                ent_list.remove(row)
+            _clear_listbox(ent_list)
             ent_list.append(Adw.ActionRow(title="Could not load repositories", subtitle=str(exc)))
             return
         render_enterprise_list()
@@ -1787,36 +1860,80 @@ def show_publish(parent: Gtk.Window, store: AppStore) -> None:
     repo = store.selected_repository
     if not repo:
         return
-    account = store.accounts[0] if store.accounts else None
+    accounts = list(store.accounts)
+    account = accounts[0] if accounts else None
     if not account:
         store.begin_sign_in(False)
         return
 
-    def submit(values: dict[str, str]) -> None:
-        store.publish_repository(
-            repo,
-            values.get("name") or repo.name,
-            values.get("description") or "",
-            values.get("visibility") == "private",
-            values.get("org") or None,
-            account,
-        )
-
+    from ..create_repo import sanitized_repository_name
     from ..git.ops import read_description
+    from ..github.api import GitHubAPI
 
-    _text_dialog(
-        parent,
-        "Publish repository",
-        f"Signed in as {account.login}",
-        [
-            ("name", "Name", repo.name),
-            ("description", "Description", read_description(repo.path)),
-            ("visibility", "Visibility (private/public)", "private"),
-            ("org", "Organization (optional)", ""),
-        ],
-        submit,
-        "Publish",
-    )
+    dialog = Adw.Dialog()
+    dialog.set_content_width(480)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(Adw.WindowTitle(title="Publish repository", subtitle=f"Signed in as {account.login}"))
+    publish_btn = Gtk.Button(label="Publish repository")
+    publish_btn.add_css_class("suggested-action")
+    header.pack_end(publish_btn)
+    toolbar.add_top_bar(header)
+    page = Adw.PreferencesPage()
+    group = Adw.PreferencesGroup()
+    name_row = Adw.EntryRow(title="Name")
+    name_row.set_text(repo.name)
+    sanitized_row = Adw.ActionRow(title="Will be created as")
+    sanitized_row.set_subtitle("")
+    sanitized_row.set_visible(False)
+    desc_row = Adw.EntryRow(title="Description")
+    desc_row.set_text(read_description(repo.path) or "")
+    private_row = Adw.SwitchRow(title="Keep this code private")
+    private_row.set_active(True)
+    org_row = Adw.ComboRow(title="Organization")
+    org_logins = ["None"]
+    org_row.set_model(Gtk.StringList.new(org_logins))
+
+    def refresh_name(*_a: Any) -> None:
+        raw = name_row.get_text().strip()
+        clean = sanitized_repository_name(raw) if raw else ""
+        if raw and clean and clean != raw:
+            sanitized_row.set_subtitle(clean)
+            sanitized_row.set_visible(True)
+        else:
+            sanitized_row.set_visible(False)
+
+    name_row.connect("changed", refresh_name)
+
+    def submit(*_a: Any) -> None:
+        raw = name_row.get_text().strip() or repo.name
+        name = sanitized_repository_name(raw) or repo.name
+        org = None
+        idx = org_row.get_selected()
+        if idx > 0 and idx < len(org_logins):
+            org = org_logins[idx]
+        dialog.close()
+        store.publish_repository(repo, name, desc_row.get_text().strip(), private_row.get_active(), org, account)
+
+    publish_btn.connect("clicked", submit)
+    group.add(name_row)
+    group.add(sanitized_row)
+    group.add(desc_row)
+    group.add(private_row)
+    group.add(org_row)
+    page.add(group)
+    toolbar.set_content(page)
+    dialog.set_child(toolbar)
+    dialog.present(parent)
+    refresh_name()
+
+    try:
+        fetched = GitHubAPI.from_account(account).fetch_orgs()
+    except Exception:
+        fetched = []
+    fetched = sorted(fetched, key=lambda item: str(item.get("login") or "").casefold())
+    org_logins = ["None"] + [str(item.get("login") or "") for item in fetched if item.get("login")]
+    org_row.set_model(Gtk.StringList.new(org_logins or ["None"]))
 
 
 def show_remove_repository(parent: Gtk.Window, store: AppStore) -> None:
@@ -2254,9 +2371,7 @@ def show_generic_auth(parent: Gtk.Window, store: AppStore, payload: dict[str, An
         if info:
             host = info.hostname
         secrets.set_generic(host, user, password)
-        repo = store.selected_repository
-        if repo:
-            store.push_repo(repo)
+        store.retry_last_remote_action()
 
     _text_dialog(parent, "Authentication required", url, [("username", "Username", ""), ("password", "Password / token", "")], submit, "Save and retry")
 
@@ -2384,8 +2499,10 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     title_row = Adw.EntryRow(title="Title")
     title_row.set_text(state.commit_message.summary if state.commit_message else (state.pr_commits[0].summary if state.pr_commits else current or ""))
     body_row = Adw.EntryRow(title="Description")
+    draft = Gtk.CheckButton(label="Create as draft")
     root.append(title_row)
     root.append(body_row)
+    root.append(draft)
     actions = Gtk.Box(spacing=8)
     create_btn = Gtk.Button(label="Create pull request")
     create_btn.add_css_class("suggested-action")
@@ -2463,7 +2580,7 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
         idx = base_drop.get_selected()
         base = model.get_string(idx) if model is not None and idx >= 0 else default
         dialog.close()
-        store.create_pull_request(repo, title_row.get_text().strip() or current, base, body_row.get_text().strip())
+        store.create_pull_request(repo, title_row.get_text().strip() or current, base, body_row.get_text().strip(), draft=draft.get_active())
 
     def view(*_a: Any) -> None:
         st = store.state_for(repo)

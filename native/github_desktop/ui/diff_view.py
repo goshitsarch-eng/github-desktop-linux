@@ -771,12 +771,34 @@ class DiffViewer(Gtk.Box):
             self._inner.append(_difference_images(diff.previous, diff.current))
         else:
             box = Gtk.Box(spacing=12)
-            for tex, title in ((prev_tex, "Previous"), (cur_tex, "Current")):
+            for tex, blob, title in ((prev_tex, diff.previous, "Previous"), (cur_tex, diff.current, "Current")):
                 col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-                col.append(Gtk.Label(label=title))
+                meta = _image_dimensions_label(tex, blob)
+                col.append(Gtk.Label(label=title, xalign=0))
+                if meta:
+                    hint = Gtk.Label(label=meta, xalign=0)
+                    hint.add_css_class("dim-label")
+                    col.append(hint)
                 col.append(_picture(tex))
                 box.append(col)
             self._inner.append(box)
+
+
+def _format_byte_size(n: int) -> str:
+    if n < 1024:
+        return f"{n} bytes"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n / (1024 * 1024):.1f} MB"
+
+
+def _image_dimensions_label(tex: Gdk.Texture | None, blob: bytes | None) -> str:
+    parts: list[str] = []
+    if tex is not None:
+        parts.append(f"{tex.get_width()}×{tex.get_height()}")
+    if blob:
+        parts.append(_format_byte_size(len(blob)))
+    return " · ".join(parts)
 
 
 def _picture(tex: Gdk.Texture | None) -> Gtk.Widget:

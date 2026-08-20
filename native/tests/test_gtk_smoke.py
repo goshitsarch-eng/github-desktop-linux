@@ -167,6 +167,19 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             from github_desktop.ui.dialogs import show_add_repository
 
             show_add_repository(win, store, str(git_repo))
+            from unittest.mock import patch
+
+            from github_desktop.models import Account
+            from github_desktop.ui.dialogs import show_clone_repository, show_publish
+
+            store.accounts = [
+                Account(login="octocat", endpoint="https://api.github.com", token="test-token")
+            ]
+            with patch("github_desktop.github.api.GitHubAPI.fetch_orgs", return_value=[{"login": "acme"}]), patch(
+                "github_desktop.github.api.GitHubAPI.fetch_repos", return_value=[]
+            ):
+                show_publish(win, store)
+                show_clone_repository(win, store, {})
             repos[0].is_missing = True
             win._show_missing(repos[0])
             win._repo_content.set_visible_child_name("missing")

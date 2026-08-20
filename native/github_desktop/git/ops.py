@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import re
+import signal
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -84,7 +86,16 @@ from .progress import (
     MultiCommitProgress,
     format_rebase_value,
 )
-from .runner import GitResult, env_for_remote, git, git_path_is_repository, resolve_repository_root
+from .runner import (
+    GitResult,
+    abort_git_process,
+    env_for_remote,
+    find_git,
+    git,
+    git_path_is_repository,
+    resolve_repository_root,
+    _prepare_env,
+)
 from .status import (
     CONFLICT_STATUS_CODES,
     StatusEntry,
@@ -355,11 +366,67 @@ def get_working_directory_diff(
     return _diff_from_result(repo, file.path, file.status, result, commitish=None)
 
 
+MAX_PARTIAL_BLOB_BYTES = 256 * 1024
+
+
 def get_blob_contents(repo: str, commitish: str, path: str) -> bytes:
     result = git(["show", f"{commitish}:{path}"], repo, success_exit_codes={0, 128}, name="getBlobContents", binary=True)
     if result.exit_code != 0:
         return b""
     return result.stdout_bytes or result.stdout.encode("utf-8", errors="replace")
+
+
+def get_partial_blob_contents(
+    repo: str,
+    commitish: str,
+    path: str,
+    length: int = MAX_PARTIAL_BLOB_BYTES,
+) -> bytes:
+    """Read at most `length` bytes of a blob. Desktop `getPartialBlobContents`.
+
+    Stops the git process after `length` bytes so huge blobs are never fully
+    materialized for syntax highlighting.
+    """
+    cmd = [find_git(), "show", f"{commitish}:{path}"]
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(repo),
+        env=_prepare_env(None),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        stdout = proc.stdout
+        assert stdout is not None
+        while total < length:
+            chunk = stdout.read(min(65536, length - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        if proc.poll() is None:
+            abort_git_process(proc)
+        else:
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                abort_git_process(proc)
+    finally:
+        if proc.stderr is not None:
+            try:
+                proc.stderr.read()
+            except Exception:
+                pass
+        if proc.poll() is None:
+            abort_git_process(proc)
+    data = b"".join(chunks)[:length]
+    code = proc.returncode
+    if not data and code not in {0, None, -signal.SIGTERM, -signal.SIGKILL, 1}:
+        return b""
+    return data
 
 
 def get_working_directory_lines(repo: str, path: str) -> list[str]:
@@ -372,6 +439,18 @@ def get_working_directory_lines(repo: str, path: str) -> list[str]:
 
 def get_blob_lines(repo: str, commitish: str, path: str) -> list[str]:
     data = get_blob_contents(repo, commitish, path)
+    if not data:
+        return []
+    return data.decode("utf-8", errors="replace").splitlines()
+
+
+def get_partial_blob_lines(
+    repo: str,
+    commitish: str,
+    path: str,
+    length: int = MAX_PARTIAL_BLOB_BYTES,
+) -> list[str]:
+    data = get_partial_blob_contents(repo, commitish, path, length)
     if not data:
         return []
     return data.decode("utf-8", errors="replace").splitlines()
@@ -479,6 +558,20 @@ def _submodule_diff(repo: str, path: str, status: SubmoduleStatus) -> SubmoduleD
 
 def unstage_all(repo: str) -> None:
     git(["reset", "--mixed", "HEAD"], repo, success_exit_codes={0, 128}, name="unstageAll")
+
+
+def unstage_all_files(repo: str) -> None:
+    """Remove every path from the index, leaving the working tree intact.
+
+    Desktop `unstageAllFiles`: `git rm --cached -r -f .`. Mixed reset cannot
+    walk `HEAD` after the first commit is deleted.
+    """
+    git(
+        ["rm", "--cached", "-r", "-f", "."],
+        repo,
+        success_exit_codes={0, 1, 128},
+        name="unstageAllFiles",
+    )
 
 
 def update_index(
@@ -1512,7 +1605,7 @@ def undo_first_commit(repo: str) -> None:
     deleted = [f.path for f in status.working_directory.files if f.status.kind == AppFileStatusKind.DELETED]
     checkout_paths(repo, deleted)
     delete_ref(repo, "HEAD", "Reverting first commit")
-    unstage_all(repo)
+    unstage_all_files(repo)
 
 
 def undo_commit(repo: str, parent_shas: Sequence[str] | None = None) -> None:
@@ -1773,7 +1866,27 @@ def create_desktop_stash_entry(
 
 
 def stash_pop(repo: str, stash_ref: str = "stash@{0}") -> None:
-    git(["stash", "pop", stash_ref], repo, name="stashPop")
+    """Pop a stash. Desktop `popStashEntry`: exit 1 with empty stderr still drops."""
+    entries, _total = get_stashes(repo)
+    match = next((entry for entry in entries if entry.name == stash_ref or entry.stash_sha == stash_ref), None)
+    result = git(
+        ["stash", "pop", "--quiet", stash_ref],
+        repo,
+        success_exit_codes={0, 1},
+        name="popStashEntry",
+    )
+    if result.exit_code != 1:
+        return
+    if (result.stderr or "").strip():
+        raise GitError(
+            result.stderr.strip() or "stash pop failed",
+            args=["stash", "pop", stash_ref],
+            exit_code=1,
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+    if match is not None:
+        drop_desktop_stash_entry(repo, match.stash_sha)
 
 
 def stash_drop(repo: str, stash_ref: str) -> None:
@@ -1938,12 +2051,28 @@ def write_gitignore(repo: str, text: str) -> None:
     Path(os.path.join(repo, ".gitignore")).write_text(text, encoding="utf-8")
 
 
-def append_ignore_rule(repo: str, pattern: str) -> None:
+def append_ignore_rule(repo: str, pattern: str | Sequence[str]) -> None:
+    if not isinstance(pattern, str):
+        pattern = "\n".join(pattern)
     current = read_gitignore(repo)
     if not current.endswith("\n") and current:
         current += "\n"
     current += pattern.rstrip("\n") + "\n"
     write_gitignore(repo, current)
+
+
+_GITIGNORE_SPECIAL_RE = re.compile(r"[\[\]!*#?]")
+
+
+def escape_git_special_characters(pattern: str) -> str:
+    """Desktop `escapeGitSpecialCharacters` for .gitignore paths."""
+    return _GITIGNORE_SPECIAL_RE.sub(lambda match: "\\" + match.group(0), pattern)
+
+
+def append_ignore_file(repo: str, file_path: str | Sequence[str]) -> None:
+    """Desktop `appendIgnoreFile`: escape gitignore specials, then append."""
+    paths = [file_path] if isinstance(file_path, str) else list(file_path)
+    append_ignore_rule(repo, [escape_git_special_characters(path) for path in paths])
 
 
 def lfs_track(repo: str, patterns: Sequence[str]) -> None:
@@ -2757,9 +2886,26 @@ def get_upstream_remote_name_for_ref(path: str, ref: str | None = None) -> str |
     return match.group(1) if match else None
 
 
-def add_safe_directory(path: str) -> None:
+def add_global_config_value(name: str, value: str) -> None:
     git(
-        ["config", "--global", "--add", "safe.directory", path],
+        ["config", "--global", "--add", name, value],
         os.path.expanduser("~"),
-        name="addSafeDirectory",
+        name="addGlobalConfigValue",
     )
+
+
+def add_global_config_value_if_missing(name: str, value: str) -> None:
+    """Desktop `addGlobalConfigValueIfMissing`."""
+    result = git(
+        ["config", "--global", "-z", "--get-all", name, value],
+        os.path.expanduser("~"),
+        success_exit_codes={0, 1},
+        name="addGlobalConfigValue",
+    )
+    existing = [item for item in result.stdout.split("\0") if item]
+    if result.exit_code == 1 or value not in existing:
+        add_global_config_value(name, value)
+
+
+def add_safe_directory(path: str) -> None:
+    add_global_config_value_if_missing("safe.directory", path)

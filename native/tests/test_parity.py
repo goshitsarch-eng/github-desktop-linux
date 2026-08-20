@@ -106,6 +106,11 @@ REQUIRED_GIT_FUNCS = [
     "reset_submodule_paths",
     "get_upstream_ref_for_ref",
     "move_item_to_trash",
+    "unstage_all_files",
+    "escape_git_special_characters",
+    "append_ignore_file",
+    "get_partial_blob_contents",
+    "add_global_config_value_if_missing",
 ]
 
 
@@ -205,6 +210,11 @@ def test_window_actions_cover_menus() -> None:
     from github_desktop import create_repo as create_repo_mod
 
     src += open(create_repo_mod.__file__, encoding="utf-8").read()
+    from github_desktop import clone_groups as clone_groups_mod
+    from github_desktop.ui import branches as branches_mod
+
+    src += open(clone_groups_mod.__file__, encoding="utf-8").read()
+    src += open(branches_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -350,5 +360,21 @@ def test_window_actions_cover_menus() -> None:
         "Changes can be restored by retrieving them from the Trash",
         "Discarded changes will be unrecoverable",
         "moveItemToTrash",
+        "Keep this code private",
+        "Create without pushing",
+        "Create as draft",
+        "Your repositories",
+        "Clone failed",
+        "Would you like to retry cloning",
+        "Stash changes and continue",
+        "Delete tag",
+        "unstageAllFiles",
+        "escapeGitSpecialCharacters",
+        "getPartialBlobContents",
+        "addGlobalConfigValueIfMissing",
+        "popStashEntry",
+        "Copy selected paths",
+        "startCherryPickWithPullRequest",
+        "openCreatePullRequestInBrowser",
     ]:
         assert phrase in src

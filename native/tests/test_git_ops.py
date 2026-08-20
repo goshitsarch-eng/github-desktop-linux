@@ -165,7 +165,8 @@ def test_undo_first_commit_restores_deleted_files(tmp_path: Path) -> None:
     status = get_status(str(repo))
     assert status
     assert status.current_tip is None
-    assert any(f.path == "only.txt" for f in status.working_directory.files)
+    restored = next(f for f in status.working_directory.files if f.path == "only.txt")
+    assert restored.status.kind == AppFileStatusKind.UNTRACKED
 
 
 def test_discard_untracked_and_modified(git_repo: Path) -> None:
@@ -354,4 +355,84 @@ def test_discard_untracked_file_permanently(git_repo: Path) -> None:
     assert files
     discard_working_files(str(git_repo), files, move_to_trash=False)
     assert not target.exists()
+
+
+def test_undo_first_commit_leaves_files_untracked(tmp_path: Path) -> None:
+    from github_desktop.git.ops import undo_first_commit
+
+    repo = tmp_path / "born"
+    repo.mkdir()
+    run_git(repo, "init", "-b", "main")
+    run_git(repo, "config", "user.name", "Test User")
+    run_git(repo, "config", "user.email", "test@example.com")
+    (repo / "keep.txt").write_text("keep\n", encoding="utf-8")
+    run_git(repo, "add", "keep.txt")
+    run_git(repo, "commit", "-m", "first")
+    undo_first_commit(str(repo))
+    status = get_status(str(repo))
+    assert status
+    assert status.current_tip is None
+    keep = next(f for f in status.working_directory.files if f.path == "keep.txt")
+    assert keep.status.kind == AppFileStatusKind.UNTRACKED
+    cached = run_git(repo, "diff", "--cached", "--name-only").stdout
+    assert "keep.txt" not in cached
+
+
+def test_escape_git_special_characters_matches_desktop() -> None:
+    from github_desktop.git.ops import escape_git_special_characters
+
+    unescaped = "[never]\\!gonna*give#you?_.up"
+    assert escape_git_special_characters(unescaped) == "\\[never\\]\\\\!gonna\\*give\\#you\\?_.up"
+
+
+def test_append_ignore_file_escapes_specials(git_repo: Path) -> None:
+    from github_desktop.git.ops import append_ignore_file, read_gitignore
+
+    append_ignore_file(str(git_repo), "[never]!gonna*give#you?_.up")
+    text = read_gitignore(str(git_repo))
+    assert "\\[never\\]\\!gonna\\*give\\#you\\?_.up" in text
+
+
+def test_get_partial_blob_contents_caps_size(git_repo: Path) -> None:
+    from github_desktop.git.ops import get_partial_blob_contents
+
+    blob = git_repo / "big.bin"
+    blob.write_bytes(b"a" * (300 * 1024))
+    run_git(git_repo, "add", "big.bin")
+    run_git(git_repo, "commit", "-m", "big")
+    data = get_partial_blob_contents(str(git_repo), "HEAD", "big.bin", 256 * 1024)
+    assert len(data) == 256 * 1024
+
+
+def test_add_safe_directory_is_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from github_desktop.git.ops import add_safe_directory
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(home / ".gitconfig"))
+    path = str(tmp_path / "unsafe")
+    add_safe_directory(path)
+    add_safe_directory(path)
+    result = run_git(home, "config", "--global", "--get-all", "safe.directory")
+    values = [line for line in result.stdout.splitlines() if line == path]
+    assert values == [path]
+
+
+def test_stash_pop_with_conflicts_drops_desktop_stash(git_repo: Path) -> None:
+    from github_desktop.git.ops import (
+        create_desktop_stash_entry,
+        get_last_desktop_stash_entry_for_branch,
+        stash_pop,
+    )
+
+    (git_repo / "README.md").write_text("stashed\n", encoding="utf-8")
+    assert create_desktop_stash_entry(str(git_repo), "main")
+    entry = get_last_desktop_stash_entry_for_branch(str(git_repo), "main")
+    assert entry is not None
+    (git_repo / "README.md").write_text("working\n", encoding="utf-8")
+    run_git(git_repo, "add", "README.md")
+    run_git(git_repo, "commit", "-m", "working")
+    stash_pop(str(git_repo), entry.name)
+    assert get_last_desktop_stash_entry_for_branch(str(git_repo), "main") is None
 
