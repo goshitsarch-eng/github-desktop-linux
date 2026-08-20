@@ -132,6 +132,7 @@ from .github.api import GitHubAPI, merge_updated_issues, merge_updated_pull_requ
 from .github.ci_checks import (
     attach_workflow_jobs_to_checks,
     failing_checks,
+    get_latest_pr_workflow_runs_logs_for_check_run,
     is_failure,
     manually_set_checks_to_pending,
     split_rerunnable_checks,
@@ -147,6 +148,7 @@ from .github.oauth import (
     get_oauth_authorization_url,
     new_oauth_state,
 )
+from .offset_from import offset_from_now
 from .logging import get_logger
 from .models import (
     COMMIT_BATCH_SIZE,
@@ -3475,7 +3477,7 @@ class AppStore:
         if not repo.github:
             return
         last = float(self.settings.last_prune_dates.get(repo.path) or 0)
-        if last and time.time() - last < 24 * 60 * 60:
+        if last and last * 1000.0 > offset_from_now(-24, "hours"):
             return
         self.settings.last_prune_dates[repo.path] = time.time()
         self.persist_settings()
@@ -4658,14 +4660,14 @@ class AppStore:
         last_updated: str | None,
     ) -> tuple[list[PullRequest], str | None]:
         if not last_updated:
-            prs = api.fetch_pull_requests(gh.owner, gh.name, state="open")
+            prs = api.fetch_all_open_pull_requests(gh.owner, gh.name)
         else:
             try:
                 updated = api.fetch_updated_pull_requests(gh.owner, gh.name, last_updated)
                 prs = merge_updated_pull_requests(existing, updated)
             except (MaxResultsError, APIError) as exc:
                 log.debug("fetchUpdatedPullRequests fell back to open PRs: %s", exc)
-                prs = api.fetch_pull_requests(gh.owner, gh.name, state="open")
+                prs = api.fetch_all_open_pull_requests(gh.owner, gh.name)
         stamps = [item.updated_at for item in prs if item.updated_at]
         if last_updated:
             stamps.append(last_updated)
@@ -4922,6 +4924,9 @@ class AppStore:
 
         def work() -> tuple[list, dict[int, list]]:
             jobs = api.fetch_workflow_jobs_for_sha(owner, name, sha)
+            checks = list(state.check_runs or [])
+            if any(run.actions_workflow for run in checks):
+                get_latest_pr_workflow_runs_logs_for_check_run(api, owner, name, checks)
             annotations: dict[int, list] = {}
             for run in failed[:8]:
                 try:

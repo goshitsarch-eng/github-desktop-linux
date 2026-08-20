@@ -172,3 +172,37 @@ def test_map_workflows_and_pending_rerun() -> None:
     assert pending[0].status == "in_progress"
     assert pending[0].conclusion is None
     assert pending[0].steps[0].status == "in_progress"
+
+
+def test_get_latest_pr_workflow_runs_logs_for_check_run() -> None:
+    from github_desktop.github.ci_checks import get_latest_pr_workflow_runs_logs_for_check_run
+    from github_desktop.models import ActionsWorkflow
+
+    class FakeAPI:
+        def fetch_workflow_run_jobs(self, owner, repo, run_id):
+            assert (owner, repo, run_id) == ("o", "r", 9)
+            return {
+                "jobs": [
+                    {
+                        "id": 5,
+                        "html_url": "https://github.com/o/r/actions/runs/9/job/5",
+                        "steps": [
+                            {
+                                "name": "Set up job",
+                                "number": 1,
+                                "status": "completed",
+                                "conclusion": "success",
+                            }
+                        ],
+                    }
+                ]
+            }
+
+    check = _run(
+        id=5,
+        name="linux",
+        actions_workflow=ActionsWorkflow(id=9, name="CI", event="pull_request"),
+    )
+    mapped = get_latest_pr_workflow_runs_logs_for_check_run(FakeAPI(), "o", "r", [check])
+    assert mapped[0].html_url == "https://github.com/o/r/actions/runs/9/job/5"
+    assert mapped[0].steps[0].name == "Set up job"

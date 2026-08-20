@@ -67,6 +67,23 @@ REVERT_STEPS: tuple[ProgressStep, ...] = (ProgressStep("Checking out files", 1.0
 _BYTE_UNITS = ("B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB")
 
 
+def parse_carriage_return(text: str) -> str:
+    """Desktop `parseCarriageReturn`: terminal-style ``\\r`` overwrite.
+
+    Git (and many other CLI tools) use carriage returns to present progress.
+    ``Downloading: 1%\\rDownloading: 2%\\r`` is perceived as the 1 changing to 2.
+    """
+    if "\r" not in text:
+        return text
+    rewritten: list[str] = []
+    for line in text.split("\n"):
+        buf = ""
+        for cur in line.split("\r"):
+            buf = cur if len(cur) >= len(buf) else cur + buf[len(cur) :]
+        rewritten.append(buf)
+    return "\n".join(rewritten)
+
+
 def format_bytes(byte_count: int, decimals: int = 1, fixed: bool = True) -> str:
     """Desktop `formatBytes` (IEC units so LFS progress matches Git)."""
     if byte_count == 0:
@@ -96,6 +113,7 @@ _LFS_LINE_RE = re.compile(r"^(.+?)\s(\d+)/(\d+)\s(\d+)/(\d+)\s(.+)$")
 
 def parse_git_progress_line(line: str) -> GitProgressInfo | None:
     """Parse one Git progress line, or None if it is not progress output."""
+    line = parse_carriage_return(line)
     title_length = line.rfind(": ")
     if title_length <= 0:
         return None
@@ -135,6 +153,7 @@ class GitProgressParser:
         self.last_percent = 0.0
 
     def parse(self, line: str) -> GitProgress:
+        line = parse_carriage_return(line)
         progress = parse_git_progress_line(line)
         if progress is None:
             return GitProgress(kind="context", percent=self.last_percent, text=line)

@@ -9,6 +9,7 @@ from .ci_checks import (
     failing_checks,
     get_combined_status_summary,
     get_check_status_count_map,
+    get_latest_pr_workflow_runs_logs_for_check_run,
 )
 from .push_control import PushControl, default_push_control, is_branch_pushable
 from .repo_rules import (

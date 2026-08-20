@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Sequence
 
 from ..models import (
     ActionsWorkflow,
@@ -342,6 +342,36 @@ def _step_from_api(step: dict, job_html: str | None) -> CheckStep:
         started_at=step.get("started_at"),
         completed_at=step.get("completed_at"),
     )
+
+
+def get_latest_pr_workflow_runs_logs_for_check_run(
+    api: Any,
+    owner: str,
+    repo: str,
+    check_runs: Sequence[RefCheck],
+) -> list[RefCheck]:
+    """Desktop `getLatestPRWorkflowRunsLogsForCheckRun`: job steps via `fetchWorkflowRunJobs`."""
+    jobs_cache: dict[int, dict | None] = {}
+    mapped: list[RefCheck] = []
+    for check in check_runs:
+        workflow = check.actions_workflow
+        if workflow is None:
+            mapped.append(check)
+            continue
+        run_id = int(workflow.id)
+        if run_id not in jobs_cache:
+            jobs_cache[run_id] = api.fetch_workflow_run_jobs(owner, repo, run_id)
+        payload = jobs_cache[run_id]
+        jobs = (payload or {}).get("jobs") or [] if isinstance(payload, dict) else []
+        matching = next((job for job in jobs if isinstance(job, dict) and job.get("id") == check.id), None)
+        if matching is None:
+            mapped.append(check)
+            continue
+        html = matching.get("html_url") or check.html_url
+        check.html_url = html
+        check.steps = [_step_from_api(step, html) for step in (matching.get("steps") or [])]
+        mapped.append(check)
+    return mapped
 
 
 def attach_workflow_jobs_to_checks(check_runs: Sequence[RefCheck], jobs: Sequence[dict]) -> list[RefCheck]:

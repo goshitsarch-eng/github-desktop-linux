@@ -302,10 +302,11 @@ def test_window_actions_cover_menus() -> None:
     src += open(linux_mod.__file__, encoding="utf-8").read()
     src += open(text_tokens_mod.__file__, encoding="utf-8").read()
     src += open(menus_mod.__file__, encoding="utf-8").read()
-    from github_desktop import parse_pac as parse_pac_mod, linux_proxy as linux_proxy_mod
+    from github_desktop import parse_pac as parse_pac_mod, linux_proxy as linux_proxy_mod, offset_from as offset_from_mod
 
     src += open(parse_pac_mod.__file__, encoding="utf-8").read()
     src += open(linux_proxy_mod.__file__, encoding="utf-8").read()
+    src += open(offset_from_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -815,5 +816,15 @@ def test_window_actions_cover_menus() -> None:
         "MouseScroller",
         "resolveGitProxy",
         "Lines ",
+        "getNextPagePathFromLink",
+        "getNextPagePathWithIncreasingPageSize",
+        "fetchAllOpenPullRequests",
+        "fetchWorkflowRunJobs",
+        "fetchPullRequestReviews",
+        "fetchIssueComments",
+        "parseCarriageReturn",
+        "offsetFromNow",
+        "urlWithQueryString",
+        "getLatestPRWorkflowRunsLogsForCheckRun",
     ]:
         assert phrase in src

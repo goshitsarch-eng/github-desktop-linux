@@ -7,7 +7,8 @@ import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Iterable
+import re
+from typing import Any, Callable, Iterable
 
 from ..errors import APIError, CopilotError, MaxResultsError
 from ..logging import get_logger
@@ -30,6 +31,91 @@ log = get_logger()
 DOTCOM_API = "https://api.github.com"
 USER_AGENT = f"{APP_NAME}/{__version__}"
 PER_PAGE = 100
+ANTIOPE_PREVIEW_ACCEPT = "application/vnd.github.antiope-preview+json"
+_NEXT_LINK_RE = re.compile(r'<([^>]+)>; rel="([^"]+)"')
+
+
+def url_with_query_string(url: str, params: dict[str, str]) -> str:
+    """Desktop `urlWithQueryString`: append query params, preserving an existing query."""
+    qs = "&".join(f"{key}={urllib.parse.quote(str(value), safe='')}" for key, value in params.items())
+    if not qs:
+        return url
+    return f"{url}&{qs}" if "?" in url else f"{url}?{qs}"
+
+
+def _link_header(source: Any) -> str:
+    if source is None:
+        return ""
+    if isinstance(source, str):
+        return source
+    if isinstance(source, dict):
+        for key, value in source.items():
+            if str(key).lower() == "link":
+                return str(value)
+        return ""
+    headers = getattr(source, "headers", None)
+    if headers is None:
+        return ""
+    getter = getattr(headers, "get", None)
+    if callable(getter):
+        return str(getter("Link") or getter("link") or "")
+    if isinstance(headers, dict):
+        return _link_header(headers)
+    return str(headers)
+
+
+def get_next_page_path_from_link(source: Any) -> str | None:
+    """Desktop `getNextPagePathFromLink`.
+
+    Node's `url.parse().path` includes the query string; Python's
+    `urlsplit().path` does not, so this concatenates `?query` when present.
+    """
+    header = _link_header(source)
+    if not header:
+        return None
+    for part in header.split(","):
+        match = _NEXT_LINK_RE.search(part.strip())
+        if match and match.group(2) == "next":
+            parsed = urllib.parse.urlsplit(match.group(1))
+            path = parsed.path or ""
+            if parsed.query:
+                path = f"{path}?{parsed.query}"
+            return path or None
+    return None
+
+
+def get_next_page_path_with_increasing_page_size(source: Any) -> str | None:
+    """Desktop `getNextPagePathWithIncreasingPageSize`.
+
+    Follows GitHub `Link` headers and doubles `per_page` only when
+    `received % nextPageSize === 0` so later pages do not skip items
+    (Desktop `app/test/unit/api-test.ts`).
+    """
+    next_path = get_next_page_path_from_link(source)
+    if not next_path:
+        return None
+    parsed = urllib.parse.urlsplit(next_path)
+    query = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
+    per_page_s = query.get("per_page")
+    page_s = query.get("page")
+    try:
+        page_size = int(per_page_s) if per_page_s else 0
+        page_number = int(page_s) if page_s else 0
+    except ValueError:
+        return next_path
+    if not page_size or not page_number:
+        return next_path
+    # Confusing, but we're looking at the _next_ page path here
+    # so the current is whatever came before it.
+    current_page = page_number - 1
+    received = current_page * page_size
+    next_page_size = min(100, page_size * 2)
+    if page_size != next_page_size and received % next_page_size == 0:
+        query["per_page"] = str(next_page_size)
+        query["page"] = str(received // next_page_size + 1)
+        new_query = urllib.parse.urlencode(query)
+        return urllib.parse.urlunsplit(("", "", parsed.path, new_query, ""))
+    return next_path
 
 _token_invalidated_callback = None
 
@@ -271,6 +357,36 @@ class GitHubAPI:
                 break
         return items
 
+    def fetch_all(
+        self,
+        path: str,
+        *,
+        per_page: int = 100,
+        get_next_page_path: Callable[[Any], str | None] | None = None,
+        continue_fn: Callable[[list[Any]], bool] | None = None,
+        suppress_errors: bool = True,
+    ) -> list[Any]:
+        """Desktop `API.fetchAll`: follow GitHub `Link` headers until exhausted."""
+        buf: list[Any] = []
+        next_path: str | None = url_with_query_string(path, {"per_page": str(per_page)})
+        resolve_next = get_next_page_path or get_next_page_path_from_link
+        while next_path:
+            try:
+                data, headers = self.request("GET", next_path, return_headers=True)
+            except APIError as exc:
+                if suppress_errors:
+                    log.warn("fetchAll: '%s' returned a %s", path, exc.status)
+                    return buf
+                raise
+            page = data if isinstance(data, list) else []
+            buf.extend(page)
+            next_path = resolve_next(headers)
+            if not next_path:
+                break
+            if continue_fn is not None and not continue_fn(buf):
+                break
+        return buf
+
     def fetch_repos(self, affiliation: str = "owner,collaborator,organization_member") -> list[GitHubRepository]:
         items = self._paginate("/user/repos", {"affiliation": affiliation, "sort": "updated"})
         return [self._to_repo(item) for item in items]
@@ -331,41 +447,57 @@ class GitHubAPI:
         items = self._paginate(f"/repos/{owner}/{name}/pulls", {"state": state, "sort": "updated"})
         return [self._to_pr(item) for item in items]
 
+    def fetch_all_open_pull_requests(self, owner: str, name: str) -> list[PullRequest]:
+        """Desktop `fetchAllOpenPullRequests`: `GET /repos/{owner}/{name}/pulls?state=open`."""
+        path = url_with_query_string(f"/repos/{owner}/{name}/pulls", {"state": "open"})
+        try:
+            items = self.fetch_all(path)
+        except APIError:
+            log.warn("failed fetching open PRs for repository %s/%s", owner, name)
+            raise
+        return [self._to_pr(item) for item in items if isinstance(item, dict)]
+
     def fetch_updated_pull_requests(
         self, owner: str, name: str, since: str, max_results: int = 320
     ) -> list[PullRequest]:
-        """Desktop `fetchUpdatedPullRequests`: page PRs updated since `since`, newest first."""
+        """Desktop `fetchUpdatedPullRequests`.
+
+        Starts at ``per_page=10`` and follows GitHub ``Link`` headers via
+        ``getNextPagePathWithIncreasingPageSize`` so later pages double
+        ``per_page`` without skipping items (Desktop ``api-test.ts``).
+        """
         since_stamp = since or ""
-        items: list[dict[str, Any]] = []
-        page = 1
-        per_page = 10
-        while True:
-            data = self.get(
-                f"/repos/{owner}/{name}/pulls",
-                query={
-                    "state": "all",
-                    "sort": "updated",
-                    "direction": "desc",
-                    "per_page": str(per_page),
-                    "page": str(page),
-                },
-            )
-            batch = data if isinstance(data, list) else []
-            if not batch:
-                break
-            items.extend(batch)
-            if len(items) >= max_results:
+        path = url_with_query_string(
+            f"/repos/{owner}/{name}/pulls",
+            {"state": "all", "sort": "updated", "direction": "desc"},
+        )
+
+        def should_continue(results: list[Any]) -> bool:
+            if len(results) >= max_results:
                 raise MaxResultsError("got max pull requests, aborting")
-            last = batch[-1] if batch else {}
-            if str(last.get("updated_at") or "") <= since_stamp:
-                break
-            if len(batch) < per_page:
-                break
-            page += 1
-            per_page = min(per_page * 2, 100)
-            if page > 20:
-                break
-        return [self._to_pr(item) for item in items if str(item.get("updated_at") or "") >= since_stamp]
+            last = results[-1] if results else None
+            if not isinstance(last, dict):
+                return False
+            return str(last.get("updated_at") or "") > since_stamp
+
+        try:
+            items = self.fetch_all(
+                path,
+                per_page=10,
+                get_next_page_path=get_next_page_path_with_increasing_page_size,
+                continue_fn=should_continue,
+                suppress_errors=False,
+            )
+        except MaxResultsError:
+            raise
+        except APIError:
+            log.warn("failed fetching updated PRs for repository %s/%s", owner, name)
+            raise
+        return [
+            self._to_pr(item)
+            for item in items
+            if isinstance(item, dict) and str(item.get("updated_at") or "") >= since_stamp
+        ]
 
     def fetch_pull_request(self, owner: str, name: str, number: int) -> PullRequest:
         return self._to_pr(self.get(f"/repos/{owner}/{name}/pulls/{number}"))
@@ -529,6 +661,26 @@ class GitHubAPI:
             return token if isinstance(token, str) and token else None
         return None
 
+    def fetch_workflow_run_jobs(
+        self, owner: str, name: str, workflow_run_id: int
+    ) -> dict[str, Any] | None:
+        """Desktop `fetchWorkflowRunJobs`: jobs for one Actions workflow run."""
+        extra = {"Accept": ANTIOPE_PREVIEW_ACCEPT}
+        try:
+            data = self.get(
+                f"/repos/{owner}/{name}/actions/runs/{int(workflow_run_id)}/jobs",
+                extra_headers=extra,
+            )
+        except APIError:
+            log.debug(
+                "Failed fetching workflow jobs (%s/%s) workflow run: %s",
+                owner,
+                name,
+                workflow_run_id,
+            )
+            return None
+        return data if isinstance(data, dict) else None
+
     def fetch_workflow_jobs_for_sha(self, owner: str, name: str, sha: str) -> list[dict[str, Any]]:
         try:
             data = self.get(f"/repos/{owner}/{name}/actions/runs", query={"head_sha": sha})
@@ -540,9 +692,8 @@ class GitHubAPI:
             run_id = run.get("id")
             if not run_id:
                 continue
-            try:
-                payload = self.get(f"/repos/{owner}/{name}/actions/runs/{run_id}/jobs")
-            except APIError:
+            payload = self.fetch_workflow_run_jobs(owner, name, int(run_id))
+            if not payload:
                 continue
             workflow_meta = {
                 "id": int(run_id),
@@ -551,16 +702,17 @@ class GitHubAPI:
                 "check_suite_id": run.get("check_suite_id"),
                 "html_url": run.get("html_url"),
             }
-            for job in (payload or {}).get("jobs") or []:
-                job["_workflow"] = workflow_meta
-                jobs.append(job)
+            for job in payload.get("jobs") or []:
+                if isinstance(job, dict):
+                    job["_workflow"] = workflow_meta
+                    jobs.append(job)
         return jobs
 
     def fetch_pr_workflow_runs_by_branch_name(
         self, owner: str, name: str, branch_name: str
     ) -> list[dict[str, Any]]:
         """Desktop `fetchPRWorkflowRunsByBranchName`."""
-        extra = {"Accept": "application/vnd.github.antiope-preview+json"}
+        extra = {"Accept": ANTIOPE_PREVIEW_ACCEPT}
         try:
             data = self.get(
                 f"/repos/{owner}/{name}/actions/runs",
@@ -579,7 +731,7 @@ class GitHubAPI:
         self, owner: str, name: str, check_suite_id: int
     ) -> dict[str, Any] | None:
         """Desktop `fetchPRActionWorkflowRunByCheckSuiteId`."""
-        extra = {"Accept": "application/vnd.github.antiope-preview+json"}
+        extra = {"Accept": ANTIOPE_PREVIEW_ACCEPT}
         try:
             data = self.get(
                 f"/repos/{owner}/{name}/actions/runs",
@@ -864,6 +1016,49 @@ class GitHubAPI:
                 pr_number,
             )
             return None
+
+    def fetch_pull_request_reviews(
+        self, owner: str, name: str, pr_number: str | int
+    ) -> list[dict[str, Any]]:
+        """Desktop `fetchPullRequestReviews`."""
+        try:
+            data = self.get(f"/repos/{owner}/{name}/pulls/{pr_number}/reviews")
+            return data if isinstance(data, list) else []
+        except APIError:
+            log.debug("failed fetching PR reviews for %s/%s/pulls/%s", owner, name, pr_number)
+            return []
+
+    def fetch_pull_request_review_comments(
+        self, owner: str, name: str, pr_number: str | int, review_id: str | int
+    ) -> list[dict[str, Any]]:
+        """Desktop `fetchPullRequestReviewComments`."""
+        try:
+            data = self.get(f"/repos/{owner}/{name}/pulls/{pr_number}/reviews/{review_id}/comments")
+            return data if isinstance(data, list) else []
+        except APIError:
+            log.debug(
+                "failed fetching PR review comments for %s/%s/pulls/%s",
+                owner,
+                name,
+                pr_number,
+            )
+            return []
+
+    def fetch_issue_comments(
+        self, owner: str, name: str, issue_number: str | int
+    ) -> list[dict[str, Any]]:
+        """Desktop `fetchIssueComments`."""
+        try:
+            data = self.get(f"/repos/{owner}/{name}/issues/{issue_number}/comments")
+            return data if isinstance(data, list) else []
+        except APIError:
+            log.debug(
+                "failed fetching issue comments for %s/%s/issues/%s",
+                owner,
+                name,
+                issue_number,
+            )
+            return []
 
     def fetch_notification_subject(self, url: str) -> dict[str, Any] | None:
         """Load a notification's latest comment/review using Desktop's typed endpoints when possible."""

@@ -405,13 +405,26 @@ def test_fetch_updated_pull_requests_raises_max_results() -> None:
 
     api = GitHubAPI("https://api.github.com", "tok")
 
-    def fake_get(path, **kwargs):
-        return [
-            {"number": i, "title": str(i), "updated_at": "2026-08-01T00:00:00Z", "created_at": "2026-08-01T00:00:00Z", "user": {}, "head": {}, "base": {}, "html_url": ""}
+    def fake_request(method, path, **kwargs):
+        items = [
+            {
+                "number": i,
+                "title": str(i),
+                "updated_at": "2026-08-01T00:00:00Z",
+                "created_at": "2026-08-01T00:00:00Z",
+                "user": {},
+                "head": {},
+                "base": {},
+                "html_url": "",
+            }
             for i in range(10)
         ]
+        headers = {"link": '</repos/o/r/pulls?per_page=10&page=2>; rel="next"'}
+        if kwargs.get("return_headers"):
+            return items, headers
+        return items
 
-    api.get = fake_get  # type: ignore[method-assign]
+    api.request = fake_request  # type: ignore[method-assign]
     with pytest.raises(MaxResultsError):
         api.fetch_updated_pull_requests("o", "r", "2020-01-01T00:00:00Z", max_results=5)
 

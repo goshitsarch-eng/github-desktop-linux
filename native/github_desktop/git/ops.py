@@ -3109,13 +3109,15 @@ def prune_merged_branches(
     delete: bool = True,
 ) -> list[str]:
     """Desktop BranchPruner: delete merged local branches whose upstream is gone."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timezone
+
+    from ..offset_from import offset_from_now
 
     merged = get_merged_branches(repo, default_branch)
     current = get_symbolic_ref(repo, "HEAD")
     if current:
         merged.pop(current, None)
-    two_weeks = datetime.now(timezone.utc) - timedelta(days=14)
+    two_weeks = datetime.fromtimestamp(offset_from_now(-14, "days") / 1000.0, tz=timezone.utc)
     recent = {format_as_local_ref(name) for name in get_branch_checkouts(repo, two_weeks)}
     remote_local_refs = {format_as_local_ref(b.name) for b in get_branches(repo, "refs/remotes/")}
     ready: list[str] = []

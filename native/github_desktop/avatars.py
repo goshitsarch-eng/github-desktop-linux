@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 import urllib.parse
 
 from .models import Account, html_url_from_endpoint, is_dotcom_endpoint, is_ghe_endpoint, is_ghes_endpoint
+from .offset_from import offset_from_now
 
 GITHUB_EMAIL_AVATAR = "https://avatars.githubusercontent.com/u/e"
 GITHUB_LOGIN_AVATAR = "https://avatars.githubusercontent.com"
 NOREPLY_RE = re.compile(r"^(?:(?P<id>\d+)\+)?(?P<login>[^@]+)@users\.noreply\.github\.com$", re.I)
 
-_AVATAR_TOKENS: dict[str, str] = {}
+_AVATAR_TOKENS: dict[str, tuple[str, float]] = {}
 
 
 def initials_for(name: str, email: str = "") -> str:
@@ -51,8 +53,11 @@ def ensure_avatar_token(account: Account | None) -> str | None:
     if account is None or not is_ghe_endpoint(account.endpoint):
         return None
     cached = _AVATAR_TOKENS.get(account.endpoint)
+    now_ms = time.time() * 1000.0
     if cached:
-        return cached
+        token, expires_at = cached
+        if now_ms < expires_at:
+            return token
     try:
         from .github.api import GitHubAPI
 
@@ -60,7 +65,8 @@ def ensure_avatar_token(account: Account | None) -> str | None:
     except Exception:
         return None
     if token:
-        _AVATAR_TOKENS[account.endpoint] = token
+        # Desktop `ExpiringOperationCache` TTL: `offsetFrom(0, 50, 'minutes')`.
+        _AVATAR_TOKENS[account.endpoint] = (token, float(offset_from_now(50, "minutes")))
     return token
 
 
