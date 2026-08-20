@@ -106,12 +106,22 @@ class ExpandableCommitSummary(Gtk.Box):
         self._body_text = primary.body
         self._set_avatar(users_from_commits(commits))
         if len(commits) == 1:
-            summary = primary.summary or "Empty commit message"
+            from .emoji import expand_shortcodes
+            from ..models import format_commit_attribution
+            from ..push_pull import format_commit_relative_time
+
+            has_empty = not (primary.summary or "").strip()
+            summary = "Empty commit message" if has_empty else expand_shortcodes(primary.summary)
             self._summary.set_text(summary)
+            if has_empty:
+                self._summary.add_css_class("empty-summary")
+            else:
+                self._summary.remove_css_class("empty-summary")
             tags = (" · " + ", ".join(primary.tags)) if primary.tags else ""
+            attribution = format_commit_attribution(primary)
+            relative = format_commit_relative_time(primary.author.date)
             self._meta.set_text(
-                f"{primary.author.name} <{primary.author.email}> · "
-                f"{primary.author.date.strftime('%Y-%m-%d %H:%M')} · {primary.short_sha}{tags}"
+                f"{attribution} • {relative} · {primary.author.email} · {primary.short_sha}{tags}"
             )
         else:
             in_diff = set(shas_in_diff or [])

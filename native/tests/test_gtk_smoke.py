@@ -85,6 +85,14 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             viewer.render(sample, path="README.md", selection=selection, side_by_side=True)
             viewer.render(sample, path="README.md", selection=selection, side_by_side=False)
             viewer.render(BinaryDiff(), path="photo.bin")
+            from github_desktop.models import ImageDiff, ImageDiffType
+
+            png = bytes.fromhex(
+                "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c089"
+                "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+            )
+            viewer.render(ImageDiff(previous=png, current=png), path="a.png", image_mode=ImageDiffType.SWIPE.value)
+            viewer.render(ImageDiff(previous=None, current=png), path="new.png")
             viewer.start_search()
             viewer.close_search()
             assert hasattr(win, "_stash_viewer")

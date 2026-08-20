@@ -42,6 +42,7 @@ from ..models import (
     SignInStep,
     UncommittedChangesStrategy,
     git_author_name_is_valid,
+    group_pr_base_branches,
 )
 from ..shells import get_available_shells, open_external
 from ..store import AppStore
@@ -1494,12 +1495,18 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
 
     def render_github_list() -> None:
         account = selected_account()
-        empty = "Sign in to GitHub.com to see your repositories" if not account else "No matching repositories"
+        needle = gh_filter.get_text().strip()
+        if not account:
+            empty = "Sign in to GitHub.com to see your repositories"
+        elif needle:
+            empty = "Sorry, I can't find that repository"
+        else:
+            empty = "No matching repositories"
         _render_grouped_clone_list(
             repo_list,
             loaded,
             account.login if account else "",
-            gh_filter.get_text(),
+            needle,
             selected_clone_url=selected_clone_url,
             url_row=url_row,
             path_row=path_row,
@@ -1534,16 +1541,18 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
 
     def render_enterprise_list() -> None:
         account = selected_account(True)
-        empty = (
-            "Sign in to GitHub Enterprise to see your repositories"
-            if not account
-            else "No matching repositories"
-        )
+        needle = ent_filter.get_text().strip()
+        if not account:
+            empty = "Sign in to GitHub Enterprise to see your repositories"
+        elif needle:
+            empty = "Sorry, I can't find that repository"
+        else:
+            empty = "No matching repositories"
         _render_grouped_clone_list(
             ent_list,
             loaded_ent,
             account.login if account else "",
-            ent_filter.get_text(),
+            needle,
             selected_clone_url=selected_clone_url,
             url_row=url_row,
             path_row=path_row,
@@ -2637,15 +2646,23 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     target = github_for_contribution(repo) or repo.github
     base_names = [b.name for b in state.branches if b.name != current]
     default = state.pr_base_branch or (target.default_branch if target else repo.github.default_branch)
-    if default and default not in base_names:
-        base_names.insert(0, default)
+    recent_bases, other_bases = group_pr_base_branches(
+        base_names,
+        list(state.recent_branches or []),
+        current=current,
+        default=default,
+    )
+    # prRecentBaseBranches: recent checkouts first, then the remaining remote-capable names.
+    if default and default not in recent_bases and default not in other_bases and default != current:
+        other_bases.insert(0, default)
+    selected = {"name": default or (recent_bases[0] if recent_bases else (other_bases[0] if other_bases else ""))}
 
     dialog = Adw.Dialog()
     dialog.set_content_width(900)
     dialog.set_content_height(640)
     toolbar = Adw.ToolbarView()
     header = Adw.HeaderBar()
-    header.set_title_widget(Adw.WindowTitle(title="Preview pull request", subtitle=f"{current} → {default}"))
+    header.set_title_widget(Adw.WindowTitle(title="Open a pull request", subtitle=f"{current} → {selected['name']}"))
     toolbar.add_top_bar(header)
 
     root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -2653,18 +2670,35 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     root.set_margin_end(12)
     root.set_margin_top(8)
     root.set_margin_bottom(8)
-    top = Gtk.Box(spacing=8)
-    top.append(Gtk.Label(label="Base"))
-    base_drop = Gtk.DropDown.new_from_strings(base_names or [default])
-    if default in base_names:
-        base_drop.set_selected(base_names.index(default))
-    top.append(base_drop)
+    details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+    merge_into = Gtk.Label(wrap=True, xalign=0)
+    merge_into.add_css_class("base-branch-details")
+    details.append(merge_into)
     stats = Gtk.Label(xalign=0, hexpand=True)
-    top.append(stats)
+    stats.add_css_class("lines-added-deleted")
+    details.append(stats)
     merge_info = Gtk.Label(wrap=True, xalign=0)
     merge_info.add_css_class("merge-info")
-    root.append(top)
-    root.append(merge_info)
+    details.append(merge_info)
+    root.append(details)
+
+    base_btn = Gtk.MenuButton()
+    base_btn.set_halign(Gtk.Align.START)
+    base_label = Gtk.Label(label=selected["name"] or "Base")
+    base_child = Gtk.Box(spacing=6)
+    base_child.append(Gtk.Label(label="Base"))
+    base_child.append(base_label)
+    base_btn.set_child(base_child)
+    popover = Gtk.Popover()
+    list_wrap = Gtk.ScrolledWindow()
+    list_wrap.set_min_content_height(220)
+    list_wrap.set_min_content_width(280)
+    base_list = Gtk.ListBox()
+    base_list.add_css_class("boxed-list")
+    list_wrap.set_child(base_list)
+    popover.set_child(list_wrap)
+    base_btn.set_popover(popover)
+    root.append(base_btn)
 
     paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
     paned.set_resize_start_child(False)
@@ -2696,6 +2730,53 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     actions.append(view_btn)
     root.append(actions)
 
+    def _preview_kwargs():
+        st = store.state_for(repo)
+        return {
+            "show_checks": False,
+            "side_by_side": st.side_by_side or store.settings.show_side_by_side_diff,
+            "image_mode": st.image_diff_type or store.settings.image_diff_type,
+            "hide_whitespace": st.hide_whitespace or store.settings.hide_whitespace_in_diffs,
+        }
+
+    def _fill_base_list() -> None:
+        while True:
+            row = base_list.get_first_child()
+            if row is None:
+                break
+            base_list.remove(row)
+        def add_header(title: str) -> None:
+            header_row = Gtk.ListBoxRow()
+            header_row.set_selectable(False)
+            header_row.set_activatable(False)
+            label = Gtk.Label(label=title, xalign=0)
+            label.add_css_class("dim-label")
+            header_row.set_child(label)
+            base_list.append(header_row)
+
+        def add_name(name: str) -> None:
+            row = Gtk.ListBoxRow()
+            row.set_child(Gtk.Label(label=name, xalign=0))
+            row.branch_name = name  # type: ignore[attr-defined]
+            base_list.append(row)
+
+        if recent_bases:
+            add_header("Recent")
+            for name in recent_bases:
+                add_name(name)
+        if other_bases:
+            add_header("Other branches")
+            for name in other_bases:
+                add_name(name)
+        if not recent_bases and not other_bases:
+            empty = Gtk.ListBoxRow()
+            empty.set_selectable(False)
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            box.append(Gtk.Label(label="Sorry, I can't find that remote branch.", wrap=True, xalign=0))
+            box.append(Gtk.Label(label="You can only open pull requests against remote branches.", wrap=True, xalign=0))
+            empty.set_child(box)
+            base_list.append(empty)
+
     def render_preview() -> None:
         st = store.state_for(repo)
         cs = st.pr_changeset
@@ -2703,11 +2784,14 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
         added = cs.lines_added if cs else 0
         deleted = cs.lines_deleted if cs else 0
         files_n = len(st.pr_files)
+        base_name = selected["name"] or default
+        commit_word = "commit" if n == 1 else "commits"
+        merge_into.set_text(f"Merge {n} {commit_word} into {base_name} from {current}.")
         if n == 0:
             stats.set_text("No commits to merge into the base branch")
             merge_info.set_text("")
         else:
-            stats.set_text(f"{n} commit{'s' if n != 1 else ''} · {files_n} files · +{added} −{deleted}")
+            stats.set_text(f"{files_n} files · {added} added lines, {deleted} removed lines")
             from ..git.ops import determine_mergeability
 
             ours = next((b.tip_sha for b in st.branches if b.name == (st.pr_base_branch or default)), None)
@@ -2733,9 +2817,10 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
             row.set_activatable(True)
             row._file = file  # type: ignore[attr-defined]
             file_list.append(row)
+        kwargs = _preview_kwargs()
         if st.pr_files:
             diff = store.load_pr_preview_diff(repo, st.pr_files[0])
-            viewer.render(diff, path=st.pr_files[0].path, show_checks=False)
+            viewer.render(diff, path=st.pr_files[0].path, **kwargs)
         else:
             viewer.render(None)
 
@@ -2743,26 +2828,25 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
         file = getattr(row, "_file", None)
         if file:
             diff = store.load_pr_preview_diff(repo, file)
-            viewer.render(diff, path=file.path, show_checks=False)
+            viewer.render(diff, path=file.path, **_preview_kwargs())
 
     file_list.connect("row-activated", on_file)
 
-    def on_base(*_a: Any) -> None:
-        model = base_drop.get_model()
-        idx = base_drop.get_selected()
-        if model is None or idx < 0:
+    def on_base(_l, row) -> None:
+        name = getattr(row, "branch_name", "") or ""
+        if not name:
             return
-        name = model.get_string(idx)
+        selected["name"] = name
+        base_label.set_text(name)
         store.load_pr_preview(repo, name)
-        header.set_title_widget(Adw.WindowTitle(title="Preview pull request", subtitle=f"{current} → {name}"))
+        header.set_title_widget(Adw.WindowTitle(title="Open a pull request", subtitle=f"{current} → {name}"))
+        popover.popdown()
         render_preview()
 
-    base_drop.connect("notify::selected", on_base)
+    base_list.connect("row-activated", on_base)
 
     def create(*_a: Any) -> None:
-        model = base_drop.get_model()
-        idx = base_drop.get_selected()
-        base = model.get_string(idx) if model is not None and idx >= 0 else default
+        base = selected["name"] or default
         dialog.close()
         store.create_pull_request(repo, title_row.get_text().strip() or current, base, body_row.get_text().strip(), draft=draft.get_active())
 
@@ -2774,6 +2858,7 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
 
     create_btn.connect("clicked", create)
     view_btn.connect("clicked", view)
+    _fill_base_list()
     render_preview()
     toolbar.set_content(root)
     dialog.set_child(toolbar)

@@ -105,6 +105,41 @@ APP_CSS = """
 .image-diff-toolbar {
   padding: 6px;
 }
+.image-diff-header {
+  font-weight: 600;
+}
+.image-diff-swipe {
+  padding: 8px;
+}
+.image-diff-swipe-canvas {
+  background-color: alpha(@window_fg_color, 0.04);
+}
+.tag-indicator, .tag-name {
+  font-size: 0.75rem;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background-color: alpha(@accent_bg_color, 0.28);
+}
+.tag-indicator-more {
+  min-width: 8px;
+  min-height: 8px;
+  border-radius: 999px;
+  background-color: alpha(@accent_bg_color, 0.55);
+}
+.unpushed-indicator {
+  color: @accent_color;
+}
+.commit-summary.empty-summary {
+  font-style: italic;
+  opacity: 0.7;
+}
+.push-pull-button .push-pull-label {
+  font-weight: 600;
+}
+.push-last-fetched {
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
 .ahead-behind {
   font-size: 0.85rem;
   opacity: 0.8;

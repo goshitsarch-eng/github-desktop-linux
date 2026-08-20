@@ -29,8 +29,10 @@ from ..models import (
     TutorialStep,
     WelcomeStep,
     WorkingDirectoryFileChange,
+    format_commit_attribution,
+    get_conflicted_files,
 )
-from ..push_pull import describe_push_pull, format_last_fetched
+from ..push_pull import describe_push_pull, format_commit_relative_time, format_last_fetched
 from ..shells import open_external, open_in_default_program
 from ..store import AppStore
 from ..version import APP_NAME
@@ -591,7 +593,17 @@ class MainWindow(Adw.ApplicationWindow):
 
         self._push_box = Gtk.Box()
         self._push_box.add_css_class("linked")
-        self._push_btn = Gtk.Button(label="Fetch origin")
+        self._push_btn = Gtk.Button()
+        self._push_btn.add_css_class("push-pull-button")
+        push_labels = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self._push_action_label = Gtk.Label(label="Fetch origin", xalign=0)
+        self._push_action_label.add_css_class("push-pull-label")
+        self._push_fetched_label = Gtk.Label(label="Never fetched", xalign=0)
+        self._push_fetched_label.add_css_class("dim-label")
+        self._push_fetched_label.add_css_class("push-last-fetched")
+        push_labels.append(self._push_action_label)
+        push_labels.append(self._push_fetched_label)
+        self._push_btn.set_child(push_labels)
         self._push_btn.connect("clicked", self._on_push_pull)
         self._push_menu_btn = Gtk.MenuButton()
         self._push_menu_btn.set_icon_name("pan-down-symbolic")
@@ -1272,10 +1284,9 @@ class MainWindow(Adw.ApplicationWindow):
         if len(title) > 42:
             title = title[:39] + "…"
         if pct:
-            self._push_btn.set_label(f"{title} {pct}%")
+            self._set_push_chrome(f"{title} {pct}%", None, sensitive=False)
         else:
-            self._push_btn.set_label(title)
-        self._push_btn.set_sensitive(False)
+            self._set_push_chrome(title, None, sensitive=False)
         if hasattr(self, "_push_menu_btn"):
             self._push_menu_btn.set_sensitive(False)
             self._push_menu_btn.set_visible(False)
@@ -1305,6 +1316,19 @@ class MainWindow(Adw.ApplicationWindow):
         self._push_menu_btn.set_menu_model(menu)
         self._push_menu_btn.set_visible(bool(items))
 
+    def _set_push_chrome(self, label: str, subtitle: str | None, *, sensitive: bool = True) -> None:
+        if hasattr(self, "_push_action_label"):
+            self._push_action_label.set_text(label)
+        else:
+            self._push_btn.set_label(label)
+        if hasattr(self, "_push_fetched_label"):
+            if subtitle:
+                self._push_fetched_label.set_text(subtitle)
+                self._push_fetched_label.set_visible(True)
+            else:
+                self._push_fetched_label.set_visible(False)
+        self._push_btn.set_sensitive(sensitive)
+
     def _update_push_label(self, state) -> None:
         if self.store.progress_kind:
             self._update_network_progress()
@@ -1315,8 +1339,7 @@ class MainWindow(Adw.ApplicationWindow):
         if hasattr(self, "_push_menu_btn"):
             self._push_menu_btn.set_tooltip_text(fetched)
         if not status:
-            self._push_btn.set_label("Fetch origin")
-            self._push_btn.set_sensitive(True)
+            self._set_push_chrome("Fetch origin", fetched, sensitive=True)
             self._set_push_menu((), "origin")
             return
         ab = status.branch_ahead_behind
@@ -1332,8 +1355,7 @@ class MainWindow(Adw.ApplicationWindow):
             force_push=self.store.current_branch_force_push_state(),
             pull_with_rebase=bool(getattr(state, "pull_with_rebase", False)),
         )
-        self._push_btn.set_label(presentation.label)
-        self._push_btn.set_sensitive(presentation.sensitive)
+        self._set_push_chrome(presentation.label, fetched, sensitive=presentation.sensitive)
         self._set_push_menu(presentation.menu_items, presentation.remote_name)
 
     def _on_push_pull(self, *_args: object) -> None:
@@ -1820,19 +1842,57 @@ class MainWindow(Adw.ApplicationWindow):
         box = Gtk.Box(spacing=8)
         box.append(AvatarStack(users_from_commit(commit), size=28))
         texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        summary = Gtk.Label(label=commit.summary, xalign=0)
+        texts.set_hexpand(True)
+        from .emoji import expand_shortcodes
+
+        has_empty_summary = not (commit.summary or "").strip()
+        summary_text = "Empty commit message" if has_empty_summary else expand_shortcodes(commit.summary)
+        summary = Gtk.Label(label=summary_text, xalign=0)
         summary.add_css_class("commit-summary")
-        tags = (" · " + ", ".join(commit.tags)) if commit.tags else ""
-        meta = Gtk.Label(
-            label=f"{commit.short_sha} · {commit.author.name} · {commit.author.date.strftime('%Y-%m-%d %H:%M')}{tags}",
-            xalign=0,
-        )
-        meta.add_css_class("commit-sha")
+        if has_empty_summary:
+            summary.add_css_class("empty-summary")
+        attribution = format_commit_attribution(commit)
+        relative = format_commit_relative_time(commit.author.date)
+        byline = Gtk.Label(label=f"{attribution} • {relative}", xalign=0)
+        byline.add_css_class("commit-sha")
         texts.append(summary)
-        texts.append(meta)
+        texts.append(byline)
         box.append(texts)
+        indicators = Gtk.Box(spacing=4)
+        indicators.add_css_class("commit-indicators")
+        if commit.tags:
+            tag_box = Gtk.Box(spacing=4)
+            tag_box.add_css_class("tag-indicator")
+            first = Gtk.Label(label=commit.tags[0])
+            first.add_css_class("tag-name")
+            tag_box.append(first)
+            if len(commit.tags) > 1:
+                more = Gtk.Label(label="")
+                more.add_css_class("tag-indicator-more")
+                more.set_tooltip_text(", ".join(commit.tags[1:]))
+                tag_box.append(more)
+            indicators.append(tag_box)
+        repo = self.store.selected_repository
+        state = self.store.state_for(repo) if repo else None
+        local_shas = set(getattr(state, "local_commit_shas", None) or [])
+        tags_to_push = set(getattr(state, "local_tags_to_push", None) or [])
+        unpushed_tags = [tag for tag in commit.tags if tag in tags_to_push]
+        is_local = commit.sha in local_shas
+        if is_local or unpushed_tags:
+            arrow = Gtk.Image.new_from_icon_name("go-up-symbolic")
+            arrow.add_css_class("unpushed-indicator")
+            if is_local:
+                arrow.set_tooltip_text("This commit has not been pushed to the remote repository")
+            else:
+                count = len(unpushed_tags)
+                noun = "tag" if count == 1 else "tags"
+                arrow.set_tooltip_text(f"This commit has {count} {noun} to push")
+            indicators.append(arrow)
+        if indicators.get_first_child() is not None:
+            box.append(indicators)
         row.set_child(box)
         row._commit = commit  # type: ignore[attr-defined]
+        row.set_tooltip_text(commit.sha)
         attach_right_click(row, lambda *_ , r=row: self._commit_item_menu(r))
         self._install_commit_dnd(row, commit)
         return row
@@ -1916,12 +1976,25 @@ class MainWindow(Adw.ApplicationWindow):
         status = state.status
         if not repo or not status:
             return
+        files = list(status.working_directory.files) if status.working_directory else []
+        unresolved = get_conflicted_files(files)
+        can_continue = not unresolved
+        continue_tooltip = (
+            "Continue rebase"
+            if can_continue
+            else "Resolve all conflicts before continuing"
+        )
+        has_untracked = any(f.status.kind == AppFileStatusKind.UNTRACKED for f in files)
         if status.merge_head_found:
             self._conflict_bar.append(Gtk.Label(label="Merge in progress"))
             view = Gtk.Button(label="View conflicts")
             view.connect("clicked", lambda *_: show_conflicts_dialog(self, self.store, MultiCommitOperationKind.MERGE))
             cont = Gtk.Button(label="Commit merge")
             abort = Gtk.Button(label="Abort merge")
+            cont.set_sensitive(can_continue)
+            cont.set_tooltip_text(
+                "Commit merge" if can_continue else "Resolve all conflicts before continuing"
+            )
             cont.connect("clicked", lambda *_: self.store.continue_conflict_operation(repo, MultiCommitOperationKind.MERGE))
             abort.connect(
                 "clicked",
@@ -1934,12 +2007,18 @@ class MainWindow(Adw.ApplicationWindow):
             self._conflict_bar.append(view)
             self._conflict_bar.append(cont)
             self._conflict_bar.append(abort)
+            if has_untracked:
+                warn = Gtk.Label(label="Untracked files will be excluded")
+                warn.add_css_class("warning-untracked-files")
+                self._conflict_bar.append(warn)
         elif status.rebase_internal_state:
             self._conflict_bar.append(Gtk.Label(label="Rebase in progress"))
             view = Gtk.Button(label="View conflicts")
             view.connect("clicked", lambda *_: show_conflicts_dialog(self, self.store, MultiCommitOperationKind.REBASE))
             cont = Gtk.Button(label="Continue rebase")
             abort = Gtk.Button(label="Abort rebase")
+            cont.set_sensitive(can_continue)
+            cont.set_tooltip_text(continue_tooltip)
             cont.connect("clicked", lambda *_: self.store.continue_conflict_operation(repo, MultiCommitOperationKind.REBASE))
             abort.connect(
                 "clicked",
@@ -1952,12 +2031,20 @@ class MainWindow(Adw.ApplicationWindow):
             self._conflict_bar.append(view)
             self._conflict_bar.append(cont)
             self._conflict_bar.append(abort)
+            if has_untracked:
+                warn = Gtk.Label(label="Untracked files will be excluded")
+                warn.add_css_class("warning-untracked-files")
+                self._conflict_bar.append(warn)
         elif status.is_cherry_picking_head_found:
             self._conflict_bar.append(Gtk.Label(label="Cherry-pick in progress"))
             view = Gtk.Button(label="View conflicts")
             view.connect("clicked", lambda *_: show_conflicts_dialog(self, self.store, MultiCommitOperationKind.CHERRY_PICK))
             cont = Gtk.Button(label="Continue")
             abort = Gtk.Button(label="Abort")
+            cont.set_sensitive(can_continue)
+            cont.set_tooltip_text(
+                "Continue" if can_continue else "Resolve all conflicts before continuing"
+            )
             cont.connect("clicked", lambda *_: self.store.continue_conflict_operation(repo, MultiCommitOperationKind.CHERRY_PICK))
             abort.connect(
                 "clicked",
@@ -1970,6 +2057,10 @@ class MainWindow(Adw.ApplicationWindow):
             self._conflict_bar.append(view)
             self._conflict_bar.append(cont)
             self._conflict_bar.append(abort)
+            if has_untracked:
+                warn = Gtk.Label(label="Untracked files will be excluded")
+                warn.add_css_class("warning-untracked-files")
+                self._conflict_bar.append(warn)
 
     def _refresh_stash_bar(self, state) -> None:
         child = self._stash_bar.get_first_child()

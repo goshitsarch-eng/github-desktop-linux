@@ -244,3 +244,80 @@ def test_fork_remote_name() -> None:
     assert fork_pull_request_remote_name("octocat") == "github-desktop-octocat"
     file = WorkingDirectoryFileChange("a", FileStatus(AppFileStatusKind.CONFLICTED, us=GitStatusEntry.DELETED, them=GitStatusEntry.MODIFIED))
     assert file.status.us == GitStatusEntry.DELETED
+
+
+def test_rev_helpers_and_update_ref(git_repo: Path) -> None:
+    from github_desktop.git.ops import (
+        get_branch_ahead_behind,
+        get_commits_between,
+        get_commits_in_range,
+        rev_range,
+        rev_range_inclusive,
+        rev_symmetric_difference,
+        update_ref,
+    )
+
+    assert rev_range("abc", "def") == "abc..def"
+    assert rev_range_inclusive("abc", "def") == "abc^..def"
+    assert rev_symmetric_difference("abc", "def") == "abc...def"
+    old = run_git(git_repo, "rev-parse", "HEAD").stdout.strip()
+    run_git(git_repo, "checkout", "-b", "topic")
+    (git_repo / "topic.txt").write_text("topic\n", encoding="utf-8")
+    run_git(git_repo, "add", "topic.txt")
+    run_git(git_repo, "commit", "-m", "topic")
+    new = run_git(git_repo, "rev-parse", "HEAD").stdout.strip()
+    between = get_commits_between(str(git_repo), old, new)
+    assert between is not None
+    assert any(c.sha == new for c in between)
+    ranged = get_commits_in_range(str(git_repo), rev_range(old, new))
+    assert ranged == between
+    branch = Branch("topic", "main", new, BranchType.LOCAL)
+    ab = get_branch_ahead_behind(str(git_repo), branch)
+    assert ab is not None
+    assert ab.ahead == 1
+    assert ab.behind == 0
+    update_ref(str(git_repo), "refs/heads/topic", new, old, "rewind topic")
+    assert run_git(git_repo, "rev-parse", "refs/heads/topic").stdout.strip() == old
+
+
+def test_fill_credential_with_helper(git_repo: Path, tmp_path: Path) -> None:
+    from github_desktop.git.ops import approve_credential, fill_credential, reject_credential
+
+    helper = tmp_path / "cred-helper.sh"
+    helper.write_text(
+        "#!/bin/sh\n"
+        "case \"$1\" in\n"
+        "get) printf 'username=alice\\npassword=s3cret\\n' ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    helper.chmod(0o755)
+    filled = fill_credential(
+        {"protocol": "https", "host": "example.com"},
+        str(git_repo),
+        helper=str(helper),
+    )
+    assert filled.get("username") == "alice"
+    assert filled.get("password") == "s3cret"
+    stored = approve_credential(filled, str(git_repo), helper=str(helper))
+    assert stored.get("username") == "alice"
+    reject_credential(filled, str(git_repo), helper=str(helper))
+
+
+def test_global_config_value_wrappers(tmp_path: Path, monkeypatch) -> None:
+    from github_desktop.git.ops import (
+        get_global_boolean_config_value,
+        get_global_config_value,
+        remove_global_config_value,
+        set_global_config_value,
+    )
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    set_global_config_value("desktop.testuser", "Ada")
+    assert get_global_config_value("desktop.testuser") == "Ada"
+    set_global_config_value("desktop.testflag", "true")
+    assert get_global_boolean_config_value("desktop.testflag") is True
+    remove_global_config_value("desktop.testuser")
+    assert get_global_config_value("desktop.testuser") is None

@@ -49,6 +49,18 @@ def format_last_fetched(ts: float | None, *, now: float | None = None) -> str:
     return f"Last fetched {format_relative_past(current - ts)}"
 
 
+def format_commit_relative_time(when, *, now=None) -> str:
+    """Relative time for commit list items (`just now`, `3 minutes ago`, …)."""
+    from datetime import datetime, timezone
+
+    current = now or datetime.now(timezone.utc)
+    if getattr(when, "tzinfo", None) is None:
+        when = when.replace(tzinfo=timezone.utc)
+    if getattr(current, "tzinfo", None) is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return format_relative_past((current - when).total_seconds())
+
+
 def describe_push_pull(
     *,
     remote_name: str | None,

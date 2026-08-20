@@ -764,13 +764,13 @@ class DiffViewer(Gtk.Box):
         prev_tex = _texture_from_bytes(diff.previous)
         cur_tex = _texture_from_bytes(diff.current)
         if not prev_tex and cur_tex:
-            panels = ((cur_tex, diff.current, "New"),)
+            panels = ((cur_tex, diff.current, "Added"),)
         elif prev_tex and not cur_tex:
             panels = ((prev_tex, diff.previous, "Deleted"),)
         else:
             panels = ((prev_tex, diff.previous, "Previous"), (cur_tex, diff.current, "Current"))
         if mode == ImageDiffType.SWIPE.value and prev_tex and cur_tex:
-            self._inner.append(_swipe_images(prev_tex, cur_tex))
+            self._inner.append(_swipe_images(prev_tex, cur_tex, diff.previous, diff.current))
         elif mode == ImageDiffType.ONION.value and prev_tex and cur_tex:
             self._inner.append(_onion_images(prev_tex, cur_tex))
         elif mode == ImageDiffType.DIFFERENCE.value and prev_tex and cur_tex:
@@ -779,8 +779,12 @@ class DiffViewer(Gtk.Box):
             box = Gtk.Box(spacing=12)
             for tex, blob, title in panels:
                 col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+                header_class = "image-diff-current" if title in {"Added", "Current"} else "image-diff-previous"
+                col.add_css_class(header_class)
+                heading = Gtk.Label(label=title, xalign=0)
+                heading.add_css_class("image-diff-header")
+                col.append(heading)
                 meta = _image_dimensions_label(tex, blob)
-                col.append(Gtk.Label(label=title, xalign=0))
                 if meta:
                     hint = Gtk.Label(label=meta, xalign=0)
                     hint.add_css_class("dim-label")
@@ -816,28 +820,105 @@ def _picture(tex: Gdk.Texture | None) -> Gtk.Widget:
     return pic
 
 
-def _texture_from_bytes(blob: bytes | None) -> Gdk.Texture | None:
+def _pixbuf_from_bytes(blob: bytes | None):
     if not blob or GdkPixbuf is None:
         return None
     try:
         loader = GdkPixbuf.PixbufLoader()
         loader.write(blob)
         loader.close()
-        pix = loader.get_pixbuf()
-        if pix:
-            return Gdk.Texture.new_for_pixbuf(pix)
+        return loader.get_pixbuf()
     except Exception:
         return None
+
+
+def _texture_from_bytes(blob: bytes | None) -> Gdk.Texture | None:
+    pix = _pixbuf_from_bytes(blob)
+    if pix:
+        return Gdk.Texture.new_for_pixbuf(pix)
     return None
 
 
-def _swipe_images(previous: Gdk.Texture | None, current: Gdk.Texture | None) -> Gtk.Widget:
-    paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-    paned.set_start_child(_picture(previous))
-    paned.set_end_child(_picture(current))
-    paned.set_wide_handle(True)
-    paned.set_position(240)
-    return paned
+def _swipe_images(
+    previous: Gdk.Texture | None,
+    current: Gdk.Texture | None,
+    previous_blob: bytes | None = None,
+    current_blob: bytes | None = None,
+) -> Gtk.Widget:
+    """Desktop `Swipe`: 0% is all current, 100% is all previous, clipped overlay."""
+    max_w = max(
+        previous.get_width() if previous else 1,
+        current.get_width() if current else 1,
+        1,
+    )
+    max_h = max(
+        previous.get_height() if previous else 1,
+        current.get_height() if current else 1,
+        1,
+    )
+    display_w = min(max_w, 480)
+    display_h = max(1, int(round(max_h * (display_w / max_w))))
+    prev_pix = _pixbuf_from_bytes(previous_blob)
+    curr_pix = _pixbuf_from_bytes(current_blob)
+    if prev_pix is None and previous is not None:
+        prev_pix = _pixbuf_from_bytes(
+            bytes(previous.save_to_png_bytes().get_data()) if hasattr(previous, "save_to_png_bytes") else b""
+        )
+    if curr_pix is None and current is not None:
+        curr_pix = _pixbuf_from_bytes(
+            bytes(current.save_to_png_bytes().get_data()) if hasattr(current, "save_to_png_bytes") else b""
+        )
+    if prev_pix is not None and (prev_pix.get_width() != display_w or prev_pix.get_height() != display_h):
+        prev_pix = prev_pix.scale_simple(display_w, display_h, GdkPixbuf.InterpType.BILINEAR)
+    if curr_pix is not None and (curr_pix.get_width() != display_w or curr_pix.get_height() != display_h):
+        curr_pix = curr_pix.scale_simple(display_w, display_h, GdkPixbuf.InterpType.BILINEAR)
+
+    root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+    root.add_css_class("image-diff-swipe")
+    state = {"percent": 0.0}
+    area = Gtk.DrawingArea()
+    area.set_content_width(display_w)
+    area.set_content_height(display_h)
+    area.add_css_class("image-diff-swipe-canvas")
+
+    def draw(_area, cr, width: int, height: int) -> None:
+        # Slider 0 = all current (split at left); 100 = all previous (split at right).
+        split = int(width * (state["percent"] / 100.0))
+        if prev_pix is not None and split > 0:
+            cr.save()
+            cr.rectangle(0, 0, split, height)
+            cr.clip()
+            Gdk.cairo_set_source_pixbuf(cr, prev_pix, 0, 0)
+            cr.paint()
+            cr.restore()
+        if curr_pix is not None and split < width:
+            cr.save()
+            cr.rectangle(split, 0, width - split, height)
+            cr.clip()
+            Gdk.cairo_set_source_pixbuf(cr, curr_pix, 0, 0)
+            cr.paint()
+            cr.restore()
+        cr.set_source_rgba(0.2, 0.55, 0.95, 0.95)
+        cr.set_line_width(2)
+        cr.move_to(split, 0)
+        cr.line_to(split, height)
+        cr.stroke()
+
+    area.set_draw_func(draw)
+    scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 0.1)
+    scale.set_value(0)
+    scale.set_draw_value(False)
+    scale.set_hexpand(True)
+    scale.add_css_class("slider")
+
+    def on_change(widget: Gtk.Scale) -> None:
+        state["percent"] = widget.get_value()
+        area.queue_draw()
+
+    scale.connect("value-changed", on_change)
+    root.append(scale)
+    root.append(area)
+    return root
 
 
 def _onion_images(previous: Gdk.Texture | None, current: Gdk.Texture | None) -> Gtk.Widget:

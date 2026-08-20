@@ -10,7 +10,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 from ..errors import GitError, NotARepositoryError
 from ..logging import get_logger
@@ -704,15 +704,36 @@ def stage_manual_resolution(
         ):
             return
     if chosen in (GitStatusEntry.UPDATED_BUT_UNMERGED, None) or added_in_both:
-        checkout_arg = "--ours" if resolution == ManualConflictResolution.OURS else "--theirs"
-        git(["checkout", checkout_arg, "--", file_path], repo, name="checkoutConflictedFile")
+        checkout_conflicted_file(repo, file_path, resolution)
         if chosen is None and not added_in_both:
             git(["add", "--", file_path], repo, name="addResolved")
             return
     if chosen == GitStatusEntry.DELETED:
-        git(["rm", "--", file_path], repo, name="removeConflictedFile")
+        remove_conflicted_file(repo, file_path)
         return
-    git(["add", "--", file_path], repo, name="addConflictedFile")
+    add_conflicted_file(repo, file_path)
+
+
+def add_conflicted_file(repo: str, file: str | WorkingDirectoryFileChange) -> None:
+    """Desktop `addConflictedFile`."""
+    path = file.path if isinstance(file, WorkingDirectoryFileChange) else file
+    git(["add", "--", path], repo, name="addConflictedFile")
+
+
+def checkout_conflicted_file(
+    repo: str,
+    file: str | WorkingDirectoryFileChange,
+    resolution: ManualConflictResolution,
+) -> None:
+    """Desktop `checkoutConflictedFile` (`--ours` / `--theirs`)."""
+    path = file.path if isinstance(file, WorkingDirectoryFileChange) else file
+    git(["checkout", f"--{resolution.value}", "--", path], repo, name="checkoutConflictedFile")
+
+
+def remove_conflicted_file(repo: str, file: str | WorkingDirectoryFileChange) -> None:
+    """Desktop `removeConflictedFile`."""
+    path = file.path if isinstance(file, WorkingDirectoryFileChange) else file
+    git(["rm", "--", path], repo, name="removeConflictedFile")
 
 
 def _parse_commit_sha(result: GitResult, repo: str | None = None) -> str:
@@ -1588,6 +1609,11 @@ def delete_ref(repo: str, ref: str, reason: str | None = None) -> None:
     git(args, repo, name="deleteRef")
 
 
+def update_ref(repo: str, ref: str, old_value: str, new_value: str, reason: str) -> None:
+    """Desktop `updateRef`: compare-and-swap a fully qualified ref."""
+    git(["update-ref", ref, new_value, old_value, "-m", reason], repo, name="updateRef")
+
+
 def undo_first_commit(repo: str) -> None:
     """Undo the initial commit: restore deleted paths, drop HEAD, unstage all.
 
@@ -2009,6 +2035,26 @@ def get_boolean_config_value(repo: str | None, key: str, global_only: bool = Fal
     return value != "false"
 
 
+def get_global_config_value(key: str) -> str | None:
+    """Desktop `getGlobalConfigValue`."""
+    return get_config_value(None, key, global_only=True)
+
+
+def set_global_config_value(key: str, value: str) -> None:
+    """Desktop `setGlobalConfigValue`."""
+    set_config_value(None, key, value, global_only=True)
+
+
+def remove_global_config_value(key: str) -> None:
+    """Desktop `removeGlobalConfigValue`."""
+    remove_config_value(None, key, global_only=True)
+
+
+def get_global_boolean_config_value(key: str) -> bool | None:
+    """Desktop `getGlobalBooleanConfigValue`."""
+    return get_boolean_config_value(None, key, global_only=True)
+
+
 def warn_about_remote_commits(repo: str, branch: Branch, oldest_ref: str | None) -> bool:
     """True when rewriting this published branch would require a force push.
 
@@ -2346,13 +2392,20 @@ def get_ahead_behind_range(repo: str, range_spec: str, *, swap: bool = False) ->
     return AheadBehind(ahead=left, behind=right)
 
 
-def get_commits_between(repo: str, base_sha: str, target_sha: str) -> list[CommitOneLine] | None:
-    """Commits reachable from target but not base, oldest first (Desktop getCommitsBetweenCommits)."""
+def get_branch_ahead_behind(repo: str, branch: Branch) -> AheadBehind | None:
+    """Desktop `getBranchAheadBehind` using the symmetric difference vs upstream."""
+    if branch.type == BranchType.REMOTE or not branch.upstream:
+        return None
+    return get_ahead_behind_range(repo, rev_symmetric_difference(branch.name, branch.upstream))
+
+
+def get_commits_in_range(repo: str, range_spec: str) -> list[CommitOneLine] | None:
+    """Desktop `getCommitsInRange`: commits in a rev-list range, oldest first."""
     result = git(
-        ["rev-list", f"{base_sha}..{target_sha}", "--reverse", "--oneline", "--no-abbrev-commit", "--"],
+        ["rev-list", range_spec, "--reverse", "--oneline", "--no-abbrev-commit", "--"],
         repo,
         success_exit_codes={0, 128},
-        name="commitsBetween",
+        name="getCommitsInRange",
     )
     if result.exit_code != 0:
         return None
@@ -2362,6 +2415,11 @@ def get_commits_between(repo: str, base_sha: str, target_sha: str) -> list[Commi
         if sha:
             commits.append(CommitOneLine(sha=sha, summary=summary))
     return commits
+
+
+def get_commits_between(repo: str, base_sha: str, target_sha: str) -> list[CommitOneLine] | None:
+    """Commits reachable from target but not base, oldest first (Desktop getCommitsBetweenCommits)."""
+    return get_commits_in_range(repo, rev_range(base_sha, target_sha))
 
 
 _RECENT_BRANCH_RE = re.compile(
@@ -2479,6 +2537,70 @@ def format_credential(credential: dict[str, str]) -> str:
             raise GitError(f"forbidden characters in credential value: {key}")
         lines.append(f"{_CREDENTIAL_INDEX_RE.sub('[]', key)}={val}\n")
     return "".join(lines)
+
+
+def _credential_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    merged = {"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "", "TERM": "dumb"}
+    if env:
+        merged.update({key: value for key, value in env.items() if value is not None})
+    return merged
+
+
+def _exec_credential(
+    action: str,
+    credential: dict[str, str],
+    path: str,
+    env: Mapping[str, str] | None = None,
+    *,
+    helper: str | None = None,
+) -> dict[str, str]:
+    """Run `git credential fill|approve|reject` without forcing Git Credential Manager."""
+    args: list[str] = []
+    if helper is not None:
+        args += ["-c", "credential.helper=", "-c", f"credential.helper={helper}"]
+    args += ["credential", action]
+    result = git(
+        args,
+        path,
+        stdin=format_credential(credential),
+        env=_credential_env(env),
+        name=f"{action}Credential",
+    )
+    parsed = parse_credential(result.stdout)
+    return parsed or dict(credential)
+
+
+def fill_credential(
+    credential: dict[str, str],
+    path: str,
+    env: Mapping[str, str] | None = None,
+    *,
+    helper: str | None = None,
+) -> dict[str, str]:
+    """Desktop `fillCredential`. Uses configured helpers (not `credential.helper=manager`)."""
+    return _exec_credential("fill", credential, path, env, helper=helper)
+
+
+def approve_credential(
+    credential: dict[str, str],
+    path: str,
+    env: Mapping[str, str] | None = None,
+    *,
+    helper: str | None = None,
+) -> dict[str, str]:
+    """Desktop `approveCredential`."""
+    return _exec_credential("approve", credential, path, env, helper=helper)
+
+
+def reject_credential(
+    credential: dict[str, str],
+    path: str,
+    env: Mapping[str, str] | None = None,
+    *,
+    helper: str | None = None,
+) -> dict[str, str]:
+    """Desktop `rejectCredential`."""
+    return _exec_credential("reject", credential, path, env, helper=helper)
 
 
 def determine_mergeability(repo: str, ours_sha: str, theirs_sha: str) -> MergeTreeResult:
@@ -2734,6 +2856,16 @@ def prune_merged_branches(
 
 def rev_range(from_ref: str, to_ref: str) -> str:
     return f"{from_ref}..{to_ref}"
+
+
+def rev_range_inclusive(from_ref: str, to_ref: str) -> str:
+    """Desktop `revRangeInclusive`: include the `from` commit."""
+    return f"{from_ref}^..{to_ref}"
+
+
+def rev_symmetric_difference(from_ref: str, to_ref: str) -> str:
+    """Desktop `revSymmetricDifference`."""
+    return f"{from_ref}...{to_ref}"
 
 
 def get_default_branch() -> str:

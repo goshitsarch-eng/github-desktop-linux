@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum, IntEnum, StrEnum
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 
 class AppFileStatusKind(StrEnum):
@@ -531,12 +531,29 @@ def is_manual_conflict(status: FileStatus) -> bool:
     return status.is_conflicted and status.conflict_marker_count is None
 
 
-def has_unresolved_conflicts(status: FileStatus) -> bool:
+def has_unresolved_conflicts(
+    status: FileStatus, manual_resolution: ManualConflictResolution | None = None
+) -> bool:
+    """Desktop `hasUnresolvedConflicts`. Manual resolutions count as resolved."""
     if not status.is_conflicted:
         return False
     if is_manual_conflict(status):
-        return True
+        return manual_resolution is None
     return (status.conflict_marker_count or 0) > 0
+
+
+def get_conflicted_files(
+    files: Sequence[WorkingDirectoryFileChange],
+    manual_resolutions: Mapping[str, ManualConflictResolution] | None = None,
+) -> list[WorkingDirectoryFileChange]:
+    """Desktop `getConflictedFiles`: still-unresolved conflicted paths."""
+    resolutions = manual_resolutions or {}
+    return [
+        file
+        for file in files
+        if file.status.is_conflicted
+        and has_unresolved_conflicts(file.status, resolutions.get(file.path))
+    ]
 
 
 def get_label_for_manual_resolution_option(entry: GitStatusEntry | None, branch: str | None = None) -> str:
@@ -820,6 +837,26 @@ class Commit:
         return len(self.parent_shas) > 1
 
 
+def format_commit_attribution(commit: Commit) -> str:
+    """Desktop `CommitAttribution` for a single commit (author, committer, co-authors)."""
+    names: list[str] = []
+
+    def add(name: str) -> None:
+        if name and name not in names:
+            names.append(name)
+
+    add(commit.author.name)
+    if not commit.authored_by_committer:
+        add(commit.committer.name)
+    for author in commit.co_authors:
+        add(author.name)
+    if len(names) <= 1:
+        return names[0] if names else ""
+    if len(names) == 2:
+        return f"{names[0]}, {names[1]}"
+    return f"{len(names)} people"
+
+
 @dataclass
 class CommitOneLine:
     sha: str
@@ -873,6 +910,27 @@ class Branch:
     @property
     def is_desktop_fork_remote_branch(self) -> bool:
         return self.name.startswith(FORKED_REMOTE_PREFIX)
+
+
+def group_pr_base_branches(
+    branch_names: Sequence[str],
+    recent_names: Sequence[str],
+    *,
+    current: str | None,
+    default: str | None,
+) -> tuple[list[str], list[str]]:
+    """Split Start PR bases into Desktop `prRecentBaseBranches` and the rest."""
+    names = [name for name in branch_names if name and name != current]
+    if default and default != current and default not in names:
+        names.insert(0, default)
+    recent: list[str] = []
+    seen: set[str] = set()
+    for name in recent_names:
+        if name in names and name not in seen:
+            recent.append(name)
+            seen.add(name)
+    others = [name for name in names if name not in seen]
+    return recent, others
 
 
 @dataclass

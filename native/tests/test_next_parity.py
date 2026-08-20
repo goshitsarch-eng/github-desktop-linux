@@ -9,9 +9,13 @@ from github_desktop.models import (
     AppFileStatusKind,
     FileStatus,
     GitStatusEntry,
+    ManualConflictResolution,
     RefCheck,
     SignInStep,
+    get_conflicted_files,
     get_label_for_manual_resolution_option,
+    group_pr_base_branches,
+    format_commit_attribution,
     has_unresolved_conflicts,
     is_conflict_with_markers,
     is_manual_conflict,
@@ -94,6 +98,17 @@ def test_conflict_helpers_and_labels() -> None:
     assert not has_unresolved_conflicts(resolved)
     assert is_manual_conflict(manual)
     assert has_unresolved_conflicts(manual)
+    assert not has_unresolved_conflicts(manual, ManualConflictResolution.OURS)
+    from github_desktop.models import WorkingDirectoryFileChange
+
+    files = [
+        WorkingDirectoryFileChange("a.txt", markers),
+        WorkingDirectoryFileChange("b.txt", resolved),
+        WorkingDirectoryFileChange("c.txt", manual),
+        WorkingDirectoryFileChange("d.txt", FileStatus(AppFileStatusKind.MODIFIED)),
+    ]
+    assert [f.path for f in get_conflicted_files(files)] == ["a.txt", "c.txt"]
+    assert [f.path for f in get_conflicted_files(files, {"c.txt": ManualConflictResolution.THEIRS})] == ["a.txt"]
     assert get_label_for_manual_resolution_option(GitStatusEntry.ADDED, "main") == "Use the added file from main"
     assert get_label_for_manual_resolution_option(GitStatusEntry.DELETED, "topic") == "Do not include this file on topic"
     assert get_label_for_manual_resolution_option(GitStatusEntry.UPDATED_BUT_UNMERGED, "main") == "Use the modified file from main"
@@ -116,3 +131,56 @@ def test_poll_commit_status_skips_without_github(isolated_config, git_repo) -> N
     repo = store.selected_repository
     assert repo is not None
     assert store.state_for(repo).check_runs == []
+
+
+def test_group_pr_base_branches_lists_recent_first() -> None:
+    recent, others = group_pr_base_branches(
+        ["main", "develop", "topic", "wip"],
+        ["topic", "missing", "main"],
+        current="wip",
+        default="main",
+    )
+    assert recent == ["topic", "main"]
+    assert others == ["develop"]
+
+
+def test_format_commit_attribution_includes_committer_and_coauthors() -> None:
+    from datetime import datetime, timezone
+
+    from github_desktop.models import Commit, CommitIdentity
+
+    when = datetime(2024, 1, 2, tzinfo=timezone.utc)
+    author = CommitIdentity("Ada", "ada@example.com", when)
+    committer = CommitIdentity("Grace", "grace@example.com", when)
+    same = Commit(
+        sha="a" * 40,
+        short_sha="aaaaaaa",
+        summary="hi",
+        body="",
+        author=author,
+        committer=author,
+    )
+    assert format_commit_attribution(same) == "Ada"
+    split = Commit(
+        sha="b" * 40,
+        short_sha="bbbbbbb",
+        summary="hi",
+        body="",
+        author=author,
+        committer=committer,
+        trailers=[("Co-authored-by", "Linus <linus@example.com>")],
+    )
+    assert format_commit_attribution(split) == "3 people"
+    two = Commit(
+        sha="c" * 40,
+        short_sha="ccccccc",
+        summary="",
+        body="",
+        author=author,
+        committer=committer,
+    )
+    assert format_commit_attribution(two) == "Ada, Grace"
+    assert two.co_authors == []
+    from github_desktop.push_pull import format_commit_relative_time
+
+    assert format_commit_relative_time(when, now=when) == "just now"
