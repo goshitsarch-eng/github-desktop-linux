@@ -23,7 +23,7 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
     from github_desktop.store import AppStore
     from github_desktop.theme import apply_theme
     from github_desktop.ui.css import load_css
-    from github_desktop.ui.dialogs import show_about, show_preferences, show_release_notes, show_pull_request_review
+    from github_desktop.ui.dialogs import show_about, show_preferences, show_release_notes, show_pull_request_review, show_checks
     from github_desktop.ui.window import MainWindow
 
     errors: list[str] = []
@@ -91,6 +91,7 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             win._commit_summary.bind([], None)
             win._find()
             show_release_notes(win)
+            show_checks(win, store, {"error": "CI failed", "title": "Demo PR"})
             show_pull_request_review(
                 win,
                 store,

@@ -156,5 +156,6 @@ def test_window_actions_cover_menus() -> None:
         "Release notes",
         "Get started",
         "Exit tutorial",
+        "Re-run failed checks",
     ]:
         assert phrase in src
