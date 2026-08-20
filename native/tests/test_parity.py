@@ -118,7 +118,7 @@ def test_window_actions_cover_menus() -> None:
     src += open(history.__file__, encoding="utf-8").read()
     src += open(diff_view.__file__, encoding="utf-8").read()
     from github_desktop.ui import dialogs as dialogs_mod, tutorial, checks
-    from github_desktop.github import ci_checks
+    from github_desktop.github import ci_checks, repo_rules
     from github_desktop.ui import multi_commit
 
     src += open(dialogs_mod.__file__, encoding="utf-8").read()
@@ -126,6 +126,7 @@ def test_window_actions_cover_menus() -> None:
     src += open(checks.__file__, encoding="utf-8").read()
     src += open(ci_checks.__file__, encoding="utf-8").read()
     src += open(multi_commit.__file__, encoding="utf-8").read()
+    src += open(repo_rules.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",

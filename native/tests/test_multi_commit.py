@@ -85,8 +85,9 @@ def test_warn_about_remote_commits_without_upstream(git_repo: Path) -> None:
 
 
 def test_get_boolean_config_value(git_repo: Path) -> None:
-    assert get_boolean_config_value(git_repo.as_posix(), "commit.gpgsign") is None
-    run_git(git_repo, "config", "commit.gpgsign", "true")
-    assert get_boolean_config_value(git_repo.as_posix(), "commit.gpgsign") is True
-    run_git(git_repo, "config", "commit.gpgsign", "false")
-    assert get_boolean_config_value(git_repo.as_posix(), "commit.gpgsign") is False
+    key = "githubdesktop.test.bool"
+    assert get_boolean_config_value(git_repo.as_posix(), key) is None
+    run_git(git_repo, "config", key, "true")
+    assert get_boolean_config_value(git_repo.as_posix(), key) is True
+    run_git(git_repo, "config", key, "false")
+    assert get_boolean_config_value(git_repo.as_posix(), key) is False
