@@ -1665,7 +1665,7 @@ class MainWindow(Adw.ApplicationWindow):
             add_group(group.label, visible)
         for cloning in self.store.cloning:
             pct = int((cloning.progress or 0) * 100)
-            title = f"Cloning {cloning.name}… {pct}%" if pct else f"Cloning {cloning.name}…"
+            title = f"Cloning… {pct}%" if pct else "Cloning…"
             subtitle = cloning.description or cloning.url
             row = Adw.ActionRow(title=title, subtitle=subtitle)
             row.set_activatable(True)
