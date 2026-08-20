@@ -2048,6 +2048,26 @@ class AppStore:
         state.selected_file = next((f for f in files if f.path == path), state.selected_file)
         self.emit()
 
+    def set_lines_included(
+        self, repo: Repository, path: str, from_index: int, to_index: int, included: bool
+    ) -> None:
+        start = min(from_index, to_index)
+        length = abs(to_index - from_index) + 1
+        state = self.state_for(repo)
+        if not state.status:
+            return
+        files = []
+        for f in state.status.working_directory.files:
+            if f.path == path:
+                files.append(f.with_selection(f.selection.with_range_selection(start, length, included)))
+            else:
+                files.append(f)
+        from .models import WorkingDirectoryStatus
+
+        state.status.working_directory = WorkingDirectoryStatus.from_files(files)
+        state.selected_file = next((f for f in files if f.path == path), state.selected_file)
+        self.emit()
+
     def set_hunk_included(self, repo: Repository, path: str, start: int, length: int, included: bool) -> None:
         state = self.state_for(repo)
         if not state.status:
@@ -2319,6 +2339,18 @@ class AppStore:
         if file is None or not isinstance(diff, TextDiff):
             return
         discard_changes_from_selection(repo.path, path, diff, file.selection)
+        self.refresh_repository(repo)
+
+    def discard_line_range(self, repo: Repository, path: str, start: int, end: int) -> None:
+        state = self.state_for(repo)
+        file = next((f for f in (state.status.working_directory.files if state.status else []) if f.path == path), None)
+        diff = state.current_diff
+        if file is None or not isinstance(diff, TextDiff):
+            return
+        lo = min(start, end)
+        hi = max(start, end)
+        selection = file.selection.with_select_none().with_range_selection(lo, hi - lo + 1, True)
+        discard_changes_from_selection(repo.path, path, diff, selection)
         self.refresh_repository(repo)
 
     def ignore_pattern(self, repo: Repository, pattern: str) -> None:

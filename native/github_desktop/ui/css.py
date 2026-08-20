@@ -102,6 +102,12 @@ APP_CSS = """
 .diff-excluded {
   opacity: 0.45;
 }
+.diff-gutter-selecting {
+  background-color: alpha(@accent_bg_color, 0.28);
+}
+.diff-hunk-hover {
+  background-color: alpha(@accent_bg_color, 0.12);
+}
 .diff-side {
   min-width: 12em;
   padding: 0 6px;
@@ -280,6 +286,21 @@ APP_CSS = """
 }
 .history-commit.commit-highlight {
   background-color: alpha(@accent_bg_color, 0.32);
+}
+.history-commit.commit-reorder-insert {
+  box-shadow: inset 0 3px 0 @accent_color;
+}
+.history-commit.commit-reorder-after {
+  box-shadow: inset 0 -3px 0 @accent_color;
+}
+.history-commit.commit-reorder-moving {
+  opacity: 0.45;
+}
+.reorder-commits-hint {
+  padding: 10px 12px;
+  margin: 6px 8px;
+  border-radius: 10px;
+  background-color: alpha(@accent_bg_color, 0.16);
 }
 window.underline-links button.link label,
 window.underline-links link {

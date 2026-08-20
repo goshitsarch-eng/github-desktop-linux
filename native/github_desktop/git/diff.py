@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from enum import Enum
 
 from ..models import (
     DiffHunk,
@@ -245,6 +247,96 @@ def hunk_line_span(diff: TextDiff, hunk_index: int) -> tuple[int, int]:
             return n, len(hunk.lines)
         n += len(hunk.lines)
     return 0, 0
+
+
+class DiffRangeType(str, Enum):
+    """Desktop `DiffRangeType` for interactive gutter ranges."""
+
+    ADDITIONS = "Additions"
+    DELETIONS = "Deletions"
+    MIXED = "Mixed"
+
+
+@dataclass(frozen=True)
+class DiffRange:
+    from_index: int
+    to_index: int
+    type: DiffRangeType | None
+
+
+def diff_hunk_for_index(hunks: list[DiffHunk], index: int) -> DiffHunk | None:
+    """Desktop `diffHunkForIndex` using sequential `diff_line_number`s."""
+    for hunk in hunks:
+        for line in hunk.lines:
+            if line.diff_line_number == index:
+                return hunk
+        if hunk.unified_diff_start <= index <= hunk.unified_diff_end:
+            return hunk
+    return None
+
+
+def _hunk_start_index(hunk: DiffHunk) -> int:
+    if hunk.lines and hunk.lines[0].diff_line_number is not None:
+        return hunk.lines[0].diff_line_number
+    return hunk.unified_diff_start
+
+
+def _hunk_end_index(hunk: DiffHunk) -> int:
+    if hunk.lines and hunk.lines[-1].diff_line_number is not None:
+        return hunk.lines[-1].diff_line_number
+    return hunk.unified_diff_end
+
+
+def _next_range_type(current: DiffRangeType | None, line: DiffLine) -> DiffRangeType | None:
+    if line.kind not in (DiffLineType.ADD, DiffLineType.DELETE):
+        return current
+    this = DiffRangeType.ADDITIONS if line.kind == DiffLineType.ADD else DiffRangeType.DELETIONS
+    if current is None or current == this:
+        return this
+    if current == DiffRangeType.MIXED:
+        return current
+    return DiffRangeType.MIXED
+
+
+def find_interactive_diff_range(hunks: list[DiffHunk], index: int) -> DiffRange | None:
+    """Desktop `findInteractiveDiffRange`: contiguous includeable lines around `index`."""
+    hunk = diff_hunk_for_index(hunks, index)
+    if hunk is None or not hunk.lines:
+        return None
+    start = _hunk_start_index(hunk)
+    relative = next(
+        (i for i, line in enumerate(hunk.lines) if line.diff_line_number == index),
+        index - start,
+    )
+    if relative < 0 or relative >= len(hunk.lines):
+        return None
+    range_type = _next_range_type(None, hunk.lines[relative])
+    context_before: int | None = None
+    for i in range(relative - 1, -1, -1):
+        line = hunk.lines[i]
+        if not line.selectable:
+            context_before = start + i + 1
+            break
+        range_type = _next_range_type(range_type, line)
+    from_index = context_before if context_before is not None else start + 1
+    context_after: int | None = None
+    for i in range(relative + 1, len(hunk.lines)):
+        line = hunk.lines[i]
+        if not line.selectable:
+            context_after = start + i - 1
+            break
+        range_type = _next_range_type(range_type, line)
+    to_index = context_after if context_after is not None else _hunk_end_index(hunk)
+    return DiffRange(from_index, to_index, range_type)
+
+
+def find_interactive_original_diff_range(hunks: list[DiffHunk], index: int) -> DiffRange | None:
+    """Desktop `findInteractiveOriginalDiffRange`.
+
+    Native remaps `DiffSelection` onto the current expanded line numbers, so the
+    original-diff mapping is the same as `find_interactive_diff_range`.
+    """
+    return find_interactive_diff_range(hunks, index)
 
 
 def format_discard_patch(file_path: str, diff: TextDiff, is_selected) -> str | None:

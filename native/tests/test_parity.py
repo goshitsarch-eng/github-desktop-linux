@@ -221,6 +221,9 @@ def test_window_actions_cover_menus() -> None:
     src += open(custom_integration.__file__, encoding="utf-8").read()
     src += open(git_progress.__file__, encoding="utf-8").read()
     src += open(git_ops.__file__, encoding="utf-8").read()
+    from github_desktop.git import diff as git_diff_mod
+
+    src += open(git_diff_mod.__file__, encoding="utf-8").read()
     from github_desktop.git import askpass as git_askpass
     from github_desktop.git import credential_helper as git_cred_helper
     from github_desktop import store as store_mod, models as models_mod
@@ -762,5 +765,16 @@ def test_window_actions_cover_menus() -> None:
         "tokens_as_markup",
         "delete_oauth_token",
         "Create {name}",
+        "Discard added line",
+        "Discard removed line",
+        "Discard modified line",
+        "Use ↑ ↓ to choose a new location.",
+        "Press ⏎ to confirm.",
+        "Use the Up and Down arrow keys to choose a new location for the selected commit",
+        "Press Enter to insert the selected commit",
+        "find_interactive_diff_range",
+        "_start_gutter_selection",
+        "temporary_selection",
+        "keyboard_reorder_intro_message",
     ]:
         assert phrase in src

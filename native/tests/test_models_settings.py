@@ -31,6 +31,11 @@ def test_diff_selection_toggle() -> None:
     assert sel.is_selected(2)
     none = sel.with_select_none()
     assert none.get_selection_type() == DiffSelectionType.NONE
+    ranged = DiffSelection.from_initial_selection(DiffSelectionType.ALL).with_range_selection(2, 3, False)
+    assert not ranged.is_selected(2)
+    assert not ranged.is_selected(4)
+    assert ranged.is_selected(1)
+    assert ranged.is_selected(5)
 
 
 def test_author_name_validation() -> None:

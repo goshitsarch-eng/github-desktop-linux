@@ -4995,7 +4995,7 @@ def show_reorder_commits(parent: Gtk.Window, store: AppStore, to_move: list) -> 
     header.set_title_widget(
         Adw.WindowTitle(
             title="Reorder commits",
-            subtitle="Use Up/Down then Enter to move before the selected commit. Escape cancels.",
+            subtitle="Use ↑ ↓ to choose a new location. Press ⏎ to confirm.",
         )
     )
     toolbar.add_top_bar(header)
@@ -5024,6 +5024,17 @@ def show_reorder_commits(parent: Gtk.Window, store: AppStore, to_move: list) -> 
     box.set_margin_start(12)
     box.set_margin_end(12)
     box.append(scroller)
+    plural = "s" if len(to_move) != 1 else ""
+    intro = Gtk.Label(
+        label=(
+            f"Use the Up and Down arrow keys to choose a new location for the selected commit{plural}, "
+            "then press Enter to confirm or Escape to cancel."
+        ),
+        wrap=True,
+        xalign=0,
+    )
+    intro.add_css_class("dim-label")
+    box.append(intro)
     box.append(apply_btn)
     toolbar.set_content(box)
     dialog.set_child(toolbar)

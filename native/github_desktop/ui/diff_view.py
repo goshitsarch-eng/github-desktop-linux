@@ -11,7 +11,13 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GObject, Gtk, Pango
 
-from ..git.diff import hunk_line_span, side_by_side_rows
+from ..git.diff import (
+    DiffRangeType,
+    find_interactive_diff_range,
+    find_interactive_original_diff_range,
+    hunk_line_span,
+    side_by_side_rows,
+)
 from ..git.progress import format_bytes
 from ..models import (
     DiffHunkExpansionType,
@@ -39,6 +45,17 @@ except (ValueError, ImportError):
     GdkPixbuf = None  # type: ignore[misc, assignment]
 
 VIRTUALIZE_AFTER = 400
+
+
+def get_discard_label(range_type: DiffRangeType | None, num_lines: int, *, confirm: bool = True) -> str:
+    """Desktop `getDiscardLabel` (Linux: lowercase added/removed/modified)."""
+    suffix = "…" if confirm else ""
+    plural = "s" if num_lines > 1 else ""
+    if range_type == DiffRangeType.ADDITIONS:
+        return f"Discard added line{plural}{suffix}"
+    if range_type == DiffRangeType.DELETIONS:
+        return f"Discard removed line{plural}{suffix}"
+    return f"Discard modified line{plural}{suffix}"
 
 
 @dataclass
@@ -71,8 +88,10 @@ class DiffViewer(Gtk.Box):
         *,
         interactive: bool = False,
         on_line_toggle: Callable[[str, int, bool], None] | None = None,
+        on_line_range_toggle: Callable[[str, int, int, bool], None] | None = None,
         on_hunk_toggle: Callable[[str, int, int, bool], None] | None = None,
         on_discard_selection: Callable[[str], None] | None = None,
+        on_discard_range: Callable[[str, int, int], None] | None = None,
         on_expand_hunk: Callable[[int, str], None] | None = None,
         on_expand_whole: Callable[[], None] | None = None,
         on_collapse: Callable[[], None] | None = None,
@@ -87,8 +106,10 @@ class DiffViewer(Gtk.Box):
         self.add_css_class("diff-view")
         self.interactive = interactive
         self.on_line_toggle = on_line_toggle
+        self.on_line_range_toggle = on_line_range_toggle
         self.on_hunk_toggle = on_hunk_toggle
         self.on_discard_selection = on_discard_selection
+        self.on_discard_range = on_discard_range
         self.on_expand_hunk = on_expand_hunk
         self.on_expand_whole = on_expand_whole or on_expand
         self.on_collapse = on_collapse
@@ -167,10 +188,34 @@ class DiffViewer(Gtk.Box):
         self._hide_whitespace = False
         self._side_by_side = False
         self._force_show_large = False
+        self._ask_discard_confirm = True
+        self._temporary_selection: dict[str, int | bool] | None = None
+        self._hovered_hunk: int | None = None
+        self._line_widgets: dict[int, list[Gtk.Widget]] = {}
         self.set_focusable(True)
         key = Gtk.EventControllerKey()
         key.connect("key-pressed", self._on_key)
         self.add_controller(key)
+        motion = Gtk.EventControllerMotion()
+        motion.connect("motion", self._on_gutter_motion)
+        self.add_controller(motion)
+        legacy = Gtk.EventControllerLegacy()
+        legacy.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+
+        def on_legacy(_controller, event) -> bool:
+            if self._temporary_selection is None:
+                return False
+            try:
+                etype = event.get_event_type()
+            except Exception:
+                return False
+            release = getattr(Gdk.EventType, "BUTTON_RELEASE", None)
+            if release is not None and etype == release:
+                self._end_gutter_selection()
+            return False
+
+        legacy.connect("event", on_legacy)
+        self.add_controller(legacy)
 
     def render(
         self,
@@ -185,6 +230,7 @@ class DiffViewer(Gtk.Box):
         can_collapse: bool = False,
         tab_size: int = 4,
         comments: list | None = None,
+        ask_discard_confirm: bool = True,
     ) -> None:
         if path != self._path:
             self._force_show_large = False
@@ -193,6 +239,10 @@ class DiffViewer(Gtk.Box):
         self._tab_size = max(1, tab_size)
         self._selection = selection
         self._comments = list(comments or [])
+        self._ask_discard_confirm = ask_discard_confirm
+        self._temporary_selection = None
+        self._hovered_hunk = None
+        self._line_widgets = {}
         self._row_specs = []
         self._row_widgets = []
         self._list_view = None
@@ -750,6 +800,11 @@ class DiffViewer(Gtk.Box):
         label = Gtk.Label(label=line.text or "Expand remaining file", xalign=0, hexpand=True)
         label.add_css_class("diff-hunk-text")
         row.append(label)
+        hover = Gtk.EventControllerMotion()
+        hover_index = start + 1 if length > 1 else start
+        hover.connect("enter", lambda *_a, i=hover_index: self._set_hovered_hunk(i))
+        hover.connect("leave", lambda *_a: self._set_hovered_hunk(None))
+        row.add_controller(hover)
         attach_right_click(row, lambda *_: self._hunk_menu(start, length, selection, hunk_index, expansion))
         return row
 
@@ -818,6 +873,201 @@ class DiffViewer(Gtk.Box):
         mark.set_tooltip_text("No newline at end of file")
         return mark
 
+    def _can_select_lines(self) -> bool:
+        return (
+            self.interactive
+            and self._show_checks
+            and not getattr(self, "_hide_whitespace", False)
+            and (self.on_line_toggle is not None or self.on_line_range_toggle is not None)
+        )
+
+    def _register_line_widget(self, index: int | None, widget: Gtk.Widget) -> None:
+        if index is None:
+            return
+        widget._diff_line_index = index  # type: ignore[attr-defined]
+        self._line_widgets.setdefault(index, []).append(widget)
+
+    def _line_index_from_widget(self, widget: Gtk.Widget | None) -> int | None:
+        current = widget
+        while current is not None:
+            index = getattr(current, "_diff_line_index", None)
+            if isinstance(index, int):
+                return index
+            current = current.get_parent()
+        return None
+
+    def _start_gutter_selection(self, index: int, is_selected: bool) -> None:
+        if not self._can_select_lines():
+            if getattr(self, "_hide_whitespace", False):
+                self._hint_box.set_visible(True)
+            return
+        self._hovered_hunk = None
+        self._temporary_selection = {"from": index, "to": index, "is_selected": is_selected}
+        self._refresh_gutter_css()
+
+    def _update_gutter_selection(self, index: int) -> None:
+        tmp = self._temporary_selection
+        if tmp is None or tmp.get("to") == index:
+            return
+        tmp["to"] = index
+        self._refresh_gutter_css()
+
+    def _end_gutter_selection(self) -> None:
+        tmp = self._temporary_selection
+        if tmp is None:
+            return
+        self._temporary_selection = None
+        self._refresh_gutter_css()
+        from_index = int(tmp["from"])
+        to_index = int(tmp["to"])
+        included = bool(tmp["is_selected"])
+        start = min(from_index, to_index)
+        end = max(from_index, to_index)
+        if self.on_line_range_toggle:
+            self.on_line_range_toggle(self._path, start, end, included)
+            return
+        if self.on_line_toggle:
+            for index in range(start, end + 1):
+                self.on_line_toggle(self._path, index, included)
+
+    def _on_gutter_motion(self, _controller, x: float, y: float) -> None:
+        if self._temporary_selection is None:
+            return
+        adj = self._scroll.get_vadjustment()
+        ok, _sx, sy = (False, x, y)
+        translated = self.translate_coordinates(self._scroll, x, y)
+        if translated is not None:
+            if isinstance(translated, tuple) and len(translated) == 3:
+                ok, _sx, sy = translated
+            elif isinstance(translated, tuple) and len(translated) == 2:
+                ok, sy = True, translated[1]
+        if ok:
+            height = self._scroll.get_allocated_height()
+            if sy < 24:
+                adj.set_value(max(adj.get_lower(), adj.get_value() - 16))
+            elif height and sy > height - 24:
+                adj.set_value(min(adj.get_upper() - adj.get_page_size(), adj.get_value() + 16))
+        try:
+            picked = self.pick(x, y, Gtk.PickFlags.DEFAULT)
+        except Exception:
+            picked = None
+        index = self._line_index_from_widget(picked)
+        if index is not None:
+            self._update_gutter_selection(index)
+
+    def _refresh_gutter_css(self) -> None:
+        hover_range: tuple[int, int] | None = None
+        if (
+            self._temporary_selection is None
+            and self._hovered_hunk is not None
+            and isinstance(self._diff, TextDiff)
+        ):
+            found = find_interactive_diff_range(self._diff.hunks, self._hovered_hunk)
+            if found is not None:
+                hover_range = (found.from_index, found.to_index)
+        tmp = self._temporary_selection
+        sel_range = None
+        if tmp is not None:
+            sel_range = (min(int(tmp["from"]), int(tmp["to"])), max(int(tmp["from"]), int(tmp["to"])))
+        for index, widgets in self._line_widgets.items():
+            selecting = sel_range is not None and sel_range[0] <= index <= sel_range[1]
+            hovering = hover_range is not None and hover_range[0] <= index <= hover_range[1]
+            for widget in widgets:
+                if selecting:
+                    widget.add_css_class("diff-gutter-selecting")
+                else:
+                    widget.remove_css_class("diff-gutter-selecting")
+                if hovering and not selecting:
+                    widget.add_css_class("diff-hunk-hover")
+                else:
+                    widget.remove_css_class("diff-hunk-hover")
+
+    def _set_hovered_hunk(self, index: int | None) -> None:
+        if self._temporary_selection is not None:
+            return
+        if self._hovered_hunk == index:
+            return
+        self._hovered_hunk = index
+        self._refresh_gutter_css()
+
+    def _attach_gutter_drag(self, widget: Gtk.Widget, index: int) -> None:
+        widget.add_css_class("diff-gutter")
+        self._register_line_widget(index, widget)
+        click = Gtk.GestureClick()
+        click.set_button(1)
+
+        def on_pressed(_g, n_press, _x, _y, i=index) -> None:
+            if n_press != 1:
+                return
+            currently = self._selection.is_selected(i) if self._selection else True
+            self._start_gutter_selection(i, not currently)
+
+        click.connect("pressed", on_pressed)
+        widget.add_controller(click)
+        drag = Gtk.GestureDrag()
+        drag.set_button(1)
+
+        def on_update(gesture, offset_x, offset_y, i=index) -> None:
+            if self._temporary_selection is None:
+                currently = self._selection.is_selected(i) if self._selection else True
+                self._start_gutter_selection(i, not currently)
+            origin = gesture.get_widget()
+            start = gesture.get_start_point()
+            if start is None:
+                return
+            if isinstance(start, tuple) and len(start) == 3:
+                ok, sx, sy = start
+                if not ok:
+                    return
+            elif isinstance(start, tuple) and len(start) == 2:
+                sx, sy = start
+            else:
+                return
+            if origin is None:
+                return
+            translated = origin.translate_coordinates(self, sx + offset_x, sy + offset_y)
+            if translated is None:
+                return
+            if isinstance(translated, tuple) and len(translated) == 3:
+                ok, vx, vy = translated
+                if not ok:
+                    return
+            elif isinstance(translated, tuple) and len(translated) == 2:
+                vx, vy = translated
+            else:
+                return
+            try:
+                picked = self.pick(vx, vy, Gtk.PickFlags.DEFAULT)
+            except Exception:
+                return
+            found = self._line_index_from_widget(picked)
+            if found is not None:
+                self._update_gutter_selection(found)
+
+        def on_end(_g, _ox, _oy) -> None:
+            self._end_gutter_selection()
+
+        drag.connect("drag-update", on_update)
+        drag.connect("drag-end", on_end)
+        widget.add_controller(drag)
+
+    def _discard_line(self, index: int) -> None:
+        if self.on_discard_range:
+            self.on_discard_range(self._path, index, index)
+        elif self.on_discard_selection:
+            self.on_discard_selection(self._path)
+
+    def _discard_range(self, start: int, end: int) -> None:
+        if self.on_discard_range:
+            self.on_discard_range(self._path, start, end)
+        elif self.on_discard_selection:
+            self.on_discard_selection(self._path)
+
+    def _interactive_range(self, index: int):
+        if not isinstance(self._diff, TextDiff):
+            return None
+        return find_interactive_original_diff_range(self._diff.hunks, index)
+
     def _unified_line(
         self,
         line: DiffLine,
@@ -860,6 +1110,10 @@ class DiffViewer(Gtk.Box):
         marker = self._newline_marker(line)
         if marker is not None:
             row.append(marker)
+        self._register_line_widget(index, row)
+        if line.selectable and self.interactive:
+            self._attach_gutter_drag(old, index)
+            self._attach_gutter_drag(new, index)
         attach_right_click(row, lambda *_ , i=index: self._line_menu(i, selection, line))
         return row
 
@@ -918,6 +1172,11 @@ class DiffViewer(Gtk.Box):
         marker = self._newline_marker(line)
         if marker is not None:
             box.append(marker)
+        if index is not None:
+            self._register_line_widget(index, box)
+            if line.selectable and self.interactive:
+                self._attach_gutter_drag(nlab, index)
+            attach_right_click(box, lambda *_ , i=index, ln=line: self._line_menu(i, selection, ln))
         return box
 
     def _line_menu(self, index: int, selection: DiffSelection | None, line: DiffLine | None = None) -> None:
@@ -931,13 +1190,15 @@ class DiffViewer(Gtk.Box):
                     True,
                 )
             )
-            items.append(
-                (
-                    "Discard selected lines…",
-                    lambda: self.on_discard_selection and self.on_discard_selection(self._path),
-                    True,
+            found = self._interactive_range(index)
+            if found is not None and found.type is not None:
+                items.append(
+                    (
+                        get_discard_label(found.type, 1, confirm=self._ask_discard_confirm),
+                        lambda i=index: self._discard_line(i),
+                        True,
+                    )
                 )
-            )
             items.append(None)
         copied = (line.text[1:] if line and line.text[:1] in "+- " else (line.text if line else ""))
         items.append(("Copy", lambda: copy_text(copied), True))
@@ -959,7 +1220,17 @@ class DiffViewer(Gtk.Box):
         if self.interactive:
             items.append(("Include hunk", lambda: self.on_hunk_toggle and self.on_hunk_toggle(self._path, start, length, True), True))
             items.append(("Exclude hunk", lambda: self.on_hunk_toggle and self.on_hunk_toggle(self._path, start, length, False), True))
-            items.append(("Discard selected lines…", lambda: self.on_discard_selection and self.on_discard_selection(self._path), True))
+            probe = start + 1 if length > 1 else start
+            found = self._interactive_range(probe)
+            if found is not None and found.type is not None:
+                count = found.to_index - found.from_index + 1
+                items.append(
+                    (
+                        get_discard_label(found.type, count, confirm=self._ask_discard_confirm),
+                        lambda lo=found.from_index, hi=found.to_index: self._discard_range(lo, hi),
+                        True,
+                    )
+                )
         if expansion == DiffHunkExpansionType.UP:
             items.append(("Expand up", lambda: self.on_expand_hunk and self.on_expand_hunk(hunk_index, "up"), True))
         elif expansion == DiffHunkExpansionType.DOWN:

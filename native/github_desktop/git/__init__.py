@@ -1,6 +1,9 @@
 """Git operations package."""
 
 from .diff import (
+    DiffRangeType,
+    find_interactive_diff_range,
+    find_interactive_original_diff_range,
     format_discard_patch,
     format_partial_patch,
     parse_line_endings_warning,

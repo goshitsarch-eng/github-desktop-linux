@@ -81,3 +81,21 @@ def test_discard_patch_reverses_selected_addition() -> None:
     assert patch.startswith("--- a/file.txt\n+++ b/file.txt\n")
     assert "-line4" in patch
     assert "line2 changed" not in patch or "+line2 changed" not in patch
+
+
+def test_find_interactive_diff_range_groups_contiguous_changes() -> None:
+    from github_desktop.git.diff import DiffRangeType, find_interactive_diff_range, selectable_line_indices
+
+    diff = parse_unified_diff(SAMPLE)
+    selectable = selectable_line_indices(diff)
+    delete_idx, first_add, last_add = selectable
+    mixed = find_interactive_diff_range(diff.hunks, delete_idx)
+    assert mixed is not None
+    assert mixed.type == DiffRangeType.MIXED
+    assert mixed.from_index == delete_idx
+    assert mixed.to_index == first_add
+    added = find_interactive_diff_range(diff.hunks, last_add)
+    assert added is not None
+    assert added.type == DiffRangeType.ADDITIONS
+    assert added.from_index == last_add
+    assert added.to_index == last_add

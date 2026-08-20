@@ -116,6 +116,24 @@ def _banner_noun(count: int) -> str:
     return "commit" if count == 1 else "commits"
 
 
+def keyboard_reorder_intro_message(count: int) -> str:
+    """Desktop commit-list aria live copy before an insertion point is chosen."""
+    plural = "s" if count != 1 else ""
+    return (
+        f"Use the Up and Down arrow keys to choose a new location for the selected commit{plural}, "
+        "then press Enter to confirm or Escape to cancel."
+    )
+
+
+def keyboard_reorder_insert_message(count: int, row: int, total: int) -> str:
+    """Desktop `Press Enter to insert the selected commit(s) before commit N`."""
+    plural = "s" if count != 1 else ""
+    insertion_point = f"before commit {row + 1}" if row < total else f"after commit {row}"
+    return (
+        f"Press Enter to insert the selected commit{plural} {insertion_point} or Escape to cancel."
+    )
+
+
 def format_banner_text(kind: BannerType, banner) -> str:
     """Desktop success/conflict banner copy."""
     if kind == BannerType.SUCCESSFUL_MERGE:
@@ -180,6 +198,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.set_default_size(store.settings.window_width, store.settings.window_height)
         self._building = False
         self._light_update = False
+        self._keyboard_reorder = None
         self._toast = Adw.ToastOverlay()
         self.set_content(self._toast)
         self._overlay = Gtk.Overlay()
@@ -1388,8 +1407,10 @@ class MainWindow(Adw.ApplicationWindow):
         self._diff_view = DiffViewer(
             interactive=True,
             on_line_toggle=self._on_line_toggle,
+            on_line_range_toggle=self._on_line_range_toggle,
             on_hunk_toggle=self._on_hunk_toggle,
             on_discard_selection=self._on_discard_selection,
+            on_discard_range=self._on_discard_range,
             on_expand_hunk=self._on_expand_hunk,
             on_expand_whole=self._on_expand_diff,
             on_collapse=self._on_collapse_diff,
@@ -1463,11 +1484,33 @@ class MainWindow(Adw.ApplicationWindow):
         self._compare_cta = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self._compare_cta.add_css_class("compare-cta")
         left.append(self._compare_cta)
+        self._reorder_hint = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self._reorder_hint.add_css_class("reorder-commits-hint")
+        reorder_title = Gtk.Label(label="Reorder commits", xalign=0)
+        reorder_title.add_css_class("heading")
+        self._reorder_hint.append(reorder_title)
+        reorder_keys = Gtk.Label(label="Use ↑ ↓ to choose a new location.", xalign=0, wrap=True)
+        self._reorder_hint.append(reorder_keys)
+        reorder_enter = Gtk.Label(label="Press ⏎ to confirm.", xalign=0)
+        self._reorder_hint.append(reorder_enter)
+        self._reorder_status = Gtk.Label(xalign=0, wrap=True)
+        self._reorder_status.add_css_class("dim-label")
+        self._reorder_hint.append(self._reorder_status)
+        self._reorder_hint.set_visible(False)
+        left.append(self._reorder_hint)
         scroller = Gtk.ScrolledWindow(vexpand=True)
         scroller.connect("edge-reached", self._on_history_edge)
         self._commit_list = Gtk.ListBox()
         self._commit_list.set_selection_mode(Gtk.SelectionMode.MULTIPLE)
         self._commit_list.connect("row-selected", self._on_commit_selected)
+        reorder_keys_ctl = Gtk.EventControllerKey()
+        reorder_keys_ctl.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        reorder_keys_ctl.connect("key-pressed", self._on_keyboard_reorder_key)
+        self._commit_list.add_controller(reorder_keys_ctl)
+        window_reorder = Gtk.EventControllerKey()
+        window_reorder.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        window_reorder.connect("key-pressed", self._on_keyboard_reorder_key)
+        self.add_controller(window_reorder)
         scroller.set_child(self._commit_list)
         left.append(scroller)
         paned.set_start_child(left)
@@ -2470,6 +2513,7 @@ class MainWindow(Adw.ApplicationWindow):
             self._history_shas = new_shas
             self._refresh_compare_cta(state)
             self._refresh_history_detail(state)
+            self._sync_keyboard_reorder_chrome()
             return
         self._building = True
         clear_box(self._commit_list)
@@ -2479,6 +2523,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._refresh_compare_cta(state)
         self._building = False
         self._refresh_history_detail(state)
+        self._sync_keyboard_reorder_chrome()
 
     def _commit_row(self, commit) -> Gtk.ListBoxRow:
         row = Gtk.ListBoxRow()
@@ -2545,7 +2590,7 @@ class MainWindow(Adw.ApplicationWindow):
         return row
 
     def _on_commit_selected(self, _l, row) -> None:
-        if self._building:
+        if self._building or self._keyboard_reorder:
             return
         repo = self.store.selected_repository
         if not repo or row is None:
@@ -2816,6 +2861,7 @@ class MainWindow(Adw.ApplicationWindow):
             can_collapse=state.original_diff is not None,
             tab_size=self.store.settings.tab_size,
             comments=list(state.diff_comments),
+            ask_discard_confirm=self.store.settings.confirm_discard_changes,
         )
 
     def _render_history_diff(self, state) -> None:
@@ -2844,6 +2890,12 @@ class MainWindow(Adw.ApplicationWindow):
         finally:
             self._light_update = False
 
+    def _on_line_range_toggle(self, path: str, from_index: int, to_index: int, included: bool) -> None:
+        repo = self.store.selected_repository
+        if not repo:
+            return
+        self.store.set_lines_included(repo, path, from_index, to_index, included)
+
     def _on_hunk_toggle(self, path: str, start: int, length: int, included: bool) -> None:
         repo = self.store.selected_repository
         if not repo:
@@ -2866,6 +2918,19 @@ class MainWindow(Adw.ApplicationWindow):
             )
         else:
             self.store.discard_selection(repo, path)
+
+    def _on_discard_range(self, path: str, start: int, end: int) -> None:
+        repo = self.store.selected_repository
+        if not repo:
+            return
+        if self.store.settings.confirm_discard_changes:
+            self.store.show_popup(
+                PopupType.CONFIRM_DISCARD_SELECTION,
+                path=path,
+                on_discard=lambda: self.store.discard_line_range(repo, path, start, end),
+            )
+        else:
+            self.store.discard_line_range(repo, path, start, end)
 
     def _on_expand_diff(self) -> None:
         repo = self.store.selected_repository
@@ -3011,6 +3076,8 @@ class MainWindow(Adw.ApplicationWindow):
         show_context_menu(anchor or self._hist_files, items)
 
     def _commit_item_menu(self, row: Gtk.ListBoxRow) -> None:
+        if self._keyboard_reorder:
+            return
         repo = self.store.selected_repository
         commit = getattr(row, "_commit", None)
         if not repo or commit is None:
@@ -3025,7 +3092,7 @@ class MainWindow(Adw.ApplicationWindow):
                 [
                     (f"Cherry-pick {len(selected)} commits…", lambda: self.store.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind="Cherry-pick", shas=[c.sha for c in selected]), True),
                     (f"Squash {len(selected)} commits…", lambda: self._squash_selected(selected, commit), True),
-                    (f"Reorder {len(selected)} commits…", lambda: show_reorder_commits(self, self.store, selected), True),
+                    (f"Reorder {len(selected)} commits…", lambda: self._start_keyboard_reorder(selected), self._can_keyboard_reorder()),
                 ]
             )
         else:
@@ -3036,7 +3103,7 @@ class MainWindow(Adw.ApplicationWindow):
                 [
                     ("Reset to commit…", lambda: self.store.reset_to_commit(repo, commit), (not is_tip) and local),
                     ("Checkout commit", lambda: self.store.checkout_commit_sha(repo, commit.sha), not is_tip),
-                    ("Reorder commit", lambda: show_reorder_commits(self, self.store, [commit]), True),
+                    ("Reorder commit", lambda: self._start_keyboard_reorder([commit]), self._can_keyboard_reorder()),
                     ("Revert changes in commit", lambda: self.store.revert_commit(repo, commit), True),
                     None,
                     ("Create branch from commit", lambda: self.store.show_popup(PopupType.CREATE_BRANCH, start=commit.sha), True),
@@ -3057,6 +3124,124 @@ class MainWindow(Adw.ApplicationWindow):
                 ]
             )
         show_context_menu(row, items)
+
+    def _visible_history_commits(self) -> list:
+        commits = []
+        if not hasattr(self, "_commit_list"):
+            return commits
+        child = self._commit_list.get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.ListBoxRow):
+                commit = getattr(child, "_commit", None)
+                if commit is not None:
+                    commits.append(commit)
+            child = child.get_next_sibling()
+        return commits
+
+    def _can_keyboard_reorder(self) -> bool:
+        repo = self.store.selected_repository
+        if not repo:
+            return False
+        state = self.store.state_for(repo)
+        if state.history_mode == HistoryTabMode.COMPARE:
+            return False
+        return True
+
+    def _start_keyboard_reorder(self, commits: list) -> None:
+        if not commits or not self._can_keyboard_reorder():
+            return
+        if not hasattr(self, "_commit_list"):
+            show_reorder_commits(self, self.store, commits)
+            return
+        visible = self._visible_history_commits()
+        shas = [c.sha for c in visible]
+        first = next((shas.index(c.sha) for c in commits if c.sha in shas), 0)
+        self._keyboard_reorder = {"commits": list(commits), "insert_index": first}
+        if hasattr(self, "_commit_list"):
+            self._commit_list.grab_focus()
+        self._sync_keyboard_reorder_chrome()
+
+    def _cancel_keyboard_reorder(self) -> None:
+        if self._keyboard_reorder is None:
+            return
+        self._keyboard_reorder = None
+        self._sync_keyboard_reorder_chrome()
+
+    def _confirm_keyboard_reorder(self) -> None:
+        data = self._keyboard_reorder
+        repo = self.store.selected_repository
+        if not data or not repo:
+            self._cancel_keyboard_reorder()
+            return
+        visible = self._visible_history_commits()
+        row = int(data["insert_index"])
+        moving = list(data["commits"])
+        moving_shas = {c.sha for c in moving}
+        indexes = [i for i, c in enumerate(visible) if c.sha in moving_shas]
+        base_index = None if row == 0 else row - 1
+        if indexes and all(indexes[i] + 1 == indexes[i + 1] for i in range(len(indexes) - 1)):
+            first = indexes[0]
+            dropped_above = (base_index is None and first == 0) or base_index == first - 1
+            dropped_within = base_index is not None and base_index in indexes
+            if dropped_above or dropped_within:
+                self._cancel_keyboard_reorder()
+                return
+        before = None if base_index is None or base_index >= len(visible) else visible[base_index]
+        self._keyboard_reorder = None
+        self._sync_keyboard_reorder_chrome()
+        self.store.reorder_onto(repo, moving, before)
+
+    def _on_keyboard_reorder_key(self, _c, keyval, _code, _mod) -> bool:
+        if not self._keyboard_reorder:
+            return False
+        if keyval in (65307,):  # Escape
+            self._cancel_keyboard_reorder()
+            return True
+        if keyval in (65293, 65421):  # Return / KP_Enter
+            self._confirm_keyboard_reorder()
+            return True
+        if keyval in (65362, 65364):  # Up / Down
+            visible = self._visible_history_commits()
+            maximum = len(visible)
+            current = int(self._keyboard_reorder["insert_index"])
+            current = current - 1 if keyval == 65362 else current + 1
+            self._keyboard_reorder["insert_index"] = max(0, min(maximum, current))
+            self._sync_keyboard_reorder_chrome()
+            return True
+        return False
+
+    def _sync_keyboard_reorder_chrome(self) -> None:
+        data = self._keyboard_reorder
+        if not hasattr(self, "_reorder_hint"):
+            return
+        active = data is not None
+        self._reorder_hint.set_visible(active)
+        visible = self._visible_history_commits()
+        moving_shas = {c.sha for c in data["commits"]} if data else set()
+        insert_index = int(data["insert_index"]) if data else 0
+        if active and data is not None:
+            count = len(data["commits"])
+            self._reorder_status.set_text(
+                keyboard_reorder_insert_message(count, insert_index, len(visible))
+                if visible
+                else keyboard_reorder_intro_message(count)
+            )
+        child = self._commit_list.get_first_child() if hasattr(self, "_commit_list") else None
+        index = 0
+        while child is not None:
+            if isinstance(child, Gtk.ListBoxRow):
+                commit = getattr(child, "_commit", None)
+                child.remove_css_class("commit-reorder-insert")
+                child.remove_css_class("commit-reorder-after")
+                child.remove_css_class("commit-reorder-moving")
+                if active and commit is not None and commit.sha in moving_shas:
+                    child.add_css_class("commit-reorder-moving")
+                if active and insert_index == index:
+                    child.add_css_class("commit-reorder-insert")
+                if active and insert_index == len(visible) and index == len(visible) - 1:
+                    child.add_css_class("commit-reorder-after")
+                index += 1
+            child = child.get_next_sibling()
 
     def _squash_selected(self, selected, onto) -> None:
         repo = self.store.selected_repository

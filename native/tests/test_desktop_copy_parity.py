@@ -263,3 +263,29 @@ def test_delete_oauth_token_skips_empty_token() -> None:
 
     account = Account(login="hubot", endpoint="https://api.github.com", token="")
     assert delete_oauth_token(account) is False
+
+
+def test_get_discard_label_matches_desktop_linux() -> None:
+    from github_desktop.git.diff import DiffRangeType
+    from github_desktop.ui.diff_view import get_discard_label
+
+    assert get_discard_label(DiffRangeType.ADDITIONS, 1) == "Discard added line…"
+    assert get_discard_label(DiffRangeType.DELETIONS, 2) == "Discard removed lines…"
+    assert get_discard_label(DiffRangeType.MIXED, 1, confirm=False) == "Discard modified line"
+    assert get_discard_label(DiffRangeType.ADDITIONS, 2, confirm=False) == "Discard added lines"
+
+
+def test_keyboard_reorder_copy() -> None:
+    from github_desktop.ui.window import keyboard_reorder_insert_message, keyboard_reorder_intro_message
+
+    assert keyboard_reorder_intro_message(1) == (
+        "Use the Up and Down arrow keys to choose a new location for the selected commit, "
+        "then press Enter to confirm or Escape to cancel."
+    )
+    assert "selected commits" in keyboard_reorder_intro_message(2)
+    assert keyboard_reorder_insert_message(1, 0, 5) == (
+        "Press Enter to insert the selected commit before commit 1 or Escape to cancel."
+    )
+    assert keyboard_reorder_insert_message(2, 5, 5) == (
+        "Press Enter to insert the selected commits after commit 5 or Escape to cancel."
+    )
