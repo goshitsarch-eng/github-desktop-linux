@@ -1496,6 +1496,7 @@ class AppStore:
         amend: bool = False,
         co_authors: Sequence[Author] = (),
         ignore_oversized: bool = False,
+        ignore_conflicted: bool = False,
     ) -> None:
         state = self.state_for(repo)
         if not state.status:
@@ -1521,8 +1522,21 @@ class AppStore:
                 ),
             )
             return
-        if any(f.status.kind == AppFileStatusKind.CONFLICTED for f in files):
-            self.show_popup(PopupType.COMMIT_CONFLICTS_WARNING)
+        conflicted = [f.path for f in files if f.status.kind == AppFileStatusKind.CONFLICTED]
+        if conflicted and not ignore_conflicted:
+            self.show_popup(
+                PopupType.COMMIT_CONFLICTS_WARNING,
+                files=conflicted,
+                on_commit=lambda: self._commit_now(
+                    repo,
+                    summary,
+                    description,
+                    amend=amend,
+                    co_authors=co_authors,
+                    ignore_oversized=ignore_oversized,
+                    ignore_conflicted=True,
+                ),
+            )
             return
         trailers = co_author_trailers(co_authors)
         message = format_commit_message(summary, description, trailers, repo=repo.path)

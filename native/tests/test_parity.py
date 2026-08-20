@@ -397,5 +397,13 @@ def test_window_actions_cover_menus() -> None:
         "ExistingAccountWarning",
         "aheadBehindStore",
         "Co-Author",
+        "Newer commits on remote",
+        "Confirm committing conflicted files",
+        "Yes, commit files",
+        "Invalidated account token",
+        "Continue in browser",
+        "Are you sure you want to discard these stashed changes?",
+        "overwrite your existing stash",
+        "create a detached HEAD",
     ]:
         assert phrase in src

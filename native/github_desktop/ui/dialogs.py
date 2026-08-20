@@ -213,8 +213,11 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         PopupType.CONFIRM_FORCE_PUSH: lambda: show_force_push(parent, store),
         PopupType.PUSH_NEEDS_PULL: lambda: _alert(
             parent,
-            "Fetch first?",
-            "The remote has commits you don't have locally. Pull or fetch before pushing.",
+            "Newer commits on remote",
+            "Desktop is unable to push commits to this branch because there are "
+            "commits on the remote that are not present on your local branch. "
+            "Fetch these new commits before pushing in order to reconcile them "
+            "with your local commits.",
             confirm="Fetch",
             on_confirm=lambda: repo and store.fetch_repo(repo),
         ),
@@ -222,28 +225,29 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         PopupType.CREATE_TAG: lambda: show_create_tag(parent, store, payload),
         PopupType.DELETE_TAG: lambda: show_delete_tag(parent, store, payload),
         PopupType.STASH_AND_SWITCH_BRANCH: lambda: show_stash_switch(parent, store, payload),
-        PopupType.CONFIRM_DISCARD_STASH: lambda: _alert(
+        PopupType.CONFIRM_DISCARD_STASH: lambda: _alert_with_check(
             parent,
             "Discard stash?",
-            "This cannot be undone.",
+            "Are you sure you want to discard these stashed changes?",
             destructive=True,
             confirm="Discard",
-            on_confirm=lambda: _discard_stash(store, payload),
+            on_confirm=lambda skip: _discard_stash(store, payload, skip_confirm=skip),
         ),
         PopupType.CONFIRM_OVERWRITE_STASH: lambda: _alert(
             parent,
             "Overwrite stash?",
-            "A Desktop stash already exists for this branch.",
+            "Are you sure you want to proceed? This will overwrite your existing stash with your current changes.",
             destructive=True,
             confirm="Overwrite",
             on_confirm=lambda: _overwrite_stash(store, payload),
         ),
-        PopupType.CONFIRM_CHECKOUT_COMMIT: lambda: _alert(
+        PopupType.CONFIRM_CHECKOUT_COMMIT: lambda: _alert_with_check(
             parent,
             "Checkout commit?",
-            "This will detach HEAD. You can create a branch afterwards.",
+            "Checking out a commit will create a detached HEAD, and you will no longer be on any branch. "
+            "Are you sure you want to checkout this commit?",
             confirm="Checkout",
-            on_confirm=lambda: _checkout_sha(store, payload),
+            on_confirm=lambda skip: _checkout_sha(store, payload, skip_confirm=skip),
         ),
         PopupType.WARN_LOCAL_CHANGES_BEFORE_UNDO: lambda: show_warn_undo(parent, store, payload),
         PopupType.WARNING_BEFORE_RESET: lambda: _alert(
@@ -271,14 +275,23 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         PopupType.LFS_ATTRIBUTE_MISMATCH: lambda: show_lfs_mismatch(parent, store),
         PopupType.OVERSIZED_FILES: lambda: show_oversized_files(parent, store, payload),
         PopupType.COMMIT_CONFLICTS_WARNING: lambda: _alert(
-            parent, "Conflicted files", "Resolve conflicts before committing.", cancel=None
+            parent,
+            "Confirm committing conflicted files",
+            "If you choose to commit, you’ll be committing the following conflicted files into your repository:\n"
+            + "\n".join(f"• {p}" for p in (payload.get("files") or []))
+            + "\n\nAre you sure you want to commit these conflicted files?",
+            confirm="Yes, commit files",
+            destructive=True,
+            on_confirm=lambda: payload.get("on_commit") and payload["on_commit"](),
         ),
         PopupType.SAML_REAUTH_REQUIRED: lambda: show_saml_reauth(parent, store, payload),
         PopupType.PUSH_REJECTED_WORKFLOW_SCOPE: lambda: _alert(
             parent,
-            "Workflow scope required",
-            "Pushing workflow files requires the workflow OAuth scope. Sign in again.",
-            confirm="Sign in",
+            "Push rejected",
+            "The push was rejected by the server for containing a modification to a workflow file. "
+            "In order to be able to push to workflow files GitHub Desktop needs to request additional permissions.\n\n"
+            "Would you like to open a browser to grant GitHub Desktop permission to update workflow files?",
+            confirm="Continue in browser",
             on_confirm=lambda: store.begin_sign_in(False),
         ),
         PopupType.PUSH_PROTECTION_ERROR: lambda: show_push_protection(parent, store, payload),
@@ -289,9 +302,10 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         PopupType.OPEN_SHELL_FAILED: lambda: _alert(parent, "Shell failed", str(payload.get("message") or ""), cancel=None),
         PopupType.INVALIDATED_TOKEN: lambda: _alert(
             parent,
-            "Signed out",
-            "Your GitHub token is no longer valid. Sign in again.",
-            confirm="Sign in",
+            "Invalidated account token",
+            "Your account token has been invalidated and you have been signed out. Do you want to sign in again?",
+            confirm="Yes",
+            cancel="No",
             on_confirm=lambda: store.begin_sign_in(False),
         ),
         PopupType.ADD_SSH_HOST: lambda: _alert(
@@ -323,13 +337,14 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         PopupType.DELETE_PULL_REQUEST: lambda: show_delete_pull_request(parent, store, payload),
         PopupType.LOCAL_CHANGES_OVERWRITTEN: lambda: show_local_changes_overwritten(parent, store, payload),
         PopupType.DISCARD_CHANGES_RETRY: lambda: show_discard_retry(parent, store, payload),
-        PopupType.CONFIRM_DISCARD_SELECTION: lambda: _alert(
+        PopupType.CONFIRM_DISCARD_SELECTION: lambda: _alert_with_check(
             parent,
-            "Discard selected lines?",
-            "Discarded lines cannot be recovered.",
+            "Confirm discard changes",
+            "Are you sure you want to discard the selected changes to:\n"
+            + f"• {payload.get('path') or 'the selected file'}",
             destructive=True,
-            confirm="Discard",
-            on_confirm=lambda: payload.get("on_discard") and payload["on_discard"](),
+            confirm="Discard changes",
+            on_confirm=lambda skip: _discard_selection(store, payload, skip_confirm=skip),
         ),
         PopupType.COMMIT_MESSAGE: lambda: show_commit_message_dialog(parent, store, payload),
         PopupType.CREATE_TUTORIAL_REPOSITORY: lambda: show_tutorial(parent, store),
@@ -596,14 +611,20 @@ def _reset(store: AppStore, payload: dict[str, Any]) -> None:
         store.refresh_repository(repo)
 
 
-def _checkout_sha(store: AppStore, payload: dict[str, Any]) -> None:
+def _checkout_sha(store: AppStore, payload: dict[str, Any], *, skip_confirm: bool = False) -> None:
+    if skip_confirm:
+        store.settings.confirm_checkout_commit = False
+        store.persist_settings()
     repo = store.selected_repository
     sha = payload.get("sha")
     if repo and sha:
         store.checkout_commit_sha(repo, sha, confirmed=True)
 
 
-def _discard_stash(store: AppStore, payload: dict[str, Any]) -> None:
+def _discard_stash(store: AppStore, payload: dict[str, Any], *, skip_confirm: bool = False) -> None:
+    if skip_confirm:
+        store.settings.confirm_discard_stash = False
+        store.persist_settings()
     repo = store.selected_repository
     name = payload.get("stash")
     if repo and name:
@@ -613,6 +634,15 @@ def _discard_stash(store: AppStore, payload: dict[str, Any]) -> None:
         state = store.state_for(repo)
         state.stashed_visible = False
         store.refresh_repository(repo)
+
+
+def _discard_selection(store: AppStore, payload: dict[str, Any], *, skip_confirm: bool = False) -> None:
+    if skip_confirm:
+        store.settings.confirm_discard_changes = False
+        store.persist_settings()
+    cb = payload.get("on_discard")
+    if cb:
+        cb()
 
 
 def _overwrite_stash(store: AppStore, payload: dict[str, Any]) -> None:

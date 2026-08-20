@@ -2069,6 +2069,7 @@ class MainWindow(Adw.ApplicationWindow):
         if self.store.settings.confirm_discard_changes:
             self.store.show_popup(
                 PopupType.CONFIRM_DISCARD_SELECTION,
+                path=path,
                 on_discard=lambda: self.store.discard_selection(repo, path),
             )
         else:
