@@ -61,6 +61,49 @@ def review_verb(state: str) -> str:
     return REVIEW_VERBS.get((state or "").upper(), "reviewed")
 
 
+def notification_repo_full_name(note: dict[str, Any]) -> str:
+    repo = note.get("repository") or {}
+    full = str(repo.get("full_name") or "").strip()
+    if full:
+        return full
+    owner = repo.get("owner") if isinstance(repo.get("owner"), dict) else {}
+    login = str(owner.get("login") or "")
+    name = str(repo.get("name") or "")
+    if login and name:
+        return f"{login}/{name}"
+    return ""
+
+
+def is_high_signal_notification(
+    note: dict[str, Any],
+    selected_repo_full_name: str | None = None,
+) -> bool:
+    """Match Desktop Alive high-signal kinds on REST ``/notifications``.
+
+    Alive only surfaces ``pr-checks-failed``, pull-request reviews, and
+    pull-request comments for the current repository. Native has no websocket,
+    so this filter is the Linux stand-in.
+    """
+    full = notification_repo_full_name(note)
+    if selected_repo_full_name and full and full.lower() != selected_repo_full_name.lower():
+        return False
+    subject = note.get("subject") or {}
+    stype = str(subject.get("type") or "")
+    reason = str(note.get("reason") or "").lower()
+    title = str(subject.get("title") or "").lower()
+    if stype in ("CheckSuite", "CheckRun") or reason == "ci_activity":
+        return True
+    if "fail" in title and stype in ("CheckSuite", "CheckRun", "PullRequest", ""):
+        return True
+    if stype == "PullRequestReview" or reason in ("review_requested", "approval_requested"):
+        return True
+    if stype == "PullRequest" and reason in ("comment", "mention", "review_requested"):
+        return True
+    if stype == "Issue" and reason == "comment":
+        return False
+    return False
+
+
 def classify_notification(note: dict[str, Any], subject_payload: dict[str, Any] | None = None) -> NotificationAction:
     subject = note.get("subject") or {}
     stype = str(subject.get("type") or "")

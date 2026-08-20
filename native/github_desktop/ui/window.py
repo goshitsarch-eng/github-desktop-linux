@@ -45,7 +45,7 @@ from .diff_view import DiffViewer
 from .emoji import matching_shortcodes
 from .history import ExpandableCommitSummary
 from .menus import attach_right_click, clear_box, copy_text, show_context_menu
-from .multi_commit import show_confirm_abort, show_conflicts_dialog
+from .multi_commit import MERGE_OPTIONS, merge_cta_message, show_confirm_abort, show_conflicts_dialog
 from .spellcheck import attach_spellcheck
 from .stash import StashDiffViewer
 from .tutorial import TutorialPanel
@@ -1026,7 +1026,11 @@ class MainWindow(Adw.ApplicationWindow):
         self._coauthor_entry = self._author_input.entry
         self._coauthor_store = self._author_input.store
         self._summary.set_completion(completion)
-        self._spell = attach_spellcheck(self._description, enabled=self.store.settings.spellcheck_enabled)
+        self._spell = attach_spellcheck(
+            self._summary,
+            self._description,
+            enabled=self.store.settings.spellcheck_enabled,
+        )
         btn_row = Gtk.Box(spacing=6)
         self._commit_btn = Gtk.Button(label="Commit to branch")
         self._commit_btn.add_css_class("suggested-action")
@@ -1108,7 +1112,7 @@ class MainWindow(Adw.ApplicationWindow):
         compare_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         compare_col.set_hexpand(True)
         self._compare_search = Gtk.SearchEntry()
-        self._compare_search.set_placeholder_text("Filter branches")
+        self._compare_search.set_placeholder_text("Select Branch to Compare…")
         self._compare_search.set_hexpand(True)
         self._compare_search.connect("search-changed", lambda *_: self._refresh_compare_list())
         compare_col.append(self._compare_search)
@@ -2642,10 +2646,16 @@ class MainWindow(Adw.ApplicationWindow):
         history.set_child(Gtk.Label(label="History", xalign=0))
         history.branch_name = ""
         self._compare_list.append(history)
+        comparable = [b for b in state.branches if b.name != current_name]
+        if hasattr(self, "_compare_search"):
+            if not comparable:
+                self._compare_search.set_placeholder_text("No branches to compare")
+            elif state.history_mode != HistoryTabMode.COMPARE:
+                self._compare_search.set_placeholder_text("Select Branch to Compare…")
+            else:
+                self._compare_search.set_placeholder_text("Filter branches")
         shown = 0
-        for branch in state.branches:
-            if branch.name == current_name:
-                continue
+        for branch in comparable:
             if query and query not in branch.name.lower():
                 continue
             if shown >= 40:
@@ -2681,6 +2691,30 @@ class MainWindow(Adw.ApplicationWindow):
         if repo:
             self.store.set_compare_mode(repo, mode)
 
+    def _on_compare_op_changed(self, drop: Gtk.DropDown, *_args) -> None:
+        self._compare_op_index = int(drop.get_selected())
+        repo = self.store.selected_repository
+        if repo:
+            self._refresh_compare_cta(self.store.state_for(repo))
+
+    def _execute_compare_merge(self, *_args) -> None:
+        repo = self.store.selected_repository
+        if repo is None:
+            return
+        state = self.store.state_for(repo)
+        if not state.compare_branch:
+            return
+        idx = getattr(self, "_compare_op_index", 0)
+        if idx < 0 or idx >= len(MERGE_OPTIONS):
+            idx = 0
+        kind = MERGE_OPTIONS[idx][0]
+        compare = state.compare_branch.name
+        if kind == MultiCommitOperationKind.REBASE:
+            self.store.rebase_branch(repo, compare)
+        else:
+            self.store.merge_branch(repo, compare, squash=(kind == MultiCommitOperationKind.SQUASH))
+        self.store.compare_to_branch(repo, None)
+
     def _refresh_compare_cta(self, state) -> None:
         if not hasattr(self, "_compare_cta"):
             return
@@ -2692,61 +2726,53 @@ class MainWindow(Adw.ApplicationWindow):
         behind = len(state.compare_behind)
         self._compare_cta.append(Gtk.Label(label=f"{ahead} ahead · {behind} behind {state.compare_branch.name}"))
         current = state.status.current_branch if state.status else "current branch"
+        compare = state.compare_branch.name
         merge_tree = state.merge_tree
-        if merge_tree and merge_tree.kind == ComputedAction.CONFLICTS:
-            noun = "file" if merge_tree.conflicted_files == 1 else "files"
-            warn = Gtk.Label(
-                label=f"Can't automatically merge. {merge_tree.conflicted_files} conflicted {noun}.",
-                wrap=True,
-                xalign=0,
-            )
-            warn.add_css_class("warning")
-            self._compare_cta.append(warn)
-        elif merge_tree and merge_tree.kind == ComputedAction.INVALID:
-            self._compare_cta.append(Gtk.Label(label="Unable to merge unrelated histories into this branch.", wrap=True, xalign=0))
-        elif merge_tree and merge_tree.kind == ComputedAction.CLEAN and behind:
-            self._compare_cta.append(Gtk.Label(label="Able to merge automatically.", xalign=0))
-        if behind and repo:
-            msg = Gtk.Label(
-                label=f"This will merge {behind} commit{'s' if behind != 1 else ''} from {state.compare_branch.name} into {current}",
-                wrap=True,
-                xalign=0,
-            )
-            self._compare_cta.append(msg)
-            ops = Gtk.Box(spacing=6)
-            merge = Gtk.Button(label=f"Merge into {current}")
-            merge.add_css_class("suggested-action")
-            merge.set_sensitive(not (merge_tree and merge_tree.kind == ComputedAction.INVALID))
-            merge.connect(
-                "clicked",
-                lambda *_: self.store.show_popup(
-                    PopupType.MULTI_COMMIT_OPERATION,
-                    kind="Merge",
-                    initial_branch=state.compare_branch.name,
-                ),
-            )
-            rebase = Gtk.Button(label="Rebase")
-            rebase.connect(
-                "clicked",
-                lambda *_: self.store.show_popup(
-                    PopupType.MULTI_COMMIT_OPERATION,
-                    kind="Rebase",
-                    initial_branch=state.compare_branch.name,
-                ),
-            )
-            squash = Gtk.Button(label="Squash")
-            squash.connect(
-                "clicked",
-                lambda *_: self.store.show_popup(
-                    PopupType.MULTI_COMMIT_OPERATION,
-                    kind="Squash",
-                    initial_branch=state.compare_branch.name,
-                ),
-            )
-            ops.append(merge)
-            ops.append(rebase)
-            ops.append(squash)
-            self._compare_cta.append(ops)
+        idx = getattr(self, "_compare_op_index", 0)
+        if idx < 0 or idx >= len(MERGE_OPTIONS):
+            idx = 0
+        kind = MERGE_OPTIONS[idx][0]
+        if kind == MultiCommitOperationKind.REBASE:
+            commit_count = ahead
+            action = ComputedAction.CLEAN
+            if merge_tree is None:
+                action = ComputedAction.LOADING
+            elif merge_tree.kind == ComputedAction.INVALID:
+                action = ComputedAction.INVALID
+            conflicted = 0
+        else:
+            commit_count = behind
+            action = merge_tree.kind if merge_tree else ComputedAction.LOADING
+            conflicted = merge_tree.conflicted_files if merge_tree else 0
+        message, can_proceed = merge_cta_message(
+            kind,
+            current,
+            compare,
+            commit_count,
+            action,
+            conflicted,
+        )
+        if action == ComputedAction.CLEAN and kind != MultiCommitOperationKind.REBASE and behind:
+            able = Gtk.Label(label="Able to merge automatically.", xalign=0)
+            able.add_css_class("dim-label")
+            self._compare_cta.append(able)
+        if message:
+            status = Gtk.Label(label=message, wrap=True, xalign=0)
+            if action == ComputedAction.CONFLICTS or action == ComputedAction.INVALID:
+                status.add_css_class("warning")
+            self._compare_cta.append(status)
+        ops = Gtk.Box(spacing=6)
+        drop = Gtk.DropDown.new_from_strings([opt[1] for opt in MERGE_OPTIONS])
+        drop.set_selected(idx)
+        drop.connect("notify::selected", self._on_compare_op_changed)
+        drop.set_sensitive(behind > 0 or kind == MultiCommitOperationKind.REBASE)
+        action_btn = Gtk.Button(label=MERGE_OPTIONS[idx][1])
+        action_btn.add_css_class("suggested-action")
+        action_btn.set_sensitive(can_proceed)
+        action_btn.connect("clicked", self._execute_compare_merge)
+        ops.append(drop)
+        ops.append(action_btn)
+        self._compare_cta.append(ops)
 
     def _repo_list_menu(self, widget: Gtk.Widget, repo) -> None:
         show_context_menu(

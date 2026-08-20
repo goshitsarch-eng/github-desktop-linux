@@ -16,7 +16,7 @@ from ..changelog import load_release_notes
 from ..thank_you import thank_you_note
 from ..custom_integration import TARGET_PATH_ARGUMENT
 from ..editors import get_available_editors
-from ..errors import ValidationError
+from ..errors import GitError, ValidationError
 from ..git.ops import (
     add_remote,
     add_safe_directory,
@@ -24,6 +24,8 @@ from ..git.ops import (
     get_config_value,
     get_default_branch,
     get_repository_type,
+    is_config_file_lock_error,
+    parse_config_lock_file_path_from_error,
     read_gitignore,
     remove_config_value,
     remove_remote,
@@ -1374,12 +1376,58 @@ def _render_grouped_clone_list(
         listbox.append(Adw.ActionRow(title=empty_title))
 
 
+def show_config_lock_file_exists(
+    parent: Gtk.Window | None,
+    lock_path: str,
+    on_deleted: Callable[[], None],
+) -> None:
+    """Desktop `ConfigLockFileExists` when git cannot lock a config file."""
+    dialog = Adw.AlertDialog()
+    dialog.set_heading("Failed to update Git configuration file.")
+    dialog.set_body(
+        f"A lock file already exists at {lock_path}. "
+        "This can happen if another tool is currently modifying the Git "
+        "configuration or if a Git process has terminated earlier without "
+        "cleaning up the lock file. Do you want to delete the lock file "
+        "and try again?"
+    )
+    dialog.add_response("cancel", "Cancel")
+    dialog.add_response("delete", "Delete the lock file")
+    dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+
+    def on_response(_dialog, response: str) -> None:
+        if response != "delete":
+            return
+        try:
+            os.unlink(lock_path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return
+        on_deleted()
+
+    dialog.connect("response", on_response)
+    dialog.present(parent)
+
+
+def _handle_config_lock(parent: Gtk.Window | None, error: BaseException, retry: Callable[[], None]) -> bool:
+    """Show ConfigLockFileExists when `isConfigFileLockError`; return True if handled."""
+    if not is_config_file_lock_error(error):
+        return False
+    lock = parse_config_lock_file_path_from_error(error) if isinstance(error, GitError) else None
+    if not lock:
+        return False
+    show_config_lock_file_exists(parent, lock, retry)
+    return True
+
+
 def _clone_sign_in_cta(
     store: "AppStore",
     dialog: Adw.Dialog,
     *,
     enterprise: bool,
     message: str,
+    action_title: str = "Sign in",
 ) -> Gtk.Widget:
     """Desktop clone `CallToAction` prompting Sign in."""
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -1389,7 +1437,7 @@ def _clone_sign_in_cta(
     box.set_margin_start(16)
     box.set_margin_end(16)
     label = Gtk.Label(label=message, wrap=True, xalign=0)
-    btn = Gtk.Button(label="Sign in")
+    btn = Gtk.Button(label=action_title)
     btn.add_css_class("suggested-action")
     btn.set_halign(Gtk.Align.START)
 
@@ -2271,12 +2319,19 @@ def show_repository_settings(parent: Gtk.Window, store: AppStore) -> None:
         sync_other()
 
     def save_g(*_a: Any) -> None:
-        if local_check.get_active():
-            set_config_value(repo.path, "user.name", name_row.get_text())
-            set_config_value(repo.path, "user.email", _selected_email())
-        else:
-            remove_config_value(repo.path, "user.name")
-            remove_config_value(repo.path, "user.email")
+        def apply_config() -> None:
+            if local_check.get_active():
+                set_config_value(repo.path, "user.name", name_row.get_text())
+                set_config_value(repo.path, "user.email", _selected_email())
+            else:
+                remove_config_value(repo.path, "user.name")
+                remove_config_value(repo.path, "user.email")
+
+        try:
+            apply_config()
+        except GitError as exc:
+            if not _handle_config_lock(parent, exc, apply_config):
+                store.show_popup(PopupType.ERROR, error=str(exc))
 
     global_check.connect("toggled", apply_location)
     local_check.connect("toggled", apply_location)
@@ -2318,21 +2373,66 @@ def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
     s = store.settings
 
     accounts = Adw.PreferencesPage(title="Accounts", icon_name="system-users-symbolic")
-    acc_group = Adw.PreferencesGroup(title="GitHub accounts")
-    for account in store.accounts:
+    dotcom_group = Adw.PreferencesGroup(title="GitHub.com")
+    ent_group = Adw.PreferencesGroup(title="GitHub Enterprise")
+    dotcom_accounts = [a for a in store.accounts if a.is_dotcom]
+    ent_accounts = [a for a in store.accounts if not a.is_dotcom]
+
+    def _sign_out_row(account) -> Adw.ActionRow:
         row = Adw.ActionRow(title=account.login, subtitle=account.friendly_endpoint)
-        row.add_prefix(Avatar(account.name or account.login, account.emails[0] if account.emails else "", login=account.login, avatar_url=account.avatar_url, size=28))
+        row.add_prefix(
+            Avatar(
+                account.name or account.login,
+                account.emails[0] if account.emails else "",
+                login=account.login,
+                avatar_url=account.avatar_url,
+                size=28,
+            )
+        )
         btn = Gtk.Button(label="Sign out")
         btn.connect("clicked", lambda _b, a=account: (store.sign_out(a), dialog.close()))
         row.add_suffix(btn)
-        acc_group.add(row)
-    sign_dot = Gtk.Button(label="Sign in to GitHub.com")
-    sign_dot.connect("clicked", lambda *_: store.begin_sign_in(False))
-    sign_ent = Gtk.Button(label="Sign in to GitHub Enterprise")
-    sign_ent.connect("clicked", lambda *_: store.begin_sign_in(True))
-    acc_group.add(sign_dot)
-    acc_group.add(sign_ent)
-    accounts.add(acc_group)
+        return row
+
+    def _prefs_sign_in_cta(*, enterprise: bool) -> Adw.ActionRow:
+        if enterprise:
+            title = "Sign into GitHub Enterprise"
+            message = "If you are using GitHub Enterprise at work, sign in to it to get access to your repositories."
+        else:
+            title = "Sign into GitHub.com"
+            message = "Sign in to your GitHub.com account to access your repositories."
+        row = Adw.ActionRow(title=title, subtitle=message)
+        row.add_css_class("call-to-action")
+        btn = Gtk.Button(label=title)
+        btn.add_css_class("suggested-action")
+        btn.set_valign(Gtk.Align.CENTER)
+
+        def go(*_a: Any) -> None:
+            dialog.close()
+            store.begin_sign_in(enterprise)
+
+        btn.connect("clicked", go)
+        row.add_suffix(btn)
+        row.set_activatable(False)
+        return row
+
+    if dotcom_accounts:
+        for account in dotcom_accounts:
+            dotcom_group.add(_sign_out_row(account))
+    else:
+        dotcom_group.add(_prefs_sign_in_cta(enterprise=False))
+    if ent_accounts:
+        for account in ent_accounts:
+            ent_group.add(_sign_out_row(account))
+        add_row = Adw.ActionRow(title="Add GitHub Enterprise account")
+        add_ent = Gtk.Button(label="Add GitHub Enterprise account")
+        add_ent.connect("clicked", lambda *_: (dialog.close(), store.begin_sign_in(True)))
+        add_row.add_suffix(add_ent)
+        ent_group.add(add_row)
+    else:
+        ent_group.add(_prefs_sign_in_cta(enterprise=True))
+    accounts.add(dotcom_group)
+    accounts.add(ent_group)
 
     integrations = Adw.PreferencesPage(title="Integrations", icon_name="applications-engineering-symbolic")
     ed_group = Adw.PreferencesGroup(title="External editor")
@@ -2508,6 +2608,9 @@ def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
     notes = Adw.PreferencesPage(title="Notifications", icon_name="preferences-system-notifications-symbolic")
     n_group = Adw.PreferencesGroup()
     n_row = Adw.SwitchRow(title="Enable notifications", active=s.notifications_enabled)
+    n_row.set_subtitle(
+        "Allows the display of notifications when high-signal events take place in the current repository."
+    )
     n_group.add(n_row)
     notes.add(n_group)
 
@@ -2615,7 +2718,16 @@ def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
             else:
                 model = email_row.get_model()
                 email = model.get_string(idx) if model is not None else other_email.get_text().strip()
-            store.save_git_user(name_row.get_text(), email, branch_row.get_text().strip() or None)
+            name = name_row.get_text()
+            branch = branch_row.get_text().strip() or None
+
+            def save_user() -> None:
+                store.save_git_user(name, email, branch)
+
+            try:
+                save_user()
+            except GitError as exc:
+                _handle_config_lock(parent, exc, save_user)
         except ValidationError:
             pass
         store.persist_settings()

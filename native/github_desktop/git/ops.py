@@ -89,6 +89,7 @@ from .progress import (
 from .runner import (
     GitResult,
     abort_git_process,
+    env_for_proxy,
     env_for_remote,
     find_git,
     git,
@@ -2096,6 +2097,33 @@ def warn_about_remote_commits(repo: str, branch: Branch, oldest_ref: str | None)
         return True
     remote_commits = get_commits_between(repo, oldest_ref, branch.upstream)
     return remote_commits is not None and len(remote_commits) > 0
+
+
+_CONFIG_LOCK_RE = re.compile(r"^error: could not lock config file (.+?): File exists$", re.M)
+
+
+def is_config_file_lock_error(error: BaseException) -> bool:
+    """Desktop `isConfigFileLockError`: git could not lock a config file."""
+    if not isinstance(error, GitError):
+        return False
+    if error.git_error == "ConfigLockFileAlreadyExists":
+        return True
+    blob = f"{error.stderr}\n{error}"
+    return bool(_CONFIG_LOCK_RE.search(blob))
+
+
+def parse_config_lock_file_path_from_error(error: GitError, cwd: str | None = None) -> str | None:
+    """Desktop `parseConfigLockFilePathFromError`.
+
+    Git prints the config path without the ``.lock`` suffix; the lock file is
+    ``{normalized}.lock`` resolved against the command cwd.
+    """
+    match = _CONFIG_LOCK_RE.search(error.stderr or str(error))
+    if not match:
+        return None
+    normalized = match.group(1)
+    base = cwd or error.path or os.path.expanduser("~")
+    return os.path.abspath(os.path.join(base, f"{normalized}.lock"))
 
 
 def set_config_value(repo: str | None, key: str, value: str, global_only: bool = False) -> None:

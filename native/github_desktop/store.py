@@ -125,7 +125,7 @@ from .github.ci_checks import (
     summarize_check_runs,
 )
 from .github.repo_rules import RepoRulesInfo, parse_repo_rules, use_repo_rules_logic
-from .github.notifications import classify_notification, pull_request_from_payload
+from .github.notifications import classify_notification, is_high_signal_notification, pull_request_from_payload
 from .github.oauth import (
     dotcom_endpoint,
     enterprise_endpoint_from_url,
@@ -3826,7 +3826,13 @@ class AppStore:
     def poll_notifications(self) -> None:
         if not self.settings.notifications_enabled or not self.accounts:
             return
-        account = self.accounts[0]
+        repo = self.selected_repository
+        selected_full = repo.github.full_name if repo and repo.github else None
+        if not selected_full:
+            return
+        account = self.account_for_repo(repo) if repo else None
+        if account is None:
+            account = self.accounts[0]
 
         def work() -> list:
             api = GitHubAPI.from_account(account)
@@ -3836,7 +3842,9 @@ class AppStore:
                 pass
             notes = api.fetch_notifications()
             enriched: list[tuple[dict, dict | None]] = []
-            for note in notes[:8]:
+            for note in notes[:20]:
+                if not is_high_signal_notification(note, selected_full):
+                    continue
                 subject = note.get("subject") or {}
                 latest = subject.get("latest_comment_url") or subject.get("url")
                 payload = None
@@ -3852,7 +3860,6 @@ class AppStore:
         def done(exc: BaseException | None, result: list | None = None) -> None:
             if exc or not result:
                 return
-            shown_popup = False
             for note, payload in result:
                 ident = str(note.get("id") or "")
                 if not ident or ident in self._seen_notifications:
@@ -3863,9 +3870,7 @@ class AppStore:
                 if action.popup:
                     self._notification_payloads[nid] = (action.popup, dict(action.payload))
                 show_notification(action.title, action.body, enabled=True, notification_id=nid)
-                if action.popup and not shown_popup:
-                    shown_popup = True
-                    self.show_popup(action.popup, **action.payload)
+                # Desktop opens popups from notification clicks, not automatically.
 
         self._run(work, done)
 

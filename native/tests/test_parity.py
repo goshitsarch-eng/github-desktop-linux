@@ -128,6 +128,9 @@ REQUIRED_GIT_FUNCS = [
     "rev_symmetric_difference",
     "get_stashed_files",
     "get_trailer_separator_characters",
+    "is_config_file_lock_error",
+    "parse_config_lock_file_path_from_error",
+    "env_for_proxy",
 ]
 
 
@@ -243,6 +246,11 @@ def test_window_actions_cover_menus() -> None:
     from github_desktop.ui import markdown as markdown_mod
 
     src += open(markdown_mod.__file__, encoding="utf-8").read()
+    from github_desktop.git import runner as git_runner_mod
+    from github_desktop.github import notifications as notifications_mod
+
+    src += open(git_runner_mod.__file__, encoding="utf-8").read()
+    src += open(notifications_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -475,5 +483,21 @@ def test_window_actions_cover_menus() -> None:
         "MentionFilter",
         "CommitMentionFilter",
         "getTrailerSeparatorCharacters",
+        "There will be",
+        "Unable to merge unrelated histories in this repository",
+        "Sign into GitHub.com",
+        "high-signal events",
+        "Select Branch to Compare",
+        "No branches to compare",
+        "ConfigLockFileExists",
+        "isConfigFileLockError",
+        "envForProxy",
+        "This pull request closes",
+        "TeamMention",
+        "gh-123",
+        "Add GitHub Enterprise account",
+        "getMergeOptions",
+        "CloseKeywordFilter",
+        "IssueMentionFilter",
     ]:
         assert phrase in src

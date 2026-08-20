@@ -246,12 +246,17 @@ def git(
     )
     if result.exit_code not in success:
         message = result.stderr.strip() or result.stdout.strip() or f"git {name} failed"
+        git_error = None
+        if "could not lock config file" in result.stderr and "File exists" in result.stderr:
+            git_error = "ConfigLockFileAlreadyExists"
         raise GitError(
             message,
             args=list(args),
             exit_code=result.exit_code,
             stdout=result.stdout,
             stderr=result.stderr,
+            git_error=git_error,
+            path=str(cwd),
         )
     return result
 
@@ -284,6 +289,41 @@ def resolve_repository_root(path: str) -> str | None:
         return None
 
 
+def env_for_proxy(remote_url: str, env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Desktop `envForProxy` without Electron PAC resolution.
+
+    Only HTTP(S) remotes are eligible. Skipped when ``ALL_PROXY``/``all_proxy``
+    or the protocol-specific ``http_proxy``/``https_proxy`` is already set.
+    Otherwise ``git config --global http.proxy`` is used when present.
+    """
+    import re as _re
+
+    source = env if env is not None else os.environ
+    match = _re.match(r"^(https?)://", remote_url or "", flags=_re.I)
+    if match is None:
+        return {}
+    if "ALL_PROXY" in source or "all_proxy" in source:
+        return {}
+    proto = match.group(1).lower()
+    env_key = f"{proto}_proxy"
+    if env_key in source or (proto == "https" and "HTTPS_PROXY" in source):
+        return {}
+    proxy = ""
+    try:
+        result = git(
+            ["config", "--global", "--get", "http.proxy"],
+            os.path.expanduser("~"),
+            success_exit_codes={0, 1},
+            name="httpProxy",
+        )
+        proxy = (result.stdout or "").strip()
+    except Exception:
+        proxy = ""
+    if not proxy:
+        return {}
+    return {env_key: proxy}
+
+
 def env_for_remote(
     remote_url: str,
     *,
@@ -297,6 +337,7 @@ def env_for_remote(
         "GIT_TERMINAL_PROMPT": "0",
         "GCM_INTERACTIVE": "Never",
     }
+    env.update(env_for_proxy(remote_url))
     if extra:
         env.update(extra)
     user = username

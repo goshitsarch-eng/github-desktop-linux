@@ -292,3 +292,96 @@ def test_trailer_separator_characters(git_repo) -> None:
     assert get_trailer_separator_characters(str(git_repo)) == ":"
     set_config_value(str(git_repo), "trailer.separators", ":#")
     assert get_trailer_separator_characters(str(git_repo)) == ":#"
+
+
+def test_markdown_issue_team_and_close_filters() -> None:
+    from github_desktop.ui.markdown import close_keyword_tooltip, markdown_to_pango
+
+    issues = markdown_to_pango(
+        "See gh-123 and desktop/dugite#9 and /issues/4",
+        issue_base_url="https://github.com/octo/hello/issues",
+        repo_html_url="https://github.com/octo/hello",
+    )
+    assert "gh-123" in issues
+    assert 'href="https://github.com/octo/hello/issues/123"' in issues
+    assert "desktop/dugite#9" in issues
+    assert 'href="https://github.com/desktop/dugite/issues/9"' in issues
+    assert 'href="https://github.com/octo/hello/issues/4"' in issues
+    team = markdown_to_pango(
+        "cc @desktop/the-a-team and @octocat",
+        issue_base_url="https://github.com/desktop/desktop/issues",
+    )
+    assert 'href="https://github.com/orgs/desktop/teams/the-a-team"' in team
+    assert "@desktop/the-a-team" in team
+    assert 'href="https://github.com/octocat"' in team
+    assert close_keyword_tooltip("Closes #44 after review") == "This pull request closes #44."
+    closed = markdown_to_pango(
+        "Fixes #12",
+        issue_base_url="https://github.com/octo/hello/issues",
+    )
+    assert 'href="https://github.com/octo/hello/issues/12"' in closed
+
+
+def test_config_lock_error_helpers() -> None:
+    from github_desktop.errors import GitError
+    from github_desktop.git.ops import is_config_file_lock_error, parse_config_lock_file_path_from_error
+
+    err = GitError(
+        "could not lock",
+        stderr="error: could not lock config file /tmp/gitconfig: File exists\n",
+        path="/home/dev",
+        git_error="ConfigLockFileAlreadyExists",
+    )
+    assert is_config_file_lock_error(err)
+    lock = parse_config_lock_file_path_from_error(err)
+    assert lock == "/tmp/gitconfig.lock"
+    assert not is_config_file_lock_error(GitError("unrelated", stderr="fatal: bad"))
+
+
+def test_env_for_proxy_skips_and_honors_git_config(monkeypatch) -> None:
+    from github_desktop.git import runner as runner_mod
+    from github_desktop.git.ops import env_for_proxy
+
+    assert env_for_proxy("git@github.com:a/b.git", env={}) == {}
+    assert env_for_proxy("https://github.com/", env={"ALL_PROXY": "socks5://127.0.0.1:1080"}) == {}
+    assert env_for_proxy("https://github.com/", env={"https_proxy": "http://existing:8080"}) == {}
+
+    class _Result:
+        stdout = "http://proxy.example:8080\n"
+
+    monkeypatch.setattr(runner_mod, "git", lambda *a, **k: _Result())
+    assert env_for_proxy("https://github.com/", env={}) == {"https_proxy": "http://proxy.example:8080"}
+    assert env_for_proxy("http://github.com/", env={}) == {"http_proxy": "http://proxy.example:8080"}
+
+
+def test_high_signal_notification_filter() -> None:
+    from github_desktop.github.notifications import is_high_signal_notification
+
+    checks = {
+        "id": "1",
+        "reason": "ci_activity",
+        "subject": {"type": "CheckSuite", "title": "Checks failed"},
+        "repository": {"full_name": "octo/hello"},
+    }
+    review = {
+        "id": "2",
+        "reason": "review_requested",
+        "subject": {"type": "PullRequest", "title": "Please review"},
+        "repository": {"full_name": "octo/hello"},
+    }
+    other = {
+        "id": "3",
+        "reason": "subscribed",
+        "subject": {"type": "Issue", "title": "Random issue"},
+        "repository": {"full_name": "octo/hello"},
+    }
+    other_repo = {
+        "id": "4",
+        "reason": "ci_activity",
+        "subject": {"type": "CheckSuite", "title": "Checks failed"},
+        "repository": {"full_name": "someone/else"},
+    }
+    assert is_high_signal_notification(checks, "octo/hello")
+    assert is_high_signal_notification(review, "octo/hello")
+    assert not is_high_signal_notification(other, "octo/hello")
+    assert not is_high_signal_notification(other_repo, "octo/hello")

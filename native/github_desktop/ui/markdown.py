@@ -3,8 +3,11 @@
 Desktop renders PR bodies in a sandboxed iframe. Native GTK has no WebKit
 requirement, so we convert a safe subset of GitHub Flavored Markdown to Pango
 markup: emphasis, inline/fenced code, https-only links, emoji shortcodes,
-``#123`` issue refs, ``MentionFilter`` (@user), and ``CommitMentionFilter``
-(7–40 hex SHAs). Raw HTML, ``javascript:``, and ``data:`` URLs are dropped.
+``IssueMentionFilter`` (``#123``, ``gh-123``, ``/issues/123``, ``owner/repo#123``),
+``MentionFilter`` (@user), ``TeamMentionFilter`` (@org/team),
+``CloseKeywordFilter`` (Closes/Fixes/Resolves with tooltip
+``This pull request closes #N.``), and ``CommitMentionFilter`` (7–40 hex SHAs).
+Raw HTML, ``javascript:``, and ``data:`` URLs are dropped.
 """
 
 from __future__ import annotations
@@ -24,12 +27,27 @@ _AUTOLINK_RE = re.compile(r"(?<!href=\")(?<!href=')https?://[^\s<]+")
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*|__(.+?)__")
 _ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|(?<!_)_(?!_)(.+?)(?<!_)_(?!_)")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.M)
-_ISSUE_RE = re.compile(r"(?<![/\w])#(\d+)\b")
 _QUOTE_RE = re.compile(r"^&gt;\s?(.*)$", re.M)
+# TeamMentionFilter: @org/team before MentionFilter so the slash is not split.
+_TEAM_MENTION_RE = re.compile(
+    r"(^|[^A-Za-z0-9_`])@([A-Za-z0-9][A-Za-z0-9-]{0,38})/([A-Za-z0-9][A-Za-z0-9_-]*)\b"
+)
 _MENTION_RE = re.compile(
     r"(^|[^A-Za-z0-9_`])@([A-Za-z0-9][A-Za-z0-9-]{0,38})(?![/\w-])"
 )
 _SHA_RE = re.compile(r"\b([0-9a-f]{7,40})\b")
+# CloseKeywordFilter: close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved
+_CLOSE_KEYWORD_RE = re.compile(
+    r"\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s*:?\s+)(?=#|gh-|/(?:issues|pull|discussions)/)",
+    re.I,
+)
+# IssueMentionFilter: optional owner/repo, then # | gh- | /issues/ | /pull/ | /discussions/
+_ISSUE_MENTION_RE = re.compile(
+    r"(?<!\w)(?:(?P<owner>[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)/(?P<repo>[\w.-]+))?"
+    r"(?P<marker>#|gh-|/(?:issues|pull|discussions)/)(?P<num>\d+)\b",
+    re.I,
+)
+CLOSE_KEYWORD_TOOLTIP = "This pull request closes #{0}."
 
 
 def _safe_url(url: str) -> str | None:
@@ -56,6 +74,27 @@ def issue_base_from_html_url(html_url: str | None) -> str | None:
     if not base.startswith("http"):
         return None
     return base + "/issues"
+
+
+def _host_from_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return None
+
+
+def close_keyword_tooltip(text: str) -> str | None:
+    """Desktop CloseKeywordFilter tooltip when the body mentions Closes/Fixes #N."""
+    match = re.search(
+        r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*(?:#|gh-|/(?:issues|pull|discussions)/)(\d+)",
+        text or "",
+        re.I,
+    )
+    if not match:
+        return None
+    return CLOSE_KEYWORD_TOOLTIP.format(match.group(1))
 
 
 def markdown_to_pango(
@@ -108,26 +147,47 @@ def markdown_to_pango(
     escaped = _HEADING_RE.sub(lambda m: f"<b>{m.group(2)}</b>", escaped)
     escaped = _QUOTE_RE.sub(lambda m: f"<i>{m.group(1)}</i>", escaped)
 
-    if issue_base_url:
-        base = issue_base_url.rstrip("/")
+    host = _host_from_url(issue_base_url) or _host_from_url(repo_html_url)
+
+    def stash_close(match: re.Match[str]) -> str:
+        verb, space = match.group(1), match.group(2)
+        return hold(f"<span>{html.escape(verb, quote=True)}</span>") + space
+
+    escaped = _CLOSE_KEYWORD_RE.sub(stash_close, escaped)
+
+    if issue_base_url or host:
+        default_base = (issue_base_url or "").rstrip("/")
 
         def stash_issue(match: re.Match[str]) -> str:
-            num = match.group(1)
-            href = html.escape(f"{base}/{num}", quote=True)
-            return hold(f'<a href="{href}">#{num}</a>')
+            owner, repo, marker, num = (
+                match.group("owner"),
+                match.group("repo"),
+                match.group("marker"),
+                match.group("num"),
+            )
+            label = match.group(0)
+            _ = marker
+            if owner and repo and host:
+                href = f"{host}/{owner}/{repo}/issues/{num}"
+            elif default_base:
+                href = f"{default_base}/{num}"
+            elif host and repo_html_url:
+                href = f"{repo_html_url.rstrip('/')}/issues/{num}"
+            else:
+                return match.group(0)
+            return hold(f'<a href="{html.escape(href, quote=True)}">{html.escape(label, quote=True)}</a>')
 
-        escaped = _ISSUE_RE.sub(stash_issue, escaped)
+        escaped = _ISSUE_MENTION_RE.sub(stash_issue, escaped)
 
-    host = None
-    if issue_base_url:
-        parsed = urlparse(issue_base_url)
-        if parsed.scheme and parsed.netloc:
-            host = f"{parsed.scheme}://{parsed.netloc}"
-    elif repo_html_url:
-        parsed = urlparse(repo_html_url)
-        if parsed.scheme and parsed.netloc:
-            host = f"{parsed.scheme}://{parsed.netloc}"
     if host:
+
+        def stash_team(match: re.Match[str]) -> str:
+            prefix, org, team = match.group(1), match.group(2), match.group(3)
+            href = html.escape(f"{host}/orgs/{org}/teams/{team}", quote=True)
+            label = html.escape(f"@{org}/{team}", quote=True)
+            return hold(f'{prefix}<a href="{href}">{label}</a>')
+
+        escaped = _TEAM_MENTION_RE.sub(stash_team, escaped)
 
         def stash_mention(match: re.Match[str]) -> str:
             prefix, user = match.group(1), match.group(2)
@@ -191,6 +251,9 @@ def sandboxed_markdown_label(
     except Exception:
         label.set_use_markup(False)
         label.set_text(text)
+    tip = close_keyword_tooltip(markdown or "")
+    if tip:
+        label.set_tooltip_text(tip)
 
     def on_link(_widget, uri: str) -> bool:
         if _safe_url(uri):

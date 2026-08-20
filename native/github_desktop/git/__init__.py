@@ -115,6 +115,8 @@ from .ops import (
     get_remote_head,
     get_remote_url,
     get_symbolic_ref,
+    is_config_file_lock_error,
+    parse_config_lock_file_path_from_error,
     parse_credential,
     get_rebase_internal_state,
     get_remotes,
@@ -190,7 +192,7 @@ from .ops import (
     write_description,
     write_gitignore,
 )
-from .runner import abort_git_process, env_for_remote, find_git, git, git_path_is_repository, resolve_repository_root
+from .runner import abort_git_process, env_for_proxy, env_for_remote, find_git, git, git_path_is_repository, resolve_repository_root
 from .status import parse_porcelain_status
 
 __all__ = [

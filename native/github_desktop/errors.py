@@ -17,6 +17,7 @@ class GitError(DesktopError):
         stdout: str = "",
         stderr: str = "",
         git_error: str | None = None,
+        path: str | None = None,
     ) -> None:
         super().__init__(message)
         self.git_args = args or []
@@ -24,6 +25,7 @@ class GitError(DesktopError):
         self.stdout = stdout
         self.stderr = stderr
         self.git_error = git_error
+        self.path = path
 
     @property
     def is_auth_failure(self) -> bool:

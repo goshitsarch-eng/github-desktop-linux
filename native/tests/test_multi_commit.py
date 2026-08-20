@@ -91,3 +91,39 @@ def test_get_boolean_config_value(git_repo: Path) -> None:
     assert get_boolean_config_value(git_repo.as_posix(), key) is True
     run_git(git_repo, "config", key, "false")
     assert get_boolean_config_value(git_repo.as_posix(), key) is False
+
+
+def test_merge_cta_message_matches_desktop() -> None:
+    from github_desktop.models import ComputedAction, MultiCommitOperationKind
+    from github_desktop.ui.multi_commit import get_merge_options, merge_cta_message
+
+    labels = [opt[1] for opt in get_merge_options()]
+    assert labels == ["Create a merge commit", "Squash and merge", "Rebase"]
+    loading, ok = merge_cta_message(MultiCommitOperationKind.MERGE, "main", "topic", 2, None)
+    assert "Checking for ability to merge automatically" in loading
+    assert ok is False
+    invalid, ok = merge_cta_message(
+        MultiCommitOperationKind.MERGE, "main", "topic", 2, ComputedAction.INVALID
+    )
+    assert invalid == "Unable to merge unrelated histories in this repository"
+    assert ok is False
+    rebase_invalid, ok = merge_cta_message(
+        MultiCommitOperationKind.REBASE, "main", "topic", 2, ComputedAction.INVALID
+    )
+    assert rebase_invalid == "Unable to start rebase. Check you have chosen a valid branch."
+    assert ok is False
+    conflicts, ok = merge_cta_message(
+        MultiCommitOperationKind.MERGE, "main", "topic", 3, ComputedAction.CONFLICTS, 4
+    )
+    assert conflicts == "There will be 4 conflicted files when merging topic into main"
+    assert ok is True
+    clean, ok = merge_cta_message(
+        MultiCommitOperationKind.MERGE, "main", "topic", 1, ComputedAction.CLEAN
+    )
+    assert clean == "This will merge 1 commit from topic into main"
+    assert ok is True
+    rebase, ok = merge_cta_message(
+        MultiCommitOperationKind.REBASE, "main", "topic", 2, ComputedAction.CLEAN
+    )
+    assert rebase == "This will update main by applying its 2 commits on top of topic"
+    assert ok is True

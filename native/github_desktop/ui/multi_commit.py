@@ -26,6 +26,7 @@ from ..git.progress import MultiCommitProgress
 from ..models import (
     ComputedAction,
     ManualConflictResolution,
+    MergeTreeResult,
     MultiCommitOperationKind,
     WorkingDirectoryFileChange,
     get_label_for_manual_resolution_option,
@@ -54,6 +55,80 @@ MERGE_OPTIONS = (
         "The commits from the selected branch will be rebased and added to the current branch.",
     ),
 )
+
+
+def get_merge_options() -> tuple:
+    """Desktop `getMergeOptions()` labels for the compare Merge CTA dropdown."""
+    return MERGE_OPTIONS
+
+
+def merge_cta_message(
+    kind: MultiCommitOperationKind | str,
+    current: str,
+    compare: str,
+    commit_count: int,
+    action: ComputedAction | None,
+    conflicted_files: int = 0,
+) -> tuple[str, bool]:
+    """Copy from Desktop `merge-call-to-action-with-conflicts.tsx`.
+
+    Returns ``(message, can_proceed)``. Loading uses
+    ``Checking for ability to merge automatically…`` (or squash/rebase).
+    Invalid merge: ``Unable to merge unrelated histories in this repository``.
+    Conflicts: ``There will be N conflicted file(s) when merging …``.
+    """
+    if isinstance(kind, MultiCommitOperationKind):
+        op = kind.value.lower()
+        is_rebase = kind == MultiCommitOperationKind.REBASE
+    else:
+        op = str(kind).lower()
+        is_rebase = op == "rebase"
+    if action is None or action == ComputedAction.LOADING:
+        return f"Checking for ability to {op} automatically…", False
+    if action == ComputedAction.INVALID:
+        if is_rebase:
+            return "Unable to start rebase. Check you have chosen a valid branch.", False
+        return "Unable to merge unrelated histories in this repository", False
+    if commit_count <= 0:
+        return "", False
+    if is_rebase:
+        if action != ComputedAction.CLEAN:
+            return "", False
+        noun = "commit" if commit_count == 1 else "commits"
+        return (
+            f"This will update {current} by applying its {commit_count} {noun} on top of {compare}",
+            True,
+        )
+    if action == ComputedAction.CONFLICTS:
+        noun = "file" if conflicted_files == 1 else "files"
+        return (
+            f"There will be {conflicted_files} conflicted {noun} when merging {compare} into {current}",
+            True,
+        )
+    noun = "commit" if commit_count == 1 else "commits"
+    return (
+        f"This will merge {commit_count} {noun} from {compare} into {current}",
+        True,
+    )
+
+
+def merge_cta_can_proceed(
+    kind: MultiCommitOperationKind | str,
+    commit_count: int,
+    merge_tree: MergeTreeResult | None,
+) -> bool:
+    """Desktop `isUpdateBranchDisabled` inverted: rebase needs Clean; merge blocks Invalid."""
+    if commit_count <= 0:
+        return False
+    if isinstance(kind, str):
+        is_rebase = kind.lower() == "rebase"
+    else:
+        is_rebase = kind == MultiCommitOperationKind.REBASE
+    if merge_tree is None:
+        return False
+    if is_rebase:
+        return merge_tree.kind == ComputedAction.CLEAN
+    return merge_tree.kind != ComputedAction.INVALID
 
 
 def can_start_operation(
