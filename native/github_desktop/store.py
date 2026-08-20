@@ -185,6 +185,9 @@ from .models import (
     Remote,
     Repository,
     RepositorySectionTab,
+    RetryAction,
+    RetryActionType,
+    SelectionType,
     SignInStep,
     StashEntry,
     TextDiff,
@@ -201,6 +204,8 @@ from .models import (
     has_write_permission,
     html_url_from_endpoint,
     is_dotcom_endpoint,
+    retry_action_from_legacy,
+    retry_action_name,
     sanitize_ref_name,
 )
 from .notifications import show_notification
@@ -329,6 +334,7 @@ class AppStore:
         self.sign_in_existing: Account | None = None
         self.oauth_state: str | None = None
         self.cloning: list[CloningRepository] = []
+        self.selected_cloning_id: int | None = None
         self._clone_processes: dict[int, list] = {}
         self._clone_cancels: dict[int, threading.Event] = {}
         self.repo_state: dict[int, RepositoryViewState] = {}
@@ -341,7 +347,7 @@ class AppStore:
         self._seen_notifications: set[str] = set()
         self._notification_payloads: dict[str, tuple[PopupType, dict]] = {}
         self._shown_upstream_popup: set[str] = set()
-        self._retry_action: dict[str, Any] | None = None
+        self._retry_action: RetryAction | dict[str, Any] | None = None
         self._pending_open_action: OpenRepositoryAction | None = None
         self._listeners: list[Listener] = []
         self._lock = threading.RLock()
@@ -352,6 +358,7 @@ class AppStore:
         self._ahead_behind_cache: dict[tuple[str, str, str], AheadBehind | None] = {}
         self._load_accounts()
         self._load_repositories()
+        self._maybe_show_accessibility_banner()
         if not os.environ.get("PYTEST_CURRENT_TEST"):
             start_askpass_server()
             set_prompt_callback(self.handle_askpass)
@@ -548,6 +555,27 @@ class AppStore:
                 return repo
         return None
 
+    @property
+    def selected_cloning(self) -> CloningRepository | None:
+        if self.selected_cloning_id is None:
+            return None
+        return next((item for item in self.cloning if item.id == self.selected_cloning_id), None)
+
+    @property
+    def selected_state_type(self) -> SelectionType:
+        if self.selected_cloning is not None:
+            return SelectionType.CLONING
+        repo = self.selected_repository
+        if repo is not None and repo.is_missing:
+            return SelectionType.MISSING
+        return SelectionType.REPOSITORY
+
+    def select_cloning(self, clone_id: int | None) -> None:
+        self.selected_cloning_id = clone_id
+        self.selected_repository_id = None
+        self.foldout = None
+        self.emit()
+
     def state_for(self, repo: Repository | None = None) -> RepositoryViewState:
         repo = repo or self.selected_repository
         if repo is None:
@@ -592,6 +620,7 @@ class AppStore:
         previous_id = self.selected_repository_id
         if repo_id is not None:
             self._remember_recent_repository(previous_id, repo_id)
+        self.selected_cloning_id = None
         self.selected_repository_id = repo_id
         self.foldout = None
         self.persist_settings()
@@ -738,7 +767,7 @@ class AppStore:
         clone_id = -abs(int(uuid.uuid4().int % 10_000_000) or 1)
         cloning = CloningRepository(id=clone_id, path=dest, url=url)
         self.cloning.append(cloning)
-        self.emit()
+        self.select_cloning(clone_id)
         account = account_for_remote(self.accounts, url)
         env = env_for_remote(url, token=account.token) if account else None
         holder: list = []
@@ -760,6 +789,8 @@ class AppStore:
         def done(exc: BaseException | None) -> None:
             self._clear_network_progress()
             self.cloning = [c for c in self.cloning if c.id != clone_id]
+            if self.selected_cloning_id == clone_id:
+                self.selected_cloning_id = None
             cancelled = cancel.is_set()
             self._clone_processes.pop(clone_id, None)
             self._clone_cancels.pop(clone_id, None)
@@ -772,7 +803,7 @@ class AppStore:
                 repo.is_missing = False
                 repo.unsafe = False
                 self._save_repositories()
-                self.refresh_repository(repo)
+                self.select_repository(repo.id)
             self.emit()
 
         self._run(work, done)
@@ -867,6 +898,14 @@ class AppStore:
         for proc in list(self._clone_processes.get(clone_id) or []):
             abort_git_process(proc)
         self.cloning = [item for item in self.cloning if item.id != clone_id]
+        if self.selected_cloning_id == clone_id:
+            if self.cloning:
+                self.selected_cloning_id = self.cloning[0].id
+            else:
+                self.selected_cloning_id = None
+                if self.repositories:
+                    self.select_repository(self.repositories[0].id)
+                    return
         self.emit()
 
     def clone(
@@ -880,7 +919,7 @@ class AppStore:
         clone_id = -abs(int(uuid.uuid4().int % 10_000_000) or 1)
         cloning = CloningRepository(id=clone_id, path=path, url=url)
         self.cloning.append(cloning)
-        self.emit()
+        self.select_cloning(clone_id)
         env = None
         account = account or account_for_remote(self.accounts, url)
         holder: list = []
@@ -921,6 +960,8 @@ class AppStore:
         def done(exc: BaseException | None) -> None:
             self._clear_network_progress()
             self.cloning = [c for c in self.cloning if c.id != clone_id]
+            if self.selected_cloning_id == clone_id:
+                self.selected_cloning_id = None
             cancelled = cancel.is_set()
             self._clone_processes.pop(clone_id, None)
             self._clone_cancels.pop(clone_id, None)
@@ -953,7 +994,13 @@ class AppStore:
         branch: str | None = None,
         tutorial: bool = False,
     ) -> None:
-        self._retry_action = {"kind": "clone", "url": url, "path": path, "branch": branch, "tutorial": tutorial}
+        self._retry_action = RetryAction(
+            type=RetryActionType.CLONE,
+            url=url,
+            path=path,
+            branch=branch,
+            tutorial=tutorial,
+        )
         self.show_popup(
             PopupType.ERROR,
             error=str(exc),
@@ -971,12 +1018,16 @@ class AppStore:
         private: bool,
         org: str | None,
         account: Account,
+        on_done: Callable[[BaseException | None], None] | None = None,
     ) -> None:
         api = GitHubAPI.from_account(account)
+        progress = self._network_progress_cb("publish", f"Creating repository on {account.friendly_endpoint}")
 
         def work() -> Repository:
+            progress(f"Creating repository on {account.friendly_endpoint}", 0.0)
             created = api.create_repository(name, description=description, private=private, org=org)
             remotes = get_remotes(repo.path)
+            progress("Adding origin remote", 0.4)
             if any(r.name == "origin" for r in remotes):
                 set_remote_url(repo.path, "origin", created.clone_url)
             else:
@@ -984,6 +1035,7 @@ class AppStore:
             env = env_for_remote(created.clone_url, token=account.token)
             status = get_status(repo.path)
             branch = (status.current_branch if status else None) or get_default_branch()
+            progress(f"Pushing repository to {account.friendly_endpoint}", 0.7)
             try:
                 push(repo.path, "origin", branch, None, set_upstream=True, env=env)
             except GitError:
@@ -993,11 +1045,17 @@ class AppStore:
             self._save_repositories()
             return repo
 
-        def done(exc: BaseException | None) -> None:
-            if exc:
-                self.show_popup(PopupType.ERROR, error=str(exc))
-            else:
+        def done(exc: BaseException | None, _repo: Repository | None = None) -> None:
+            self._clear_network_progress()
+            if not exc:
                 self.refresh_repository(repo)
+            if on_done:
+                try:
+                    on_done(exc)
+                except Exception:
+                    pass
+            elif exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
             self.emit()
 
         self._run(work, done)
@@ -1605,13 +1663,13 @@ class AppStore:
                 self.show_popup(
                     PopupType.SSH_KEY_PASSPHRASE,
                     key_path=parsed.key_path,
-                    on_submit=lambda secret, remember=True: finish(secret, remember),
+                    on_submit=lambda secret, remember=False: finish(secret, remember),
                 )
             else:
                 self.show_popup(
                     PopupType.SSH_USER_PASSWORD,
                     username=parsed.username or parsed.prompt,
-                    on_submit=lambda secret, remember=True: finish(secret, remember),
+                    on_submit=lambda secret, remember=False: finish(secret, remember),
                 )
             return False
 
@@ -2387,6 +2445,16 @@ class AppStore:
         *,
         continue_with_force_push: bool = False,
     ) -> None:
+        retry = RetryAction(
+            type=RetryActionType.SQUASH,
+            repo_id=repo.id,
+            onto_sha=onto.sha,
+            to_squash_shas=[item.sha for item in to_squash],
+            message=message,
+            last_retained=onto.parent_shas[0] if onto.parent_shas else None,
+        )
+        if not continue_with_force_push and self.check_for_uncommitted_changes(repo, retry):
+            return
         last_retained = onto.parent_shas[0] if onto.parent_shas else None
         if self._merge_commits_block_rewrite(repo, last_retained, "squash"):
             return
@@ -2400,12 +2468,18 @@ class AppStore:
         ):
             return
         undo_sha = self._capture_undo(repo)
-        result = squash_commits(repo.path, targets, onto, last_retained, message)
+        try:
+            result = squash_commits(repo.path, targets, onto, last_retained, message)
+        except GitError as exc:
+            if not self._maybe_local_changes_overwritten(repo, exc, retry):
+                self.show_popup(PopupType.ERROR, error=str(exc))
+            return
         if result == RebaseResult.COMPLETED_WITHOUT_ERROR:
             self.state_for(repo).pending_force_push_before = undo_sha
             self.show_banner(Banner(BannerType.SUCCESSFUL_SQUASH, count=len(targets) + 1, undo_sha=undo_sha))
         elif result == RebaseResult.CONFLICTS_ENCOUNTERED:
             self.show_banner(Banner(BannerType.CONFLICTS_FOUND, operation_description="Squash", operation_kind=MultiCommitOperationKind.SQUASH.value))
+            self.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind=MultiCommitOperationKind.SQUASH, step="conflicts")
         self.refresh_repository(repo)
 
     def reorder_onto(
@@ -2416,6 +2490,15 @@ class AppStore:
         *,
         continue_with_force_push: bool = False,
     ) -> None:
+        retry = RetryAction(
+            type=RetryActionType.REORDER,
+            repo_id=repo.id,
+            to_move_shas=[item.sha for item in to_move],
+            before_sha=before.sha if before else None,
+            last_retained=(before.parent_shas[0] if before and before.parent_shas else None),
+        )
+        if not continue_with_force_push and self.check_for_uncommitted_changes(repo, retry):
+            return
         last_retained = None
         if before and before.parent_shas:
             last_retained = before.parent_shas[0]
@@ -2433,12 +2516,18 @@ class AppStore:
         ):
             return
         undo_sha = self._capture_undo(repo)
-        result = reorder_commits(repo.path, moving, before, last_retained)
+        try:
+            result = reorder_commits(repo.path, moving, before, last_retained)
+        except GitError as exc:
+            if not self._maybe_local_changes_overwritten(repo, exc, retry):
+                self.show_popup(PopupType.ERROR, error=str(exc))
+            return
         if result == RebaseResult.COMPLETED_WITHOUT_ERROR:
             self.state_for(repo).pending_force_push_before = undo_sha
             self.show_banner(Banner(BannerType.SUCCESSFUL_REORDER, count=len(moving), undo_sha=undo_sha))
         elif result == RebaseResult.CONFLICTS_ENCOUNTERED:
             self.show_banner(Banner(BannerType.CONFLICTS_FOUND, operation_description="Reorder", operation_kind=MultiCommitOperationKind.REORDER.value))
+            self.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind=MultiCommitOperationKind.REORDER, step="conflicts")
         self.refresh_repository(repo)
 
     def _confirm_rewrite_force_push(
@@ -2852,7 +2941,7 @@ class AppStore:
         def done(exc: BaseException | None) -> None:
             self._clear_network_progress()
             if exc:
-                self._retry_action = {"kind": "push", "repo_id": repo.id, "force": force}
+                self._retry_action = RetryAction(type=RetryActionType.PUSH, repo_id=repo.id, force=force)
                 self._handle_remote_error(repo, exc)
             else:
                 if force:
@@ -2885,7 +2974,7 @@ class AppStore:
         def done(exc: BaseException | None, tags: list[str] | None = None) -> None:
             self._clear_network_progress()
             if exc:
-                self._retry_action = {"kind": "pull", "repo_id": repo.id}
+                self._retry_action = RetryAction(type=RetryActionType.PULL, repo_id=repo.id)
                 self._handle_remote_error(repo, exc)
             else:
                 if tags is not None:
@@ -3042,7 +3131,7 @@ class AppStore:
                 if quiet:
                     log.debug("background fetch failed: %s", exc)
                 else:
-                    self._retry_action = {"kind": "fetch", "repo_id": repo.id}
+                    self._retry_action = RetryAction(type=RetryActionType.FETCH, repo_id=repo.id)
                     self._handle_remote_error(repo, exc)
             else:
                 if tags is not None:
@@ -3112,13 +3201,11 @@ class AppStore:
                 return
             if exc.is_local_changes_overwritten:
                 files = overwritten_files_from_error(f"{exc.stderr}\n{exc.stdout}")
-                self.show_popup(
-                    PopupType.LOCAL_CHANGES_OVERWRITTEN,
-                    files=files,
-                    retry_kind=self.progress_kind or "checkout",
-                    repo_id=repo.id,
-                    has_existing_stash=self._has_existing_desktop_stash(repo),
-                )
+                retry = self._retry_action
+                if not isinstance(retry, RetryAction):
+                    kind = self.progress_kind or "checkout"
+                    retry = retry_action_from_legacy({"kind": kind, "repo_id": repo.id})
+                self._popup_local_changes_overwritten(repo, retry, files)
                 return
             if exc.is_workflow_scope:
                 self.show_popup(
@@ -3135,6 +3222,16 @@ class AppStore:
                 except GitError:
                     pass
                 github_remote = bool(repo.github) or (bool(url) and is_github_host(url, self.accounts))
+                retry = self._retry_action
+                retry_type = retry.type if isinstance(retry, RetryAction) else (retry or {}).get("kind")
+                if (
+                    retry_type in {RetryActionType.PUSH, "push", "Push"}
+                    and repo.github
+                    and not has_write_permission(repo.github)
+                ):
+                    # Desktop `insufficientGitHubRepoPermissions`: fork instead of token invalidation.
+                    self.show_popup(PopupType.CREATE_FORK)
+                    return
                 if github_remote:
                     account = self.account_for_repo(repo) or (account_for_remote(self.accounts, url) if url else None)
                     if account:
@@ -3182,13 +3279,10 @@ class AppStore:
             self._clear_network_progress()
             if exc:
                 if isinstance(exc, GitError) and exc.is_local_changes_overwritten:
-                    self.show_popup(
-                        PopupType.LOCAL_CHANGES_OVERWRITTEN,
-                        files=overwritten_files_from_error(f"{exc.stderr}\n{exc.stdout}"),
-                        retry_kind="checkout",
-                        branch=name,
-                        repo_id=repo.id,
-                        has_existing_stash=self._has_existing_desktop_stash(repo),
+                    self._popup_local_changes_overwritten(
+                        repo,
+                        RetryAction(type=RetryActionType.CHECKOUT, repo_id=repo.id, branch=name),
+                        overwritten_files_from_error(f"{exc.stderr}\n{exc.stdout}"),
                     )
                     return
                 self.show_popup(PopupType.ERROR, error=str(exc))
@@ -3225,13 +3319,10 @@ class AppStore:
                 raise
             current = self.state_for(repo).status.current_branch if self.state_for(repo).status else name
             if not self.stash_and_drop_previous(repo, name):
-                self.show_popup(
-                    PopupType.LOCAL_CHANGES_OVERWRITTEN,
-                    files=overwritten_files_from_error(str(exc)),
-                    retry_kind="checkout",
-                    branch=name,
-                    repo_id=repo.id,
-                    has_existing_stash=self._has_existing_desktop_stash(repo),
+                self._popup_local_changes_overwritten(
+                    repo,
+                    RetryAction(type=RetryActionType.CHECKOUT, repo_id=repo.id, branch=name),
+                    overwritten_files_from_error(str(exc)),
                 )
                 return
             checkout_branch(repo.path, branch)
@@ -3262,6 +3353,26 @@ class AppStore:
         checkout_branch(repo.path, name)
         self.remember_branch(repo, name)
         self.refresh_repository(repo)
+
+    def cherry_pick_to_new_branch(
+        self,
+        repo: Repository,
+        shas: Sequence[str],
+        name: str,
+        on_done: Callable[..., None] | None = None,
+        on_progress: Callable[..., None] | None = None,
+    ) -> None:
+        """Desktop `CreateBranchForCherryPick`: create from HEAD, then cherry-pick."""
+        retry = RetryAction(
+            type=RetryActionType.CREATE_BRANCH_FOR_CHERRY_PICK,
+            repo_id=repo.id,
+            branch=name,
+            shas=list(shas),
+        )
+        if self.check_for_uncommitted_changes(repo, retry):
+            return
+        self.create_branch_and_checkout(repo, name)
+        self.cherry_pick_commits(repo, shas, target_branch=None, on_done=on_done, on_progress=on_progress)
 
     def _capture_undo(self, repo: Repository) -> str | None:
         status = self.state_for(repo).status
@@ -3295,6 +3406,12 @@ class AppStore:
         self.refresh_repository(repo)
 
     def merge_branch(self, repo: Repository, branch: str, squash: bool = False, on_done: Callable[..., None] | None = None) -> None:
+        retry = RetryAction(
+            type=RetryActionType.MERGE,
+            repo_id=repo.id,
+            their_branch=branch,
+            squash=squash,
+        )
         undo_sha = self._capture_undo(repo)
 
         def work() -> tuple:
@@ -3313,7 +3430,8 @@ class AppStore:
             if status is not None:
                 self.state_for(repo).status = status
             if exc:
-                self.show_popup(PopupType.ERROR, error=str(exc))
+                if not self._maybe_local_changes_overwritten(repo, exc, retry):
+                    self.show_popup(PopupType.ERROR, error=str(exc))
             elif merge_result == MergeResult.FAILED:
                 kind = MultiCommitOperationKind.SQUASH if squash else MultiCommitOperationKind.MERGE
                 self.show_banner(Banner(BannerType.MERGE_CONFLICTS_FOUND, our_branch=self.state_for(repo).status.current_branch if self.state_for(repo).status else None, their_branch=branch, operation_kind=kind.value))
@@ -3331,6 +3449,7 @@ class AppStore:
         self._run(work, done)
 
     def rebase_branch(self, repo: Repository, base: str, on_done: Callable[..., None] | None = None, on_progress: Callable[..., None] | None = None) -> None:
+        retry = RetryAction(type=RetryActionType.REBASE, repo_id=repo.id, base_branch=base)
         undo_sha = self._capture_undo(repo)
 
         def work() -> tuple:
@@ -3351,7 +3470,8 @@ class AppStore:
             if status is not None:
                 self.state_for(repo).status = status
             if exc:
-                self.show_popup(PopupType.ERROR, error=str(exc))
+                if not self._maybe_local_changes_overwritten(repo, exc, retry):
+                    self.show_popup(PopupType.ERROR, error=str(exc))
             elif rebase_result == RebaseResult.CONFLICTS_ENCOUNTERED:
                 self.show_banner(Banner(BannerType.REBASE_CONFLICTS_FOUND, target_branch=base, operation_kind=MultiCommitOperationKind.REBASE.value))
                 self.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind=MultiCommitOperationKind.REBASE, step="conflicts")
@@ -3441,6 +3561,14 @@ class AppStore:
         current = state.status.current_branch if state.status else None
         if target_branch and current and target_branch == current:
             return
+        retry = RetryAction(
+            type=RetryActionType.CHERRY_PICK,
+            repo_id=repo.id,
+            shas=list(shas),
+            target_branch=target_branch,
+        )
+        if self.check_for_uncommitted_changes(repo, retry):
+            return
         undo_sha = self._capture_undo(repo)
 
         def work() -> tuple:
@@ -3469,7 +3597,8 @@ class AppStore:
             if status is not None:
                 self.state_for(repo).status = status
             if exc:
-                self.show_popup(PopupType.ERROR, error=str(exc))
+                if not self._maybe_local_changes_overwritten(repo, exc, retry):
+                    self.show_popup(PopupType.ERROR, error=str(exc))
             elif cherry_result == CherryPickResult.CONFLICTS_ENCOUNTERED:
                 self.show_banner(Banner(BannerType.CHERRY_PICK_CONFLICTS_FOUND, target_branch=target_branch, operation_kind=MultiCommitOperationKind.CHERRY_PICK.value))
                 self.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind=MultiCommitOperationKind.CHERRY_PICK, step="conflicts")
@@ -3565,28 +3694,108 @@ class AppStore:
         self._run(work, done)
 
     def retry_last_remote_action(self) -> None:
-        action = self._retry_action
-        self._retry_action = None
-        if not action:
+        self.perform_retry()
+
+    def check_for_uncommitted_changes(self, repo: Repository, retry: RetryAction) -> bool:
+        """Desktop `_checkForUncommittedChanges`: LCO popup when the WD is dirty."""
+        state = self.state_for(repo)
+        files = list(state.status.working_directory.files) if state.status else []
+        if not files:
+            return False
+        self._popup_local_changes_overwritten(repo, retry, [item.path for item in files])
+        return True
+
+    def _popup_local_changes_overwritten(
+        self,
+        repo: Repository,
+        retry: RetryAction,
+        files: Sequence[str] | None = None,
+    ) -> None:
+        paths = list(files or [])
+        self.show_popup(
+            PopupType.LOCAL_CHANGES_OVERWRITTEN,
+            files=paths,
+            retry_kind=retry_action_name(retry),
+            retry_action=retry,
+            repo_id=repo.id,
+            has_existing_stash=self._has_existing_desktop_stash(repo),
+        )
+
+    def _maybe_local_changes_overwritten(
+        self,
+        repo: Repository,
+        exc: BaseException,
+        retry: RetryAction,
+    ) -> bool:
+        if not isinstance(exc, GitError) or not exc.is_local_changes_overwritten:
+            return False
+        files = overwritten_files_from_error(f"{exc.stderr}\n{exc.stdout}")
+        self._popup_local_changes_overwritten(repo, retry, files)
+        return True
+
+    def perform_retry(self, action: RetryAction | dict[str, Any] | None = None) -> None:
+        """Desktop `dispatcher.performRetry`."""
+        if action is None:
+            action = self._retry_action
+            self._retry_action = None
+        if isinstance(action, dict):
+            action = retry_action_from_legacy(action)
+        if action is None:
             return
-        kind = action.get("kind")
-        if kind == "clone":
+        if action.type == RetryActionType.CLONE:
             self.clone(
-                str(action.get("url") or ""),
-                str(action.get("path") or ""),
-                branch=action.get("branch"),
-                tutorial=bool(action.get("tutorial")),
+                str(action.url or ""),
+                str(action.path or ""),
+                branch=action.branch,
+                tutorial=bool(action.tutorial),
             )
             return
-        repo = next((r for r in self.repositories if r.id == action.get("repo_id")), None)
-        if not repo:
+        repo = next((item for item in self.repositories if item.id == action.repo_id), None)
+        if repo is None:
+            repo = self.selected_repository
+        if repo is None:
             return
-        if kind == "push":
-            self.push_repo(repo, force=bool(action.get("force")))
-        elif kind == "pull":
+        if action.type == RetryActionType.PUSH:
+            self.push_repo(repo, force=bool(action.force))
+        elif action.type == RetryActionType.PULL:
             self.pull_repo(repo)
-        else:
+        elif action.type == RetryActionType.FETCH:
             self.fetch_repo(repo)
+        elif action.type == RetryActionType.CHECKOUT and action.branch:
+            state = self.state_for(repo)
+            branch = next((item for item in state.branches if item.name == action.branch), None)
+            if branch is not None:
+                self.checkout(repo, branch)
+            else:
+                checkout_branch(repo.path, action.branch)
+                self.refresh_repository(repo)
+        elif action.type == RetryActionType.MERGE and action.their_branch:
+            self.merge_branch(repo, action.their_branch, squash=bool(action.squash))
+        elif action.type == RetryActionType.REBASE and action.base_branch:
+            self.rebase_branch(repo, action.base_branch)
+        elif action.type == RetryActionType.CHERRY_PICK:
+            self.cherry_pick_commits(repo, action.shas, target_branch=action.target_branch)
+        elif action.type == RetryActionType.CREATE_BRANCH_FOR_CHERRY_PICK and action.branch:
+            self.cherry_pick_to_new_branch(repo, action.shas, action.branch)
+        elif action.type == RetryActionType.SQUASH and action.onto_sha:
+            onto = get_commit(repo.path, action.onto_sha)
+            targets = [item for sha in action.to_squash_shas if (item := get_commit(repo.path, sha))]
+            if onto is not None and targets:
+                self.squash_onto(repo, targets, onto, action.message)
+        elif action.type == RetryActionType.REORDER:
+            moving = [item for sha in action.to_move_shas if (item := get_commit(repo.path, sha))]
+            before = get_commit(repo.path, action.before_sha) if action.before_sha else None
+            if moving:
+                self.reorder_onto(repo, moving, before)
+        elif action.type == RetryActionType.DISCARD_CHANGES and action.files:
+            state = self.state_for(repo)
+            files = [
+                item
+                for item in (state.status.working_directory.files if state.status else [])
+                if item.path in set(action.files)
+            ]
+            if files:
+                self.discard_files(repo, files, move_to_trash=False)
 
     def open_stored_notification(self, ident: str) -> None:
         stored = self._notification_payloads.get(ident)
@@ -3757,7 +3966,22 @@ class AppStore:
         self.settings.welcome_shown = True
         self.welcome_step = None
         self.persist_settings()
+        self._maybe_show_accessibility_banner()
         self.emit()
+
+    def _maybe_show_accessibility_banner(self) -> None:
+        """Desktop first-run `AccessibilitySettingsBanner` for link underlines and diff check marks."""
+        if self.banner is not None:
+            return
+        if not self.settings.welcome_shown or self.settings.accessibility_banner_dismissed:
+            return
+        self.banner = Banner(BannerType.ACCESSIBILITY_SETTINGS)
+
+    def dismiss_accessibility_banner(self) -> None:
+        self.settings.accessibility_banner_dismissed = True
+        self.persist_settings()
+        if self.banner and self.banner.type == BannerType.ACCESSIBILITY_SETTINGS:
+            self.clear_banner()
 
     def skip_welcome_sign_in(self) -> None:
         self.welcome_step = WelcomeStep.CONFIGURE_GIT

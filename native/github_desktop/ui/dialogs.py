@@ -42,12 +42,15 @@ from ..models import (
     GitHubRepository,
     PopupType,
     PreferencesTab,
+    PublishTab,
     RepositorySettingsTab,
     SignInStep,
     UncommittedChangesStrategy,
     git_author_name_is_valid,
     group_pr_base_branches,
     pr_base_branches,
+    accounts_for_publish_tab,
+    default_publish_tab,
 )
 from ..shells import get_available_shells, open_external
 from ..store import AppStore
@@ -435,6 +438,8 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
 
 
 def show_error_dialog(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    from ..errors import is_auth_failure_error
+
     heading = str(payload.get("title") or "Error")
     body = str(payload.get("error") or "Something went wrong")
     retry = payload.get("retry")
@@ -445,6 +450,20 @@ def show_error_dialog(parent: Gtk.Window, store: AppStore, payload: dict[str, An
             body = f"{body}\n\nWould you like to retry cloning {name}?"
     if callable(retry):
         _alert(parent, heading, body, confirm="Retry", cancel="Close", on_confirm=retry)
+        return
+    auth = bool(payload.get("open_preferences")) or is_auth_failure_error(payload.get("git_error"))
+    lower = body.lower()
+    if not auth:
+        auth = "authentication failed" in lower or "File > Options." in body
+    if auth:
+        _alert(
+            parent,
+            heading,
+            body,
+            confirm="Close",
+            cancel="Open options",
+            on_cancel=lambda: show_preferences(parent, store, PreferencesTab.ACCOUNTS),
+        )
         return
     _alert(parent, heading, body, cancel=None)
 
@@ -728,12 +747,17 @@ def _stash_and_retry(store: AppStore, payload: dict[str, Any]) -> None:
     if not repo:
         return
     from ..git.ops import checkout_branch, stash_push
+    from ..models import RetryAction
 
     state = store.state_for(repo)
     stash_push(repo.path, state.status.current_branch if state.status else "unknown")
     retry = payload.get("retry")
     if callable(retry):
         retry()
+        return
+    action = payload.get("retry_action")
+    if isinstance(action, RetryAction) or isinstance(action, dict):
+        store.perform_retry(action)
         return
     kind = payload.get("retry_kind")
     branch = payload.get("branch")
@@ -2328,137 +2352,203 @@ def show_publish(parent: Gtk.Window, store: AppStore) -> None:
     repo = store.selected_repository
     if not repo:
         return
-    accounts = list(store.accounts)
-    account = accounts[0] if accounts else None
-    if not account:
-        dialog = Adw.Dialog()
-        dialog.set_content_width(460)
-        toolbar = Adw.ToolbarView()
-        header = Adw.HeaderBar()
-        header.set_title_widget(Adw.WindowTitle(title="Publish repository", subtitle="Sign in required"))
-        toolbar.add_top_bar(header)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
-        box.set_margin_top(12)
-        box.set_margin_bottom(12)
-        box.set_margin_start(12)
-        box.set_margin_end(12)
-        box.append(
-            _clone_sign_in_cta(
-                store,
-                dialog,
-                enterprise=False,
-                message="Sign in to your GitHub.com account to access your repositories.",
-            )
-        )
-        box.append(
-            _clone_sign_in_cta(
-                store,
-                dialog,
-                enterprise=True,
-                message="If you are using GitHub Enterprise at work, sign in to it to get access to your repositories.",
-            )
-        )
-        toolbar.set_content(box)
-        dialog.set_child(toolbar)
-        dialog.present(parent)
-        return
-
     from ..create_repo import sanitized_repository_name
     from ..git.ops import read_description
     from ..github.api import GitHubAPI
 
-    selected = [account]
+    accounts = list(store.accounts)
     dialog = Adw.Dialog()
     dialog.set_content_width(480)
     toolbar = Adw.ToolbarView()
     header = Adw.HeaderBar()
-    title = Adw.WindowTitle(title="Publish repository", subtitle=f"Signed in as {account.login}")
-    header.set_title_widget(title)
+    stack = Adw.ViewStack()
+    switcher = Adw.ViewSwitcher()
+    switcher.set_stack(stack)
+    header.set_title_widget(switcher)
     publish_btn = Gtk.Button(label="Publish repository")
     publish_btn.add_css_class("suggested-action")
     header.pack_end(publish_btn)
     toolbar.add_top_bar(header)
-    page = Adw.PreferencesPage()
-    group = Adw.PreferencesGroup()
-    account_row = Adw.ComboRow(title="Account")
-    account_labels = [f"{item.login} ({item.friendly_endpoint})" for item in accounts]
-    account_row.set_model(Gtk.StringList.new(account_labels or [account.login]))
-    account_row.set_selected(0)
-    name_row = Adw.EntryRow(title="Name")
-    name_row.set_text(repo.name)
-    sanitized_row = Adw.ActionRow(title="Will be created as")
-    sanitized_row.set_subtitle("")
-    sanitized_row.set_visible(False)
-    desc_row = Adw.EntryRow(title="Description")
-    desc_row.set_text(read_description(repo.path) or "")
-    private_row = Adw.SwitchRow(title="Keep this code private")
-    private_row.set_active(True)
-    org_row = Adw.ComboRow(title="Organization")
-    org_logins = ["None"]
-    org_row.set_model(Gtk.StringList.new(org_logins))
+    error = Gtk.Label(wrap=True, xalign=0)
+    error.add_css_class("error")
+    error.set_visible(False)
+    error.set_margin_start(18)
+    error.set_margin_end(18)
+    error.set_margin_top(8)
+    status = Gtk.Label(wrap=True, xalign=0)
+    status.add_css_class("dim-label")
+    status.set_visible(False)
+    status.set_margin_start(18)
+    status.set_margin_end(18)
+    publishing = {"busy": False}
+    forms: dict[str, dict[str, Any]] = {}
 
-    def refresh_name(*_a: Any) -> None:
-        raw = name_row.get_text().strip()
-        clean = sanitized_repository_name(raw) if raw else ""
-        if raw and clean and clean != raw:
-            sanitized_row.set_subtitle(clean)
-            sanitized_row.set_visible(True)
-        else:
-            sanitized_row.set_visible(False)
+    def build_form(tab_accounts: list) -> dict[str, Any]:
+        selected = [tab_accounts[0]]
+        page = Adw.PreferencesPage()
+        group = Adw.PreferencesGroup()
+        account_row = Adw.ComboRow(title="Account")
+        labels = [f"{item.login} ({item.friendly_endpoint})" for item in tab_accounts]
+        account_row.set_model(Gtk.StringList.new(labels or [""]))
+        account_row.set_selected(0)
+        name_row = Adw.EntryRow(title="Name")
+        name_row.set_text(repo.name)
+        sanitized_row = Adw.ActionRow(title="Will be created as")
+        sanitized_row.set_subtitle("")
+        sanitized_row.set_visible(False)
+        desc_row = Adw.EntryRow(title="Description")
+        desc_row.set_text(read_description(repo.path) or "")
+        private_row = Adw.SwitchRow(title="Keep this code private")
+        private_row.set_active(True)
+        org_row = Adw.ComboRow(title="Organization")
+        org_logins = ["None"]
+        org_row.set_model(Gtk.StringList.new(org_logins))
 
-    def load_orgs() -> None:
-        nonlocal org_logins
-        current = selected[0]
-        try:
-            fetched = GitHubAPI.from_account(current).fetch_orgs()
-        except Exception:
-            fetched = []
-        fetched = sorted(fetched, key=lambda item: str(item.get("login") or "").casefold())
-        org_logins = ["None"] + [str(item.get("login") or "") for item in fetched if item.get("login")]
-        org_row.set_model(Gtk.StringList.new(org_logins or ["None"]))
-        org_row.set_selected(0)
+        def refresh_name(*_a: Any) -> None:
+            raw = name_row.get_text().strip()
+            clean = sanitized_repository_name(raw) if raw else ""
+            if raw and clean and clean != raw:
+                sanitized_row.set_subtitle(clean)
+                sanitized_row.set_visible(True)
+            else:
+                sanitized_row.set_visible(False)
 
-    def on_account(*_a: Any) -> None:
-        idx = int(account_row.get_selected())
-        if 0 <= idx < len(accounts):
-            selected[0] = accounts[idx]
-            title.set_subtitle(f"Signed in as {selected[0].login}")
-            load_orgs()
+        def load_orgs() -> None:
+            nonlocal org_logins
+            current = selected[0]
+            try:
+                fetched = GitHubAPI.from_account(current).fetch_orgs()
+            except Exception:
+                fetched = []
+            fetched = sorted(fetched, key=lambda item: str(item.get("login") or "").casefold())
+            org_logins = ["None"] + [str(item.get("login") or "") for item in fetched if item.get("login")]
+            org_row.set_model(Gtk.StringList.new(org_logins or ["None"]))
+            org_row.set_selected(0)
 
-    name_row.connect("changed", refresh_name)
-    account_row.connect("notify::selected", on_account)
+        def on_account(*_a: Any) -> None:
+            idx = int(account_row.get_selected())
+            if 0 <= idx < len(tab_accounts):
+                selected[0] = tab_accounts[idx]
+                load_orgs()
+
+        name_row.connect("changed", refresh_name)
+        account_row.connect("notify::selected", on_account)
+        if len(tab_accounts) > 1:
+            group.add(account_row)
+        group.add(name_row)
+        group.add(sanitized_row)
+        group.add(desc_row)
+        group.add(private_row)
+        group.add(org_row)
+        page.add(group)
+        refresh_name()
+        load_orgs()
+        return {
+            "page": page,
+            "selected": selected,
+            "name_row": name_row,
+            "desc_row": desc_row,
+            "private_row": private_row,
+            "org_row": org_row,
+            "org_logins": lambda: org_logins,
+            "set_sensitive": lambda enabled: (
+                name_row.set_sensitive(enabled),
+                desc_row.set_sensitive(enabled),
+                private_row.set_sensitive(enabled),
+                org_row.set_sensitive(enabled),
+                account_row.set_sensitive(enabled),
+            ),
+        }
+
+    def tab_content(tab: PublishTab) -> Gtk.Widget:
+        tab_accounts = accounts_for_publish_tab(accounts, tab)
+        if tab_accounts:
+            form = build_form(tab_accounts)
+            forms[tab.value] = form
+            return form["page"]
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.append(
+            _clone_sign_in_cta(
+                store,
+                dialog,
+                enterprise=tab == PublishTab.ENTERPRISE,
+                message=(
+                    "If you are using GitHub Enterprise at work, sign in to it to get access to your repositories."
+                    if tab == PublishTab.ENTERPRISE
+                    else "Sign in to your GitHub.com account to access your repositories."
+                ),
+            )
+        )
+        return box
+
+    stack.add_titled(tab_content(PublishTab.DOTCOM), PublishTab.DOTCOM.value, "GitHub.com")
+    stack.add_titled(tab_content(PublishTab.ENTERPRISE), PublishTab.ENTERPRISE.value, "GitHub Enterprise")
+    stack.set_visible_child_name(default_publish_tab(accounts).value)
+
+    def current_form() -> dict[str, Any] | None:
+        return forms.get(stack.get_visible_child_name() or "")
+
+    def refresh_publish_button(*_a: Any) -> None:
+        form = current_form()
+        has_name = bool(form and form["name_row"].get_text().strip()) if form else False
+        publish_btn.set_visible(form is not None)
+        publish_btn.set_sensitive(bool(form) and has_name and not publishing["busy"])
+
+    def set_busy(busy: bool, message: str = "") -> None:
+        publishing["busy"] = busy
+        status.set_text(message)
+        status.set_visible(busy and bool(message))
+        for form in forms.values():
+            form["set_sensitive"](not busy)
+        publish_btn.set_label("Publishing…" if busy else "Publish repository")
+        refresh_publish_button()
 
     def submit(*_a: Any) -> None:
-        raw = name_row.get_text().strip() or repo.name
+        form = current_form()
+        if not form or publishing["busy"]:
+            return
+        error.set_visible(False)
+        raw = form["name_row"].get_text().strip() or repo.name
         name = sanitized_repository_name(raw) or repo.name
         org = None
-        idx = org_row.get_selected()
-        if idx > 0 and idx < len(org_logins):
-            org = org_logins[idx]
-        dialog.close()
+        logins = form["org_logins"]()
+        idx = form["org_row"].get_selected()
+        if idx > 0 and idx < len(logins):
+            org = logins[idx]
+        account = form["selected"][0]
+        set_busy(True, f"Creating repository on {account.friendly_endpoint}")
+
+        def finished(exc: BaseException | None) -> None:
+            if exc:
+                error.set_text(str(exc))
+                error.set_visible(True)
+                set_busy(False)
+                return
+            dialog.close()
+
         store.publish_repository(
             repo,
             name,
-            desc_row.get_text().strip(),
-            private_row.get_active(),
+            form["desc_row"].get_text().strip(),
+            form["private_row"].get_active(),
             org,
-            selected[0],
+            account,
+            on_done=finished,
         )
 
     publish_btn.connect("clicked", submit)
-    if len(accounts) > 1:
-        group.add(account_row)
-    group.add(name_row)
-    group.add(sanitized_row)
-    group.add(desc_row)
-    group.add(private_row)
-    group.add(org_row)
-    page.add(group)
-    toolbar.set_content(page)
+    stack.connect("notify::visible-child-name", refresh_publish_button)
+    for form in forms.values():
+        form["name_row"].connect("changed", refresh_publish_button)
+    stack.set_vexpand(True)
+    content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+    content.append(error)
+    content.append(status)
+    content.append(stack)
+    toolbar.set_content(content)
     dialog.set_child(toolbar)
+    refresh_publish_button()
     dialog.present(parent)
-    refresh_name()
-    load_orgs()
 
 
 def show_remove_repository(parent: Gtk.Window, store: AppStore) -> None:
@@ -3185,6 +3275,15 @@ def show_force_push(parent: Gtk.Window, store: AppStore) -> None:
 
 def show_generic_auth(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
     url = payload.get("remote_url") or ""
+    username = str(payload.get("username") or "")
+    if not username:
+        try:
+            from urllib.parse import urlparse
+
+            parsed = urlparse(url if "://" in url else f"https://{url}")
+            username = parsed.username or ""
+        except Exception:
+            username = ""
 
     def submit(values: dict[str, str]) -> None:
         from .. import secrets
@@ -3200,7 +3299,7 @@ def show_generic_auth(parent: Gtk.Window, store: AppStore, payload: dict[str, An
         secrets.set_generic(host, user, password)
         store.retry_last_remote_action()
 
-    _text_dialog(parent, "Authentication required", url, [("username", "Username", ""), ("password", "Password / token", "")], submit, "Save and retry")
+    _text_dialog(parent, "Authentication required", url, [("username", "Username", username), ("password", "Password / token", "")], submit, "Save and retry")
 
 
 def show_create_tag(parent: Gtk.Window, store: AppStore, payload: dict[str, Any] | None = None) -> None:
@@ -4049,47 +4148,75 @@ def show_alias(parent: Gtk.Window, store: AppStore) -> None:
 
 
 def show_ssh_passphrase(parent: Gtk.Window, payload: dict[str, Any]) -> None:
-    def submit(values: dict[str, str]) -> None:
-        cb = payload.get("on_submit")
-        if cb:
-            cb(values.get("passphrase") or None, True)
-
-    def cancel() -> None:
-        cb = payload.get("on_submit")
-        if cb:
-            cb(None, False)
-
-    _text_dialog(
+    _ssh_secret_dialog(
         parent,
         "SSH key passphrase",
         payload.get("key_path") or "",
-        [("passphrase", "Passphrase", "")],
-        submit,
-        "Continue",
-        on_cancel=cancel,
+        "passphrase",
+        "Passphrase",
+        "Remember passphrase",
+        payload,
     )
 
 
 def show_ssh_password(parent: Gtk.Window, payload: dict[str, Any]) -> None:
-    def submit(values: dict[str, str]) -> None:
-        cb = payload.get("on_submit")
-        if cb:
-            cb(values.get("password") or None, True)
-
-    def cancel() -> None:
-        cb = payload.get("on_submit")
-        if cb:
-            cb(None, False)
-
-    _text_dialog(
+    _ssh_secret_dialog(
         parent,
         "SSH password",
         payload.get("username") or "",
-        [("password", "Password", "")],
-        submit,
-        "Continue",
-        on_cancel=cancel,
+        "password",
+        "Password",
+        "Remember password",
+        payload,
     )
+
+
+def _ssh_secret_dialog(
+    parent: Gtk.Window,
+    heading: str,
+    body: str,
+    field: str,
+    field_title: str,
+    remember_label: str,
+    payload: dict[str, Any],
+) -> None:
+    dialog = Adw.Dialog()
+    dialog.set_content_width(440)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(Adw.WindowTitle(title=heading, subtitle=str(body)))
+    cancel = Gtk.Button(label="Cancel")
+    ok = Gtk.Button(label="Continue")
+    ok.add_css_class("suggested-action")
+    header.pack_start(cancel)
+    header.pack_end(ok)
+    toolbar.add_top_bar(header)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+    box.set_margin_top(18)
+    box.set_margin_bottom(18)
+    box.set_margin_start(18)
+    box.set_margin_end(18)
+    row = Adw.PasswordEntryRow(title=field_title)
+    remember = Gtk.CheckButton(label=remember_label)
+    remember.set_active(False)
+    box.append(row)
+    box.append(remember)
+    toolbar.set_content(box)
+    dialog.set_child(toolbar)
+    closed = {"done": False}
+
+    def finish(value: str | None, stored: bool) -> None:
+        if closed["done"]:
+            return
+        closed["done"] = True
+        dialog.close()
+        cb = payload.get("on_submit")
+        if cb:
+            cb(value, stored)
+
+    cancel.connect("clicked", lambda *_: finish(None, False))
+    ok.connect("clicked", lambda *_: finish(row.get_text() or None, bool(remember.get_active())))
+    dialog.present(parent)
 
 
 def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:

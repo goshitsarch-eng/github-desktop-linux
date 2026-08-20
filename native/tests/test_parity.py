@@ -637,5 +637,14 @@ def test_window_actions_cover_menus() -> None:
         "Previous tags",
         "You are not able to cherry-pick from and to the same branch",
         "new-branch-drop",
+        "RetryActionType",
+        "_checkForUncommittedChanges",
+        "insufficientGitHubRepoPermissions",
+        "Remember passphrase",
+        "performRetry",
+        "CloningRepositoryView",
+        "accessibility-banner-dismissed",
+        "link underlines and diff check marks",
+        "PublishTab",
     ]:
         assert phrase in src

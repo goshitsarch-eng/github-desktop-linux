@@ -626,7 +626,7 @@ def _show_cherry_pick_target(parent: Gtk.Window, store: AppStore, payload: dict[
         start_btn.set_tooltip_text("")
         start_btn.set_label(f"Cherry-pick {count} {noun} to {branch.name}…")
 
-    def run_cherry(target: str | None) -> None:
+    def run_cherry(target: str | None, *, new_branch: str | None = None) -> None:
         progress = show_operation_progress(parent, MultiCommitOperationKind.CHERRY_PICK, commit_count=count)
 
         def finished(*_exc: object) -> None:
@@ -638,6 +638,9 @@ def _show_cherry_pick_target(parent: Gtk.Window, store: AppStore, payload: dict[
 
             _on_main(close)
 
+        if new_branch:
+            store.cherry_pick_to_new_branch(repo, shas, new_branch, on_done=finished, on_progress=progress.update)
+            return
         store.cherry_pick_commits(repo, shas, target, on_done=finished, on_progress=progress.update)
 
     def start(*_a: object) -> None:
@@ -646,8 +649,7 @@ def _show_cherry_pick_target(parent: Gtk.Window, store: AppStore, payload: dict[
             if not name:
                 return
             dialog.close()
-            store.create_branch_and_checkout(repo, name)
-            run_cherry(None)
+            run_cherry(None, new_branch=name)
             return
         branch = selected["branch"]
         if not branch:

@@ -157,6 +157,8 @@ class MainWindow(Adw.ApplicationWindow):
                 self._banner.set_button_label("Open Your Card")
             elif kind == BannerType.DETACHED_HEAD:
                 self._banner.set_button_label("Create branch")
+            elif kind == BannerType.ACCESSIBILITY_SETTINGS:
+                self._banner.set_button_label("Open settings")
             elif kind in CONFLICT_BANNER_KINDS:
                 self._banner.set_button_label("View conflicts")
             elif kind in SUCCESS_BANNER_KINDS and self.store.banner.undo_sha:
@@ -195,6 +197,10 @@ class MainWindow(Adw.ApplicationWindow):
             BannerType.CONFLICTS_FOUND: banner.operation_description or "Conflicts found",
             BannerType.OPEN_THANK_YOU_CARD: "The Desktop team would like to thank you for your contributions.",
             BannerType.DETACHED_HEAD: "You are in a detached HEAD state. Create a branch to keep your work.",
+            BannerType.ACCESSIBILITY_SETTINGS: (
+                "Check out the new accessibility settings to control the visibility of "
+                "the link underlines and diff check marks."
+            ),
         }
         return mapping.get(kind, kind.value)
 
@@ -205,6 +211,10 @@ class MainWindow(Adw.ApplicationWindow):
             return
         if banner and banner.type == BannerType.DETACHED_HEAD:
             self.store.show_popup(PopupType.CREATE_BRANCH)
+            return
+        if banner and banner.type == BannerType.ACCESSIBILITY_SETTINGS:
+            self.store.dismiss_accessibility_banner()
+            show_preferences(self, self.store, PreferencesTab.ACCESSIBILITY)
             return
         if banner and banner.type in CONFLICT_BANNER_KINDS:
             kind = banner.operation_kind or {
@@ -689,8 +699,10 @@ class MainWindow(Adw.ApplicationWindow):
         self._work_area.append(self._tutorial_panel)
         self._repo_content = Gtk.Stack()
         self._missing_page = self._build_missing()
+        self._cloning_page = self._build_cloning()
         self._repo_content.add_named(self._work_area, "content")
         self._repo_content.add_named(self._missing_page, "missing")
+        self._repo_content.add_named(self._cloning_page, "cloning")
         toolbar.set_content(self._repo_content)
         self._split.set_content(toolbar)
         return self._split
@@ -731,6 +743,33 @@ class MainWindow(Adw.ApplicationWindow):
         box.append(remove)
         page.set_child(box)
         return page
+
+    def _build_cloning(self) -> Gtk.Widget:
+        """Desktop `CloningRepositoryView`: progress page for an in-flight clone."""
+        page = Adw.StatusPage(icon_name="folder-download-symbolic")
+        page.set_title("Cloning")
+        page.add_css_class("cloning-repository-view")
+        self._cloning_title = page
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box.set_halign(Gtk.Align.CENTER)
+        box.set_size_request(360, -1)
+        self._cloning_bar = Gtk.ProgressBar()
+        self._cloning_detail = Gtk.Label(wrap=True, xalign=0.5)
+        self._cloning_detail.add_css_class("dim-label")
+        box.append(self._cloning_bar)
+        box.append(self._cloning_detail)
+        page.set_child(box)
+        return page
+
+    def _show_cloning(self, cloning) -> None:
+        title = f"Cloning {cloning.name}"
+        self._cloning_title.set_title(title)
+        fraction = float(cloning.progress or 0)
+        if fraction > 0:
+            self._cloning_bar.set_fraction(min(1.0, fraction))
+        else:
+            self._cloning_bar.pulse()
+        self._cloning_detail.set_text(cloning.description or cloning.url)
 
     def _locate_repository(self) -> None:
         repo = self.store.selected_repository
@@ -1214,10 +1253,20 @@ class MainWindow(Adw.ApplicationWindow):
             self.store.set_section(RepositorySectionTab.CHANGES)
 
     def _refresh_repo(self) -> None:
+        cloning = self.store.selected_cloning
+        if cloning is not None:
+            self._repo_btn.set_label(f"Cloning {cloning.name}…")
+            self.set_title(f"Cloning {cloning.name} — {APP_NAME}")
+            if hasattr(self, "_repo_content"):
+                self._show_cloning(cloning)
+                self._repo_content.set_visible_child_name("cloning")
+            self._refresh_repo_list()
+            return
         repo = self.store.selected_repository
         if repo is None:
             if self.store.cloning:
-                self._repo_btn.set_label(f"Cloning {self.store.cloning[0].url}…")
+                fallback = self.store.cloning[0]
+                self._repo_btn.set_label(f"Cloning {fallback.name}…")
             return
         self._repo_btn.set_label(repo.display_name)
         self.set_title(f"{repo.display_name} — {APP_NAME}")
@@ -1337,10 +1386,12 @@ class MainWindow(Adw.ApplicationWindow):
             repo = self.store.selected_repository
             if repo:
                 self._update_push_label(self.store.state_for(repo))
-            if self.store.cloning:
-                c = self.store.cloning[0]
-                pct = int((c.progress or 0) * 100)
-                self._repo_btn.set_label(f"Cloning {c.url}… {pct}%" if pct else f"Cloning {c.url}…")
+            cloning = self.store.selected_cloning or (self.store.cloning[0] if self.store.cloning else None)
+            if cloning is not None:
+                pct = int((cloning.progress or 0) * 100)
+                self._repo_btn.set_label(f"Cloning {cloning.name}… {pct}%" if pct else f"Cloning {cloning.name}…")
+                if hasattr(self, "_cloning_title") and self.store.selected_cloning is not None:
+                    self._show_cloning(cloning)
             return
         title = self.store.progress_title or kind.title()
         pct = int(self.store.progress_value * 100)
@@ -1353,9 +1404,14 @@ class MainWindow(Adw.ApplicationWindow):
         if hasattr(self, "_push_menu_btn"):
             self._push_menu_btn.set_sensitive(False)
             self._push_menu_btn.set_visible(False)
-        if kind == "clone" and self.store.cloning:
-            c = self.store.cloning[0]
-            self._repo_btn.set_label(f"Cloning {c.url}… {pct}%" if pct else f"Cloning {c.url}…")
+        if kind == "clone":
+            cloning = self.store.selected_cloning or (self.store.cloning[0] if self.store.cloning else None)
+            if cloning is not None:
+                self._repo_btn.set_label(
+                    f"Cloning {cloning.name}… {pct}%" if pct else f"Cloning {cloning.name}…"
+                )
+                if hasattr(self, "_cloning_title") and self.store.selected_cloning is not None:
+                    self._show_cloning(cloning)
 
     def _remote_name(self, state) -> str | None:
         status = state.status
@@ -1609,9 +1665,11 @@ class MainWindow(Adw.ApplicationWindow):
             add_group(group.label, visible)
         for cloning in self.store.cloning:
             pct = int((cloning.progress or 0) * 100)
-            title = f"Cloning… {pct}%" if pct else "Cloning…"
+            title = f"Cloning {cloning.name}… {pct}%" if pct else f"Cloning {cloning.name}…"
             subtitle = cloning.description or cloning.url
             row = Adw.ActionRow(title=title, subtitle=subtitle)
+            row.set_activatable(True)
+            row.connect("activated", lambda _r, cid=cloning.id: self.store.select_cloning(cid))
             cancel = Gtk.Button(label="Cancel clone")
             cancel.set_valign(Gtk.Align.CENTER)
             cancel.connect("clicked", lambda *_a, cid=cloning.id: self.store.abort_clone(cid))

@@ -42,6 +42,7 @@ class Settings:
     repository_indicators_enabled: bool = True
     underline_links: bool = True
     show_diff_check_marks: bool = True
+    accessibility_banner_dismissed: bool = False  # Desktop `accessibility-banner-dismissed`
     hide_whitespace_in_diffs: bool = False
     hide_whitespace_in_history_diff: bool = False
     hide_whitespace_in_pull_request_diff: bool = False

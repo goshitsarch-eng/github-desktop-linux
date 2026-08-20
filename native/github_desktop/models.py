@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum, IntEnum, StrEnum
+from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 
@@ -230,6 +231,7 @@ class BannerType(StrEnum):
     OS_VERSION_NO_LONGER_SUPPORTED = "OSVersionNoLongerSupported"
     OPEN_THANK_YOU_CARD = "OpenThankYouCard"
     DETACHED_HEAD = "DetachedHead"
+    ACCESSIBILITY_SETTINGS = "AccessibilitySettings"
 
 
 class ForcePushBranchState(StrEnum):
@@ -286,6 +288,13 @@ class CloneRepositoryTab(StrEnum):
     DOTCOM = "DotCom"
     ENTERPRISE = "Enterprise"
     URL = "URL"
+
+
+class PublishTab(StrEnum):
+    """Desktop `PublishTab` for the Publish repository dialog."""
+
+    DOTCOM = "DotCom"
+    ENTERPRISE = "Enterprise"
 
 
 class SignInStep(StrEnum):
@@ -1188,6 +1197,13 @@ class CloningRepository:
     progress: float = 0.0
     description: str = ""
 
+    @property
+    def name(self) -> str:
+        url_name = Path(str(self.url).rstrip("/")).name
+        if url_name.endswith(".git"):
+            url_name = url_name[:-4]
+        return url_name or Path(self.path).name
+
 
 @dataclass
 class AccountEmail:
@@ -1255,10 +1271,31 @@ class Account:
         return "api.github.com" in self.endpoint
 
     @property
+    def is_enterprise(self) -> bool:
+        """Desktop `isEnterpriseAccount`: any account that is not GitHub.com."""
+        return not self.is_dotcom
+
+    @property
     def friendly_endpoint(self) -> str:
         if self.is_dotcom:
             return "GitHub.com"
         return html_url_from_endpoint(self.endpoint)
+
+
+def accounts_for_publish_tab(accounts: Sequence[Account], tab: PublishTab | str) -> list[Account]:
+    """Accounts shown on a Desktop Publish `GitHub.com` / `GitHub Enterprise` tab."""
+    enterprise = tab in {PublishTab.ENTERPRISE, PublishTab.ENTERPRISE.value, "enterprise"}
+    if enterprise:
+        return [item for item in accounts if item.is_enterprise]
+    return [item for item in accounts if item.is_dotcom]
+
+
+def default_publish_tab(accounts: Sequence[Account]) -> PublishTab:
+    if not accounts_for_publish_tab(accounts, PublishTab.DOTCOM) and accounts_for_publish_tab(
+        accounts, PublishTab.ENTERPRISE
+    ):
+        return PublishTab.ENTERPRISE
+    return PublishTab.DOTCOM
 
 
 def stealth_email_for_account(account: Account) -> str:
@@ -1411,6 +1448,106 @@ class Banner:
 class Popup:
     type: PopupType
     payload: dict[str, Any] = field(default_factory=dict)
+
+
+class RetryActionType(StrEnum):
+    """Desktop `RetryActionType`."""
+
+    PUSH = "Push"
+    PULL = "Pull"
+    FETCH = "Fetch"
+    CLONE = "Clone"
+    CHECKOUT = "Checkout"
+    MERGE = "Merge"
+    REBASE = "Rebase"
+    CHERRY_PICK = "CherryPick"
+    CREATE_BRANCH_FOR_CHERRY_PICK = "CreateBranchForCherryPick"
+    SQUASH = "Squash"
+    REORDER = "Reorder"
+    DISCARD_CHANGES = "DiscardChanges"
+
+
+@dataclass
+class RetryAction:
+    """Desktop `RetryAction` payload for LCO / error Retry / `performRetry`."""
+
+    type: RetryActionType
+    repo_id: int | None = None
+    branch: str | None = None
+    url: str | None = None
+    path: str | None = None
+    force: bool = False
+    tutorial: bool = False
+    squash: bool = False
+    create_branch: bool = False
+    their_branch: str | None = None
+    base_branch: str | None = None
+    target_branch: str | None = None
+    onto_sha: str | None = None
+    before_sha: str | None = None
+    last_retained: str | None = None
+    message: str = ""
+    shas: list[str] = field(default_factory=list)
+    to_squash_shas: list[str] = field(default_factory=list)
+    to_move_shas: list[str] = field(default_factory=list)
+    files: list[str] = field(default_factory=list)
+
+
+def retry_action_name(action: RetryAction | RetryActionType | str | None) -> str:
+    """Desktop `LocalChangesOverwritten.getRetryActionName`."""
+    kind = action.type if isinstance(action, RetryAction) else action
+    mapping = {
+        RetryActionType.CHECKOUT: "checkout",
+        RetryActionType.PULL: "pull",
+        RetryActionType.MERGE: "merge",
+        RetryActionType.REBASE: "rebase",
+        RetryActionType.CLONE: "clone",
+        RetryActionType.FETCH: "fetch",
+        RetryActionType.PUSH: "push",
+        RetryActionType.CHERRY_PICK: "cherry-pick",
+        RetryActionType.CREATE_BRANCH_FOR_CHERRY_PICK: "cherry-pick",
+        RetryActionType.SQUASH: "squash",
+        RetryActionType.REORDER: "reorder",
+        RetryActionType.DISCARD_CHANGES: "discard changes",
+    }
+    if isinstance(kind, RetryActionType):
+        return mapping.get(kind, kind.value.lower())
+    text = str(kind or "checkout")
+    aliases = {item.value.lower(): name for item, name in mapping.items()}
+    aliases.update({item.name.lower(): name for item, name in mapping.items()})
+    return aliases.get(text.lower(), text)
+
+
+def retry_action_from_legacy(payload: Mapping[str, Any]) -> RetryAction:
+    kind = str(payload.get("kind") or payload.get("type") or "Checkout")
+    try:
+        action_type = RetryActionType(kind)
+    except ValueError:
+        by_name = {item.name.lower(): item for item in RetryActionType}
+        by_label = {retry_action_name(item): item for item in RetryActionType}
+        action_type = by_name.get(kind.lower()) or by_label.get(kind.lower()) or RetryActionType.CHECKOUT
+    return RetryAction(
+        type=action_type,
+        repo_id=payload.get("repo_id"),
+        branch=payload.get("branch"),
+        url=payload.get("url"),
+        path=payload.get("path"),
+        force=bool(payload.get("force")),
+        tutorial=bool(payload.get("tutorial")),
+        squash=bool(payload.get("squash")),
+        create_branch=bool(payload.get("create_branch")),
+        their_branch=payload.get("their_branch"),
+        base_branch=payload.get("base_branch"),
+        target_branch=payload.get("target_branch"),
+        onto_sha=payload.get("onto_sha"),
+        before_sha=payload.get("before_sha"),
+        last_retained=payload.get("last_retained"),
+        message=str(payload.get("message") or ""),
+        shas=list(payload.get("shas") or []),
+        to_squash_shas=list(payload.get("to_squash_shas") or []),
+        to_move_shas=list(payload.get("to_move_shas") or []),
+        files=list(payload.get("files") or []),
+    )
 
 
 @dataclass

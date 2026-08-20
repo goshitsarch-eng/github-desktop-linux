@@ -175,6 +175,18 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             from github_desktop.ui.dialogs import show_create_tag
 
             show_create_tag(win, store, {"sha": "deadbeef"})
+            from github_desktop.ui.dialogs import show_ssh_passphrase, show_local_changes_overwritten
+
+            show_ssh_passphrase(win, {"key_path": "/tmp/id_rsa", "on_submit": lambda *_: None})
+            show_local_changes_overwritten(win, store, {"files": ["a.txt"], "retry_kind": "checkout"})
+            from github_desktop.models import CloningRepository
+
+            cloning = CloningRepository(id=-1, path=str(git_repo), url="https://github.com/desktop/desktop.git")
+            store.cloning = [cloning]
+            store.select_cloning(cloning.id)
+            win._refresh_repo()
+            assert win._repo_content.get_visible_child_name() == "cloning"
+            store.select_repository(repos[0].id)
             from github_desktop.ui.dialogs import show_create_repository
 
             show_create_repository(win, store, "")
