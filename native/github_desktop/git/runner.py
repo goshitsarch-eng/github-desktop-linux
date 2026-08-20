@@ -415,11 +415,17 @@ def env_for_remote(
     username: str | None = None,
     password: str | None = None,
     extra: Mapping[str, str] | None = None,
+    use_external_credential_helper: bool = False,
 ) -> dict[str, str]:
-    """Build env vars that inject HTTPS credentials without prompting."""
+    """Build env vars that inject HTTPS credentials without prompting.
+
+    Desktop Advanced `useExternalCredentialHelper`: when True, do not force
+    GCM_INTERACTIVE=Never so the system Git credential helper can prompt.
+    GitHub account tokens are still injected as `http.extraHeader`.
+    """
     env: dict[str, str] = {
         "GIT_TERMINAL_PROMPT": "0",
-        "GCM_INTERACTIVE": "Never",
+        "GCM_INTERACTIVE": "Auto" if use_external_credential_helper else "Never",
     }
     env.update(env_for_proxy(remote_url))
     if extra:

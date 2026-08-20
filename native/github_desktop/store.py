@@ -117,7 +117,7 @@ from .git import (
 )
 from .git.askpass import askpass_env, set_prompt_callback, start_askpass_server
 from .git.runner import find_git, resolve_repository_root
-from .github.api import GitHubAPI
+from .github.api import GitHubAPI, on_token_invalidated
 from .github.ci_checks import (
     attach_workflow_jobs_to_checks,
     failing_checks,
@@ -201,7 +201,7 @@ from .models import (
 from .notifications import show_notification
 from .paths import accounts_path, repositories_path
 from .protocol import OAuthAction, OpenRepositoryAction, URLAction, parse_app_url
-from .remote_parsing import account_for_remote, github_from_remote, parse_remote, sanitize_remote_url, url_matches_remote
+from .remote_parsing import account_for_remote, github_from_remote, is_github_host, parse_remote, sanitize_remote_url, url_matches_remote
 from .settings import Settings, load_settings, save_settings
 from .shells import find_shell, get_available_shells, open_custom_shell, open_external, open_file_manager, open_shell
 from .thank_you import (
@@ -339,6 +339,8 @@ class AppStore:
         if not os.environ.get("PYTEST_CURRENT_TEST"):
             start_askpass_server()
             set_prompt_callback(self.handle_askpass)
+        # Desktop `API.onTokenInvalidated` — last AppStore wins (module-level callback).
+        on_token_invalidated(self._on_token_invalidated)
 
     # --- persistence ---
     def _load_accounts(self) -> None:
@@ -1198,7 +1200,7 @@ class AppStore:
             state.current_diff = None
             return
         try:
-            diff = get_working_directory_diff(repo.path, file, state.hide_whitespace, state.diff_context)
+            diff = get_working_directory_diff(repo.path, file, self._hide_ws_changes(state), state.diff_context)
             diff = self._prepare_text_diff(repo, file.path, diff)
             state.current_diff = diff
             if isinstance(diff, TextDiff):
@@ -1380,6 +1382,7 @@ class AppStore:
         return self.accounts[0] if self.accounts else None
 
     def env_for_repo(self, repo: Repository, url: str | None = None) -> dict[str, str] | None:
+        helper = bool(self.settings.use_external_credential_helper)
         if not url:
             try:
                 remotes = get_remotes(repo.path)
@@ -1391,13 +1394,24 @@ class AppStore:
         account = account_for_remote(self.accounts, url) or self.account_for_repo(repo)
         extra = askpass_env()
         if account:
-            return env_for_remote(url, token=account.token, extra=extra or None)
+            return env_for_remote(
+                url,
+                token=account.token,
+                extra=extra or None,
+                use_external_credential_helper=helper,
+            )
         host = (parse_remote(url).hostname if parse_remote(url) else None)
         if host:
             user, password = secrets.get_generic(host)
             if user and password:
-                return env_for_remote(url, username=user, password=password, extra=extra or None)
-        return env_for_remote(url, extra=extra or None)
+                return env_for_remote(
+                    url,
+                    username=user,
+                    password=password,
+                    extra=extra or None,
+                    use_external_credential_helper=helper,
+                )
+        return env_for_remote(url, extra=extra or None, use_external_credential_helper=helper)
 
     def handle_askpass(self, prompt: str) -> str:
         """Show Desktop SSH dialogs on the GTK thread and return the answer."""
@@ -1669,6 +1683,46 @@ class AppStore:
         state = self.state_for(repo)
         state.side_by_side = enabled
         self.settings.show_side_by_side_diff = enabled
+        self.persist_settings()
+        self.emit()
+
+    def _hide_ws_changes(self, state: RepositoryViewState) -> bool:
+        return bool(state.hide_whitespace or self.settings.hide_whitespace_in_diffs)
+
+    def _hide_ws_history(self) -> bool:
+        """Desktop `hideWhitespaceInHistoryDiff`."""
+        return bool(self.settings.hide_whitespace_in_history_diff)
+
+    def _hide_ws_pr(self) -> bool:
+        """Desktop `hideWhitespaceInPullRequestDiff`."""
+        return bool(self.settings.hide_whitespace_in_pull_request_diff)
+
+    def set_hide_whitespace_in_changes_diff(self, repo: Repository, hidden: bool) -> None:
+        """Desktop `_setHideWhitespaceInChangesDiff`."""
+        state = self.state_for(repo)
+        state.hide_whitespace = hidden
+        self.settings.hide_whitespace_in_diffs = hidden
+        self.persist_settings()
+        if state.selected_file:
+            self.select_file(repo, state.selected_file)
+        else:
+            self.emit()
+
+    def set_hide_whitespace_in_history_diff(self, repo: Repository, hidden: bool, path: str | None = None) -> None:
+        """Desktop `_setHideWhitespaceInHistoryDiff`."""
+        self.settings.hide_whitespace_in_history_diff = hidden
+        self.persist_settings()
+        state = self.state_for(repo)
+        files = list(state.selected_commit_files)
+        file = next((item for item in files if path and item.path == path), files[0] if files else None)
+        if file and state.selected_commit:
+            self.load_history_diff(repo, file.path, state.selected_commit.sha, file.status)
+        else:
+            self.emit()
+
+    def set_hide_whitespace_in_pull_request_diff(self, repo: Repository, hidden: bool) -> None:
+        """Desktop `_setHideWhitespaceInPullRequestDiff`."""
+        self.settings.hide_whitespace_in_pull_request_diff = hidden
         self.persist_settings()
         self.emit()
 
@@ -2010,7 +2064,7 @@ class AppStore:
                     repo,
                     file.path,
                     get_commit_diff(
-                        repo.path, file.path, file.commitish, file.status, state.hide_whitespace, state.diff_context
+                        repo.path, file.path, file.commitish, file.status, self._hide_ws_changes(state), state.diff_context
                     ),
                     commitish=file.commitish,
                 )
@@ -2080,7 +2134,7 @@ class AppStore:
                     base_name,
                     current,
                     file.status,
-                    state.hide_whitespace,
+                    self._hide_ws_pr(),
                     state.diff_context,
                     latest,
                 )
@@ -2088,7 +2142,7 @@ class AppStore:
                 oldest = state.pr_commits[-1].sha
                 newest = state.pr_commits[0].sha
                 diff = get_commit_range_diff(
-                    repo.path, file.path, oldest, newest, file.status, state.hide_whitespace, state.diff_context
+                    repo.path, file.path, oldest, newest, file.status, self._hide_ws_pr(), state.diff_context
                 )
             else:
                 return None
@@ -2141,7 +2195,7 @@ class AppStore:
                 f = state.selected_commit_files[0]
                 try:
                     diff = get_commit_range_diff(
-                        repo.path, f.path, oldest.sha, newest.sha, f.status, state.hide_whitespace, state.diff_context
+                        repo.path, f.path, oldest.sha, newest.sha, f.status, self._hide_ws_history(), state.diff_context
                     )
                     state.current_diff = self._prepare_text_diff(repo, f.path, diff, commitish=newest.sha)
                 except GitError:
@@ -2343,7 +2397,10 @@ class AppStore:
 
         self._run(work, done)
 
-    def set_commit_author_email(self, repo: Repository, email: str, *, local: bool = True) -> None:
+    def set_commit_author_email(self, repo: Repository, email: str, *, local: bool | None = None) -> None:
+        """Desktop avatar Update email: global unless this repo already has local `user.email`."""
+        if local is None:
+            local = bool(get_config_value(repo.path, "user.email", local_only=True))
         if local:
             set_config_value(repo.path, "user.email", email)
         else:
@@ -2474,7 +2531,7 @@ class AppStore:
                     repo,
                     f.path,
                     get_commit_diff(
-                        repo.path, f.path, commit.sha, f.status, state.hide_whitespace, state.diff_context
+                        repo.path, f.path, commit.sha, f.status, self._hide_ws_history(), state.diff_context
                     ),
                     commitish=commit.sha,
                 )
@@ -2496,11 +2553,11 @@ class AppStore:
         if len(ordered) >= 2 and _commits_are_contiguous(ordered, history):
             newest, oldest = ordered[0], ordered[-1]
             diff = get_commit_range_diff(
-                repo.path, path, oldest.sha, newest.sha, status, state.hide_whitespace, state.diff_context
+                repo.path, path, oldest.sha, newest.sha, status, self._hide_ws_history(), state.diff_context
             )
             prepared = self._prepare_text_diff(repo, path, diff, commitish=newest.sha)
         else:
-            diff = get_commit_diff(repo.path, path, sha, status, state.hide_whitespace, state.diff_context)
+            diff = get_commit_diff(repo.path, path, sha, status, self._hide_ws_history(), state.diff_context)
             prepared = self._prepare_text_diff(repo, path, diff, commitish=sha)
         state.current_diff = prepared
         return prepared
@@ -2846,6 +2903,18 @@ class AppStore:
                     url = remotes[0].url if remotes else ""
                 except GitError:
                     pass
+                github_remote = bool(repo.github) or (bool(url) and is_github_host(url, self.accounts))
+                if github_remote:
+                    account = self.account_for_repo(repo) or (account_for_remote(self.accounts, url) if url else None)
+                    if account:
+                        self.sign_out(account)
+                        self.show_popup(PopupType.INVALIDATED_TOKEN, account=account)
+                    else:
+                        parsed = parse_remote(url) if url else None
+                        host = (parsed.hostname if parsed else "").lower()
+                        enterprise = host not in ("", "github.com", "www.github.com", "gist.github.com", "api.github.com")
+                        self.begin_sign_in(enterprise)
+                    return
                 self.show_popup(PopupType.GENERIC_GIT_AUTHENTICATION, remote_url=url)
                 return
             if exc.is_force_needed:
@@ -3361,6 +3430,32 @@ class AppStore:
         self._save_accounts()
         self.emit()
 
+    def _on_token_invalidated(self, endpoint: str, token: str) -> None:
+        """Desktop `AppStore.onTokenInvalidated`: sign out the matching account and prompt."""
+
+        def go() -> bool:
+            account = next((item for item in self.accounts if item.endpoint.rstrip("/") == (endpoint or "").rstrip("/")), None)
+            if account is None:
+                return False
+            if account.token and account.token != token:
+                log.error("Token for %s invalidated but token mismatch", endpoint)
+                return False
+            self.sign_out(account)
+            self.show_popup(PopupType.INVALIDATED_TOKEN, account=account)
+            return False
+
+        invoked = False
+        try:
+            from gi.repository import Gio, GLib
+
+            if Gio.Application.get_default() is not None:
+                GLib.idle_add(go)
+                invoked = True
+        except Exception:
+            invoked = False
+        if not invoked:
+            go()
+
     def finish_welcome(self) -> None:
         self.settings.welcome_shown = True
         self.welcome_step = None
@@ -3568,16 +3663,16 @@ class AppStore:
         encoded_compare = compare_fork_preface + quote(compare_branch, safe="")
         open_external(f"{gh.html_url}/pull/new/{encoded_base}{encoded_compare}")
 
-    def _after_push_for_pull_request(self, repo: Repository, preview: bool) -> None:
+    def _after_push_for_pull_request(self, repo: Repository, preview: bool, base_branch: str | None = None) -> None:
         if preview:
             self.show_popup(PopupType.START_PULL_REQUEST)
         else:
-            self.open_create_pull_request_in_browser(repo)
+            self.open_create_pull_request_in_browser(repo, base_branch)
 
-    def _create_pull_request_flow(self, repo: Repository, preview: bool = False) -> None:
+    def _create_pull_request_flow(self, repo: Repository, preview: bool = False, base_branch: str | None = None) -> None:
         state = self.state_for(repo)
         ahead_behind = state.ahead_behind
-        continue_pr = lambda: self._after_push_for_pull_request(repo, preview)
+        continue_pr = lambda: self._after_push_for_pull_request(repo, preview, base_branch)
         if ahead_behind is None:
             self.show_popup(
                 PopupType.PUSH_BRANCH_COMMITS,
@@ -3595,6 +3690,10 @@ class AppStore:
             )
             return
         continue_pr()
+
+    def create_pull_request_from_preview(self, repo: Repository, base_branch: str | None = None) -> None:
+        """Desktop Start PR Create: re-run the push gate, then `_openCreatePullRequestInBrowser`."""
+        self._create_pull_request_flow(repo, preview=False, base_branch=base_branch)
 
     def create_pull_request(self, repo: Repository, title: str, base: str, body: str = "", draft: bool = False) -> None:
         account = self.account_for_repo(repo)

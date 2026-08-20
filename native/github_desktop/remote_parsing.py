@@ -44,6 +44,42 @@ def hostname_from_endpoint(endpoint: str) -> str:
     return html.replace("https://", "").replace("http://", "").split("/")[0]
 
 
+_KNOWN_THIRD_PARTY_HOSTS = (
+    "amazonaws.com",
+    "visualstudio.com",
+    "azure.com",
+    "dev.azure.com",
+    "bitbucket.org",
+    "gitlab.com",
+    "sourceforge.net",
+    "codeberg.org",
+)
+
+
+def is_github_host(url: str, accounts: list[Account] | None = None) -> bool:
+    """Desktop `isGitHubHost` without the `/meta` probe (hostname + known accounts)."""
+    parsed = parse_remote(url)
+    host = (parsed.hostname if parsed else "").lower()
+    if not host:
+        from urllib.parse import urlparse
+
+        raw = url if "://" in url else f"https://{url}"
+        host = (urlparse(raw).hostname or "").lower()
+    if host in ("github.com", "www.github.com", "gist.github.com", "api.github.com"):
+        return True
+    if host.endswith(".ghe.com") or host.endswith(".github.com"):
+        return True
+    if re.search(r"(^|\.)github\.", host):
+        return True
+    if re.search(r"(^|\.)(bitbucket|gitlab)\.", host):
+        return False
+    if any(host == known or host.endswith("." + known) for known in _KNOWN_THIRD_PARTY_HOSTS):
+        return False
+    if accounts and account_for_remote(accounts, url):
+        return True
+    return False
+
+
 def account_for_remote(accounts: list[Account], url: str) -> Account | None:
     parsed = parse_remote(url)
     if not parsed:

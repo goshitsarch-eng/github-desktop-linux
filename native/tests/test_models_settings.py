@@ -57,6 +57,16 @@ def test_parse_remotes() -> None:
     assert https and https.hostname == "github.com"
 
 
+def test_is_github_host() -> None:
+    from github_desktop.remote_parsing import is_github_host
+
+    assert is_github_host("https://github.com/desktop/desktop.git")
+    assert is_github_host("git@github.com:desktop/desktop.git")
+    assert is_github_host("https://acme.ghe.com/org/repo.git")
+    assert not is_github_host("https://gitlab.com/org/repo.git")
+    assert not is_github_host("https://bitbucket.org/org/repo.git")
+
+
 def test_oauth_url_contains_scopes_and_state() -> None:
     url = get_oauth_authorization_url("https://api.github.com", "abc-state")
     assert "client_id=" in url

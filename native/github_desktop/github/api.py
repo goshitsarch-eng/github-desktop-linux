@@ -30,6 +30,21 @@ DOTCOM_API = "https://api.github.com"
 USER_AGENT = f"{APP_NAME}/{__version__}"
 PER_PAGE = 100
 
+_token_invalidated_callback = None
+
+
+def on_token_invalidated(callback) -> None:
+    """Desktop `API.onTokenInvalidated`."""
+    global _token_invalidated_callback
+    _token_invalidated_callback = callback
+
+
+def emit_token_invalidated(endpoint: str, token: str) -> None:
+    """Desktop `API.emitTokenInvalidated`."""
+    callback = _token_invalidated_callback
+    if callback is not None:
+        callback(endpoint, token)
+
 
 def get_dotcom_api_endpoint() -> str:
     import os
@@ -92,10 +107,26 @@ class GitHubAPI:
                 return raw.decode("utf-8")
         except urllib.error.HTTPError as exc:
             payload = exc.read().decode("utf-8", errors="replace")
+            header_map: dict[str, str] = {}
+            try:
+                header_map = {
+                    str(key).lower(): str(value) for key, value in (exc.headers.items() if exc.headers else [])
+                }
+            except Exception:
+                header_map = {}
+            # Desktop ghRequest: 401 + X-GitHub-Request-Id and no OTP => emitTokenInvalidated.
+            if (
+                exc.code == 401
+                and self.token
+                and header_map.get("x-github-request-id")
+                and not header_map.get("x-github-otp")
+            ):
+                emit_token_invalidated(self.endpoint, self.token)
             raise APIError(
                 f"GitHub API {method} {url} failed: {exc.code} {payload[:500]}",
                 status=exc.code,
                 body=payload,
+                headers=header_map,
             ) from exc
         except urllib.error.URLError as exc:
             raise APIError(f"GitHub API network error: {exc}") from exc

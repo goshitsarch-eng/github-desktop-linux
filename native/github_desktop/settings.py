@@ -43,6 +43,8 @@ class Settings:
     underline_links: bool = True
     show_diff_check_marks: bool = True
     hide_whitespace_in_diffs: bool = False
+    hide_whitespace_in_history_diff: bool = False
+    hide_whitespace_in_pull_request_diff: bool = False
     show_side_by_side_diff: bool = False
     image_diff_type: str = "TwoUp"
     clone_default_directory: str = ""

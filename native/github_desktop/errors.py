@@ -121,10 +121,18 @@ class AuthenticationError(DesktopError):
 
 
 class APIError(DesktopError):
-    def __init__(self, message: str, *, status: int | None = None, body: str = "") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        body: str = "",
+        headers: dict[str, str] | None = None,
+    ) -> None:
         super().__init__(message)
         self.status = status
         self.body = body
+        self.headers = headers or {}
 
 
 class CopilotError(DesktopError):

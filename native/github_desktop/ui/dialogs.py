@@ -42,6 +42,7 @@ from ..models import (
     GitHubRepository,
     PopupType,
     PreferencesTab,
+    RepositorySettingsTab,
     SignInStep,
     UncommittedChangesStrategy,
     git_author_name_is_valid,
@@ -230,6 +231,17 @@ def _text_dialog(
     dialog.present(parent)
 
 
+def _coerce_enum(raw: Any, enum_cls: Any) -> Any:
+    if isinstance(raw, enum_cls):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return enum_cls(raw)
+        except ValueError:
+            return None
+    return None
+
+
 def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, payload: dict[str, Any]) -> None:
     repo = store.selected_repository
     mapping: dict[PopupType, Callable[..., None]] = {
@@ -237,7 +249,11 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         PopupType.ABOUT: lambda: show_about(parent),
         PopupType.ACKNOWLEDGEMENTS: lambda: show_acknowledgements(parent),
         PopupType.TERMS_AND_CONDITIONS: lambda: show_terms(parent),
-        PopupType.PREFERENCES: lambda: show_preferences(parent, store),
+        PopupType.PREFERENCES: lambda: show_preferences(
+            parent,
+            store,
+            _coerce_enum(payload.get("tab") or payload.get("initialSelectedTab"), PreferencesTab),
+        ),
         PopupType.ADD_REPOSITORY: lambda: show_add_repository(parent, store, payload.get("path", "")),
         PopupType.CREATE_REPOSITORY: lambda: show_create_repository(parent, store, payload.get("path", "")),
         PopupType.CLONE_REPOSITORY: lambda: show_clone_repository(parent, store, payload),
@@ -249,7 +265,11 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         PopupType.CONFIRM_DISCARD_CHANGES: lambda: show_discard(parent, store, payload),
         PopupType.PUBLISH_REPOSITORY: lambda: show_publish(parent, store),
         PopupType.REMOVE_REPOSITORY: lambda: show_remove_repository(parent, store),
-        PopupType.REPOSITORY_SETTINGS: lambda: show_repository_settings(parent, store),
+        PopupType.REPOSITORY_SETTINGS: lambda: show_repository_settings(
+            parent,
+            store,
+            _coerce_enum(payload.get("tab") or payload.get("initialSelectedTab"), RepositorySettingsTab),
+        ),
         PopupType.CONFIRM_FORCE_PUSH: lambda: show_force_push(parent, store),
         PopupType.PUSH_NEEDS_PULL: lambda: _alert(
             parent,
@@ -341,7 +361,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
             "Your account token has been invalidated and you have been signed out. Do you want to sign in again?",
             confirm="Yes",
             cancel="No",
-            on_confirm=lambda: store.begin_sign_in(False),
+            on_confirm=lambda: store.begin_sign_in(not bool(getattr(payload.get("account"), "is_dotcom", True))),
         ),
         PopupType.ADD_SSH_HOST: lambda: _alert(
             parent,
@@ -2499,7 +2519,9 @@ def attach_git_email_not_found_warning(
     return refresh
 
 
-def show_repository_settings(parent: Gtk.Window, store: AppStore) -> None:
+def show_repository_settings(
+    parent: Gtk.Window, store: AppStore, tab: RepositorySettingsTab | None = None
+) -> None:
     repo = store.selected_repository
     if not repo:
         return
@@ -2690,6 +2712,15 @@ def show_repository_settings(parent: Gtk.Window, store: AppStore) -> None:
     dialog.add(git_page)
     if repo.is_fork:
         dialog.add(fork_page)
+    remote_page.set_name(RepositorySettingsTab.REMOTE.value)
+    ignore_page.set_name(RepositorySettingsTab.IGNORED_FILES.value)
+    git_page.set_name(RepositorySettingsTab.GIT_CONFIG.value)
+    fork_page.set_name(RepositorySettingsTab.FORK_SETTINGS.value)
+    if tab is not None:
+        try:
+            dialog.set_visible_page_name(tab.value)
+        except Exception:
+            pass
     dialog.present(parent)
 
 
@@ -3290,7 +3321,7 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
             "show_checks": False,
             "side_by_side": st.side_by_side or store.settings.show_side_by_side_diff,
             "image_mode": st.image_diff_type or store.settings.image_diff_type,
-            "hide_whitespace": st.hide_whitespace or store.settings.hide_whitespace_in_diffs,
+            "hide_whitespace": store._hide_ws_pr(),
         }
 
     def _fill_base_list() -> None:
@@ -3402,7 +3433,7 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     def create(*_a: Any) -> None:
         base = selected["name"] or default
         dialog.close()
-        store.create_pull_request(repo, title_row.get_text().strip() or current, base, body_row.get_text().strip(), draft=draft.get_active())
+        store.create_pull_request_from_preview(repo, base)
 
     def view(*_a: Any) -> None:
         st = store.state_for(repo)
@@ -3412,6 +3443,17 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
 
     create_btn.connect("clicked", create)
     view_btn.connect("clicked", view)
+
+    def on_pr_hide_ws(hidden: bool) -> None:
+        store.set_hide_whitespace_in_pull_request_diff(repo, hidden)
+        render_preview()
+
+    def on_pr_side(enabled: bool) -> None:
+        store.set_side_by_side(repo, enabled)
+        render_preview()
+
+    viewer.on_hide_whitespace_changed = on_pr_hide_ws
+    viewer.on_side_by_side_changed = on_pr_side
     _fill_base_list()
     render_preview()
     toolbar.set_content(root)
@@ -3678,7 +3720,7 @@ def show_create_fork(parent: Gtk.Window, store: AppStore) -> None:
 
 
 def show_fork_settings(parent: Gtk.Window, store: AppStore) -> None:
-    show_repository_settings(parent, store)
+    show_repository_settings(parent, store, RepositorySettingsTab.FORK_SETTINGS)
 
 
 def show_alias(parent: Gtk.Window, store: AppStore) -> None:

@@ -278,6 +278,10 @@ def test_window_actions_cover_menus() -> None:
     src += open(group_repos_mod.__file__, encoding="utf-8").read()
     src += open(avatars_mod.__file__, encoding="utf-8").read()
     src += open(push_control_mod.__file__, encoding="utf-8").read()
+    from github_desktop import remote_parsing as remote_parsing_mod, settings as settings_mod
+
+    src += open(remote_parsing_mod.__file__, encoding="utf-8").read()
+    src += open(settings_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -588,5 +592,13 @@ def test_window_actions_cover_menus() -> None:
         "group_repositories",
         "recent_repository_ids",
         "current_branch_protected",
+        "emitTokenInvalidated",
+        "useExternalCredentialHelper",
+        "Diff options",
+        "hideWhitespaceInHistoryDiff",
+        "hideWhitespaceInPullRequestDiff",
+        "isGitHubHost",
+        "create_pull_request_from_preview",
+        "Hide whitespace changes",
     ]:
         assert phrase in src

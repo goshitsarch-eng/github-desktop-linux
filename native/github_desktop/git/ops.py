@@ -1517,9 +1517,10 @@ def push(
     args = ["push", remote, refspec]
     if tags:
         args += list(tags)
-    if set_upstream or not remote_branch:
+    # Desktop `push`: `--set-upstream` when there is no remote branch, else `--force-with-lease`.
+    if not remote_branch:
         args.append("--set-upstream")
-    if force_with_lease:
+    elif force_with_lease:
         args.append("--force-with-lease")
     kwargs: dict = {"env": env, "name": "push"}
     if progress:

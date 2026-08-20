@@ -24,8 +24,10 @@ from ..models import (
     ManualConflictResolution,
     MultiCommitOperationKind,
     PopupType,
+    PreferencesTab,
     PullRequestSuggestedNextAction,
     RepositorySectionTab,
+    RepositorySettingsTab,
     TutorialStep,
     WelcomeStep,
     WorkingDirectoryFileChange,
@@ -940,6 +942,7 @@ class MainWindow(Adw.ApplicationWindow):
         tools.append(self._include_all)
         ignore_ws = Gtk.CheckButton(label="Hide whitespace")
         ignore_ws.connect("toggled", self._on_hide_ws)
+        self._hide_ws = ignore_ws
         tools.append(ignore_ws)
         self._side_toggle = Gtk.CheckButton(label="Side-by-side")
         self._side_toggle.connect("toggled", self._on_side_by_side)
@@ -1096,6 +1099,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_open_submodule=self._open_submodule,
             on_open_binary=self._open_binary_file,
             on_hide_whitespace_changed=self._set_hide_whitespace,
+            on_side_by_side_changed=lambda enabled: self._set_side_by_side_value(enabled),
         )
         paned.set_end_child(self._diff_view)
         self._changes_stack = Gtk.Stack()
@@ -1186,6 +1190,8 @@ class MainWindow(Adw.ApplicationWindow):
             on_collapse=self._on_collapse_diff,
             on_open_submodule=self._open_submodule,
             on_open_binary=self._open_binary_file,
+            on_hide_whitespace_changed=self._set_history_hide_whitespace,
+            on_side_by_side_changed=lambda enabled: self._set_side_by_side_value(enabled),
         )
         right.append(self._hist_diff_view)
         paned.set_end_child(right)
@@ -1257,6 +1263,8 @@ class MainWindow(Adw.ApplicationWindow):
         if hasattr(self, "_side_toggle"):
             self._building = True
             self._side_toggle.set_active(state.side_by_side or self.store.settings.show_side_by_side_diff)
+            if hasattr(self, "_hide_ws"):
+                self._hide_ws.set_active(state.hide_whitespace or self.store.settings.hide_whitespace_in_diffs)
             self._building = False
         page = self._view_stack.get_page(self._changes_page)
         n = len(state.status.working_directory.files) if state.status else 0
@@ -1902,16 +1910,27 @@ class MainWindow(Adw.ApplicationWindow):
             self.store.set_include_all(repo, btn.get_active())
 
     def _on_hide_ws(self, btn: Gtk.CheckButton) -> None:
+        if self._building:
+            return
         self._set_hide_whitespace(btn.get_active())
 
     def _set_hide_whitespace(self, hidden: bool) -> None:
         repo = self.store.selected_repository
         if not repo:
             return
-        state = self.store.state_for(repo)
-        state.hide_whitespace = hidden
-        if state.selected_file:
-            self.store.select_file(repo, state.selected_file)
+        self.store.set_hide_whitespace_in_changes_diff(repo, hidden)
+
+    def _set_history_hide_whitespace(self, hidden: bool) -> None:
+        repo = self.store.selected_repository
+        if not repo:
+            return
+        path = getattr(self._hist_diff_view, "_path", "") or None
+        self.store.set_hide_whitespace_in_history_diff(repo, hidden, path)
+
+    def _set_side_by_side_value(self, enabled: bool) -> None:
+        repo = self.store.selected_repository
+        if repo:
+            self.store.set_side_by_side(repo, enabled)
 
     def _on_side_by_side(self, btn: Gtk.CheckButton) -> None:
         if self._building:
@@ -2267,7 +2286,7 @@ class MainWindow(Adw.ApplicationWindow):
             state.current_diff if state.stashed_visible else None,
             side_by_side=state.side_by_side or self.store.settings.show_side_by_side_diff,
             image_mode=state.image_diff_type or self.store.settings.image_diff_type,
-            hide_whitespace=state.hide_whitespace or self.store.settings.hide_whitespace_in_diffs,
+            hide_whitespace=self.store._hide_ws_changes(state),
             can_collapse=state.original_diff is not None,
             tab_size=self.store.settings.tab_size,
         )
@@ -2283,7 +2302,7 @@ class MainWindow(Adw.ApplicationWindow):
             side_by_side=state.side_by_side or self.store.settings.show_side_by_side_diff,
             image_mode=state.image_diff_type or self.store.settings.image_diff_type,
             show_checks=self.store.settings.show_diff_check_marks,
-            hide_whitespace=state.hide_whitespace or self.store.settings.hide_whitespace_in_diffs,
+            hide_whitespace=self.store._hide_ws_changes(state),
             can_collapse=state.original_diff is not None,
             tab_size=self.store.settings.tab_size,
             comments=list(state.diff_comments),
@@ -2299,7 +2318,7 @@ class MainWindow(Adw.ApplicationWindow):
             side_by_side=state.side_by_side or self.store.settings.show_side_by_side_diff,
             image_mode=state.image_diff_type or self.store.settings.image_diff_type,
             show_checks=False,
-            hide_whitespace=state.hide_whitespace or self.store.settings.hide_whitespace_in_diffs,
+            hide_whitespace=self.store._hide_ws_history(),
             can_collapse=state.original_diff is not None,
             tab_size=self.store.settings.tab_size,
             comments=list(state.diff_comments),
@@ -3042,14 +3061,20 @@ class MainWindow(Adw.ApplicationWindow):
             btn.connect("clicked", lambda _b, addr=item: self._use_author_email(repo, addr))
             self._author_popover_box.append(btn)
         git_btn = Gtk.Button(label="Open Git settings")
-        git_btn.connect("clicked", lambda *_: (self._author_popover.popdown(), show_preferences(self, self.store)))
+        git_btn.connect("clicked", lambda *_: (self._author_popover.popdown(), show_preferences(self, self.store, PreferencesTab.GIT)))
         self._author_popover_box.append(git_btn)
         repo_btn = Gtk.Button(label="Open repository Git config")
-        repo_btn.connect("clicked", lambda *_: (self._author_popover.popdown(), self.store.show_popup(PopupType.REPOSITORY_SETTINGS)))
+        repo_btn.connect(
+            "clicked",
+            lambda *_: (
+                self._author_popover.popdown(),
+                self.store.show_popup(PopupType.REPOSITORY_SETTINGS, tab=RepositorySettingsTab.GIT_CONFIG),
+            ),
+        )
         self._author_popover_box.append(repo_btn)
 
     def _use_author_email(self, repo, email: str) -> None:
-        self.store.set_commit_author_email(repo, email, local=True)
+        self.store.set_commit_author_email(repo, email)
         self._author_popover.popdown()
         self._refresh_author_avatar(repo)
 

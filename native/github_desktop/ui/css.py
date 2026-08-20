@@ -109,6 +109,13 @@ APP_CSS = """
 .diff-empty {
   background-color: alpha(@window_fg_color, 0.04);
 }
+.diff-options-popover {
+  min-width: 16em;
+}
+.diff-options-legend {
+  font-weight: 600;
+  margin-top: 4px;
+}
 .context-menu-item {
   padding: 4px 10px;
 }

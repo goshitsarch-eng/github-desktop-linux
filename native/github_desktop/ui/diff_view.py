@@ -80,6 +80,7 @@ class DiffViewer(Gtk.Box):
         on_open_submodule: Callable[[str], None] | None = None,
         on_open_binary: Callable[[str], None] | None = None,
         on_hide_whitespace_changed: Callable[[bool], None] | None = None,
+        on_side_by_side_changed: Callable[[bool], None] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.add_css_class("diff-view")
@@ -95,6 +96,7 @@ class DiffViewer(Gtk.Box):
         self.on_open_submodule = on_open_submodule
         self.on_open_binary = on_open_binary
         self.on_hide_whitespace_changed = on_hide_whitespace_changed
+        self.on_side_by_side_changed = on_side_by_side_changed
         self._toolbar = Gtk.Box(spacing=6)
         self._toolbar.add_css_class("diff-toolbar")
         self.append(self._toolbar)
@@ -162,6 +164,7 @@ class DiffViewer(Gtk.Box):
         self._diff: FileDiff | None = None
         self._comments: list = []
         self._hide_whitespace = False
+        self._side_by_side = False
         self._force_show_large = False
         self.set_focusable(True)
         key = Gtk.EventControllerKey()
@@ -199,6 +202,7 @@ class DiffViewer(Gtk.Box):
         self._list_store = None
         self._diff = diff
         self._hide_whitespace = hide_whitespace
+        self._side_by_side = side_by_side
         if diff is None:
             self._inner.append(Adw.StatusPage(title="No file selected", icon_name="document-symbolic"))
             return
@@ -213,6 +217,7 @@ class DiffViewer(Gtk.Box):
                 btn.connect("clicked", lambda *_: self.on_open_binary and self.on_open_binary(self._path))
                 page.set_child(btn)
             self._inner.append(page)
+            self._add_diff_options()
             return
         if kind == DiffType.IMAGE and isinstance(diff, ImageDiff):
             prev = _pixbuf_from_bytes(diff.previous)
@@ -224,8 +229,10 @@ class DiffViewer(Gtk.Box):
                         description="DirectDraw Surface files need a DDS decoder Desktop ships for Electron. Open the file in an external editor to compare.",
                     )
                 )
+                self._add_diff_options()
                 return
             self._render_image(diff, image_mode)
+            self._add_diff_options()
             return
         if kind == DiffType.UNRENDERABLE:
             page = Adw.StatusPage(title="The diff is too large to be displayed.")
@@ -235,6 +242,7 @@ class DiffViewer(Gtk.Box):
                 btn.connect("clicked", lambda *_: self.on_open_binary and self.on_open_binary(self._path))
                 page.set_child(btn)
             self._inner.append(page)
+            self._add_diff_options()
             return
         if kind == DiffType.LARGE_TEXT and not self._force_show_large:
             page = Adw.StatusPage(
@@ -255,6 +263,7 @@ class DiffViewer(Gtk.Box):
                 actions.append(open_btn)
             page.set_child(actions)
             self._inner.append(page)
+            self._add_diff_options()
             return
         if kind == DiffType.LARGE_TEXT:
             from ..models import LargeTextDiff
@@ -269,6 +278,7 @@ class DiffViewer(Gtk.Box):
                 )
         if kind == DiffType.SUBMODULE:
             self._render_submodule(diff)
+            self._add_diff_options()
             return
         if not isinstance(diff, TextDiff):
             self._inner.append(Gtk.Label(label="Unable to display this diff"))
@@ -333,6 +343,75 @@ class DiffViewer(Gtk.Box):
         find.set_tooltip_text("Find in diff (Ctrl+F)")
         find.connect("clicked", lambda *_: self.start_search())
         self._toolbar.append(find)
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        self._toolbar.append(spacer)
+        self._add_diff_options()
+
+    def _add_diff_options(self) -> None:
+        """Desktop `DiffOptions` popover: hide whitespace + unified/split display."""
+        btn = Gtk.MenuButton()
+        btn.add_css_class("flat")
+        btn.add_css_class("diff-options-component")
+        btn.set_icon_name("emblem-system-symbolic")
+        btn.set_tooltip_text("Diff options")
+        popover = Gtk.Popover()
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.add_css_class("diff-options-popover")
+        box.set_margin_top(10)
+        box.set_margin_bottom(10)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        heading = Gtk.Label(label="Diff options", xalign=0)
+        heading.add_css_class("heading")
+        box.append(heading)
+        ws_legend = Gtk.Label(label="Whitespace", xalign=0)
+        ws_legend.add_css_class("diff-options-legend")
+        box.append(ws_legend)
+        hide = Gtk.CheckButton(label="Hide whitespace changes")
+        hide.set_active(self._hide_whitespace)
+
+        def on_hide(check: Gtk.CheckButton) -> None:
+            hidden = check.get_active()
+            self._hide_whitespace = hidden
+            if self.on_hide_whitespace_changed:
+                self.on_hide_whitespace_changed(hidden)
+
+        hide.connect("toggled", on_hide)
+        box.append(hide)
+        if self.interactive:
+            note = Gtk.Label(
+                label="Interacting with individual lines or hunks will be disabled while hiding whitespace.",
+                wrap=True,
+                xalign=0,
+            )
+            note.add_css_class("dim-label")
+            note.add_css_class("secondary-text")
+            box.append(note)
+        display_legend = Gtk.Label(label="Diff display", xalign=0)
+        display_legend.add_css_class("diff-options-legend")
+        box.append(display_legend)
+        unified = Gtk.CheckButton(label="Unified")
+        split = Gtk.CheckButton(label="Split")
+        split.set_group(unified)
+        unified.set_active(not self._side_by_side)
+        split.set_active(self._side_by_side)
+
+        def on_unified(check: Gtk.CheckButton) -> None:
+            if check.get_active() and self.on_side_by_side_changed:
+                self.on_side_by_side_changed(False)
+
+        def on_split(check: Gtk.CheckButton) -> None:
+            if check.get_active() and self.on_side_by_side_changed:
+                self.on_side_by_side_changed(True)
+
+        unified.connect("toggled", on_unified)
+        split.connect("toggled", on_split)
+        box.append(unified)
+        box.append(split)
+        popover.set_child(box)
+        btn.set_popover(popover)
+        self._toolbar.append(btn)
 
     def start_search(self) -> None:
         self._search_revealer.set_reveal_child(True)
