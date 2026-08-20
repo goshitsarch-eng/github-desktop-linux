@@ -143,3 +143,11 @@ def get_generic(host: str, username: str | None = None) -> tuple[str | None, str
     if stored_user:
         return stored_user, get_password(GENERIC_SERVICE, f"{stored_user}@{host}")
     return None, None
+
+
+def delete_generic(host: str, username: str) -> None:
+    """Desktop `deleteGenericCredential`."""
+    delete_password(GENERIC_SERVICE, f"{username}@{host}")
+    stored_user = get_password(GENERIC_SERVICE, f"username@{host}")
+    if stored_user == username:
+        delete_password(GENERIC_SERVICE, f"username@{host}")

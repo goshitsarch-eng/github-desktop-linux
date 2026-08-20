@@ -233,6 +233,7 @@ def _text_dialog(
 
     cancel.connect("clicked", cancel_clicked)
     ok.connect("clicked", submit)
+    dialog.connect("closed", cancel_clicked)
     dialog.present(parent)
 
 
@@ -1896,6 +1897,12 @@ def show_sign_in(
     render()
     toolbar.set_content(box)
     dialog.set_child(toolbar)
+
+    def on_closed(*_a: Any) -> None:
+        if store.sign_in_step != SignInStep.SUCCESS:
+            store._finish_credential_sign_in(None)
+
+    dialog.connect("closed", on_closed)
     dialog.present(parent)
 
 
@@ -3295,6 +3302,7 @@ def show_force_push(parent: Gtk.Window, store: AppStore) -> None:
 def show_generic_auth(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
     url = payload.get("remote_url") or ""
     username = str(payload.get("username") or "")
+    on_submit_cb = payload.get("on_submit")
     if not username:
         try:
             from urllib.parse import urlparse
@@ -3308,6 +3316,9 @@ def show_generic_auth(parent: Gtk.Window, store: AppStore, payload: dict[str, An
         from .. import secrets
 
         user, password = values.get("username", ""), values.get("password", "")
+        if callable(on_submit_cb):
+            on_submit_cb(user, password)
+            return
         parsed = url
         host = parsed
         from ..remote_parsing import parse_remote
@@ -3318,7 +3329,19 @@ def show_generic_auth(parent: Gtk.Window, store: AppStore, payload: dict[str, An
         secrets.set_generic(host, user, password)
         store.retry_last_remote_action()
 
-    _text_dialog(parent, "Authentication required", url, [("username", "Username", username), ("password", "Password / token", "")], submit, "Save and retry")
+    def cancel() -> None:
+        if callable(on_submit_cb):
+            on_submit_cb("", "")
+
+    _text_dialog(
+        parent,
+        "Authentication required",
+        url,
+        [("username", "Username", username), ("password", "Password / token", "")],
+        submit,
+        "Save and retry" if not callable(on_submit_cb) else "Continue",
+        on_cancel=cancel,
+    )
 
 
 def show_create_tag(parent: Gtk.Window, store: AppStore, payload: dict[str, Any] | None = None) -> None:

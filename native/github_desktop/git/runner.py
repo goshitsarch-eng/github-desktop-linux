@@ -422,6 +422,8 @@ def env_for_remote(
     Desktop Advanced `useExternalCredentialHelper`: when True, do not force
     GCM_INTERACTIVE=Never so the system Git credential helper can prompt.
     GitHub account tokens are still injected as `http.extraHeader`.
+    The credential helper trampoline is attached via `GIT_CONFIG_PARAMETERS`
+    in `extra` (Desktop `withTrampolineEnv`) so LFS filters inherit it.
     """
     env: dict[str, str] = {
         "GIT_TERMINAL_PROMPT": "0",

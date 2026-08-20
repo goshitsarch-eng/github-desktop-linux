@@ -120,6 +120,11 @@ from .git import (
     write_gitignore,
 )
 from .git.askpass import askpass_env, set_prompt_callback, start_askpass_server
+from .git.credential_helper import (
+    credential_helper_env,
+    set_credential_callback,
+    start_credential_helper_server,
+)
 from .git.runner import find_git, git, resolve_repository_root
 from .github.api import GitHubAPI, on_token_invalidated
 from .github.ci_checks import (
@@ -357,12 +362,15 @@ class AppStore:
         self._background_fetch_interval = BACKGROUND_FETCH_DEFAULT_INTERVAL
         self._background_fetch_in_flight = False
         self._ahead_behind_cache: dict[tuple[str, str, str], AheadBehind | None] = {}
+        self._credential_sign_in_finish: list[Callable[[Account | None], None]] = []
         self._load_accounts()
         self._load_repositories()
         self._maybe_show_accessibility_banner()
         if not os.environ.get("PYTEST_CURRENT_TEST"):
             start_askpass_server()
             set_prompt_callback(self.handle_askpass)
+            start_credential_helper_server()
+            set_credential_callback(self.handle_credential)
         # Desktop `API.onTokenInvalidated` — last AppStore wins (module-level callback).
         on_token_invalidated(self._on_token_invalidated)
 
@@ -590,10 +598,13 @@ class AppStore:
         self.emit()
 
     def close_popup(self) -> None:
+        closed = self.popup
         if self.all_popups:
             self.all_popups.pop()
         self.popup = self.all_popups[-1] if self.all_popups else None
         self.emit()
+        if closed is not None and closed.type == PopupType.SIGN_IN and self.sign_in_step != SignInStep.SUCCESS:
+            self._finish_credential_sign_in(None)
 
     def take_popups(self) -> list[Popup]:
         """Drain Desktop `allPopups` for the GTK window to present (nested dialogs)."""
@@ -770,7 +781,7 @@ class AppStore:
         self.cloning.append(cloning)
         self.select_cloning(clone_id)
         account = account_for_remote(self.accounts, url)
-        env = self.env_for_url(url, account)
+        env = self.env_for_url(url, account, trampoline_path=os.path.dirname(os.path.abspath(dest)) or dest)
         holder: list = []
         cancel = threading.Event()
         self._clone_processes[clone_id] = holder
@@ -940,7 +951,11 @@ class AppStore:
                         cloning.url = clone_url
                 except APIError:
                     pass
-            env_local = self.env_for_url(clone_url, account)
+            env_local = self.env_for_url(
+                clone_url,
+                account,
+                trampoline_path=os.path.dirname(os.path.abspath(path)) or path,
+            )
             clone_repository(
                 clone_url,
                 path,
@@ -1037,7 +1052,7 @@ class AppStore:
                 set_remote_url(repo.path, "origin", created.clone_url)
             else:
                 add_remote(repo.path, "origin", created.clone_url)
-            env = self.env_for_url(created.clone_url, account)
+            env = self.env_for_url(created.clone_url, account, trampoline_path=repo.path)
             status = get_status(repo.path)
             branch = (status.current_branch if status else None) or get_default_branch()
             progress(f"Pushing repository to {account.friendly_endpoint}", 0.7)
@@ -1558,7 +1573,7 @@ class AppStore:
             git(["commit", "-m", "Initial commit"], path, name="tutorial:commit")
             add_remote(path, "origin", created.clone_url)
             progress(f"Pushing repository to {account.friendly_endpoint}", 0.3)
-            env = self.env_for_url(created.clone_url, account)
+            env = self.env_for_url(created.clone_url, account, trampoline_path=path)
             push(path, "origin", branch, None, env=env)
             progress("Finalizing tutorial repository", 0.9)
 
@@ -1599,10 +1614,18 @@ class AppStore:
             return account_for_remote(self.accounts, remotes[0].url)
         return self.accounts[0] if self.accounts else None
 
-    def env_for_url(self, url: str, account: Account | None = None) -> dict[str, str]:
-        """Desktop `withTrampolineEnv`: askpass + GitHub token or generic HTTPS secrets."""
+    def env_for_url(
+        self,
+        url: str,
+        account: Account | None = None,
+        *,
+        trampoline_path: str | None = None,
+        background: bool = False,
+    ) -> dict[str, str]:
+        """Desktop `withTrampolineEnv`: askpass + credential.helper trampoline + token/generic extraHeader."""
         helper = bool(self.settings.use_external_credential_helper)
         extra = askpass_env()
+        extra.update(credential_helper_env(path=trampoline_path, background=background))
         account = account or account_for_remote(self.accounts, url)
         if account:
             return env_for_remote(
@@ -1624,7 +1647,13 @@ class AppStore:
                 )
         return env_for_remote(url, extra=extra or None, use_external_credential_helper=helper)
 
-    def env_for_repo(self, repo: Repository, url: str | None = None) -> dict[str, str] | None:
+    def env_for_repo(
+        self,
+        repo: Repository,
+        url: str | None = None,
+        *,
+        background: bool = False,
+    ) -> dict[str, str] | None:
         if not url:
             try:
                 remotes = get_remotes(repo.path)
@@ -1634,7 +1663,120 @@ class AppStore:
         if not url:
             return None
         account = account_for_remote(self.accounts, url) or self.account_for_repo(repo)
-        return self.env_for_url(url, account)
+        return self.env_for_url(url, account, trampoline_path=repo.path, background=background)
+
+    def _finish_credential_sign_in(self, account: Account | None) -> None:
+        waiters = self._credential_sign_in_finish
+        self._credential_sign_in_finish = []
+        for finish in waiters:
+            try:
+                finish(account)
+            except Exception:
+                log.exception("credential helper sign-in waiter failed")
+
+    def _marshal_prompt(self, show: Callable[..., None], timeout: float = 600.0):
+        """Run `show` on the GTK thread and wait. `show` must eventually set the event via a callback."""
+        event = threading.Event()
+        box: dict[str, object] = {"value": None}
+
+        def finish(value: object = None) -> None:
+            box["value"] = value
+            event.set()
+
+        def go() -> bool:
+            try:
+                show(finish)
+            except Exception:
+                log.exception("credential helper prompt failed")
+                finish(None)
+            return False
+
+        try:
+            from gi.repository import Gio, GLib
+
+            if Gio.Application.get_default() is None:
+                return None
+            GLib.idle_add(go)
+        except Exception:
+            return None
+        event.wait(timeout=timeout)
+        return box["value"]
+
+    def _prompt_github_sign_in(self, endpoint: str) -> Account | None:
+        parsed = parse_remote(endpoint)
+        host = (parsed.hostname if parsed else "").lower()
+        if not host:
+            from urllib.parse import urlparse
+
+            host = (urlparse(endpoint if "://" in endpoint else f"https://{endpoint}").hostname or "").lower()
+        enterprise = host not in ("", "github.com", "www.github.com", "gist.github.com", "api.github.com")
+
+        def show(finish: Callable[[Account | None], None]) -> None:
+            self._credential_sign_in_finish.append(finish)
+            self.begin_sign_in(enterprise, credential_helper_url=endpoint)
+
+        result = self._marshal_prompt(show)
+        return result if isinstance(result, Account) else None
+
+    def _prompt_generic_git_auth(self, endpoint: str, username: str | None) -> dict[str, str] | None:
+        def show(finish: Callable[[object], None]) -> None:
+            def done(user: str, password: str) -> None:
+                if user and password:
+                    finish({"login": user, "token": password})
+                else:
+                    finish(None)
+
+            self.show_popup(
+                PopupType.GENERIC_GIT_AUTHENTICATION,
+                remote_url=endpoint,
+                username=username or "",
+                on_submit=done,
+            )
+
+        result = self._marshal_prompt(show)
+        return result if isinstance(result, dict) else None
+
+    def handle_credential(
+        self,
+        action: str,
+        cred: dict[str, str],
+        *,
+        background: bool = False,
+        trampoline_path: str = ".",
+    ) -> dict[str, str] | None:
+        """Desktop `createCredentialHelperTrampolineHandler` body."""
+        from .git.credential_helper import erase_credential, get_credential, store_credential
+
+        helper = bool(self.settings.use_external_credential_helper)
+        if action == "get":
+            return get_credential(
+                cred,
+                self.accounts,
+                background=background,
+                use_external=helper,
+                prompt_github=None if background else self._prompt_github_sign_in,
+                prompt_generic=None if background else self._prompt_generic_git_auth,
+                trampoline_path=trampoline_path,
+            )
+        if action == "store":
+            store_credential(
+                cred,
+                self.accounts,
+                use_external=helper,
+                trampoline_path=trampoline_path,
+                background=background,
+            )
+            return None
+        if action == "erase":
+            erase_credential(
+                cred,
+                self.accounts,
+                use_external=helper,
+                trampoline_path=trampoline_path,
+                background=background,
+            )
+            return None
+        return None
 
     def handle_askpass(self, prompt: str) -> str:
         """Show Desktop SSH dialogs on the GTK thread and return the answer."""
@@ -3103,7 +3245,7 @@ class AppStore:
             if quiet:
                 self._background_fetch_in_flight = False
             return
-        env = self.env_for_repo(repo, remote.url)
+        env = self.env_for_repo(repo, remote.url, background=quiet)
         extra = [r for r in remotes if r.name == "upstream" and r.name != remote.name]
         progress = None if quiet else self._network_progress_cb("fetch", f"Fetching {remote.name}")
 
@@ -3115,7 +3257,7 @@ class AppStore:
                 log.debug("update remote HEAD failed: %s", exc)
             for other in extra:
                 try:
-                    fetch(repo.path, other.name, env=self.env_for_repo(repo, other.url))
+                    fetch(repo.path, other.name, env=self.env_for_repo(repo, other.url, background=quiet))
                 except GitError as exc:
                     log.debug("upstream fetch failed: %s", exc)
             try:
@@ -3909,6 +4051,7 @@ class AppStore:
                 else:
                     self._add_account(account)
                     self.sign_in_step = SignInStep.SUCCESS
+                    self._finish_credential_sign_in(account)
                     self.close_popup()
                     if self.welcome_step is not None:
                         self.welcome_step = WelcomeStep.CONFIGURE_GIT

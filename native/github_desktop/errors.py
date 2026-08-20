@@ -277,6 +277,8 @@ def classify_git_error(stderr: str, stdout: str = "") -> str | None:
         for needle in (
             "authentication failed",
             "could not read username",
+            "could not read password",
+            "terminal prompts disabled",
             "invalid username or password",
             "error: 401",
             "fatal: could not read password",

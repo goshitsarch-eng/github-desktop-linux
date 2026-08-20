@@ -222,9 +222,11 @@ def test_window_actions_cover_menus() -> None:
     src += open(git_progress.__file__, encoding="utf-8").read()
     src += open(git_ops.__file__, encoding="utf-8").read()
     from github_desktop.git import askpass as git_askpass
+    from github_desktop.git import credential_helper as git_cred_helper
     from github_desktop import store as store_mod, models as models_mod
 
     src += open(git_askpass.__file__, encoding="utf-8").read()
+    src += open(git_cred_helper.__file__, encoding="utf-8").read()
     src += open(store_mod.__file__, encoding="utf-8").read()
     src += open(models_mod.__file__, encoding="utf-8").read()
     from github_desktop import push_pull, commit_dnd
@@ -653,5 +655,9 @@ def test_window_actions_cover_menus() -> None:
         "isCredentialHelperSignIn",
         "withTrampolineEnv",
         "ConfigureGitUser",
+        "credential.helper=desktop",
+        "createCredentialHelperTrampolineHandler",
+        "x-github-request-id",
+        "GIT_CONFIG_PARAMETERS",
     ]:
         assert phrase in src

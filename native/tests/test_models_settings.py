@@ -58,13 +58,14 @@ def test_parse_remotes() -> None:
 
 
 def test_is_github_host() -> None:
-    from github_desktop.remote_parsing import is_github_host
+    from github_desktop.remote_parsing import get_api_endpoint, is_github_host
 
     assert is_github_host("https://github.com/desktop/desktop.git")
     assert is_github_host("git@github.com:desktop/desktop.git")
     assert is_github_host("https://acme.ghe.com/org/repo.git")
     assert not is_github_host("https://gitlab.com/org/repo.git")
     assert not is_github_host("https://bitbucket.org/org/repo.git")
+    assert get_api_endpoint("https://github.com/a/b.git") == "https://api.github.com"
 
 
 def test_oauth_url_contains_scopes_and_state() -> None:
