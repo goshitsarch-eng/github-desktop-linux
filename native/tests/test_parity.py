@@ -405,5 +405,10 @@ def test_window_actions_cover_menus() -> None:
         "Are you sure you want to discard these stashed changes?",
         "overwrite your existing stash",
         "create a detached HEAD",
+        "Learn more about gitignore files",
+        "intentionally untracked files",
+        "No description provided.",
+        "PullRequestQuickView",
+        "GitConfigUserForm",
     ]:
         assert phrase in src

@@ -8,9 +8,10 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gtk
+from gi.repository import Adw, Gdk, GLib, Gtk
 
 from ..models import Branch, BranchType, PopupType, PullRequest
+from ..shells import open_external
 from .menus import attach_right_click, clear_box, copy_text, show_context_menu
 
 
@@ -126,6 +127,13 @@ class BranchesFoldout(Gtk.Popover):
         self._branches: list[Branch] = []
         self._prs: list[PullRequest] = []
         self._pr_checks: dict[int, str] = {}
+        self._pr_quick = Gtk.Popover()
+        self._pr_quick.set_autohide(False)
+        self._pr_quick.set_has_arrow(True)
+        self._pr_quick.set_position(Gtk.PositionType.RIGHT)
+        self._pr_quick_timer = 0
+        self._pr_quick_pr: PullRequest | None = None
+        self.connect("notify::visible", lambda *_: None if self.get_visible() else self._hide_pr_quick())
         self._default_name: str | None = None
         self._recent: list[str] = []
 
@@ -206,6 +214,10 @@ class BranchesFoldout(Gtk.Popover):
                 row.add_suffix(Gtk.Label(label="Draft"))
             row.set_activatable(True)
             row._pr = pr  # type: ignore[attr-defined]
+            motion = Gtk.EventControllerMotion()
+            motion.connect("enter", lambda *_a, r=row, p=pr: self._schedule_pr_quick(r, p))
+            motion.connect("leave", lambda *_a: self._schedule_hide_pr_quick())
+            row.add_controller(motion)
             if self._on_cherry_pick_pr:
                 try:
                     drop = Gtk.DropTarget.new(str, Gdk.DragAction.MOVE)
@@ -222,6 +234,66 @@ class BranchesFoldout(Gtk.Popover):
                 except Exception:
                     pass
             self._pr_list.append(row)
+
+    def _cancel_pr_quick_timer(self) -> None:
+        if self._pr_quick_timer:
+            GLib.source_remove(self._pr_quick_timer)
+            self._pr_quick_timer = 0
+
+    def _schedule_pr_quick(self, row: Gtk.Widget, pr: PullRequest) -> None:
+        self._cancel_pr_quick_timer()
+        self._pr_quick_timer = GLib.timeout_add(250, lambda: self._show_pr_quick(row, pr) or False)
+
+    def _schedule_hide_pr_quick(self) -> None:
+        self._cancel_pr_quick_timer()
+        self._pr_quick_timer = GLib.timeout_add(200, lambda: self._hide_pr_quick() or False)
+
+    def _show_pr_quick(self, row: Gtk.Widget, pr: PullRequest) -> None:
+        """Desktop `PullRequestQuickView` hover card."""
+        self._cancel_pr_quick_timer()
+        self._pr_quick_pr = pr
+        try:
+            self._pr_quick.unparent()
+        except Exception:
+            pass
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(10)
+        box.set_margin_bottom(10)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        box.set_size_request(280, -1)
+        header = Gtk.Box(spacing=8)
+        header.append(Gtk.Label(label="Review requested" if not pr.draft else "Draft pull request", xalign=0, hexpand=True))
+        view = Gtk.Button(label="View on GitHub")
+        view.add_css_class("flat")
+        view.connect("clicked", lambda *_: (self._hide_pr_quick(), open_external(pr.html_url)))
+        header.append(view)
+        box.append(header)
+        status = Gtk.Label(label="Draft" if pr.draft else "Open", xalign=0)
+        status.add_css_class("heading")
+        box.append(status)
+        title = Gtk.Label(label=pr.title, wrap=True, xalign=0)
+        title.add_css_class("title-4")
+        box.append(title)
+        body_text = (pr.body or "").strip() or "No description provided."
+        body = Gtk.Label(label=body_text[:800], wrap=True, xalign=0)
+        body.add_css_class("dim-label")
+        box.append(body)
+        stay = Gtk.EventControllerMotion()
+        stay.connect("enter", lambda *_: self._cancel_pr_quick_timer())
+        stay.connect("leave", lambda *_: self._schedule_hide_pr_quick())
+        box.add_controller(stay)
+        self._pr_quick.set_child(box)
+        self._pr_quick.set_parent(row)
+        self._pr_quick.popup()
+
+    def _hide_pr_quick(self) -> None:
+        self._cancel_pr_quick_timer()
+        try:
+            self._pr_quick.popdown()
+        except Exception:
+            pass
+        self._pr_quick_pr = None
 
     def _branch_row(self, branch: Branch) -> Gtk.Widget:
         subtitle = "Current branch" if branch.name == self._current_name else (branch.upstream or branch.type.value)

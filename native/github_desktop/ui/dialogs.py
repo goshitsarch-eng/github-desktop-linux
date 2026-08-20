@@ -2081,6 +2081,16 @@ def show_repository_settings(parent: Gtk.Window, store: AppStore) -> None:
     remote_page.add(remote_group)
 
     ignore_group = Adw.PreferencesGroup(title=".gitignore")
+    ignore_group.set_description(
+        "This file specifies intentionally untracked files that Git should ignore. "
+        "Files already tracked by Git are not affected."
+    )
+    examples = Gtk.LinkButton(
+        uri="https://docs.github.com/en/get-started/git-basics/ignoring-files",
+        label="Learn more about gitignore files",
+    )
+    examples.set_halign(Gtk.Align.START)
+    ignore_group.add(examples)
     buffer = Gtk.TextBuffer()
     buffer.set_text(read_gitignore(repo.path))
     text = Gtk.TextView(buffer=buffer)
@@ -2112,28 +2122,59 @@ def show_repository_settings(parent: Gtk.Window, store: AppStore) -> None:
     git_group.add(global_check)
     git_group.add(local_check)
     name_row = Adw.EntryRow(title="Name")
-    email_row = Adw.EntryRow(title="Email")
+    from ..models import account_email_choices  # Desktop GitConfigUserForm: repo account emails + stealth + Other
+
+    account = store.account_for_repo(repo)
+    email_choices: list[str] = []
+    if account:
+        for item in account_email_choices(account):
+            if item not in email_choices:
+                email_choices.append(item)
+    current_email = (local_e if use_local else global_e) or ""
+    if current_email and current_email not in email_choices:
+        email_choices.insert(0, current_email)
+    email_choices.append("Other")
+    email_row = Adw.ComboRow(title="Email")
+    email_row.set_model(Gtk.StringList.new(email_choices or ["Other"]))
+    if current_email and current_email in email_choices:
+        email_row.set_selected(email_choices.index(current_email))
+    other_email = Adw.EntryRow(title="Other email")
+    other_email.set_text(current_email)
+    other_email.set_visible(False)
+
+    def sync_other(*_a: Any) -> None:
+        idx = email_row.get_selected()
+        other_email.set_visible(local_check.get_active() and idx >= 0 and idx == len(email_choices) - 1)
+
+    email_row.connect("notify::selected", sync_other)
     name_row.set_text((local_n if use_local else global_n) or "")
-    email_row.set_text((local_e if use_local else global_e) or "")
     git_group.add(name_row)
     git_group.add(email_row)
+    git_group.add(other_email)
     save_git = Gtk.Button(label="Save Git config")
+
+    def _selected_email() -> str:
+        idx = email_row.get_selected()
+        if idx < 0 or idx >= len(email_choices) - 1:
+            return other_email.get_text().strip()
+        model = email_row.get_model()
+        return model.get_string(idx) if model is not None else other_email.get_text().strip()
 
     def apply_location(*_a: Any) -> None:
         local = local_check.get_active()
         name_row.set_sensitive(local)
         email_row.set_sensitive(local)
+        other_email.set_sensitive(local)
         if local:
             name_row.set_text(local_n or global_n or "")
-            email_row.set_text(local_e or global_e or "")
         else:
             name_row.set_text(global_n or "")
-            email_row.set_text(global_e or "")
+        sync_other()
 
     def save_g(*_a: Any) -> None:
         if local_check.get_active():
             set_config_value(repo.path, "user.name", name_row.get_text())
-            set_config_value(repo.path, "user.email", email_row.get_text())
+            set_config_value(repo.path, "user.email", _selected_email())
         else:
             remove_config_value(repo.path, "user.name")
             remove_config_value(repo.path, "user.email")
