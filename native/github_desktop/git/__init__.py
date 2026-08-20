@@ -1,6 +1,15 @@
 """Git operations package."""
 
 from .diff import format_discard_patch, format_partial_patch, parse_unified_diff, selectable_line_indices, side_by_side_rows
+from .expansion import (
+    DEFAULT_DIFF_EXPANSION_STEP,
+    apply_expansion_metadata,
+    can_expand_diff,
+    copy_text_diff,
+    expand_text_diff_hunk,
+    expand_whole_text_diff,
+    remap_selection,
+)
 from .ops import (
     abort_cherry_pick,
     abort_merge,
@@ -31,6 +40,8 @@ from .ops import (
     get_ahead_behind,
     get_all_tags,
     get_author_identity,
+    get_blob_contents,
+    get_blob_lines,
     get_branches,
     get_changed_files,
     get_commit,
@@ -45,6 +56,7 @@ from .ops import (
     get_status,
     get_submodules,
     get_working_directory_diff,
+    get_working_directory_lines,
     init_repository,
     interactive_rebase_todo,
     is_lfs_repo,

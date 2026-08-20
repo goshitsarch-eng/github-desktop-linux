@@ -221,6 +221,28 @@ def get_working_directory_diff(
     return _diff_from_result(repo, file.path, file.status, result, commitish=None)
 
 
+def get_blob_contents(repo: str, commitish: str, path: str) -> bytes:
+    result = git(["show", f"{commitish}:{path}"], repo, success_exit_codes={0, 128}, name="getBlobContents", binary=True)
+    if result.exit_code != 0:
+        return b""
+    return result.stdout_bytes or result.stdout.encode("utf-8", errors="replace")
+
+
+def get_working_directory_lines(repo: str, path: str) -> list[str]:
+    full = os.path.join(repo, path)
+    try:
+        return Path(full).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+
+
+def get_blob_lines(repo: str, commitish: str, path: str) -> list[str]:
+    data = get_blob_contents(repo, commitish, path)
+    if not data:
+        return []
+    return data.decode("utf-8", errors="replace").splitlines()
+
+
 def get_commit_diff(
     repo: str,
     path: str,

@@ -55,6 +55,8 @@ class Settings:
     selected_repository_id: int | None = None
     repository_section: str = "Changes"
     ask_for_confirmation_on_force_push: bool = True
+    zoom_factor: float = 1.0
+    recent_branches: dict[str, list[str]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

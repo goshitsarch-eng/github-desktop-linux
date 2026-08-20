@@ -24,10 +24,13 @@ KEYWORDS = {
     ".rb": r"\b(BEGIN|END|alias|and|begin|break|case|class|def|defined|do|else|elsif|end|ensure|false|for|if|in|module|next|nil|not|or|redo|rescue|retry|return|self|super|then|true|undef|unless|until|when|while|yield)\b",
     ".sh": r"\b(alias|break|case|do|done|elif|else|esac|export|fi|for|function|if|in|local|return|select|then|time|until|while)\b",
     ".json": r"\b(true|false|null)\b",
+    ".jsx": r"\b(async|await|break|case|catch|class|const|continue|default|else|export|extends|false|finally|for|function|if|import|in|instanceof|let|new|null|return|static|super|switch|this|throw|true|try|typeof|var|void|while|yield)\b",
+    ".php": r"\b(abstract|and|array|as|break|case|catch|class|const|continue|echo|else|elseif|extends|final|for|foreach|function|if|include|interface|namespace|new|or|private|protected|public|return|static|switch|throw|trait|try|use|while|xor)\b",
+    ".cs": r"\b(abstract|as|base|bool|break|byte|case|catch|class|const|continue|decimal|default|delegate|do|double|else|enum|event|explicit|extern|false|finally|fixed|float|for|foreach|goto|if|implicit|in|int|interface|internal|is|lock|long|namespace|new|null|object|operator|out|override|params|private|protected|public|readonly|ref|return|sealed|short|static|string|struct|switch|this|throw|true|try|typeof|uint|ulong|unchecked|unsafe|ushort|using|virtual|void|volatile|while)\b",
 }
 
 HASH_COMMENTS = {".py", ".rb", ".sh", ".yml", ".yaml", ".toml"}
-SLASH_COMMENTS = {".js", ".ts", ".tsx", ".rs", ".go", ".c", ".h", ".cpp", ".java"}
+SLASH_COMMENTS = {".js", ".ts", ".tsx", ".jsx", ".rs", ".go", ".c", ".h", ".cpp", ".java", ".php", ".cs", ".kt", ".swift", ".vue"}
 
 
 def highlight_diff_line(text: str, path: str) -> str:

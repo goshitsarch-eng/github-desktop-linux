@@ -670,7 +670,7 @@ def show_rename_branch(parent: Gtk.Window, store: AppStore) -> None:
     if not repo:
         return
     state = store.state_for(repo)
-    current = state.status.current_branch if state.status else ""
+    current = payload.get("branch") or (state.status.current_branch if state.status else "")
 
     def submit(values: dict[str, str]) -> None:
         new = values.get("name", "").strip()
@@ -928,10 +928,13 @@ def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
     theme_row.set_selected(["system", "light", "dark"].index(s.theme) if s.theme in ("system", "light", "dark") else 0)
     tab_row = Adw.SpinRow(title="Diff tab size")
     tab_row.set_adjustment(Gtk.Adjustment(value=s.tab_size, lower=1, upper=8, step_increment=1))
+    zoom_row = Adw.SpinRow(title="Zoom")
+    zoom_row.set_adjustment(Gtk.Adjustment(value=s.zoom_factor, lower=0.7, upper=3.0, step_increment=0.1))
     side_row = Adw.SwitchRow(title="Show side-by-side diffs", active=s.show_side_by_side_diff)
     ws_row = Adw.SwitchRow(title="Hide whitespace in diffs", active=s.hide_whitespace_in_diffs)
     theme_group.add(theme_row)
     theme_group.add(tab_row)
+    theme_group.add(zoom_row)
     theme_group.add(side_row)
     theme_group.add(ws_row)
     appearance.add(theme_group)
@@ -991,6 +994,7 @@ def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
     def persist(*_a: Any) -> None:
         s.theme = ["system", "light", "dark"][theme_row.get_selected()]
         s.tab_size = int(tab_row.get_value())
+        s.zoom_factor = float(zoom_row.get_value())
         s.show_side_by_side_diff = side_row.get_active()
         s.hide_whitespace_in_diffs = ws_row.get_active()
         s.notifications_enabled = n_row.get_active()
@@ -1015,6 +1019,7 @@ def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
             pass
         store.persist_settings()
         store.apply_theme()
+        store.set_zoom(s.zoom_factor)
 
     dialog.connect("closed", persist)
     dialog.present(parent)
@@ -1295,3 +1300,89 @@ def show_tutorial(parent: Gtk.Window, store: AppStore) -> None:
 
 def show_checks(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
     _alert(parent, "Checks failed", str(payload.get("error") or "One or more checks failed on the pull request."), cancel=None)
+
+
+def show_reorder_commits(parent: Gtk.Window, store: AppStore, to_move: list) -> None:
+    """Keyboard-first reorder: ↑/↓ choose the commit to insert before, Enter applies."""
+    repo = store.selected_repository
+    if not repo or not to_move:
+        return
+    state = store.state_for(repo)
+    local = [c for c in state.commits if c.sha in set(state.local_commit_shas)] or list(state.commits)
+    moving_shas = {c.sha for c in to_move}
+    candidates = [c for c in local if c.sha not in moving_shas]
+    if not candidates:
+        store.reorder_onto(repo, to_move, None)
+        return
+    dialog = Adw.Dialog()
+    dialog.set_content_width(460)
+    dialog.set_content_height(420)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(
+        Adw.WindowTitle(
+            title="Reorder commits",
+            subtitle="Use Up/Down then Enter to move before the selected commit. Escape cancels.",
+        )
+    )
+    toolbar.add_top_bar(header)
+    scroller = Gtk.ScrolledWindow(vexpand=True)
+    listbox = Gtk.ListBox()
+    listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
+    for commit in candidates:
+        row = Adw.ActionRow(title=commit.summary, subtitle=commit.short_sha)
+        row._commit = commit  # type: ignore[attr-defined]
+        listbox.append(row)
+    scroller.set_child(listbox)
+    apply_btn = Gtk.Button(label="Move before selected")
+    apply_btn.add_css_class("suggested-action")
+
+    def apply(*_a: Any) -> None:
+        row = listbox.get_selected_row()
+        target = getattr(row, "_commit", None) if row else None
+        dialog.close()
+        store.reorder_onto(repo, to_move, target)
+
+    apply_btn.connect("clicked", apply)
+    listbox.connect("row-activated", lambda *_: apply())
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+    box.set_margin_top(12)
+    box.set_margin_bottom(12)
+    box.set_margin_start(12)
+    box.set_margin_end(12)
+    box.append(scroller)
+    box.append(apply_btn)
+    toolbar.set_content(box)
+    dialog.set_child(toolbar)
+    controller = Gtk.EventControllerKey()
+
+    def on_key(_c, keyval, _code, _mod) -> bool:
+        if keyval in (65307,):  # Escape
+            dialog.close()
+            return True
+        if keyval in (65293, 65421):  # Return / KP_Enter
+            apply()
+            return True
+        if keyval in (65362, 65364):  # Up / Down
+            rows = []
+            child = listbox.get_first_child()
+            while child is not None:
+                if isinstance(child, Gtk.ListBoxRow):
+                    rows.append(child)
+                child = child.get_next_sibling()
+            if not rows:
+                return True
+            current = listbox.get_selected_row()
+            idx = rows.index(current) if current in rows else 0
+            idx = idx - 1 if keyval == 65362 else idx + 1
+            idx = max(0, min(len(rows) - 1, idx))
+            listbox.select_row(rows[idx])
+            return True
+        return False
+
+    controller.connect("key-pressed", on_key)
+    dialog.add_controller(controller)
+    first = listbox.get_row_at_index(0)
+    if first:
+        listbox.select_row(first)
+    dialog.present(parent)

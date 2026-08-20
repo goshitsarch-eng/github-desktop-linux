@@ -34,8 +34,10 @@ from ..models import (
 from ..shells import open_external
 from ..store import AppStore
 from ..version import APP_NAME
-from .dialogs import present_popup, show_preferences
+from .branches import BranchesFoldout
+from .dialogs import present_popup, show_preferences, show_reorder_commits
 from .diff_view import DiffViewer
+from .emoji import matching_shortcodes
 from .menus import attach_right_click, clear_box, copy_text, show_context_menu
 
 
@@ -142,7 +144,7 @@ class MainWindow(Adw.ApplicationWindow):
         add("show-changes", lambda: self.store.set_section(RepositorySectionTab.CHANGES))
         add("show-history", lambda: self.store.set_section(RepositorySectionTab.HISTORY))
         add("choose-repository", self._toggle_repo_sidebar)
-        add("show-branches", lambda: self._branch_btn.popup() if hasattr(self, "_branch_btn") else None)
+        add("show-branches", lambda: self._branches_foldout.popup_and_focus() if hasattr(self, "_branches_foldout") else None)
         add("go-to-commit-message", lambda: self._summary.grab_focus() if hasattr(self, "_summary") else None)
         add("push", lambda: self._repo_op(lambda r: self.store.push_repo(r)))
         add("force-push", lambda: self.store.show_popup(PopupType.CONFIRM_FORCE_PUSH))
@@ -174,6 +176,25 @@ class MainWindow(Adw.ApplicationWindow):
         add("create-tag", lambda: self.store.show_popup(PopupType.CREATE_TAG))
         add("generate-commit-message", lambda: self.store.show_popup(PopupType.GENERATE_COMMIT_MESSAGE_DISCLAIMER))
         add("compare-to-branch", lambda: self.store.set_section(RepositorySectionTab.HISTORY))
+        add("install-cli", self.store.install_cli)
+        add("toggle-changes-filter", self.store.toggle_changes_filter)
+        add("zoom-in", lambda: self.store.set_zoom(self.store.settings.zoom_factor + 0.1))
+        add("zoom-out", lambda: self.store.set_zoom(self.store.settings.zoom_factor - 0.1))
+        add("zoom-reset", lambda: self.store.set_zoom(1.0))
+        add("update-from-default", lambda: self._repo_op(self.store.update_from_default_branch))
+        add("branch-on-github", lambda: self._repo_op(self.store.view_branch_on_github))
+        add("report-issue", lambda: open_external("https://github.com/goshitsarch-eng/github-desktop-linux/issues/new"))
+        add("contact-support", lambda: open_external("https://github.com/contact?from_desktop_app=1"))
+        add("show-guides", lambda: open_external("https://docs.github.com/en/desktop"))
+        add("show-shortcuts", lambda: open_external("https://docs.github.com/en/desktop/installing-and-configuring-github-desktop/overview/keyboard-shortcuts"))
+        add("cut", lambda: self._edit_action("cut"))
+        add("copy", lambda: self._edit_action("copy"))
+        add("paste", lambda: self._edit_action("paste"))
+        add("select-all", lambda: self._edit_action("select-all"))
+        self.add_css_class("github-desktop-zoom")
+        from .css import apply_zoom
+
+        apply_zoom(self.store.settings.zoom_factor)
 
     def _install_shortcuts(self) -> None:
         ctrl = {
@@ -208,6 +229,15 @@ class MainWindow(Adw.ApplicationWindow):
             "<Ctrl>f": "find",
             "<Ctrl>z": "undo-commit",
             "<Alt>p": "preview-pull-request",
+            "<Ctrl>h": "toggle-stash",
+            "<Ctrl>l": "toggle-changes-filter",
+            "<Ctrl>equal": "zoom-in",
+            "<Ctrl>plus": "zoom-in",
+            "<Ctrl>minus": "zoom-out",
+            "<Ctrl>0": "zoom-reset",
+            "<Ctrl><Shift>u": "update-from-default",
+            "<Ctrl><Shift>b": "compare-to-branch",
+            "<Ctrl><Alt>b": "branch-on-github",
         }
         for accel, name in ctrl.items():
             self.get_application().set_accels_for_action(f"win.{name}", [accel])
@@ -338,8 +368,21 @@ class MainWindow(Adw.ApplicationWindow):
         self._repo_btn.connect("clicked", lambda *_: self._toggle_repo_sidebar())
         header.pack_start(self._repo_btn)
 
-        self._branch_btn = Gtk.MenuButton(icon_name="view-list-symbolic")
+        self._branch_btn = Gtk.MenuButton()
         self._branch_btn.set_always_show_arrow(True)
+        self._branches_foldout = BranchesFoldout(
+            on_checkout=lambda b: self._repo_op(lambda r: self.store.checkout(r, b)),
+            on_create=lambda: self.store.show_popup(PopupType.CREATE_BRANCH),
+            on_rename=lambda b: self.store.show_popup(PopupType.RENAME_BRANCH, branch=b.name),
+            on_delete=lambda b: self.store.show_popup(
+                PopupType.DELETE_REMOTE_BRANCH if b.type == BranchType.REMOTE else PopupType.DELETE_BRANCH,
+                branch=b.name_without_remote if b.type == BranchType.REMOTE else b.name,
+            ),
+            on_merge=lambda b: self._repo_op(lambda r: self.store.merge_branch(r, b.name)),
+            on_pr=lambda pr: self._repo_op(lambda r: self.store.checkout_pull_request(r, pr)),
+            on_view_github=lambda b: self._repo_op(lambda r: self.store.view_branch_on_github(r, b.name)),
+        )
+        self._branch_btn.set_popover(self._branches_foldout)
         header.pack_start(self._branch_btn)
 
         self._push_btn = Gtk.Button(label="Fetch origin")
@@ -390,8 +433,16 @@ class MainWindow(Adw.ApplicationWindow):
         file_m.append("Add local repository…", "win.add-local-repository")
         file_m.append("Clone repository…", "win.clone-repository")
         file_m.append("Options…", "win.preferences")
+        file_m.append("Install command line tool…", "win.install-cli")
         file_m.append("Quit", "app.quit")
         menu.append_submenu("File", file_m)
+        edit = Gio.Menu()
+        edit.append("Cut", "win.cut")
+        edit.append("Copy", "win.copy")
+        edit.append("Paste", "win.paste")
+        edit.append("Select all", "win.select-all")
+        edit.append("Find", "win.find")
+        menu.append_submenu("Edit", edit)
         view = Gio.Menu()
         view.append("Changes", "win.show-changes")
         view.append("History", "win.show-history")
@@ -399,6 +450,10 @@ class MainWindow(Adw.ApplicationWindow):
         view.append("Branches list", "win.show-branches")
         view.append("Go to summary", "win.go-to-commit-message")
         view.append("Show stashed changes", "win.toggle-stash")
+        view.append("Toggle changes filter", "win.toggle-changes-filter")
+        view.append("Reset zoom", "win.zoom-reset")
+        view.append("Zoom in", "win.zoom-in")
+        view.append("Zoom out", "win.zoom-out")
         menu.append_submenu("View", view)
         repo = Gio.Menu()
         repo.append("Push", "win.push")
@@ -418,16 +473,23 @@ class MainWindow(Adw.ApplicationWindow):
         branch.append("Delete…", "win.delete-branch")
         branch.append("Discard all changes…", "win.discard-all")
         branch.append("Stash all changes…", "win.stash-all")
+        branch.append("Update from default branch", "win.update-from-default")
+        branch.append("Compare to branch", "win.compare-to-branch")
         branch.append("Merge into current branch…", "win.merge-branch")
         branch.append("Squash and merge…", "win.squash-merge")
         branch.append("Rebase current branch…", "win.rebase-branch")
         branch.append("Compare on GitHub", "win.compare-on-github")
+        branch.append("View branch on GitHub", "win.branch-on-github")
         branch.append("Preview pull request", "win.preview-pull-request")
         branch.append("Create pull request", "win.open-pull-request")
         menu.append_submenu("Branch", branch)
         help_m = Gio.Menu()
+        help_m.append("Report issue…", "win.report-issue")
+        help_m.append("Contact GitHub support…", "win.contact-support")
+        help_m.append("Show user guides", "win.show-guides")
+        help_m.append("Show keyboard shortcuts", "win.show-shortcuts")
+        help_m.append("Show logs in file manager", "win.show-logs")
         help_m.append("About GitHub Desktop", "win.about")
-        help_m.append("Show logs", "win.show-logs")
         menu.append_submenu("Help", help_m)
         return menu
 
@@ -474,6 +536,14 @@ class MainWindow(Adw.ApplicationWindow):
             btn.connect("toggled", lambda b, v=value: b.get_active() and self._set_file_filter(v))
             self._filter_buttons[value] = btn
             chips.append(btn)
+        self._kind_buttons: dict[str, Gtk.ToggleButton] = {}
+        for value, label in (("new", "New"), ("modified", "Modified"), ("deleted", "Deleted")):
+            btn = Gtk.ToggleButton(label=label)
+            btn.add_css_class("filter-chip")
+            btn.connect("toggled", lambda b, v=value: self._set_kind_filter(v, b.get_active()))
+            self._kind_buttons[value] = btn
+            chips.append(btn)
+        self._filter_bar = chips
         left.append(chips)
         tools = Gtk.Box(spacing=6)
         self._include_all = Gtk.CheckButton(label="Include all")
@@ -519,6 +589,13 @@ class MainWindow(Adw.ApplicationWindow):
         self._coauthor_entry = Gtk.Entry()
         self._coauthor_entry.set_placeholder_text("Name <email> or @username")
         self._coauthor_entry.set_visible(False)
+        self._coauthor_store = Gtk.ListStore(str)
+        co_completion = Gtk.EntryCompletion()
+        co_completion.set_model(self._coauthor_store)
+        co_completion.set_text_column(0)
+        co_completion.set_minimum_key_length(1)
+        self._coauthor_entry.set_completion(co_completion)
+        self._summary.set_completion(completion)
         btn_row = Gtk.Box(spacing=6)
         commit_btn = Gtk.Button(label="Commit to branch")
         commit_btn.add_css_class("suggested-action")
@@ -549,7 +626,9 @@ class MainWindow(Adw.ApplicationWindow):
             on_line_toggle=self._on_line_toggle,
             on_hunk_toggle=self._on_hunk_toggle,
             on_discard_selection=self._on_discard_selection,
-            on_expand=self._on_expand_diff,
+            on_expand_hunk=self._on_expand_hunk,
+            on_expand_whole=self._on_expand_diff,
+            on_collapse=self._on_collapse_diff,
             on_image_mode=self._on_image_mode,
         )
         paned.set_end_child(self._diff_view)
@@ -587,7 +666,12 @@ class MainWindow(Adw.ApplicationWindow):
         files_scroll.set_min_content_height(120)
         files_scroll.set_child(self._hist_files)
         right.append(files_scroll)
-        self._hist_diff_view = DiffViewer(interactive=False)
+        self._hist_diff_view = DiffViewer(
+            interactive=False,
+            on_expand_hunk=self._on_expand_hunk,
+            on_expand_whole=self._on_expand_diff,
+            on_collapse=self._on_collapse_diff,
+        )
         right.append(self._hist_diff_view)
         paned.set_end_child(right)
         return paned
@@ -610,7 +694,16 @@ class MainWindow(Adw.ApplicationWindow):
         state = self.store.state_for(repo)
         branch = state.status.current_branch if state.status else "detached"
         self._branch_btn.set_label(branch or "detached HEAD")
-        self._branch_btn.set_menu_model(self._branch_menu(state))
+        self._branches_foldout.refresh(
+            state.branches,
+            state.pull_requests,
+            current=state.status.current_branch if state.status else None,
+            default_name=self.store.default_branch_name(repo),
+            recent=self.store.settings.recent_branches.get(repo.path, []),
+            has_github=bool(repo.github),
+        )
+        if hasattr(self, "_filter_bar"):
+            self._filter_bar.set_visible(self.store.settings.show_changes_filter)
         self._update_push_label(state)
         self._update_checks(state)
         self._update_tutorial_banner(repo, state)
@@ -710,26 +803,42 @@ class MainWindow(Adw.ApplicationWindow):
             if row is None:
                 break
             self._repo_list.remove(row)
-        for repo in self.store.repositories:
-            if needle and needle not in repo.display_name.lower() and needle not in repo.path.lower():
-                continue
-            row = Adw.ActionRow(title=repo.display_name, subtitle=repo.path)
-            if repo.is_missing:
-                row.set_subtitle("Can't find this repository")
-            ab = self.store.state_for(repo).ahead_behind
-            if ab and self.store.settings.repository_indicators_enabled:
-                extra = []
-                if ab.ahead:
-                    extra.append(f"↑{ab.ahead}")
-                if ab.behind:
-                    extra.append(f"↓{ab.behind}")
-                if extra:
-                    row.add_suffix(Gtk.Label(label=" ".join(extra)))
-            if repo.github:
-                row.add_prefix(Gtk.Image.new_from_icon_name("user-bookmarks-symbolic"))
-            row.set_activatable(True)
-            row.connect("activated", lambda _r, rid=repo.id: self.store.select_repository(rid))
-            self._repo_list.append(row)
+        github = [r for r in self.store.repositories if r.github]
+        other = [r for r in self.store.repositories if not r.github]
+
+        def add_group(title: str, repos) -> None:
+            if not repos:
+                return
+            header = Gtk.ListBoxRow()
+            header.set_selectable(False)
+            header.set_activatable(False)
+            label = Gtk.Label(label=title, xalign=0)
+            label.add_css_class("heading")
+            header.set_child(label)
+            self._repo_list.append(header)
+            for repo in repos:
+                if needle and needle not in repo.display_name.lower() and needle not in repo.path.lower():
+                    continue
+                row = Adw.ActionRow(title=repo.display_name, subtitle=repo.path)
+                if repo.is_missing:
+                    row.set_subtitle("Can't find this repository")
+                ab = self.store.state_for(repo).ahead_behind
+                if ab and self.store.settings.repository_indicators_enabled:
+                    extra = []
+                    if ab.ahead:
+                        extra.append(f"↑{ab.ahead}")
+                    if ab.behind:
+                        extra.append(f"↓{ab.behind}")
+                    if extra:
+                        row.add_suffix(Gtk.Label(label=" ".join(extra)))
+                if repo.github:
+                    row.add_prefix(Gtk.Image.new_from_icon_name("user-bookmarks-symbolic"))
+                row.set_activatable(True)
+                row.connect("activated", lambda _r, rid=repo.id: self.store.select_repository(rid))
+                self._repo_list.append(row)
+
+        add_group("GitHub", github)
+        add_group("Other", other)
         for cloning in self.store.cloning:
             row = Adw.ActionRow(title="Cloning…", subtitle=cloning.url)
             self._repo_list.append(row)
@@ -764,6 +873,20 @@ class MainWindow(Adw.ApplicationWindow):
             files = [f for f in files if f.include]
         elif mode == ChangesListFilter.EXCLUDED.value:
             files = [f for f in files if not f.include]
+        if state.filter_new or state.filter_modified or state.filter_deleted:
+            allowed = set()
+            if state.filter_new:
+                allowed |= {AppFileStatusKind.NEW, AppFileStatusKind.UNTRACKED}
+            if state.filter_modified:
+                allowed |= {
+                    AppFileStatusKind.MODIFIED,
+                    AppFileStatusKind.RENAMED,
+                    AppFileStatusKind.COPIED,
+                    AppFileStatusKind.CONFLICTED,
+                }
+            if state.filter_deleted:
+                allowed |= {AppFileStatusKind.DELETED}
+            files = [f for f in files if f.status.kind in allowed]
         self._building = True
         clear_box(self._file_list)
         for file in files:
@@ -854,6 +977,10 @@ class MainWindow(Adw.ApplicationWindow):
         summary = self._summary.get_text().strip()
         start, end = self._description.get_buffer().get_bounds()
         description = self._description.get_buffer().get_text(start, end, True).strip()
+        from .emoji import expand_shortcodes
+
+        summary = expand_shortcodes(summary)
+        description = expand_shortcodes(description)
         if not summary:
             self._toast.add_toast(Adw.Toast(title="A commit summary is required"))
             return
@@ -940,16 +1067,8 @@ class MainWindow(Adw.ApplicationWindow):
         f = getattr(row, "_file", None)
         state = self.store.state_for(repo)
         if f and state.selected_commit:
-            diff = get_commit_diff(
-                repo.path, f.path, state.selected_commit.sha, f.status, state.hide_whitespace, state.diff_context
-            )
-            self._hist_diff_view.render(
-                diff,
-                path=f.path,
-                side_by_side=state.side_by_side or self.store.settings.show_side_by_side_diff,
-                image_mode=state.image_diff_type,
-                show_checks=False,
-            )
+            self.store.load_history_diff(repo, f.path, state.selected_commit.sha, f.status)
+            self._render_history_diff(self.store.state_for(repo))
 
     def _on_compare(self, *_args: object) -> None:
         repo = self.store.selected_repository
@@ -1021,6 +1140,9 @@ class MainWindow(Adw.ApplicationWindow):
             side_by_side=state.side_by_side or self.store.settings.show_side_by_side_diff,
             image_mode=state.image_diff_type or self.store.settings.image_diff_type,
             show_checks=self.store.settings.show_diff_check_marks,
+            hide_whitespace=state.hide_whitespace or self.store.settings.hide_whitespace_in_diffs,
+            can_collapse=state.original_diff is not None,
+            tab_size=self.store.settings.tab_size,
         )
 
     def _render_history_diff(self, state) -> None:
@@ -1033,6 +1155,9 @@ class MainWindow(Adw.ApplicationWindow):
             side_by_side=state.side_by_side or self.store.settings.show_side_by_side_diff,
             image_mode=state.image_diff_type or self.store.settings.image_diff_type,
             show_checks=False,
+            hide_whitespace=state.hide_whitespace or self.store.settings.hide_whitespace_in_diffs,
+            can_collapse=state.original_diff is not None,
+            tab_size=self.store.settings.tab_size,
         )
 
     def _on_line_toggle(self, path: str, index: int, included: bool) -> None:
@@ -1070,7 +1195,24 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_expand_diff(self) -> None:
         repo = self.store.selected_repository
         if repo:
-            self.store.expand_diff_context(repo)
+            self.store.expand_whole_diff(repo)
+
+    def _on_expand_hunk(self, hunk_index: int, kind: str) -> None:
+        repo = self.store.selected_repository
+        if repo:
+            self.store.expand_hunk(repo, hunk_index, kind)
+
+    def _on_collapse_diff(self) -> None:
+        repo = self.store.selected_repository
+        if repo:
+            self.store.collapse_expanded_diff(repo)
+
+    def _set_kind_filter(self, kind: str, enabled: bool) -> None:
+        if self._building:
+            return
+        repo = self.store.selected_repository
+        if repo:
+            self.store.set_filter_kind(repo, kind, enabled)
 
     def _on_image_mode(self, mode: str) -> None:
         repo = self.store.selected_repository
@@ -1183,7 +1325,7 @@ class MainWindow(Adw.ApplicationWindow):
                 [
                     (f"Cherry-pick {len(selected)} commits…", lambda: self.store.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind="Cherry-pick", shas=[c.sha for c in selected]), True),
                     (f"Squash {len(selected)} commits…", lambda: self._squash_selected(selected, commit), True),
-                    (f"Reorder {len(selected)} commits…", lambda: self.store.reorder_onto(repo, selected, commit), True),
+                    (f"Reorder {len(selected)} commits…", lambda: show_reorder_commits(self, self.store, selected), True),
                 ]
             )
         else:
@@ -1194,7 +1336,7 @@ class MainWindow(Adw.ApplicationWindow):
                 [
                     ("Reset to commit…", lambda: self.store.show_popup(PopupType.WARNING_BEFORE_RESET, sha=commit.sha), (not is_tip) and local),
                     ("Checkout commit", lambda: self.store.checkout_commit_sha(repo, commit.sha), not is_tip),
-                    ("Reorder commit", lambda: self.store.reorder_onto(repo, [commit], None), True),
+                    ("Reorder commit", lambda: show_reorder_commits(self, self.store, [commit]), True),
                     ("Revert changes in commit", lambda: self.store.revert_commit(repo, commit), True),
                     None,
                     ("Create branch from commit", lambda: self.store.show_popup(PopupType.CREATE_BRANCH, start=commit.sha), True),
@@ -1342,6 +1484,12 @@ class MainWindow(Adw.ApplicationWindow):
             self._issue_store.append([f"#{number} {title}"])
         for login in state.mentions:
             self._issue_store.append([f"@{login}"])
+        for short in matching_shortcodes(""):
+            self._issue_store.append([short])
+        if hasattr(self, "_coauthor_store"):
+            self._coauthor_store.clear()
+            for login in state.mentions:
+                self._coauthor_store.append([f"@{login}"])
 
     def _refresh_compare_dropdown(self, state) -> None:
         if not hasattr(self, "_compare_dropdown"):
@@ -1405,8 +1553,50 @@ class MainWindow(Adw.ApplicationWindow):
         if not repo or not hasattr(self, "_diff_view"):
             return
         try:
-            diff = get_commit_diff(repo.path, file.path, sha, file.status)
+            diff = self.store.load_history_diff(repo, file.path, sha, file.status)
         except Exception:
             diff = None
         self._diff_view.render(diff, path=file.path, show_checks=False)
+
+    def _edit_action(self, action: str) -> None:
+        widget = self.get_focus()
+        if widget is None:
+            return
+        clipboard = self.get_clipboard()
+        if isinstance(widget, Gtk.Editable):
+            if action == "cut":
+                widget.cut_clipboard()
+            elif action == "copy":
+                widget.copy_clipboard()
+            elif action == "paste":
+                widget.paste_clipboard()
+            elif action == "select-all":
+                widget.select_region(0, -1)
+            return
+        if isinstance(widget, Gtk.TextView):
+            buf = widget.get_buffer()
+            bounds = buf.get_selection_bounds()
+            if isinstance(bounds, tuple) and len(bounds) == 3:
+                has_sel, start, end = bounds
+            elif isinstance(bounds, tuple) and len(bounds) == 2:
+                has_sel, start, end = True, bounds[0], bounds[1]
+            else:
+                has_sel, start, end = False, None, None
+            if action == "copy" and has_sel:
+                clipboard.set(buf.get_text(start, end, True))
+            elif action == "cut" and has_sel:
+                clipboard.set(buf.get_text(start, end, True))
+                buf.delete(start, end)
+            elif action == "paste":
+                def _paste(_c, result) -> None:
+                    try:
+                        text = clipboard.read_text_finish(result)
+                    except Exception:
+                        return
+                    if text:
+                        buf.insert_at_cursor(text)
+
+                clipboard.read_text_async(None, _paste)
+            elif action == "select-all":
+                buf.select_range(buf.get_start_iter(), buf.get_end_iter())
 

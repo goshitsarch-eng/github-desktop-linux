@@ -553,12 +553,23 @@ class RebaseInternalState:
     original_branch_tip: str
 
 
+class DiffHunkExpansionType(StrEnum):
+    NONE = "None"
+    UP = "Up"
+    DOWN = "Down"
+    SHORT = "Short"
+    BOTH = "Both"
+
+
 @dataclass
 class DiffHunkHeader:
     old_start_line: int
     old_line_count: int
     new_start_line: int
     new_line_count: int
+
+    def to_diff_line(self) -> str:
+        return f"@@ -{self.old_start_line},{self.old_line_count} +{self.new_start_line},{self.new_line_count} @@"
 
 
 @dataclass
@@ -581,6 +592,7 @@ class DiffHunk:
     lines: list[DiffLine]
     unified_diff_start: int
     unified_diff_end: int
+    expansion_type: DiffHunkExpansionType = DiffHunkExpansionType.NONE
 
 
 @dataclass
@@ -907,6 +919,10 @@ class Progress:
 
 def parse_name_email(value: str) -> tuple[str, str]:
     value = value.strip()
+    if value.startswith("@") and "<" not in value and " " not in value.strip():
+        login = value[1:].strip()
+        if login:
+            return login, f"{login}@users.noreply.github.com"
     if "<" in value and ">" in value:
         name, rest = value.split("<", 1)
         email = rest.split(">", 1)[0]

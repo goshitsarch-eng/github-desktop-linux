@@ -52,7 +52,9 @@ from .git import (
     get_remotes,
     get_stashes,
     get_status,
+    get_blob_lines,
     get_working_directory_diff,
+    get_working_directory_lines,
     git_path_is_repository,
     init_repository,
     merge,
@@ -179,6 +181,11 @@ class RepositoryViewState:
     mentions: list[str] = field(default_factory=list)
     diff_context: int | None = None
     local_commit_shas: list[str] = field(default_factory=list)
+    diff_new_content: list[str] | None = None
+    original_diff: TextDiff | None = None
+    filter_new: bool = False
+    filter_modified: bool = False
+    filter_deleted: bool = False
 
 
 class AppStore:
@@ -663,6 +670,7 @@ class AppStore:
             return
         try:
             diff = get_working_directory_diff(repo.path, file, state.hide_whitespace, state.diff_context)
+            diff = self._prepare_text_diff(repo, file.path, diff)
             state.current_diff = diff
             if isinstance(diff, TextDiff):
                 from .git.diff import selectable_line_indices
@@ -677,6 +685,97 @@ class AppStore:
                 state.selected_file = updated
         except GitError as exc:
             state.error = str(exc)
+
+    def _prepare_text_diff(self, repo: Repository, path: str, diff: FileDiff, commitish: str | None = None) -> FileDiff:
+        if not isinstance(diff, TextDiff) or not diff.hunks:
+            return diff
+        from .git.expansion import MAX_DIFF_EXPANSION_CONTENT, apply_expansion_metadata
+
+        state = self.state_for(repo)
+        if commitish:
+            new_lines = get_blob_lines(repo.path, commitish, path)
+            old_lines = get_blob_lines(repo.path, f"{commitish}^", path)
+        else:
+            new_lines = get_working_directory_lines(repo.path, path)
+            old_lines = get_blob_lines(repo.path, "HEAD", path)
+        state.diff_new_content = new_lines
+        state.original_diff = None
+        content_len = sum(len(line) + 1 for line in new_lines)
+        if content_len > MAX_DIFF_EXPANSION_CONTENT:
+            return apply_expansion_metadata(diff, old_line_count=len(old_lines), new_line_count=len(new_lines))
+        return apply_expansion_metadata(diff, old_line_count=len(old_lines), new_line_count=len(new_lines))
+
+    def expand_hunk(self, repo: Repository, hunk_index: int, kind: str) -> None:
+        from .git.diff import selectable_line_indices
+        from .git.expansion import copy_text_diff, expand_text_diff_hunk, remap_selection
+
+        state = self.state_for(repo)
+        diff = state.current_diff
+        lines = state.diff_new_content
+        if not isinstance(diff, TextDiff) or not lines or hunk_index < 0:
+            return
+        before = copy_text_diff(diff)
+        if state.original_diff is None:
+            state.original_diff = before
+        updated = expand_text_diff_hunk(diff, hunk_index, kind, lines)
+        if updated is None:
+            return
+        file = state.selected_file
+        if file is not None:
+            remapped = remap_selection(before, updated, file.selection)
+            remapped = remapped.with_selectable_lines(selectable_line_indices(updated))
+            updated_file = file.with_selection(remapped)
+            if state.status:
+                from .models import WorkingDirectoryStatus
+
+                files = [updated_file if f.path == file.path else f for f in state.status.working_directory.files]
+                state.status.working_directory = WorkingDirectoryStatus.from_files(files)
+            state.selected_file = updated_file
+        state.current_diff = updated
+        self.emit()
+
+    def expand_whole_diff(self, repo: Repository) -> None:
+        from .git.diff import selectable_line_indices
+        from .git.expansion import copy_text_diff, expand_whole_text_diff, remap_selection
+
+        state = self.state_for(repo)
+        diff = state.current_diff
+        lines = state.diff_new_content
+        if not isinstance(diff, TextDiff) or not lines:
+            return
+        before = copy_text_diff(diff)
+        if state.original_diff is None:
+            state.original_diff = before
+        updated = expand_whole_text_diff(diff, lines)
+        if updated is None:
+            return
+        file = state.selected_file
+        if file is not None:
+            remapped = remap_selection(before, updated, file.selection)
+            remapped = remapped.with_selectable_lines(selectable_line_indices(updated))
+            updated_file = file.with_selection(remapped)
+            if state.status:
+                from .models import WorkingDirectoryStatus
+
+                files = [updated_file if f.path == file.path else f for f in state.status.working_directory.files]
+                state.status.working_directory = WorkingDirectoryStatus.from_files(files)
+            state.selected_file = updated_file
+        state.current_diff = updated
+        self.emit()
+
+    def collapse_expanded_diff(self, repo: Repository) -> None:
+        state = self.state_for(repo)
+        if state.original_diff is None:
+            return
+        from .git.diff import selectable_line_indices
+
+        restored = state.original_diff
+        state.original_diff = None
+        state.current_diff = restored
+        file = state.selected_file
+        if file is not None and isinstance(restored, TextDiff):
+            state.selected_file = file.with_selection(file.selection.with_selectable_lines(selectable_line_indices(restored)))
+        self.emit()
 
     def _advance_tutorial(self, repo: Repository, state: RepositoryViewState) -> None:
         if not repo.tutorial:
@@ -735,6 +834,36 @@ class AppStore:
         return env_for_remote(url)
 
     def commit(
+        self,
+        repo: Repository,
+        summary: str,
+        description: str = "",
+        *,
+        amend: bool = False,
+        co_authors: Sequence[Author] = (),
+    ) -> None:
+        state = self.state_for(repo)
+        if not state.status:
+            return
+        files = [f for f in state.status.working_directory.files if f.include]
+        if not files:
+            raise ValidationError("No files selected for commit")
+        filtered = (
+            state.file_filter != ChangesListFilter.ALL.value
+            or state.filter_new
+            or state.filter_modified
+            or state.filter_deleted
+            or bool(state.filter_text)
+        )
+        if filtered and self.settings.confirm_commit_filtered_changes and not amend:
+            self.show_popup(
+                PopupType.CONFIRM_COMMIT_FILTERED_CHANGES,
+                on_commit=lambda: self._commit_now(repo, summary, description, amend=amend, co_authors=co_authors),
+            )
+            return
+        self._commit_now(repo, summary, description, amend=amend, co_authors=co_authors)
+
+    def _commit_now(
         self,
         repo: Repository,
         summary: str,
@@ -855,11 +984,80 @@ class AppStore:
         self.emit()
 
     def expand_diff_context(self, repo: Repository) -> None:
+        self.expand_whole_diff(repo)
+
+    def set_filter_kind(self, repo: Repository, kind: str, enabled: bool) -> None:
         state = self.state_for(repo)
-        current = state.diff_context or 3
-        state.diff_context = min(200, current * 3)
-        if state.selected_file:
-            self.select_file(repo, state.selected_file)
+        if kind == "new":
+            state.filter_new = enabled
+        elif kind == "modified":
+            state.filter_modified = enabled
+        elif kind == "deleted":
+            state.filter_deleted = enabled
+        self.emit()
+
+    def toggle_changes_filter(self) -> None:
+        self.settings.show_changes_filter = not self.settings.show_changes_filter
+        self.persist_settings()
+        self.emit()
+
+    def set_zoom(self, factor: float) -> None:
+        self.settings.zoom_factor = min(3.0, max(0.7, factor))
+        self.persist_settings()
+        from .ui.css import apply_zoom
+
+        apply_zoom(self.settings.zoom_factor)
+        self.emit()
+
+    def install_cli(self) -> None:
+        from .install_cli import install_cli
+
+        try:
+            install_cli()
+        except OSError as exc:
+            self.show_popup(PopupType.ERROR, error=str(exc))
+            return
+        self.show_popup(PopupType.CLI_INSTALLED)
+
+    def remember_branch(self, repo: Repository, name: str) -> None:
+        recents = [name, *[b for b in self.settings.recent_branches.get(repo.path, []) if b != name]]
+        self.settings.recent_branches[repo.path] = recents[:8]
+        self.persist_settings()
+
+    def default_branch_name(self, repo: Repository) -> str | None:
+        if repo.github and repo.github.default_branch:
+            return repo.github.default_branch
+        try:
+            return get_default_branch()
+        except GitError:
+            return "main"
+
+    def update_from_default_branch(self, repo: Repository) -> None:
+        name = self.default_branch_name(repo)
+        if not name:
+            return
+        state = self.state_for(repo)
+        target = next((b.name for b in state.branches if b.name == name or b.name.endswith("/" + name)), name)
+        self.merge_branch(repo, target)
+
+    def view_branch_on_github(self, repo: Repository, branch: str | None = None) -> None:
+        if not repo.github:
+            return
+        from urllib.parse import quote
+
+        state = self.state_for(repo)
+        name = branch or (state.status.current_branch if state.status else None)
+        if not name:
+            return
+        open_external(f"{repo.github.html_url}/tree/{quote(name)}")
+
+    def checkout_pull_request(self, repo: Repository, pr: PullRequest) -> None:
+        state = self.state_for(repo)
+        branch = next((b for b in state.branches if b.name == pr.head_ref or b.name.endswith("/" + pr.head_ref)), None)
+        if branch:
+            self.checkout(repo, branch)
+            return
+        open_external(pr.html_url)
 
     def discard_selection(self, repo: Repository, path: str) -> None:
         state = self.state_for(repo)
@@ -987,10 +1185,22 @@ class AppStore:
             state.selected_commit_files = get_changed_files(repo.path, commit.sha)
             if state.selected_commit_files:
                 f = state.selected_commit_files[0]
-                state.current_diff = get_commit_diff(
-                    repo.path, f.path, commit.sha, f.status, state.hide_whitespace, state.diff_context
+                state.current_diff = self._prepare_text_diff(
+                    repo,
+                    f.path,
+                    get_commit_diff(
+                        repo.path, f.path, commit.sha, f.status, state.hide_whitespace, state.diff_context
+                    ),
+                    commitish=commit.sha,
                 )
         self.emit()
+
+    def load_history_diff(self, repo: Repository, path: str, sha: str, status) -> FileDiff:
+        state = self.state_for(repo)
+        diff = get_commit_diff(repo.path, path, sha, status, state.hide_whitespace, state.diff_context)
+        prepared = self._prepare_text_diff(repo, path, diff, commitish=sha)
+        state.current_diff = prepared
+        return prepared
 
     def discard_files(self, repo: Repository, files: Sequence[WorkingDirectoryFileChange]) -> None:
         discard_paths(repo.path, [f.path for f in files])
@@ -1108,13 +1318,16 @@ class AppStore:
         if has_changes and strategy == UncommittedChangesStrategy.STASH_ON_CURRENT_BRANCH:
             current = status.current_branch if status else "unknown"
             stash_push(repo.path, current or "unknown")
-        checkout_branch(repo.path, branch.name_without_remote if branch.type == BranchType.REMOTE else branch.name)
+        name = branch.name_without_remote if branch.type == BranchType.REMOTE else branch.name
+        checkout_branch(repo.path, name)
+        self.remember_branch(repo, name)
         self.refresh_repository(repo)
 
     def create_branch_and_checkout(self, repo: Repository, name: str, start_point: str | None = None) -> None:
         name = sanitize_ref_name(name)
         create_branch(repo.path, name, start_point)
         checkout_branch(repo.path, name)
+        self.remember_branch(repo, name)
         self.refresh_repository(repo)
 
     def merge_branch(self, repo: Repository, branch: str, squash: bool = False) -> None:

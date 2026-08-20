@@ -48,6 +48,10 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             assert win.lookup_action("push")
             assert win.lookup_action("create-branch")
             assert win.lookup_action("open-pull-request")
+            assert win.lookup_action("install-cli")
+            assert win.lookup_action("zoom-in")
+            assert win.lookup_action("toggle-changes-filter")
+            assert hasattr(win, "_branches_foldout")
             child = win._stack.get_visible_child_name()
             assert child in {"welcome", "empty", "repo"}
             win._refresh_files()
@@ -58,17 +62,23 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             from github_desktop.git.diff import parse_unified_diff
             from github_desktop.models import DiffSelection, DiffSelectionType
 
+            sample = parse_unified_diff(
+                "@@ -10,3 +10,4 @@\n hello\n-world\n+world!\n line\n"
+            )
+            from github_desktop.git.expansion import apply_expansion_metadata
+
+            sample = apply_expansion_metadata(sample, old_line_count=40, new_line_count=40)
+            selection = DiffSelection.from_initial_selection(DiffSelectionType.ALL)
             viewer = DiffViewer(
                 interactive=True,
                 on_line_toggle=lambda *_: None,
                 on_hunk_toggle=lambda *_: None,
+                on_expand_hunk=lambda *_: None,
+                on_expand_whole=lambda: None,
             )
-            sample = parse_unified_diff(
-                "@@ -1,1 +1,2 @@\n hello\n+world\n"
-            )
-            selection = DiffSelection.from_initial_selection(DiffSelectionType.ALL)
             viewer.render(sample, path="README.md", selection=selection, side_by_side=True)
             viewer.render(sample, path="README.md", selection=selection, side_by_side=False)
+            win._branches_foldout.refresh([], [], current="main", default_name="main", recent=[], has_github=False)
             win.close()
         except Exception as exc:
             errors.append(repr(exc))

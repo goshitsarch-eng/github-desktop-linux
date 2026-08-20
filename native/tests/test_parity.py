@@ -12,6 +12,8 @@ REQUIRED_GIT_FUNCS = [
     "get_status",
     "create_commit",
     "get_working_directory_diff",
+    "get_working_directory_lines",
+    "get_blob_lines",
     "get_commit_diff",
     "get_commits",
     "get_branches",
@@ -116,6 +118,10 @@ def test_window_actions_cover_menus() -> None:
         "open-external-editor",
         "create-tag",
         "stash-all",
+        "install-cli",
+        "toggle-changes-filter",
+        "zoom-in",
+        "update-from-default",
     ]:
         assert action in src
     for phrase in [
@@ -124,5 +130,8 @@ def test_window_actions_cover_menus() -> None:
         "Side-by-side",
         "Cherry-pick",
         "Ignore file",
+        "Install command line tool",
+        "Zoom in",
+        "Modified",
     ]:
         assert phrase in src

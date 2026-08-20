@@ -1,5 +1,12 @@
 """Adwaita stylesheet for diffs, lists, and chrome."""
 
+from __future__ import annotations
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gdk, Gtk
+
 APP_CSS = """
 .diff-view {
   font-family: monospace;
@@ -22,6 +29,10 @@ APP_CSS = """
   color: alpha(@window_fg_color, 0.45);
   min-width: 3.2em;
   font-variant-numeric: tabular-nums;
+}
+.diff-expand {
+  min-width: 1.8em;
+  padding: 0 4px;
 }
 .file-status-new { color: @success_color; }
 .file-status-modified { color: @warning_color; }
@@ -86,20 +97,43 @@ APP_CSS = """
 .compare-cta {
   padding: 8px;
 }
-
+.diff-toolbar {
+  padding: 4px 8px;
+}
+.whitespace-hint {
+  padding: 6px 8px;
+  font-size: 0.85rem;
+  opacity: 0.8;
+}
 """
+
+_provider: Gtk.CssProvider | None = None
+_zoom_provider: Gtk.CssProvider | None = None
 
 
 def load_css() -> None:
-    import gi
-
-    gi.require_version("Gtk", "4.0")
-    from gi.repository import Gdk, Gtk
-
-    provider = Gtk.CssProvider()
-    provider.load_from_data(APP_CSS.encode("utf-8"))
+    global _provider
+    _provider = Gtk.CssProvider()
+    _provider.load_from_data(APP_CSS.encode("utf-8"))
     display = Gdk.Display.get_default()
     if display is not None:
         Gtk.StyleContext.add_provider_for_display(
-            display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+            display, _provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
+
+
+def apply_zoom(factor: float) -> None:
+    """Scale UI chrome similarly to Desktop's Ctrl+0/=/− webview zoom."""
+    global _zoom_provider
+    factor = min(3.0, max(0.7, float(factor)))
+    display = Gdk.Display.get_default()
+    if display is None:
+        return
+    if _zoom_provider is None:
+        _zoom_provider = Gtk.CssProvider()
+        Gtk.StyleContext.add_provider_for_display(
+            display, _zoom_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1
+        )
+    size = round(13 * factor, 2)
+    css = f"window.github-desktop-zoom {{ font-size: {size}pt; }}\n"
+    _zoom_provider.load_from_data(css.encode("utf-8"))
