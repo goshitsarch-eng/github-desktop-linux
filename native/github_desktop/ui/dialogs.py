@@ -2306,26 +2306,97 @@ def show_bypass(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) ->
     account = store.account_for_repo(repo)
     if not account:
         return
+    secret = payload.get("secret")
+    description = "secret"
+    if secret is not None:
+        description = getattr(secret, "description", None) or "secret"
+    description = payload.get("description") or description
 
-    def submit(values: dict[str, str]) -> None:
+    dialog = Adw.Dialog()
+    dialog.set_content_width(520)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(
+        Adw.WindowTitle(
+            title="Bypass push detection",
+            subtitle=f"Why are you bypassing this {description}?",
+        )
+    )
+    cancel = Gtk.Button(label="Cancel")
+    ok = Gtk.Button(label="Allow me to expose this secret")
+    ok.add_css_class("destructive-action")
+    header.pack_start(cancel)
+    header.pack_end(ok)
+    toolbar.add_top_bar(header)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+    box.set_margin_top(12)
+    box.set_margin_bottom(18)
+    box.set_margin_start(12)
+    box.set_margin_end(12)
+    reasons = [
+        (
+            BypassReason.USED_IN_TESTS,
+            "It's used in tests",
+            "The secret poses no risk. If anyone finds it, they cannot do any damage or gain access to sensitive information.",
+        ),
+        (
+            BypassReason.FALSE_POSITIVE,
+            "It's a false positive",
+            "The detected string is not a secret",
+        ),
+        (
+            BypassReason.WILL_FIX_LATER,
+            "I'll fix it later",
+            "The secret is real, I understand the risk, and I will need to revoke it. This will open a security alert and notify admins of this repository.",
+        ),
+    ]
+    group = None
+    selected = {"reason": BypassReason.FALSE_POSITIVE}
+
+    def on_toggled(btn: Gtk.CheckButton, reason: BypassReason) -> None:
+        if btn.get_active():
+            selected["reason"] = reason
+
+    for reason, title, body in reasons:
+        check = Gtk.CheckButton()
+        if group is None:
+            group = check
+        else:
+            check.set_group(group)
+        if reason == BypassReason.FALSE_POSITIVE:
+            check.set_active(True)
+        check.connect("toggled", on_toggled, reason)
+        row = Adw.ActionRow(title=title, subtitle=body)
+        row.set_activatable_widget(check)
+        row.add_prefix(check)
+        box.append(row)
+    toolbar.set_content(box)
+    dialog.set_child(toolbar)
+    closed = {"done": False}
+
+    def close(*_a: Any) -> None:
+        if not closed["done"]:
+            closed["done"] = True
+            dialog.close()
+
+    def submit(*_a: Any) -> None:
+        if closed["done"]:
+            return
+        closed["done"] = True
+        dialog.close()
         from ..github.api import GitHubAPI
 
-        reason = values.get("reason") or BypassReason.FALSE_POSITIVE.value
-        secret = payload.get("secret")
-        placeholder_id = payload.get("placeholder_id") or (getattr(secret, "id", None) if secret is not None else None)
+        placeholder_id = payload.get("placeholder_id") or (
+            getattr(secret, "id", None) if secret is not None else None
+        )
         GitHubAPI.from_account(account).create_push_protection_bypass(
-            repo.github.owner, repo.github.name, reason, placeholder_id=placeholder_id
+            repo.github.owner, repo.github.name, selected["reason"].value, placeholder_id=placeholder_id
         )
         store.push_repo(repo)
 
-    _text_dialog(
-        parent,
-        "Bypass push protection",
-        "Reasons: false_positive, used_in_tests, will_fix_later",
-        [("reason", "Reason", BypassReason.FALSE_POSITIVE.value)],
-        submit,
-        "Bypass",
-    )
+    cancel.connect("clicked", close)
+    ok.connect("clicked", submit)
+    dialog.present(parent)
 
 
 def show_create_fork(parent: Gtk.Window, store: AppStore) -> None:

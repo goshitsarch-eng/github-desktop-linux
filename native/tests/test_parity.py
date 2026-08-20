@@ -91,6 +91,10 @@ REQUIRED_GIT_FUNCS = [
     "create_desktop_stash_entry",
     "discard_working_files",
     "ensure_upstream_remote",
+    "delete_ref",
+    "undo_first_commit",
+    "do_merge_commits_exist_after_commit",
+    "get_last_fetched",
 ]
 
 
@@ -176,6 +180,12 @@ def test_window_actions_cover_menus() -> None:
     src += open(git_askpass.__file__, encoding="utf-8").read()
     src += open(store_mod.__file__, encoding="utf-8").read()
     src += open(models_mod.__file__, encoding="utf-8").read()
+    from github_desktop import push_pull, commit_dnd
+    from github_desktop.ui import css as css_mod
+
+    src += open(push_pull.__file__, encoding="utf-8").read()
+    src += open(commit_dnd.__file__, encoding="utf-8").read()
+    src += open(css_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -277,5 +287,15 @@ def test_window_actions_cover_menus() -> None:
         "with rebase",
         "rebase.backend=merge",
         "leave the tutorial",
+        "Last fetched",
+        "Never fetched",
+        "Allow me to expose this secret",
+        "It's a false positive",
+        "Unable to squash",
+        "Unable to reorder",
+        "commit-drop-squash",
+        "underline-links",
+        "Reverting first commit",
+        "pan-down-symbolic",
     ]:
         assert phrase in src

@@ -27,3 +27,19 @@ def encode_commit_shas(shas: list[str]) -> str:
 def decode_commit_shas(value: object) -> list[str]:
     text = str(value or "")
     return [part for part in text.split(",") if part]
+
+
+DROP_KIND_CSS = {
+    "squash": "commit-drop-squash",
+    "reorder-before": "commit-drop-before",
+    "reorder-after": "commit-drop-after",
+}
+
+
+def drop_kind_css_class(kind: str) -> str:
+    return DROP_KIND_CSS.get(kind, "")
+
+
+def clear_drop_kind_css(widget) -> None:
+    for cls in DROP_KIND_CSS.values():
+        widget.remove_css_class(cls)

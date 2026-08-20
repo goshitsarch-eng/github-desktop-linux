@@ -18,7 +18,6 @@ from ..models import (
     ComparisonMode,
     ComputedAction,
     DiffSelectionType,
-    ForcePushBranchState,
     HistoryTabMode,
     ManualConflictResolution,
     MultiCommitOperationKind,
@@ -28,6 +27,7 @@ from ..models import (
     WelcomeStep,
     WorkingDirectoryFileChange,
 )
+from ..push_pull import describe_push_pull, format_last_fetched
 from ..shells import open_external, open_in_default_program
 from ..store import AppStore
 from ..version import APP_NAME
@@ -100,6 +100,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._install_file_drop()
         self.store.subscribe(self._on_store)
         self.connect("close-request", self._on_close)
+        self._apply_underline_links()
         self._on_store()
 
     def _on_close(self, *_args: object) -> bool:
@@ -150,6 +151,13 @@ class MainWindow(Adw.ApplicationWindow):
             current = popup
             self.store.popup = None
             present_popup(self, self.store, current.type, current.payload)
+        self._apply_underline_links()
+
+    def _apply_underline_links(self) -> None:
+        if self.store.settings.underline_links:
+            self.add_css_class("underline-links")
+        else:
+            self.remove_css_class("underline-links")
 
     def _banner_text(self, kind: BannerType, banner) -> str:
         mapping = {
@@ -553,9 +561,17 @@ class MainWindow(Adw.ApplicationWindow):
         self._branch_btn.set_popover(self._branches_foldout)
         header.pack_start(self._branch_btn)
 
+        self._push_box = Gtk.Box()
+        self._push_box.add_css_class("linked")
         self._push_btn = Gtk.Button(label="Fetch origin")
         self._push_btn.connect("clicked", self._on_push_pull)
-        header.pack_end(self._push_btn)
+        self._push_menu_btn = Gtk.MenuButton()
+        self._push_menu_btn.set_icon_name("pan-down-symbolic")
+        self._push_menu_btn.set_tooltip_text("Fetch and force push")
+        self._push_menu_btn.set_visible(False)
+        self._push_box.append(self._push_btn)
+        self._push_box.append(self._push_menu_btn)
+        header.pack_end(self._push_box)
 
         self._ahead_label = Gtk.Label()
         self._ahead_label.add_css_class("ahead-behind")
@@ -722,6 +738,7 @@ class MainWindow(Adw.ApplicationWindow):
         repo.append("Push", "win.push")
         repo.append("Pull", "win.pull")
         repo.append("Fetch", "win.fetch")
+        repo.append("Force push", "win.force-push")
         repo.append("Remove…", "win.remove-repository")
         repo.append("View on GitHub", "win.view-on-github")
         repo.append("Open in shell", "win.open-in-shell")
@@ -1088,10 +1105,17 @@ class MainWindow(Adw.ApplicationWindow):
         if state.commit_to_amend is not None:
             self._summary.set_text(state.commit_message.summary or state.commit_to_amend.summary)
             self._description.get_buffer().set_text(state.commit_message.description or state.commit_to_amend.body)
-        elif state.commit_message.summary and not self._summary.get_text():
-            self._summary.set_text(state.commit_message.summary)
-            if state.commit_message.description:
-                self._description.get_buffer().set_text(state.commit_message.description)
+        else:
+            msg = state.commit_message
+            applied = getattr(self, "_applied_commit_message_ts", 0)
+            if msg.timestamp and msg.timestamp > applied:
+                self._summary.set_text(msg.summary)
+                self._description.get_buffer().set_text(msg.description or "")
+                self._applied_commit_message_ts = msg.timestamp
+            elif msg.summary and not self._summary.get_text():
+                self._summary.set_text(msg.summary)
+                if msg.description:
+                    self._description.get_buffer().set_text(msg.description)
         amending = state.commit_to_amend is not None
         if hasattr(self, "_commit_btn"):
             if amending and state.status:
@@ -1109,6 +1133,16 @@ class MainWindow(Adw.ApplicationWindow):
             if not repo.github:
                 self._coauthor_check.set_active(False)
                 self._coauthor_entry.set_visible(False)
+            elif state.show_co_authors or state.co_authors:
+                self._coauthor_check.set_active(True)
+                self._coauthor_entry.set_visible(True)
+                if state.co_authors and not self._coauthor_entry.get_text():
+                    self._coauthor_entry.set_text(
+                        ", ".join(
+                            f"{a.name} <{a.email}>" if getattr(a, "email", None) else a.name
+                            for a in state.co_authors
+                        )
+                    )
         if hasattr(self, "_spell"):
             self._spell.set_enabled(self.store.settings.spellcheck_enabled)
         self._refresh_author_avatar(repo)
@@ -1135,6 +1169,8 @@ class MainWindow(Adw.ApplicationWindow):
         kind = self.store.progress_kind
         if not kind:
             self._push_btn.set_sensitive(True)
+            if hasattr(self, "_push_menu_btn"):
+                self._push_menu_btn.set_sensitive(True)
             repo = self.store.selected_repository
             if repo:
                 self._update_push_label(self.store.state_for(repo))
@@ -1152,42 +1188,65 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self._push_btn.set_label(title)
         self._push_btn.set_sensitive(False)
+        if hasattr(self, "_push_menu_btn"):
+            self._push_menu_btn.set_sensitive(False)
+            self._push_menu_btn.set_visible(False)
         if kind == "clone" and self.store.cloning:
             c = self.store.cloning[0]
             self._repo_btn.set_label(f"Cloning {c.url}… {pct}%" if pct else f"Cloning {c.url}…")
+
+    def _remote_name(self, state) -> str | None:
+        status = state.status
+        if status and status.current_upstream_branch:
+            return status.current_upstream_branch.split("/", 1)[0]
+        remotes = getattr(state, "remotes", None) or []
+        if remotes:
+            return remotes[0].name
+        return None
+
+    def _set_push_menu(self, items: tuple[str, ...] | list[str], remote: str | None) -> None:
+        if not hasattr(self, "_push_menu_btn"):
+            return
+        menu = Gio.Menu()
+        name = remote or "origin"
+        for item in items:
+            if item == "fetch":
+                menu.append(f"Fetch {name}", "win.fetch")
+            elif item == "force-push":
+                menu.append(f"Force push {name}", "win.force-push")
+        self._push_menu_btn.set_menu_model(menu)
+        self._push_menu_btn.set_visible(bool(items))
 
     def _update_push_label(self, state) -> None:
         if self.store.progress_kind:
             self._update_network_progress()
             return
-        self._push_btn.set_sensitive(True)
         status = state.status
+        fetched = format_last_fetched(getattr(state, "last_fetched", None))
+        self._push_btn.set_tooltip_text(fetched)
+        if hasattr(self, "_push_menu_btn"):
+            self._push_menu_btn.set_tooltip_text(fetched)
         if not status:
             self._push_btn.set_label("Fetch origin")
+            self._push_btn.set_sensitive(True)
+            self._set_push_menu((), "origin")
             return
         ab = status.branch_ahead_behind
-        if not status.current_upstream_branch:
-            self._push_btn.set_label("Publish branch")
-        elif self.store.current_branch_force_push_state() == ForcePushBranchState.RECOMMENDED:
-            self._push_btn.set_label("Force push")
-        elif ab and ab.ahead and ab.behind:
-            self._push_btn.set_label(f"Pull {ab.behind} / Push {ab.ahead}")
-        elif ab and ab.ahead:
-            extra = ""
-            tags = getattr(state, "local_tags_to_push", None) or []
-            if tags:
-                extra = f" and {len(tags)} tag" + ("s" if len(tags) != 1 else "")
-            self._push_btn.set_label(f"Push {ab.ahead}{extra}")
-        elif tags := (getattr(state, "local_tags_to_push", None) or []):
-            label = "1 tag" if len(tags) == 1 else f"{len(tags)} tags"
-            self._push_btn.set_label(f"Push {label}")
-        elif ab and ab.behind:
-            if getattr(state, "pull_with_rebase", False):
-                self._push_btn.set_label(f"Pull {ab.behind} with rebase")
-            else:
-                self._push_btn.set_label(f"Pull {ab.behind}")
-        else:
-            self._push_btn.set_label("Fetch origin")
+        tags = getattr(state, "local_tags_to_push", None) or []
+        presentation = describe_push_pull(
+            remote_name=self._remote_name(state),
+            current_branch=status.current_branch,
+            current_tip=status.current_tip,
+            has_upstream=bool(status.current_upstream_branch),
+            ahead=ab.ahead if ab else 0,
+            behind=ab.behind if ab else 0,
+            tag_count=len(tags),
+            force_push=self.store.current_branch_force_push_state(),
+            pull_with_rebase=bool(getattr(state, "pull_with_rebase", False)),
+        )
+        self._push_btn.set_label(presentation.label)
+        self._push_btn.set_sensitive(presentation.sensitive)
+        self._set_push_menu(presentation.menu_items, presentation.remote_name)
 
     def _on_push_pull(self, *_args: object) -> None:
         if self.store.progress_kind:
@@ -1202,13 +1261,24 @@ class MainWindow(Adw.ApplicationWindow):
             return
         ab = status.branch_ahead_behind
         tags = state.local_tags_to_push
-        if self.store.current_branch_force_push_state(repo) == ForcePushBranchState.RECOMMENDED:
+        presentation = describe_push_pull(
+            remote_name=self._remote_name(state),
+            current_branch=status.current_branch,
+            current_tip=status.current_tip,
+            has_upstream=bool(status.current_upstream_branch),
+            ahead=ab.ahead if ab else 0,
+            behind=ab.behind if ab else 0,
+            tag_count=len(tags or []),
+            force_push=self.store.current_branch_force_push_state(repo),
+            pull_with_rebase=bool(getattr(state, "pull_with_rebase", False)),
+        )
+        if presentation.action == "force-push":
             self.store.show_popup(PopupType.CONFIRM_FORCE_PUSH)
-        elif not status.current_upstream_branch or (ab and ab.ahead and not ab.behind) or (tags and not (ab and ab.behind)):
+        elif presentation.action == "push":
             self.store.push_repo(repo)
-        elif ab and ab.behind:
+        elif presentation.action == "pull":
             self.store.pull_repo(repo)
-        else:
+        elif presentation.action == "fetch":
             self.store.fetch_repo(repo)
 
     def _branch_menu(self, state) -> Gio.Menu:
@@ -1596,6 +1666,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _commit_row(self, commit) -> Gtk.ListBoxRow:
         row = Gtk.ListBoxRow()
+        row.add_css_class("history-commit")
         box = Gtk.Box(spacing=8)
         box.append(AvatarStack(users_from_commit(commit), size=28))
         texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -2046,6 +2117,9 @@ class MainWindow(Adw.ApplicationWindow):
             drop = Gtk.DropTarget.new(str, Gdk.DragAction.MOVE)
 
             def on_drop(_t, value, _x, y, target=commit, widget=row):
+                from ..commit_dnd import clear_drop_kind_css, commit_drop_kind, decode_commit_shas
+
+                clear_drop_kind_css(widget)
                 repo = self.store.selected_repository
                 if not repo or not value:
                     return False
@@ -2072,6 +2146,26 @@ class MainWindow(Adw.ApplicationWindow):
                 return True
 
             drop.connect("drop", on_drop)
+
+            def on_motion(_t, _x, y, widget=row):
+                from ..commit_dnd import commit_drop_kind, drop_kind_css_class
+
+                kind = commit_drop_kind(float(y or 0), float(widget.get_allocated_height() or 1))
+                wanted = drop_kind_css_class(kind)
+                for cls in ("commit-drop-squash", "commit-drop-before", "commit-drop-after"):
+                    if cls == wanted:
+                        widget.add_css_class(cls)
+                    else:
+                        widget.remove_css_class(cls)
+                return Gdk.DragAction.MOVE
+
+            def on_leave(_t, widget=row):
+                from ..commit_dnd import clear_drop_kind_css
+
+                clear_drop_kind_css(widget)
+
+            drop.connect("motion", on_motion)
+            drop.connect("leave", on_leave)
             row.add_controller(drop)
         except Exception:
             pass

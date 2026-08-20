@@ -145,6 +145,27 @@ def test_undo_commit_keeps_changes(git_repo: Path) -> None:
     undo_commit(str(git_repo))
     status = get_status(str(git_repo))
     assert any(f.path == "x.txt" for f in status.working_directory.files)
+    cached = run_git(git_repo, "diff", "--cached", "--name-only").stdout
+    assert "x.txt" not in cached
+    assert (git_repo / "x.txt").exists()
+
+
+def test_undo_first_commit_restores_deleted_files(tmp_path: Path) -> None:
+    repo = tmp_path / "first"
+    repo.mkdir()
+    run_git(repo, "init", "-b", "main")
+    run_git(repo, "config", "user.name", "Test User")
+    run_git(repo, "config", "user.email", "test@example.com")
+    (repo / "only.txt").write_text("only\n", encoding="utf-8")
+    run_git(repo, "add", "only.txt")
+    run_git(repo, "commit", "-m", "first")
+    (repo / "only.txt").unlink()
+    undo_commit(str(repo))
+    assert (repo / "only.txt").exists()
+    status = get_status(str(repo))
+    assert status
+    assert status.current_tip is None
+    assert any(f.path == "only.txt" for f in status.working_directory.files)
 
 
 def test_discard_untracked_and_modified(git_repo: Path) -> None:

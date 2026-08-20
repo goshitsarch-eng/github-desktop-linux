@@ -241,7 +241,140 @@ def test_commit_drop_kind_squash_vs_reorder() -> None:
     assert commit_drop_kind(10, 100) == "reorder-before"
     assert commit_drop_kind(50, 100) == "squash"
     assert commit_drop_kind(90, 100) == "reorder-after"
-    assert decode_commit_shas(encode_commit_shas(["aaa", "bbb"])) == ["aaa", "bbb"]
+    assert encode_commit_shas(["aaa", "bbb"]) == "aaa,bbb"
+    assert decode_commit_shas("aaa,bbb") == ["aaa", "bbb"]
+    from github_desktop.commit_dnd import drop_kind_css_class
+
+    assert drop_kind_css_class("squash") == "commit-drop-squash"
+    assert drop_kind_css_class("reorder-before") == "commit-drop-before"
+
+
+def test_push_pull_presentation_matches_desktop() -> None:
+    from github_desktop.models import ForcePushBranchState
+    from github_desktop.push_pull import describe_push_pull, format_last_fetched
+
+    assert format_last_fetched(None) == "Never fetched"
+    assert format_last_fetched(100.0, now=100.0) == "Last fetched just now"
+    assert "minutes ago" in format_last_fetched(100.0, now=100.0 + 10 * 60)
+
+    fetch = describe_push_pull(
+        remote_name="origin",
+        current_branch="main",
+        current_tip="abc",
+        has_upstream=True,
+        ahead=0,
+        behind=0,
+        tag_count=0,
+        force_push=ForcePushBranchState.NOT_AVAILABLE,
+    )
+    assert fetch.action == "fetch"
+    assert fetch.menu_items == ()
+    assert fetch.label == "Fetch origin"
+
+    pull = describe_push_pull(
+        remote_name="origin",
+        current_branch="main",
+        current_tip="abc",
+        has_upstream=True,
+        ahead=2,
+        behind=3,
+        tag_count=0,
+        force_push=ForcePushBranchState.AVAILABLE,
+        pull_with_rebase=True,
+    )
+    assert pull.action == "pull"
+    assert pull.label == "Pull 3 with rebase"
+    assert pull.menu_items == ("fetch", "force-push")
+
+    force = describe_push_pull(
+        remote_name="origin",
+        current_branch="main",
+        current_tip="abc",
+        has_upstream=True,
+        ahead=1,
+        behind=1,
+        tag_count=0,
+        force_push=ForcePushBranchState.RECOMMENDED,
+    )
+    assert force.action == "force-push"
+    assert force.menu_items == ("fetch",)
+
+    publish = describe_push_pull(
+        remote_name=None,
+        current_branch="main",
+        current_tip="abc",
+        has_upstream=False,
+        ahead=0,
+        behind=0,
+        tag_count=0,
+        force_push=ForcePushBranchState.NOT_AVAILABLE,
+    )
+    assert publish.label == "Publish repository"
+    assert publish.menu_items == ()
+
+
+def test_last_fetched_and_merge_commit_preflight(git_repo: Path) -> None:
+    from github_desktop.git.ops import do_merge_commits_exist_after_commit, get_last_fetched
+
+    assert get_last_fetched(str(git_repo)) is None
+    fetch_head = git_repo / ".git" / "FETCH_HEAD"
+    fetch_head.write_text("deadbeef\t\tbranch 'main' of example\n", encoding="utf-8")
+    assert get_last_fetched(str(git_repo)) is not None
+    fetch_head.write_text("", encoding="utf-8")
+    assert get_last_fetched(str(git_repo)) is None
+
+    initial = run_git(git_repo, "rev-parse", "HEAD").stdout.strip()
+    assert do_merge_commits_exist_after_commit(str(git_repo), initial) is False
+    run_git(git_repo, "checkout", "-b", "topic")
+    (git_repo / "t.txt").write_text("t\n", encoding="utf-8")
+    run_git(git_repo, "add", "t.txt")
+    run_git(git_repo, "commit", "-m", "topic")
+    run_git(git_repo, "checkout", "main")
+    run_git(git_repo, "merge", "--no-ff", "topic", "-m", "merge topic")
+    assert do_merge_commits_exist_after_commit(str(git_repo), initial) is True
+    merge_sha = run_git(git_repo, "rev-parse", "HEAD").stdout.strip()
+    assert do_merge_commits_exist_after_commit(str(git_repo), merge_sha) is False
+
+
+def test_undo_last_commit_restores_message(isolated_config, git_repo: Path) -> None:
+    from github_desktop.git.ops import get_commits, get_status
+
+    store = AppStore()
+    repos = store.add_repositories([str(git_repo)])
+    repo = repos[0]
+    (git_repo / "x.txt").write_text("x\n", encoding="utf-8")
+    run_git(git_repo, "add", "x.txt")
+    run_git(git_repo, "commit", "-m", "add x\n\nbody here")
+    state = store.state_for(repo)
+    state.status = get_status(str(git_repo))
+    state.commits = get_commits(str(git_repo), limit=5)
+    store.undo_last_commit(repo, show_confirmation=False)
+    assert state.commit_message.summary == "add x"
+    assert "body here" in (state.commit_message.description or "")
+
+
+def test_squash_blocked_when_merge_commits_exist(isolated_config, git_repo: Path) -> None:
+    from github_desktop.git.ops import get_commits
+    from github_desktop.models import PopupType
+
+    run_git(git_repo, "checkout", "-b", "topic")
+    (git_repo / "t.txt").write_text("t\n", encoding="utf-8")
+    run_git(git_repo, "add", "t.txt")
+    run_git(git_repo, "commit", "-m", "topic")
+    run_git(git_repo, "checkout", "main")
+    run_git(git_repo, "merge", "--no-ff", "topic", "-m", "merge topic")
+    (git_repo / "after.txt").write_text("a\n", encoding="utf-8")
+    run_git(git_repo, "add", "after.txt")
+    run_git(git_repo, "commit", "-m", "after merge")
+    store = AppStore()
+    repos = store.add_repositories([str(git_repo)])
+    repo = repos[0]
+    commits = get_commits(str(git_repo), limit=10)
+    onto = commits[1]
+    store.squash_onto(repo, [commits[0]], onto, "squashed")
+    assert store.popup is not None
+    assert store.popup.type == PopupType.ERROR
+    assert "Unable to squash" in str(store.popup.payload.get("error") or "")
 
 
 def test_emoji_catalog_covers_gemoji() -> None:

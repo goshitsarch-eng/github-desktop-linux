@@ -1472,8 +1472,69 @@ def reset(repo: str, sha: str, mode: str = "mixed") -> None:
     git(["reset", f"--{mode}", sha], repo, name="reset")
 
 
-def undo_commit(repo: str) -> None:
-    git(["reset", "--soft", "HEAD~1"], repo, name="undoCommit")
+def delete_ref(repo: str, ref: str, reason: str | None = None) -> None:
+    args = ["update-ref", "-d", ref]
+    if reason:
+        args.extend(["-m", reason])
+    git(args, repo, name="deleteRef")
+
+
+def undo_first_commit(repo: str) -> None:
+    """Undo the initial commit: restore deleted paths, drop HEAD, unstage all.
+
+    Matches Desktop `GitStore.undoFirstCommit`: a mixed/soft reset cannot
+    walk `HEAD~1` on an unborn-after-undo branch, and deleted working-tree
+    files must be checked out first so they survive `update-ref -d HEAD`.
+    """
+    status = get_status(repo)
+    if status is None:
+        raise GitError(
+            "Unable to undo commit because there are too many files in your repository's working directory.",
+            args=["status"],
+            git_error="Busy",
+        )
+    deleted = [f.path for f in status.working_directory.files if f.status.kind == AppFileStatusKind.DELETED]
+    checkout_paths(repo, deleted)
+    delete_ref(repo, "HEAD", "Reverting first commit")
+    unstage_all(repo)
+
+
+def undo_commit(repo: str, parent_shas: Sequence[str] | None = None) -> None:
+    """Undo HEAD. First commits drop the ref; later commits mixed-reset to the parent."""
+    parents: list[str]
+    if parent_shas is None:
+        commit = get_commit(repo, "HEAD")
+        parents = list(commit.parent_shas) if commit else []
+    else:
+        parents = list(parent_shas)
+    if not parents:
+        undo_first_commit(repo)
+        return
+    reset(repo, parents[0], "mixed")
+
+
+def do_merge_commits_exist_after_commit(repo: str, commit_ref: str | None) -> bool:
+    """True when `commit_ref..HEAD` (or all of HEAD) contains a merge commit."""
+    revision = "HEAD" if commit_ref is None else rev_range(commit_ref, "HEAD")
+    result = git(
+        ["rev-list", "-1", "--merges", revision, "--"],
+        repo,
+        success_exit_codes={0, 128},
+        name="doMergeCommitsExistAfterCommit",
+    )
+    return bool(result.stdout.strip())
+
+
+def get_last_fetched(repo: str) -> float | None:
+    """mtime of `.git/FETCH_HEAD` when the file is non-empty, else None."""
+    try:
+        path = os.path.join(_git_dir(repo), "FETCH_HEAD")
+        st = os.stat(path)
+    except (OSError, GitError):
+        return None
+    if st.st_size > 0:
+        return st.st_mtime
+    return None
 
 
 def discard_changes_from_selection(

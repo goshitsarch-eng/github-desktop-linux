@@ -190,6 +190,23 @@ APP_CSS = """
 .completeness-indicator-error {
   color: @error_color;
 }
+.history-commit.commit-drop-squash {
+  background-color: alpha(@accent_bg_color, 0.22);
+}
+.history-commit.commit-drop-before {
+  box-shadow: inset 0 3px 0 @accent_color;
+}
+.history-commit.commit-drop-after {
+  box-shadow: inset 0 -3px 0 @accent_color;
+}
+window.underline-links button.link label,
+window.underline-links link {
+  text-decoration: underline;
+}
+window:not(.underline-links) button.link label,
+window:not(.underline-links) link {
+  text-decoration: none;
+}
 """
 
 _provider: Gtk.CssProvider | None = None

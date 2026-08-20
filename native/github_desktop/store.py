@@ -39,6 +39,7 @@ from .git import (
     delete_remote_branch,
     delete_tag,
     determine_mergeability,
+    do_merge_commits_exist_after_commit,
     discard_changes_from_selection,
     discard_paths,
     discard_working_files,
@@ -71,6 +72,7 @@ from .git import (
     get_files_diff_text,
     get_global_config_path,
     get_last_desktop_stash_entry_for_branch,
+    get_last_fetched,
     get_rebase_snapshot,
     get_remotes,
     get_repository_kind,
@@ -265,6 +267,7 @@ class RepositoryViewState:
     force_push_with_lease_on: dict[str, str] = field(default_factory=dict)
     pending_force_push_before: str | None = None
     pull_with_rebase: bool = False
+    last_fetched: float | None = None
 
 
 class AppStore:
@@ -831,6 +834,7 @@ class AppStore:
                 "local_commit_shas": [],
                 "upstream_mismatch": None,
                 "pull_with_rebase": bool(get_boolean_config_value(repo.path, "pull.rebase") or False),
+                "last_fetched": get_last_fetched(repo.path),
             }
             payload["upstream_mismatch"] = upstream_mismatch
             if status and status.current_branch and status.current_upstream_branch:
@@ -968,6 +972,8 @@ class AppStore:
                 state.protected_branches = list(data.get("protected_branches") or [])
             if "pull_with_rebase" in data:
                 state.pull_with_rebase = bool(data.get("pull_with_rebase"))
+            if "last_fetched" in data:
+                state.last_fetched = data.get("last_fetched")
             pending_rewrite = state.pending_force_push_before
             if pending_rewrite:
                 state.pending_force_push_before = None
@@ -1912,8 +1918,10 @@ class AppStore:
         self.emit()
 
     def squash_onto(self, repo: Repository, to_squash: Sequence[Commit], onto: Commit, message: str) -> None:
-        undo_sha = self._capture_undo(repo)
         last_retained = onto.parent_shas[0] if onto.parent_shas else None
+        if self._merge_commits_block_rewrite(repo, last_retained, "squash"):
+            return
+        undo_sha = self._capture_undo(repo)
         result = squash_commits(repo.path, list(to_squash), onto, last_retained, message)
         if result == RebaseResult.COMPLETED_WITHOUT_ERROR:
             self.state_for(repo).pending_force_push_before = undo_sha
@@ -1923,12 +1931,14 @@ class AppStore:
         self.refresh_repository(repo)
 
     def reorder_onto(self, repo: Repository, to_move: Sequence[Commit], before: Commit | None) -> None:
-        undo_sha = self._capture_undo(repo)
         last_retained = None
         if before and before.parent_shas:
             last_retained = before.parent_shas[0]
         elif to_move:
             last_retained = to_move[-1].parent_shas[0] if to_move[-1].parent_shas else None
+        if self._merge_commits_block_rewrite(repo, last_retained, "reorder"):
+            return
+        undo_sha = self._capture_undo(repo)
         result = reorder_commits(repo.path, list(to_move), before, last_retained)
         if result == RebaseResult.COMPLETED_WITHOUT_ERROR:
             self.state_for(repo).pending_force_push_before = undo_sha
@@ -1936,6 +1946,27 @@ class AppStore:
         elif result == RebaseResult.CONFLICTS_ENCOUNTERED:
             self.show_banner(Banner(BannerType.CONFLICTS_FOUND, operation_description="Reorder", operation_kind=MultiCommitOperationKind.REORDER.value))
         self.refresh_repository(repo)
+
+    def _merge_commits_block_rewrite(self, repo: Repository, last_retained: str | None, operation: str) -> bool:
+        try:
+            exists = do_merge_commits_exist_after_commit(repo.path, last_retained)
+        except GitError as exc:
+            self.show_popup(PopupType.ERROR, error=str(exc))
+            return True
+        if not exists:
+            return False
+        if operation == "squash":
+            message = (
+                "Unable to squash. Squashing replays all commits up to the last one required "
+                "for the squash. A merge commit cannot exist among those commits."
+            )
+        else:
+            message = (
+                "Unable to reorder. Reordering replays all commits up to the last one required "
+                "for the reorder. A merge commit cannot exist among those commits."
+            )
+        self.show_popup(PopupType.ERROR, error=message)
+        return True
 
     def revert_commit(self, repo: Repository, commit: Commit) -> None:
         revert(repo.path, commit.sha)
@@ -1965,8 +1996,25 @@ class AppStore:
             )
             return
         self.set_section(RepositorySectionTab.CHANGES)
-        undo_commit(repo.path)
+        undo_commit(repo.path, commit.parent_shas)
+        self._restore_commit_form(repo, commit)
         self.refresh_repository(repo)
+
+    def _restore_commit_form(self, repo: Repository, commit: Commit) -> None:
+        """Put the undone commit's summary/body/co-authors back in the commit box."""
+        state = self.state_for(repo)
+        authors = list(commit.co_authors)
+        body = commit.body or ""
+        if authors:
+            lines = [ln for ln in body.splitlines() if not ln.lower().startswith("co-authored-by")]
+            body = "\n".join(lines).strip()
+            state.co_authors = authors
+            state.show_co_authors = True
+        state.commit_message = CommitMessage(
+            summary=commit.summary,
+            description=body,
+            timestamp=int(time.time() * 1000),
+        )
 
     def clear_changes_filter(self, repo: Repository) -> None:
         state = self.state_for(repo)
@@ -2071,7 +2119,11 @@ class AppStore:
             )
             return
         state.commit_to_amend = commit
-        state.commit_message = CommitMessage(summary=commit.summary, description=commit.body)
+        state.commit_message = CommitMessage(
+            summary=commit.summary,
+            description=commit.body,
+            timestamp=int(time.time() * 1000),
+        )
         self.set_section(RepositorySectionTab.CHANGES)
         self.emit()
 
@@ -3019,7 +3071,11 @@ class AppStore:
                 self.show_popup(PopupType.ERROR, error=str(exc))
                 return
             if result:
-                self.state_for(repo).commit_message = CommitMessage(summary=result[0], description=result[1])
+                self.state_for(repo).commit_message = CommitMessage(
+                    summary=result[0],
+                    description=result[1],
+                    timestamp=int(time.time() * 1000),
+                )
                 self.emit()
 
         self._run(work, done)
