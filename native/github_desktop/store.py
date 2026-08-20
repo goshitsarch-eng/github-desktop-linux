@@ -183,7 +183,7 @@ from .models import (
 from .notifications import show_notification
 from .paths import accounts_path, repositories_path
 from .protocol import OAuthAction, OpenRepositoryAction, URLAction, parse_app_url
-from .remote_parsing import account_for_remote, github_from_remote, parse_remote, url_matches_remote
+from .remote_parsing import account_for_remote, github_from_remote, parse_remote, sanitize_remote_url, url_matches_remote
 from .settings import Settings, load_settings, save_settings
 from .shells import find_shell, get_available_shells, open_custom_shell, open_external, open_file_manager, open_shell
 from .thank_you import (
@@ -2573,11 +2573,12 @@ class AppStore:
     def convert_repository_to_fork(self, repo: Repository, fork: GitHubRepository) -> None:
         remotes = get_remotes(repo.path)
         origin = next((r for r in remotes if r.name == "origin"), remotes[0] if remotes else None)
-        old_url = origin.url if origin else (repo.github.clone_url if repo.github else "")
+        old_url = sanitize_remote_url(origin.url) if origin else (repo.github.clone_url if repo.github else "")
+        fork_url = sanitize_remote_url(fork.clone_url)
         if origin:
-            set_remote_url(repo.path, origin.name, fork.clone_url)
+            set_remote_url(repo.path, origin.name, fork_url)
         else:
-            add_remote(repo.path, "origin", fork.clone_url)
+            add_remote(repo.path, "origin", fork_url)
         if old_url:
             try:
                 add_remote(repo.path, "upstream", old_url)

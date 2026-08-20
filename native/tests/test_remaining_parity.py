@@ -19,6 +19,7 @@ from github_desktop.models import (
     github_to_dict,
 )
 from github_desktop.protocol import OpenRepositoryAction, parse_app_url
+from github_desktop.remote_parsing import parse_remote, sanitize_remote_url
 from github_desktop.store import AppStore
 from tests.conftest import run_git
 
@@ -98,6 +99,14 @@ def test_open_pull_request_gates_unpublished_branch(isolated_config, git_repo: P
     assert store.popup is not None
     assert store.popup.type == PopupType.PUSH_BRANCH_COMMITS
     assert store.popup.payload.get("unpublished") is True
+
+
+def test_sanitize_remote_url_strips_userinfo() -> None:
+    assert (
+        sanitize_remote_url("https://x-access-token:secret@github.com/acme/app.git")
+        == "https://github.com/acme/app.git"
+    )
+    assert sanitize_remote_url("https://github.com/acme/app.git") == "https://github.com/acme/app.git"
 
 
 def test_protocol_openrepo_keeps_pr_and_filepath() -> None:

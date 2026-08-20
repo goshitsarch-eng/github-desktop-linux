@@ -1442,7 +1442,17 @@ def show_discard(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -
         store.discard_files(repo, files)
 
     names = ", ".join(getattr(f, "path", str(f)) for f in files[:8])
-    _alert(parent, "Discard changes?", f"Discard changes in {names or 'selected files'}? This cannot be undone.", destructive=True, confirm="Discard", on_confirm=confirm)
+    if not store.settings.confirm_discard_changes and not store.settings.confirm_discard_changes_permanently:
+        confirm()
+        return
+    _alert(
+        parent,
+        "Discard changes?",
+        f"Discard changes in {names or 'selected files'}? These files will be discarded permanently and cannot be recovered.",
+        destructive=True,
+        confirm="Discard",
+        on_confirm=confirm,
+    )
 
 
 def show_publish(parent: Gtk.Window, store: AppStore) -> None:

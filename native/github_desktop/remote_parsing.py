@@ -57,6 +57,19 @@ def account_for_remote(accounts: list[Account], url: str) -> Account | None:
     return None
 
 
+def sanitize_remote_url(url: str) -> str:
+    """Drop embedded userinfo so tokens are not written into git remotes."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(url)
+    if not (parts.username or parts.password):
+        return url
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
+
+
 def url_matches_remote(url: str | None, remote: Remote) -> bool:
     """Desktop `urlMatchesRemote`: same host/owner/name, ignoring protocol and `.git`."""
     if not url:

@@ -267,5 +267,6 @@ def test_window_actions_cover_menus() -> None:
         "Contribute to the parent repository",
         "Stash all changes?",
         "placeholder_id",
+        "discarded permanently",
     ]:
         assert phrase in src
