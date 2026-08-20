@@ -365,6 +365,7 @@ def test_push_pull_presentation_matches_desktop() -> None:
     assert fetch.action == "fetch"
     assert fetch.menu_items == ()
     assert fetch.label == "Fetch origin"
+    assert fetch.icon == "view-refresh-symbolic"
 
     pull = describe_push_pull(
         remote_name="origin",
@@ -380,6 +381,7 @@ def test_push_pull_presentation_matches_desktop() -> None:
     assert pull.action == "pull"
     assert pull.label == "Pull 3 with rebase"
     assert pull.menu_items == ("fetch", "force-push")
+    assert pull.icon == "go-down-symbolic"
 
     force = describe_push_pull(
         remote_name="origin",
@@ -393,6 +395,7 @@ def test_push_pull_presentation_matches_desktop() -> None:
     )
     assert force.action == "force-push"
     assert force.menu_items == ("fetch",)
+    assert force.icon == "go-up-symbolic"
 
     publish = describe_push_pull(
         remote_name=None,
@@ -406,6 +409,7 @@ def test_push_pull_presentation_matches_desktop() -> None:
     )
     assert publish.label == "Publish repository"
     assert publish.menu_items == ()
+    assert publish.icon == "network-transmit-symbolic"
 
 
 def test_last_fetched_and_merge_commit_preflight(git_repo: Path) -> None:

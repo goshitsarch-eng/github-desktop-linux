@@ -1955,6 +1955,28 @@ def get_stashes(repo: str) -> tuple[list[StashEntry], int]:
     return entries, total
 
 
+def get_stashed_files(repo: str, stash_sha: str) -> list[CommittedFileChange]:
+    """Desktop `getStashedFiles`: files changed in a stash commit."""
+    result = git(
+        [
+            "stash",
+            "show",
+            stash_sha,
+            "--name-status",
+            "-z",
+            "--format=format:",
+            "--no-show-signature",
+            "--",
+        ],
+        repo,
+        success_exit_codes={0, 1, 128},
+        name="getStashedFiles",
+    )
+    if result.exit_code == 128:
+        return []
+    return _parse_name_status_z(result.stdout, stash_sha, f"{stash_sha}^")
+
+
 def get_last_desktop_stash_entry_for_branch(repo: str, branch: str) -> StashEntry | None:
     entries, _total = get_stashes(repo)
     return next((entry for entry in entries if entry.branch_name == branch), None)

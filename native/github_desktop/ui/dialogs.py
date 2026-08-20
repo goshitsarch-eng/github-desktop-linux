@@ -1374,6 +1374,35 @@ def _render_grouped_clone_list(
         listbox.append(Adw.ActionRow(title=empty_title))
 
 
+def _clone_sign_in_cta(
+    store: "AppStore",
+    dialog: Adw.Dialog,
+    *,
+    enterprise: bool,
+    message: str,
+) -> Gtk.Widget:
+    """Desktop clone `CallToAction` prompting Sign in."""
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+    box.add_css_class("call-to-action")
+    box.set_margin_top(24)
+    box.set_margin_bottom(24)
+    box.set_margin_start(16)
+    box.set_margin_end(16)
+    label = Gtk.Label(label=message, wrap=True, xalign=0)
+    btn = Gtk.Button(label="Sign in")
+    btn.add_css_class("suggested-action")
+    btn.set_halign(Gtk.Align.START)
+
+    def go(*_a: Any) -> None:
+        dialog.close()
+        store.begin_sign_in(enterprise)
+
+    btn.connect("clicked", go)
+    box.append(label)
+    box.append(btn)
+    return box
+
+
 def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
     dialog = Adw.Dialog()
     dialog.set_content_width(640)
@@ -1436,11 +1465,19 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
     filter_row.append(gh_filter)
     filter_row.append(refresh_btn)
     list_box.append(filter_row)
-    accounts = list(store.accounts)
+    accounts = [a for a in store.accounts if a.is_dotcom]
+    gh_sign_in = _clone_sign_in_cta(
+        store,
+        dialog,
+        enterprise=False,
+        message="Sign in to your GitHub.com account to access your repositories.",
+    )
+    list_box.append(gh_sign_in)
     account_drop = None
-    if len(accounts) > 1:
+    if accounts:
         account_drop = Gtk.DropDown.new_from_strings([a.login for a in accounts])
         list_box.append(account_drop)
+    gh_sign_in.set_visible(not accounts)
     scroller = Gtk.ScrolledWindow(vexpand=True)
     repo_list = Gtk.ListBox()
     repo_list.add_css_class("boxed-list")
@@ -1450,6 +1487,9 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
     gh_clone.add_css_class("suggested-action")
     list_box.append(gh_clone)
     stack.add_titled(list_box, "github", "GitHub.com")
+    filter_row.set_visible(bool(accounts))
+    scroller.set_visible(bool(accounts))
+    gh_clone.set_visible(bool(accounts))
 
     ent_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     ent_box.set_margin_top(8)
@@ -1464,11 +1504,19 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
     ent_filter_row.append(ent_filter)
     ent_filter_row.append(ent_refresh)
     ent_box.append(ent_filter_row)
-    ent_accounts = [a for a in accounts if not a.is_dotcom]
+    ent_accounts = [a for a in store.accounts if not a.is_dotcom]
+    ent_sign_in = _clone_sign_in_cta(
+        store,
+        dialog,
+        enterprise=True,
+        message="If you are using GitHub Enterprise at work, sign in to it to get access to your repositories.",
+    )
+    ent_box.append(ent_sign_in)
     ent_drop = None
-    if len(ent_accounts) > 1:
+    if ent_accounts:
         ent_drop = Gtk.DropDown.new_from_strings([a.login for a in ent_accounts])
         ent_box.append(ent_drop)
+    ent_sign_in.set_visible(not ent_accounts)
     ent_scroller = Gtk.ScrolledWindow(vexpand=True)
     ent_list = Gtk.ListBox()
     ent_list.add_css_class("boxed-list")
@@ -1478,6 +1526,9 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
     ent_clone.add_css_class("suggested-action")
     ent_box.append(ent_clone)
     stack.add_titled(ent_box, "enterprise", "GitHub Enterprise")
+    ent_filter_row.set_visible(bool(ent_accounts))
+    ent_scroller.set_visible(bool(ent_accounts))
+    ent_clone.set_visible(bool(ent_accounts))
 
     selected_clone_url = {"url": "", "name": ""}
     loaded: list = []
@@ -1491,17 +1542,22 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
                 return source[idx]
         if enterprise:
             return next((a for a in store.accounts if not a.is_dotcom), None)
-        return next((a for a in store.accounts if a.is_dotcom), store.accounts[0] if store.accounts else None)
+        return next((a for a in store.accounts if a.is_dotcom), None)
 
     def render_github_list() -> None:
         account = selected_account()
+        signed_in = account is not None
+        gh_sign_in.set_visible(not signed_in)
+        filter_row.set_visible(signed_in)
+        scroller.set_visible(signed_in)
+        gh_clone.set_visible(signed_in)
+        if account_drop is not None:
+            account_drop.set_visible(signed_in)
+        if not signed_in:
+            _clear_listbox(repo_list)
+            return
         needle = gh_filter.get_text().strip()
-        if not account:
-            empty = "Sign in to GitHub.com to see your repositories"
-        elif needle:
-            empty = "Sorry, I can't find that repository"
-        else:
-            empty = "No matching repositories"
+        empty = "Sorry, I can't find that repository" if needle else "No matching repositories"
         _render_grouped_clone_list(
             repo_list,
             loaded,
@@ -1541,13 +1597,18 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
 
     def render_enterprise_list() -> None:
         account = selected_account(True)
+        signed_in = account is not None
+        ent_sign_in.set_visible(not signed_in)
+        ent_filter_row.set_visible(signed_in)
+        ent_scroller.set_visible(signed_in)
+        ent_clone.set_visible(signed_in)
+        if ent_drop is not None:
+            ent_drop.set_visible(signed_in)
+        if not signed_in:
+            _clear_listbox(ent_list)
+            return
         needle = ent_filter.get_text().strip()
-        if not account:
-            empty = "Sign in to GitHub Enterprise to see your repositories"
-        elif needle:
-            empty = "Sorry, I can't find that repository"
-        else:
-            empty = "No matching repositories"
+        empty = "Sorry, I can't find that repository" if needle else "No matching repositories"
         _render_grouped_clone_list(
             ent_list,
             loaded_ent,
@@ -3263,8 +3324,15 @@ def _pr_event_dialog(
     ident.append(who)
     box.append(ident)
     if body.strip():
-        body_label = Gtk.Label(label=body, xalign=0, wrap=True)
-        box.append(body_label)
+        from .markdown import issue_base_from_html_url, sandboxed_markdown_label
+
+        box.append(
+            sandboxed_markdown_label(
+                body,
+                issue_base_url=issue_base_from_html_url(html_url),
+                max_chars=4000,
+            )
+        )
     buttons = Gtk.Box(spacing=8)
     if html_url:
         browser = Gtk.Button(label="Open in browser")

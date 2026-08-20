@@ -11,7 +11,9 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, GLib, Gtk
 
 from ..models import Branch, BranchType, PopupType, PullRequest
+from ..push_pull import format_commit_relative_time
 from ..shells import open_external
+from .markdown import issue_base_from_html_url, sandboxed_markdown_label
 from .menus import attach_right_click, clear_box, copy_text, show_context_menu
 
 
@@ -62,12 +64,14 @@ class BranchesFoldout(Gtk.Popover):
         on_view_github: Callable[[Branch], None],
         on_cherry_pick: Callable[[Branch, str], None] | None = None,
         on_cherry_pick_pr: Callable[[PullRequest, str], None] | None = None,
+        on_create_pr: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
         self.set_has_arrow(True)
         self.set_autohide(True)
         self._on_checkout = on_checkout
         self._on_create = on_create
+        self._on_create_pr = on_create_pr
         self._on_rename = on_rename
         self._on_delete = on_delete
         self._on_merge = on_merge
@@ -136,6 +140,9 @@ class BranchesFoldout(Gtk.Popover):
         self.connect("notify::visible", lambda *_: None if self.get_visible() else self._hide_pr_quick())
         self._default_name: str | None = None
         self._recent: list[str] = []
+        self._repository_name = ""
+        self._on_default_branch = True
+        self._prs_loading = False
 
     def refresh(
         self,
@@ -147,6 +154,9 @@ class BranchesFoldout(Gtk.Popover):
         recent: list[str],
         has_github: bool,
         pr_checks: dict[int, str] | None = None,
+        repository_name: str = "",
+        is_on_default_branch: bool = True,
+        prs_loading: bool = False,
     ) -> None:
         self._branches = list(branches)
         self._prs = list(pull_requests)
@@ -155,6 +165,9 @@ class BranchesFoldout(Gtk.Popover):
         self._default_name = default_name
         self._recent = list(recent)
         self._github = has_github
+        self._repository_name = repository_name
+        self._on_default_branch = is_on_default_branch
+        self._prs_loading = prs_loading
         self._search.set_placeholder_text("Find a branch or pull request…")
         self._refilter()
 
@@ -194,11 +207,12 @@ class BranchesFoldout(Gtk.Popover):
             if not needle or needle in pr.title.lower() or needle in str(pr.number) or needle in pr.author.lower()
         ]
         if not prs:
-            empty = Adw.ActionRow(title="No pull requests" if self._github else "This repository is not on GitHub")
-            self._pr_list.append(empty)
+            self._pr_list.append(self._pr_empty_state(bool(needle)))
             return
         for pr in prs:
-            row = Adw.ActionRow(title=f"#{pr.number} {pr.title}", subtitle=f"{pr.author} · {pr.head_ref}")
+            when = _relative_iso(pr.created_at)
+            subtitle = " · ".join(part for part in (pr.author, pr.head_ref, when) if part)
+            row = Adw.ActionRow(title=f"#{pr.number} {pr.title}", subtitle=subtitle)
             status = self._pr_checks.get(pr.number)
             if status:
                 icons = {
@@ -234,6 +248,52 @@ class BranchesFoldout(Gtk.Popover):
                 except Exception:
                     pass
             self._pr_list.append(row)
+
+    def _pr_empty_state(self, is_search: bool) -> Gtk.Widget:
+        """Desktop `NoPullRequests` blank slate."""
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.add_css_class("no-pull-requests")
+        box.set_margin_top(16)
+        box.set_margin_bottom(16)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        if not self._github:
+            title = Gtk.Label(label="This repository is not on GitHub", wrap=True, xalign=0)
+            title.add_css_class("title-4")
+            box.append(title)
+        elif self._prs_loading:
+            title = Gtk.Label(label="Hang tight", wrap=True, xalign=0)
+            title.add_css_class("title-4")
+            box.append(title)
+            box.append(Gtk.Label(label="Loading pull requests as fast as I can!", wrap=True, xalign=0))
+        elif is_search:
+            title = Gtk.Label(label="Sorry, I can't find that pull request!", wrap=True, xalign=0)
+            title.add_css_class("title-4")
+            box.append(title)
+        else:
+            title = Gtk.Label(label="You're all set!", wrap=True, xalign=0)
+            title.add_css_class("title-4")
+            box.append(title)
+            name = self._repository_name or "this repository"
+            box.append(Gtk.Label(label=f"No open pull requests in {name}", wrap=True, xalign=0))
+        if self._github and not is_search and not self._prs_loading:
+            if self._on_default_branch:
+                cta = Gtk.Button(label="Create a new branch")
+                cta.add_css_class("flat")
+                cta.connect("clicked", lambda *_: (self.popdown(), self._on_create()))
+            else:
+                cta = Gtk.Button(label="Create a pull request")
+                cta.add_css_class("suggested-action")
+                cta.connect(
+                    "clicked",
+                    lambda *_: (self.popdown(), self._on_create_pr() if self._on_create_pr else None),
+                )
+            box.append(cta)
+        row = Gtk.ListBoxRow()
+        row.set_activatable(False)
+        row.set_selectable(False)
+        row.set_child(box)
+        return row
 
     def _cancel_pr_quick_timer(self) -> None:
         if self._pr_quick_timer:
@@ -275,10 +335,14 @@ class BranchesFoldout(Gtk.Popover):
         title = Gtk.Label(label=pr.title, wrap=True, xalign=0)
         title.add_css_class("title-4")
         box.append(title)
-        body_text = (pr.body or "").strip() or "No description provided."
-        body = Gtk.Label(label=body_text[:800], wrap=True, xalign=0)
-        body.add_css_class("dim-label")
-        box.append(body)
+        box.append(
+            sandboxed_markdown_label(
+                pr.body or "",
+                issue_base_url=issue_base_from_html_url(pr.html_url),
+                max_chars=800,
+                empty="No description provided.",
+            )
+        )
         stay = Gtk.EventControllerMotion()
         stay.connect("enter", lambda *_: self._cancel_pr_quick_timer())
         stay.connect("leave", lambda *_: self._schedule_hide_pr_quick())
@@ -352,3 +416,17 @@ class BranchesFoldout(Gtk.Popover):
             return
         self.popdown()
         self._on_merge(branch)
+
+
+def _relative_iso(value: str) -> str:
+    if not value:
+        return ""
+    from datetime import datetime, timezone
+
+    try:
+        when = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return format_commit_relative_time(when)

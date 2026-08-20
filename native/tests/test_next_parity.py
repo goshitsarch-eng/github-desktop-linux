@@ -247,3 +247,32 @@ def test_commit_warns_only_when_included_files_are_hidden(isolated_config, git_r
     state.status.working_directory = WorkingDirectoryStatus.from_files(updated)
     store.commit(repo, "only visible")
     assert store.popup is None
+
+
+def test_sandboxed_markdown_pango_is_https_only() -> None:
+    from github_desktop.ui.markdown import issue_base_from_html_url, markdown_to_pango
+
+    markup = markdown_to_pango(
+        "Hello **world** and `code` [docs](https://example.com/a) [bad](javascript:alert(1)) #42",
+        issue_base_url="https://github.com/octo/hello/issues",
+    )
+    assert "<b>world</b>" in markup
+    assert "<tt>code</tt>" in markup
+    assert 'href="https://example.com/a"' in markup
+    assert 'href="javascript:' not in markup
+    assert "href=\"https://github.com/octo/hello/issues/42\"" in markup
+    assert issue_base_from_html_url("https://github.com/octo/hello/pull/9") == "https://github.com/octo/hello/issues"
+    escaped = markdown_to_pango("<script>alert(1)</script>")
+    assert "<script>" not in escaped
+    assert "&lt;script&gt;" in escaped
+
+
+def test_commit_message_copilot_flag_cleared_on_edit(isolated_config) -> None:
+    from github_desktop.models import CommitMessage
+    from github_desktop.store import AppStore
+
+    store = AppStore()
+    msg = CommitMessage(summary="Add tests", description="body", timestamp=1, generated_by_copilot=True)
+    assert msg.generated_by_copilot is True
+    edited = CommitMessage(summary="Add tests!", description="body", timestamp=1, generated_by_copilot=False)
+    assert edited.generated_by_copilot is False

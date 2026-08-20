@@ -114,6 +114,12 @@ APP_CSS = """
 .image-diff-swipe-canvas {
   background-color: alpha(@window_fg_color, 0.04);
 }
+.image-diff-difference {
+  padding: 8px;
+}
+.image-diff-difference-canvas {
+  background-color: alpha(@window_fg_color, 0.04);
+}
 .tag-indicator, .tag-name {
   font-size: 0.75rem;
   padding: 1px 6px;
@@ -135,6 +141,10 @@ APP_CSS = """
 }
 .push-pull-button .push-pull-label {
   font-weight: 600;
+}
+.push-pull-icon {
+  min-width: 16px;
+  min-height: 16px;
 }
 .push-last-fetched {
   font-size: 0.75rem;
@@ -257,6 +267,18 @@ window.underline-links link {
 window:not(.underline-links) button.link label,
 window:not(.underline-links) link {
   text-decoration: none;
+}
+.sandboxed-markdown {
+  opacity: 0.92;
+}
+.call-to-action {
+  padding: 8px;
+}
+.no-pull-requests {
+  padding: 8px;
+}
+.repo-rulesets-for-branch-link {
+  padding: 0;
 }
 """
 

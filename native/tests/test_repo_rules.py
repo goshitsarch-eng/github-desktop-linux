@@ -119,3 +119,13 @@ def test_regex_and_commit_rule_warnings() -> None:
     )
     assert none == []
     assert none_hard is False
+
+
+def test_rulesets_url_for_branch() -> None:
+    from github_desktop.github.repo_rules import rulesets_url_for_branch
+
+    repo = _repo()
+    url = rulesets_url_for_branch(repo.github, "main")
+    assert url == "https://github.com/octocat/hello/rules/?ref=refs%2Fheads%2Fmain"
+    assert rulesets_url_for_branch(None, "main") is None
+    assert rulesets_url_for_branch(repo.github, None) is None

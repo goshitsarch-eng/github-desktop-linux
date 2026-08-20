@@ -121,6 +121,7 @@ from .ops import (
     get_repository_kind,
     get_repository_type,
     get_stashes,
+    get_stashed_files,
     get_status,
     get_submodules,
     get_upstream_ref_for_ref,

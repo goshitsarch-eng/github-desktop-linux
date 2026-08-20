@@ -27,6 +27,11 @@ from .menus import MenuItem, attach_right_click, clear_box, copy_text, show_cont
 from .syntax import markup_for_diff_line
 
 try:
+    import cairo
+except ImportError:
+    cairo = None  # type: ignore[misc, assignment]
+
+try:
     gi.require_version("GdkPixbuf", "2.0")
     from gi.repository import GdkPixbuf
 except (ValueError, ImportError):
@@ -198,6 +203,14 @@ class DiffViewer(Gtk.Box):
             self._inner.append(page)
             return
         if kind == DiffType.IMAGE and isinstance(diff, ImageDiff):
+            if self._path.lower().endswith(".dds") and not _pixbuf_from_bytes(diff.previous) and not _pixbuf_from_bytes(diff.current):
+                self._inner.append(
+                    Adw.StatusPage(
+                        title="Can't preview .dds on Linux",
+                        description="DirectDraw Surface files need a DDS decoder Desktop ships for Electron. Open the file in an external editor to compare.",
+                    )
+                )
+                return
             self._render_image(diff, image_mode)
             return
         if kind in (DiffType.LARGE_TEXT, DiffType.UNRENDERABLE):
@@ -937,57 +950,36 @@ def _onion_images(previous: Gdk.Texture | None, current: Gdk.Texture | None) -> 
 
 
 def _difference_images(previous: bytes | None, current: bytes | None) -> Gtk.Widget:
-    if GdkPixbuf is None or not previous or not current:
+    """Desktop `DifferenceBlend` using cairo `OPERATOR_DIFFERENCE` (CSS mix-blend-mode: difference)."""
+    prev_pix = _pixbuf_from_bytes(previous)
+    curr_pix = _pixbuf_from_bytes(current)
+    if cairo is None or GdkPixbuf is None or prev_pix is None or curr_pix is None:
         box = Gtk.Box(spacing=12)
         box.append(_picture(_texture_from_bytes(previous)))
         box.append(_picture(_texture_from_bytes(current)))
         return box
-    try:
-        from gi.repository import GLib
+    max_w = max(prev_pix.get_width(), curr_pix.get_width(), 1)
+    max_h = max(prev_pix.get_height(), curr_pix.get_height(), 1)
+    display_w = min(max_w, 480)
+    display_h = max(1, int(round(max_h * (display_w / max_w))))
+    if prev_pix.get_width() != display_w or prev_pix.get_height() != display_h:
+        prev_pix = prev_pix.scale_simple(display_w, display_h, GdkPixbuf.InterpType.BILINEAR)
+    if curr_pix.get_width() != display_w or curr_pix.get_height() != display_h:
+        curr_pix = curr_pix.scale_simple(display_w, display_h, GdkPixbuf.InterpType.BILINEAR)
+    root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+    root.add_css_class("image-diff-difference")
+    area = Gtk.DrawingArea()
+    area.set_content_width(display_w)
+    area.set_content_height(display_h)
+    area.add_css_class("image-diff-difference-canvas")
 
-        def load(data: bytes):
-            loader = GdkPixbuf.PixbufLoader()
-            loader.write(data)
-            loader.close()
-            return loader.get_pixbuf()
+    def draw(_area, cr, width: int, height: int) -> None:
+        Gdk.cairo_set_source_pixbuf(cr, prev_pix, 0, 0)
+        cr.paint()
+        cr.set_operator(cairo.OPERATOR_DIFFERENCE)
+        Gdk.cairo_set_source_pixbuf(cr, curr_pix, 0, 0)
+        cr.paint()
 
-        a = load(previous)
-        b = load(current)
-        if a is None or b is None:
-            raise RuntimeError("decode")
-        width = min(a.get_width(), b.get_width(), 640)
-        height = min(a.get_height(), b.get_height(), 640)
-        if a.get_width() != width or a.get_height() != height:
-            a = a.scale_simple(width, height, GdkPixbuf.InterpType.BILINEAR)
-        if b.get_width() != width or b.get_height() != height:
-            b = b.scale_simple(width, height, GdkPixbuf.InterpType.BILINEAR)
-        pa = bytes(a.read_pixel_bytes().get_data())
-        pb = bytes(b.read_pixel_bytes().get_data())
-        n_a = a.get_n_channels()
-        n_b = b.get_n_channels()
-        rsa = a.get_rowstride()
-        rsb = b.get_rowstride()
-        out = bytearray(width * height * 4)
-        for y in range(height):
-            for x in range(width):
-                ia = y * rsa + x * n_a
-                ib = y * rsb + x * n_b
-                ra, ga, ba_ = pa[ia], pa[ia + 1], pa[ia + 2]
-                rb, gb, bb = pb[ib], pb[ib + 1], pb[ib + 2]
-                oi = (y * width + x) * 4
-                if abs(ra - rb) > 12 or abs(ga - gb) > 12 or abs(ba_ - bb) > 12:
-                    out[oi : oi + 4] = b"\xdc\x32\x2f\xff"
-                else:
-                    out[oi] = rb
-                    out[oi + 1] = gb
-                    out[oi + 2] = bb
-                    out[oi + 3] = 255
-        pix = GdkPixbuf.Pixbuf.new_from_bytes(
-            GLib.Bytes.new(bytes(out)), GdkPixbuf.Colorspace.RGB, True, 8, width, height, width * 4
-        )
-        return _picture(Gdk.Texture.new_for_pixbuf(pix))
-    except Exception:
-        box = Gtk.Box(spacing=12)
-        box.append(_picture(_texture_from_bytes(previous)))
-        box.append(_picture(_texture_from_bytes(current)))
-        return box
+    area.set_draw_func(draw)
+    root.append(area)
+    return root

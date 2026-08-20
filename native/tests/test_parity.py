@@ -126,6 +126,7 @@ REQUIRED_GIT_FUNCS = [
     "get_commits_in_range",
     "rev_range_inclusive",
     "rev_symmetric_difference",
+    "get_stashed_files",
 ]
 
 
@@ -238,6 +239,9 @@ def test_window_actions_cover_menus() -> None:
     from github_desktop import filter_changes as filter_changes_mod
 
     src += open(filter_changes_mod.__file__, encoding="utf-8").read()
+    from github_desktop.ui import markdown as markdown_mod
+
+    src += open(markdown_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -454,5 +458,18 @@ def test_window_actions_cover_menus() -> None:
         "Sorry, I can't find any changed files matching the following filters:",
         "isIncludedInCommit",
         "Included in commit",
+        "SandboxedMarkdown",
+        "Sign in to your GitHub.com account",
+        "You're all set!",
+        "Sorry, I can't find that pull request!",
+        "generatedByCopilot",
+        "getStashedFiles",
+        "RepoRulesetsForBranchLink",
+        "Can't preview .dds on Linux",
+        "image-diff-difference",
+        "OPERATOR_DIFFERENCE",
+        "syncClockwise",
+        "No open pull requests in",
+        "View repository rulesets",
     ]:
         assert phrase in src

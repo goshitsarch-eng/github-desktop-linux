@@ -7,6 +7,14 @@ from dataclasses import dataclass
 from .models import ForcePushBranchState
 
 
+# Desktop octicons: upload, arrowUp, arrowDown, syncClockwise, forcePush.
+ICON_PUBLISH = "network-transmit-symbolic"
+ICON_PUSH = "go-up-symbolic"
+ICON_PULL = "go-down-symbolic"
+ICON_FETCH = "view-refresh-symbolic"
+ICON_FORCE_PUSH = "go-up-symbolic"
+
+
 @dataclass(frozen=True)
 class PushPullPresentation:
     """What the toolbar push/pull control should show and do."""
@@ -16,6 +24,7 @@ class PushPullPresentation:
     menu_items: tuple[str, ...]
     sensitive: bool = True
     remote_name: str | None = None
+    icon: str = ICON_FETCH
 
 
 def format_relative_past(seconds: float) -> str:
@@ -75,15 +84,25 @@ def describe_push_pull(
 ) -> PushPullPresentation:
     """Mirror Desktop `PushPullButton.renderButton` branching."""
     if remote_name is None:
-        return PushPullPresentation("Publish repository", "push", (), remote_name=None)
+        return PushPullPresentation(
+            "Publish repository", "push", (), remote_name=None, icon=ICON_PUBLISH
+        )
     if not current_tip:
-        return PushPullPresentation("Publish branch", "none", (), sensitive=False, remote_name=remote_name)
+        return PushPullPresentation(
+            "Publish branch", "none", (), sensitive=False, remote_name=remote_name, icon=ICON_PUBLISH
+        )
     if not current_branch:
-        return PushPullPresentation("Publish branch", "none", (), sensitive=False, remote_name=remote_name)
+        return PushPullPresentation(
+            "Publish branch", "none", (), sensitive=False, remote_name=remote_name, icon=ICON_PUBLISH
+        )
     if not has_upstream:
-        return PushPullPresentation("Publish branch", "push", ("fetch",), remote_name=remote_name)
+        return PushPullPresentation(
+            "Publish branch", "push", ("fetch",), remote_name=remote_name, icon=ICON_PUBLISH
+        )
     if force_push == ForcePushBranchState.RECOMMENDED:
-        return PushPullPresentation("Force push", "force-push", ("fetch",), remote_name=remote_name)
+        return PushPullPresentation(
+            "Force push", "force-push", ("fetch",), remote_name=remote_name, icon=ICON_FORCE_PUSH
+        )
     if behind > 0:
         menu: tuple[str, ...] = ("fetch",)
         if force_push != ForcePushBranchState.NOT_AVAILABLE:
@@ -92,7 +111,7 @@ def describe_push_pull(
             label = f"Pull {behind} with rebase"
         else:
             label = f"Pull {behind}"
-        return PushPullPresentation(label, "pull", menu, remote_name=remote_name)
+        return PushPullPresentation(label, "pull", menu, remote_name=remote_name, icon=ICON_PULL)
     if ahead > 0 or tag_count > 0:
         extra = ""
         if ahead > 0 and tag_count:
@@ -102,5 +121,7 @@ def describe_push_pull(
             label = f"Push {ahead}"
         else:
             label = "Push 1 tag" if tag_count == 1 else f"Push {tag_count} tags"
-        return PushPullPresentation(label, "push", ("fetch",), remote_name=remote_name)
-    return PushPullPresentation(f"Fetch {remote_name}", "fetch", (), remote_name=remote_name)
+        return PushPullPresentation(label, "push", ("fetch",), remote_name=remote_name, icon=ICON_PUSH)
+    return PushPullPresentation(
+        f"Fetch {remote_name}", "fetch", (), remote_name=remote_name, icon=ICON_FETCH
+    )

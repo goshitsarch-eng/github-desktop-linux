@@ -888,6 +888,8 @@ class CommitMessage:
     summary: str = ""
     description: str = ""
     timestamp: int = 0
+    # Desktop `generatedByCopilot` — Copilot origin, cleared when the user edits.
+    generated_by_copilot: bool = False
 
     def as_text(self) -> str:
         summary = self.summary.strip()

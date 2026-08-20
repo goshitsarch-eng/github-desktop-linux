@@ -8,8 +8,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Literal
+from urllib.parse import quote
 
-from ..models import Account, AheadBehind, Repository
+from ..models import Account, AheadBehind, GitHubRepository, Repository
 
 
 RepoRulesMetadataStatus = Literal["pass", "fail", "bypass"]
@@ -95,6 +96,17 @@ OP_STARTS_WITH = "starts_with"
 OP_ENDS_WITH = "ends_with"
 OP_CONTAINS = "contains"
 OP_REGEX = "regex"
+
+
+def rulesets_url_for_branch(repository: GitHubRepository | None, branch: str | None) -> str | None:
+    """Desktop `RepoRulesetsForBranchLink`: ``{htmlURL}/rules/?ref=refs/heads/{branch}``."""
+    if repository is None or not branch:
+        return None
+    html_url = (repository.html_url or "").rstrip("/")
+    if not html_url:
+        return None
+    ref = quote(f"refs/heads/{branch}", safe="")
+    return f"{html_url}/rules/?ref={ref}"
 
 
 def use_repo_rules_logic(account: Account | None, repository: Repository) -> bool:

@@ -82,6 +82,7 @@ from .git import (
     get_recent_branches,
     get_rebase_internal_state,
     get_stashes,
+    get_stashed_files,
     get_status,
     get_partial_blob_lines,
     get_working_directory_diff,
@@ -1950,18 +1951,18 @@ class AppStore:
             return
         stash = state.stashes[0]
         try:
-            data = get_changeset_data(repo.path, stash.stash_sha)
+            files = get_stashed_files(repo.path, stash.stash_sha)
         except GitError:
-            data = ChangesetData()
-        state.stashed_files = data.files
-        stash.files = data.files
+            files = []
+        state.stashed_files = files
+        stash.files = files
         if state.selected_stashed_file:
             state.selected_stashed_file = next(
-                (f for f in data.files if f.path == state.selected_stashed_file.path),
-                data.files[0] if data.files else None,
+                (f for f in files if f.path == state.selected_stashed_file.path),
+                files[0] if files else None,
             )
         else:
-            state.selected_stashed_file = data.files[0] if data.files else None
+            state.selected_stashed_file = files[0] if files else None
         if state.selected_stashed_file:
             self.select_stashed_file(repo, state.selected_stashed_file)
         else:
@@ -3521,6 +3522,7 @@ class AppStore:
                     summary=result[0],
                     description=result[1],
                     timestamp=int(time.time() * 1000),
+                    generated_by_copilot=True,
                 )
                 self.emit()
 

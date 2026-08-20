@@ -94,6 +94,18 @@ def test_stash_viewer_store(isolated_config, git_repo) -> None:
     assert state.stashed_visible is False
 
 
+def test_get_stashed_files(git_repo) -> None:
+    from github_desktop.git.ops import get_stashed_files, get_stashes, stash_push
+
+    (git_repo / "README.md").write_text("dirty stash\n", encoding="utf-8")
+    stash_push(str(git_repo), "main")
+    stashes, count = get_stashes(str(git_repo))
+    assert count >= 1
+    assert stashes
+    files = get_stashed_files(str(git_repo), stashes[0].stash_sha)
+    assert any(f.path == "README.md" for f in files)
+
+
 def test_pr_preview_range(isolated_config, git_repo) -> None:
     run_git(git_repo, "checkout", "-b", "topic")
     (git_repo / "pr.txt").write_text("pr\n", encoding="utf-8")
