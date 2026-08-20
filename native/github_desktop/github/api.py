@@ -226,6 +226,27 @@ class GitHubAPI:
         data = self.get(f"/repos/{owner}/{name}")
         return self._to_repo(data)
 
+    def fetch_repository_clone_info(
+        self, owner: str, name: str, protocol: str | None = None
+    ) -> dict[str, str] | None:
+        """Desktop `fetchRepositoryCloneInfo`: canonical clone URL after rename, SSH vs HTTPS."""
+        try:
+            data = self.get(
+                f"/repos/{owner}/{name}",
+                extra_headers={"Cache-Control": "no-cache", "Pragma": "no-cache"},
+            )
+        except APIError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        if not isinstance(data, dict):
+            return None
+        url = data.get("ssh_url") if protocol == "ssh" else data.get("clone_url")
+        return {
+            "url": str(url or ""),
+            "default_branch": str(data.get("default_branch") or ""),
+        }
+
     def create_repository(
         self,
         name: str,

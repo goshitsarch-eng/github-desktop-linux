@@ -20,6 +20,7 @@ from .git import (
     abort_cherry_pick,
     abort_merge,
     abort_rebase,
+    abort_squash_merge,
     add_remote,
     add_safe_directory,
     append_ignore_file,
@@ -50,6 +51,7 @@ from .git import (
     fast_forward_branches,
     fetch,
     fetch_tags_to_push,
+    files_not_tracked_by_lfs,
     format_commit_message,
     get_ahead_behind,
     get_ahead_behind_range,
@@ -90,6 +92,7 @@ from .git import (
     get_working_directory_lines,
     git_path_is_repository,
     init_repository,
+    install_lfs_hooks as git_install_lfs_hooks,
     merge,
     move_stash_entry,
     prune_forked_remotes,
@@ -117,7 +120,7 @@ from .git import (
     write_gitignore,
 )
 from .git.askpass import askpass_env, set_prompt_callback, start_askpass_server
-from .git.runner import find_git, resolve_repository_root
+from .git.runner import find_git, git, resolve_repository_root
 from .github.api import GitHubAPI, on_token_invalidated
 from .github.ci_checks import (
     attach_workflow_jobs_to_checks,
@@ -221,6 +224,14 @@ BACKGROUND_FETCH_DEFAULT_INTERVAL = 60 * 60
 BACKGROUND_FETCH_SERVER_MINIMUM = 5 * 60
 INDICATOR_REFRESH_INTERVAL = 15 * 60
 
+# Desktop `InitialReadmeContents` for CreateTutorialRepository.
+TUTORIAL_README = (
+    "# Welcome to GitHub Desktop!\n\n"
+    "This is your README. READMEs are where you can communicate "
+    "what your project is and how to use it.\n\n"
+    "Write your name on line 6, save it, and then head back to GitHub Desktop.\n"
+)
+
 
 @dataclass
 class RepositoryViewState:
@@ -295,6 +306,8 @@ class RepositoryViewState:
     pull_with_rebase: bool = False
     last_fetched: float | None = None
     changed_files_count: int = 0
+    is_committing: bool = False  # Desktop isCommitting
+    is_generating_commit_message: bool = False  # Desktop isGeneratingCommitMessage
 
 
 class AppStore:
@@ -610,14 +623,32 @@ class AppStore:
         if added:
             self._save_repositories()
             self.select_repository(added[-1].id)
+            lfs_repos: list[Repository] = []
             for repo in added:
                 try:
                     if is_using_lfs(repo.path):
-                        self.show_popup(PopupType.INITIALIZE_LFS, paths=[repo.path])
-                        break
+                        lfs_repos.append(repo)
                 except GitError:
                     continue
+            if lfs_repos:
+                self.show_popup(PopupType.INITIALIZE_LFS, repositories=lfs_repos)
         return added
+
+    def install_lfs_hooks(
+        self,
+        repositories: Sequence[Repository] | None = None,
+        paths: Sequence[str] | None = None,
+    ) -> None:
+        """Desktop `_installLFSHooks`: `git lfs install --force` after Initialize Git LFS."""
+        repos = list(repositories or [])
+        if not repos and paths:
+            wanted = {os.path.abspath(p) for p in paths}
+            repos = [item for item in self.repositories if os.path.abspath(item.path) in wanted]
+        for repo in repos:
+            try:
+                git_install_lfs_hooks(repo.path, True)
+            except GitError as exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
 
     def _associate_github(self, repo: Repository) -> None:
         try:
@@ -838,20 +869,36 @@ class AppStore:
         self.emit()
         env = None
         account = account or account_for_remote(self.accounts, url)
-        if account:
-            env = env_for_remote(url, token=account.token)
         holder: list = []
         cancel = threading.Event()
         self._clone_processes[clone_id] = holder
         self._clone_cancels[clone_id] = cancel
+        helper = bool(self.settings.use_external_credential_helper)
 
         def work() -> None:
+            clone_url = url
+            parsed = parse_remote(url)
+            if account and parsed:
+                try:
+                    info = GitHubAPI.from_account(account).fetch_repository_clone_info(
+                        parsed.owner, parsed.name, parsed.protocol
+                    )
+                    if info and info.get("url"):
+                        clone_url = info["url"]
+                        cloning.url = clone_url
+                except APIError:
+                    pass
+            env_local = env_for_remote(
+                clone_url,
+                token=account.token if account else None,
+                use_external_credential_helper=helper,
+            )
             clone_repository(
-                url,
+                clone_url,
                 path,
                 branch=branch,
                 default_branch=get_default_branch(),
-                env=env,
+                env=env_local,
                 progress=self._clone_progress_cb(cloning),
                 process_holder=holder,
                 cancel_event=cancel,
@@ -1370,6 +1417,102 @@ class AppStore:
     def exit_tutorial(self) -> None:
         self.pause_tutorial()
 
+    def create_tutorial_repository(
+        self,
+        account: Account,
+        path: str,
+        *,
+        on_progress: Callable[[str, float, str], None] | None = None,
+        on_done: Callable[[BaseException | None], None] | None = None,
+    ) -> None:
+        """Desktop `_createTutorialRepository`: API repo, local README, initial commit, push."""
+        name = "desktop-tutorial"
+
+        def progress(title: str, value: float, description: str = "") -> None:
+            self._set_network_progress("tutorial", title, value)
+            if on_progress is None:
+                return
+
+            def tick() -> bool:
+                on_progress(title, value, description)
+                return False
+
+            invoked = False
+            try:
+                from gi.repository import Gio, GLib
+
+                if Gio.Application.get_default() is not None:
+                    GLib.idle_add(tick)
+                    invoked = True
+            except Exception:
+                invoked = False
+            if not invoked:
+                tick()
+
+        def work() -> None:
+            if os.path.exists(path):
+                raise ValidationError(
+                    f"The path '{path}' already exists. Please move it "
+                    "out of the way, or remove it, and then try again."
+                )
+            progress(f"Creating repository on {account.friendly_endpoint}", 0.0)
+            api = GitHubAPI.from_account(account)
+            try:
+                created = api.create_repository(
+                    name,
+                    description="GitHub Desktop tutorial repository",
+                    private=True,
+                )
+            except APIError as exc:
+                body = (exc.body or "").lower()
+                if exc.status == 422 and "already exists" in body:
+                    raise ValidationError(
+                        f'You already have a repository named "{name}" on your account at '
+                        f"{account.friendly_endpoint}.\n\nPlease delete the repository and try again."
+                    ) from exc
+                raise
+            branch = created.default_branch or get_default_branch()
+            progress("Initializing local repository", 0.2)
+            os.makedirs(path, exist_ok=True)
+            init_repository(path, branch)
+            readme = os.path.join(path, "README.md")
+            Path(readme).write_text(TUTORIAL_README, encoding="utf-8")
+            git(["add", "--", "README.md"], path, name="tutorial:add")
+            git(["commit", "-m", "Initial commit"], path, name="tutorial:commit")
+            add_remote(path, "origin", created.clone_url)
+            progress(f"Pushing repository to {account.friendly_endpoint}", 0.3)
+            env = env_for_remote(
+                created.clone_url,
+                token=account.token,
+                use_external_credential_helper=bool(self.settings.use_external_credential_helper),
+            )
+            push(path, "origin", branch, None, env=env)
+            progress("Finalizing tutorial repository", 0.9)
+
+        def done(exc: BaseException | None) -> None:
+            self._clear_network_progress()
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+            else:
+                repos = self.add_repositories([path])
+                for item in repos:
+                    item.tutorial = True
+                    item.is_missing = False
+                    item.unsafe = False
+                if repos:
+                    self.settings.tutorial_paused = False
+                    self.tutorial_step = TutorialStep.PICK_EDITOR
+                    self._save_repositories()
+                    self.select_repository(repos[0].id)
+            if on_done:
+                try:
+                    on_done(exc)
+                except Exception:
+                    pass
+            self.emit()
+
+        self._run(work, done)
+
     def account_for_repo(self, repo: Repository) -> Account | None:
         if repo.github:
             for account in self.accounts:
@@ -1574,6 +1717,8 @@ class AppStore:
             except OSError:
                 pass
         if oversized and not ignore_oversized:
+            oversized = files_not_tracked_by_lfs(repo.path, oversized)  # Desktop filesNotTrackedByLFS
+        if oversized and not ignore_oversized:
             self.show_popup(
                 PopupType.OVERSIZED_FILES,
                 files=oversized,
@@ -1598,8 +1743,12 @@ class AppStore:
                 ),
             )
             return
+        if state.is_committing:
+            return
         trailers = co_author_trailers(co_authors)
         message = format_commit_message(summary, description, trailers, repo=repo.path)
+        state.is_committing = True
+        self.emit()
 
         def work() -> None:
             create_commit(repo.path, message, files, amend=amend)
@@ -1607,10 +1756,11 @@ class AppStore:
         amended_sha = state.commit_to_amend.sha if amend and state.commit_to_amend else None
 
         def done(exc: BaseException | None) -> None:
+            state.is_committing = False
             if exc:
                 self.show_popup(PopupType.ERROR, error=str(exc))
             else:
-                state.commit_message = CommitMessage()
+                state.commit_message = CommitMessage(timestamp=int(time.time() * 1000))
                 state.commit_to_amend = None
                 if amended_sha:
                     state.pending_force_push_before = amended_sha
@@ -3202,9 +3352,15 @@ class AppStore:
         on_done: Callable[..., None] | None = None,
         on_progress: Callable[..., None] | None = None,
     ) -> None:
+        backend = self._conflict_backend(repo, kind)
+
         def work() -> tuple:
             progress = self._multi_progress(on_progress)
-            if kind == MultiCommitOperationKind.REBASE:
+            if backend == "cherry":
+                snapshot = get_cherry_pick_snapshot(repo.path)
+                commits = list(snapshot["commits"]) if snapshot else []
+                return continue_cherry_pick(repo.path, progress=progress, commits=commits), get_status(repo.path)
+            if backend == "rebase":
                 state = get_rebase_snapshot(repo.path) or {}
                 commits = list(state.get("commits") or [])
                 if not commits:
@@ -3212,10 +3368,6 @@ class AppStore:
                     if internal:
                         commits = get_commits_between(repo.path, internal.base_branch_tip, internal.original_branch_tip) or []
                 return continue_rebase(repo.path, progress=progress, commits=commits), get_status(repo.path)
-            if kind == MultiCommitOperationKind.CHERRY_PICK:
-                snapshot = get_cherry_pick_snapshot(repo.path)
-                commits = list(snapshot["commits"]) if snapshot else []
-                return continue_cherry_pick(repo.path, progress=progress, commits=commits), get_status(repo.path)
             files = self.state_for(repo).status.working_directory.files if self.state_for(repo).status else []
             create_merge_commit(repo.path, files)
             return None, get_status(repo.path)
@@ -3237,13 +3389,33 @@ class AppStore:
         self._run(work, done)
 
     def abort_conflict_operation(self, repo: Repository, kind: MultiCommitOperationKind) -> None:
-        if kind == MultiCommitOperationKind.REBASE:
+        backend = self._conflict_backend(repo, kind)
+        if backend == "rebase":
             abort_rebase(repo.path)
-        elif kind == MultiCommitOperationKind.CHERRY_PICK:
+        elif backend == "cherry":
             abort_cherry_pick(repo.path)
-        elif kind == MultiCommitOperationKind.MERGE:
+        elif backend == "squash-merge":
+            abort_squash_merge(repo.path)
+        else:
             abort_merge(repo.path)
         self.refresh_repository(repo)
+
+    def _conflict_backend(self, repo: Repository, kind: MultiCommitOperationKind | str | None = None) -> str:
+        """Choose abort/continue git backend from on-disk state, then operation kind."""
+        status = self.state_for(repo).status
+        if status and status.is_cherry_picking_head_found:
+            return "cherry"
+        if status and status.rebase_internal_state:
+            return "rebase"
+        if status and status.squash_msg_found and not status.merge_head_found:
+            return "squash-merge"
+        if kind == MultiCommitOperationKind.CHERRY_PICK or kind == "Cherry-pick":
+            return "cherry"
+        if kind in {MultiCommitOperationKind.REBASE, MultiCommitOperationKind.REORDER} or kind in {"Rebase", "Reorder"}:
+            return "rebase"
+        if kind == MultiCommitOperationKind.SQUASH or kind == "Squash":
+            return "rebase"
+        return "merge"
 
     def cherry_pick_commits(self, repo: Repository, shas: Sequence[str], target_branch: str | None = None, on_done: Callable[..., None] | None = None, on_progress: Callable[..., None] | None = None) -> None:
         undo_sha = self._capture_undo(repo)
@@ -3814,11 +3986,16 @@ class AppStore:
         self.refresh_repository(repo)
 
     def generate_commit_message(self, repo: Repository) -> None:
+        state = self.state_for(repo)
+        if state.is_generating_commit_message or state.is_committing:
+            return
+        state.is_generating_commit_message = True
+        self.emit()
+
         def work() -> tuple[str, str]:
             account = self.account_for_repo(repo)
             if not account:
                 raise CopilotError("Sign in to GitHub to generate a commit message")
-            state = self.state_for(repo)
             files = [f for f in (state.status.working_directory.files if state.status else []) if f.include]
             commitish = None
             if state.commit_to_amend:
@@ -3828,17 +4005,19 @@ class AppStore:
             return api.generate_commit_message(diff_text, [f.path for f in files])
 
         def done(exc: BaseException | None, result: tuple[str, str] | None = None) -> None:
+            state.is_generating_commit_message = False
             if exc:
                 self.show_popup(PopupType.ERROR, error=str(exc))
+                self.emit()
                 return
             if result:
-                self.state_for(repo).commit_message = CommitMessage(
+                state.commit_message = CommitMessage(
                     summary=result[0],
                     description=result[1],
                     timestamp=int(time.time() * 1000),
                     generated_by_copilot=True,
                 )
-                self.emit()
+            self.emit()
 
         self._run(work, done)
 

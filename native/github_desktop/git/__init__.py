@@ -21,6 +21,7 @@ from .ops import (
     abort_cherry_pick,
     abort_merge,
     abort_rebase,
+    abort_squash_merge,
     add_remote,
     add_safe_directory,
     add_global_config_value,

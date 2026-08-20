@@ -840,6 +840,8 @@ def show_conflicts_dialog(parent: Gtk.Window, store: AppStore, kind: str | None 
             kind = MultiCommitOperationKind.REBASE
         elif status.is_cherry_picking_head_found:
             kind = MultiCommitOperationKind.CHERRY_PICK
+        elif status.squash_msg_found:
+            kind = MultiCommitOperationKind.SQUASH
         else:
             kind = MultiCommitOperationKind.MERGE
     files = [f for f in status.working_directory.files if f.status.is_conflicted and has_unresolved_conflicts(f.status)]

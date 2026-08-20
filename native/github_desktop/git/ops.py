@@ -1548,15 +1548,40 @@ def merge(
         result = git(args, repo, name="merge")
         if "Already up to date" in result.stdout:
             return MergeResult.ALREADY_UP_TO_DATE
+        if squash:
+            # Desktop `merge`: successful `--squash` is committed immediately.
+            try:
+                git(["commit", "--no-edit"], repo, name="createSquashMergeCommit")
+            except GitError:
+                return MergeResult.FAILED
         return MergeResult.SUCCESS
     except GitError as exc:
-        if exc.is_conflicts or _path_exists(repo, ".git/MERGE_HEAD"):
+        if (
+            exc.is_conflicts
+            or _path_exists(repo, ".git/MERGE_HEAD")
+            or _path_exists(repo, ".git/SQUASH_MSG")
+        ):
             return MergeResult.FAILED
         raise
 
 
 def abort_merge(repo: str) -> None:
     git(["merge", "--abort"], repo, name="abortMerge")
+
+
+def abort_squash_merge(repo: str) -> None:
+    """Desktop `_abortSquashMerge` outcome: restore the pre-squash working tree.
+
+    `git merge --abort` does not work for `--squash` (no `MERGE_HEAD`). Squash
+    leaves HEAD on the original commit, so a hard reset clears `SQUASH_MSG`
+    and conflicted index state. Electron commits `SQUASH_MSG` then resets to
+    that same tip; the visible result is identical.
+    """
+    status = get_status(repo)
+    tip = status.current_tip if status else None
+    if not tip:
+        return
+    reset(repo, tip, "hard")
 
 
 def rebase(

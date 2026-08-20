@@ -327,7 +327,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
             f"The github command is available at {payload.get('path') or str(Path.home() / '.local' / 'bin' / 'github')}.",
             cancel=None,
         ),
-        PopupType.INITIALIZE_LFS: lambda: show_lfs(parent, store),
+        PopupType.INITIALIZE_LFS: lambda: show_initialize_lfs(parent, store, payload),
         PopupType.LFS_ATTRIBUTE_MISMATCH: lambda: show_lfs_mismatch(parent, store),
         PopupType.OVERSIZED_FILES: lambda: show_oversized_files(parent, store, payload),
         PopupType.COMMIT_CONFLICTS_WARNING: lambda: _alert(
@@ -3470,6 +3470,70 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     dialog.present(parent)
 
 
+def show_initialize_lfs(parent: Gtk.Window, store: AppStore, payload: dict[str, Any] | None = None) -> None:
+    """Desktop `InitializeLFS`: install hooks in repositories that already use Git LFS."""
+    payload = payload or {}
+    repos = list(payload.get("repositories") or [])
+    if not repos:
+        paths = [os.path.abspath(p) for p in (payload.get("paths") or [])]
+        repos = [item for item in store.repositories if os.path.abspath(item.path) in set(paths)]
+    if not repos and store.selected_repository:
+        repos = [store.selected_repository]
+    if not repos:
+        return
+    dialog = Adw.Dialog()
+    dialog.set_content_width(480)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(Adw.WindowTitle(title="Initialize Git LFS"))
+    toolbar.add_top_bar(header)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+    box.set_margin_top(16)
+    box.set_margin_start(16)
+    box.set_margin_end(16)
+    box.set_margin_bottom(16)
+    lfs_link = '<a href="https://git-lfs.github.com/">Git LFS</a>'
+    if len(repos) > 10:
+        intro = (
+            f"{len(repos)} repositories use {lfs_link}. To contribute to them, "
+            "Git LFS must first be initialized. Would you like to do so now?"
+        )
+    else:
+        plural = len(repos) != 1
+        uses = "The repositories use" if plural else "This repository uses"
+        them = "them" if plural else "it"
+        intro = (
+            f"{uses} {lfs_link}. To contribute to {them}, "
+            "Git LFS must first be initialized. Would you like to do so now?"
+        )
+    label = Gtk.Label(label=intro, wrap=True, xalign=0, use_markup=True)
+    label.set_max_width_chars(56)
+    box.append(label)
+    if len(repos) <= 10:
+        listing = Gtk.ListBox()
+        listing.add_css_class("boxed-list")
+        for repo in repos:
+            listing.append(Adw.ActionRow(title=repo.name, subtitle=repo.path))
+        box.append(listing)
+    actions = Gtk.Box(spacing=8)
+    later = Gtk.Button(label="Not now")
+    later.connect("clicked", lambda *_: dialog.close())
+    init_btn = Gtk.Button(label="Initialize Git LFS")
+    init_btn.add_css_class("suggested-action")
+
+    def confirm(*_a: Any) -> None:
+        dialog.close()
+        store.install_lfs_hooks(repositories=repos)
+
+    init_btn.connect("clicked", confirm)
+    actions.append(later)
+    actions.append(init_btn)
+    box.append(actions)
+    toolbar.set_content(box)
+    dialog.set_child(toolbar)
+    dialog.present(parent)
+
+
 def show_lfs(parent: Gtk.Window, store: AppStore) -> None:
     repo = store.selected_repository
     if not repo:
@@ -3528,7 +3592,7 @@ def show_push_protection(parent: Gtk.Window, store: AppStore, payload: dict[str,
     secrets = list(payload.get("secrets") or [])
     dialog = Adw.Dialog()
     dialog.set_content_width(560)
-    dialog.set_content_height(420)
+    dialog.set_content_height(480)
     toolbar = Adw.ToolbarView()
     header = Adw.HeaderBar()
     header.set_title_widget(
@@ -3540,31 +3604,125 @@ def show_push_protection(parent: Gtk.Window, store: AppStore, payload: dict[str,
     box.set_margin_start(12)
     box.set_margin_end(12)
     box.set_margin_bottom(12)
+    intro = Gtk.Label(
+        label=(
+            '<a href="https://docs.github.com/code-security/secret-scanning/protecting-pushes-with-secret-scanning">'
+            "Secret Scanning</a> found secret(s) in the commit(s) you attempted to push."
+        ),
+        wrap=True,
+        xalign=0,
+        use_markup=True,
+    )
+    intro.set_max_width_chars(60)
+    box.append(intro)
+    remediate = Gtk.Label(
+        label=(
+            "Allowing secrets risks exposure. Consider "
+            '<a href="https://docs.github.com/code-security/secret-scanning/working-with-secret-scanning-and-push-protection/working-with-push-protection-in-the-github-ui#resolving-a-blocked-commit">'
+            "removing the secret from your commit and commit history</a>."
+        ),
+        wrap=True,
+        xalign=0,
+        use_markup=True,
+    )
+    remediate.set_max_width_chars(60)
+    box.append(remediate)
+    box.append(Gtk.Label(label="Exposing this secret can allow someone to:", xalign=0, wrap=True))
+    for item in (
+        "Verify the identity of the secret(s)",
+        "Know which resources the secret(s) can access",
+        "Act on behalf of the secret's owner",
+        "Push the secret(s) to this repository without being blocked",
+    ):
+        box.append(Gtk.Label(label=f"• {item}", xalign=0, wrap=True))
     if not secrets:
         box.append(Gtk.Label(label=str(payload.get("error") or "GitHub detected a secret in this push."), xalign=0, wrap=True))
+    descriptions = [getattr(secret, "description", None) or getattr(secret, "secret_type", None) or "Secret" for secret in secrets]
+    bypassed: dict[str, Gtk.Widget] = {}
+
+    def copy_sha(sha: str) -> None:
+        parent.get_clipboard().set(sha)
+
+    def render_location(loc) -> Gtk.Box:
+        row = Gtk.Box(spacing=6)
+        sha = getattr(loc, "commit_sha", "") or ""
+        short = sha[:7] if sha else ""
+        sha_lbl = Gtk.Label(label=short, xalign=0)
+        sha_lbl.add_css_class("monospace")
+        row.append(sha_lbl)
+        if sha:
+            copy_btn = Gtk.Button(label="Copy")
+            copy_btn.add_css_class("flat")
+            copy_btn.set_tooltip_text("Copy the full SHA")
+            copy_btn.connect("clicked", lambda *_ , value=sha: copy_sha(value))
+            row.append(copy_btn)
+        path = getattr(loc, "path", "") or ""
+        line = getattr(loc, "line_number", 0) or 0
+        row.append(Gtk.Label(label=f"{path} at line {line}", xalign=0, wrap=True, hexpand=True))
+        return row
+
     for secret in secrets:
         title = getattr(secret, "description", None) or getattr(secret, "secret_type", None) or "Secret"
-        locs = getattr(secret, "locations", None) or []
-        if locs:
-            loc = locs[0]
-            subtitle = f"{loc.path}:{loc.line_number}"
-        else:
-            subtitle = getattr(secret, "path", "") or ""
-        row = Adw.ActionRow(title=title, subtitle=subtitle)
+        secret_id = getattr(secret, "id", "") or ""
+        if descriptions.count(title) > 1 and secret_id:
+            title = f"{title} ({secret_id})"
+        group = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        header_row = Gtk.Box(spacing=8)
+        header_row.append(Gtk.Label(label=title, xalign=0, wrap=True, hexpand=True))
+        status = Gtk.Label(label="Bypassed")
+        status.add_css_class("success")
+        status.set_visible(False)
+        bypassed[secret_id or title] = status
+        header_row.append(status)
         url = getattr(secret, "bypass_url", None)
         if url:
-            open_btn = Gtk.Button(label="Bypass…")
-            open_btn.connect(
-                "clicked",
-                lambda *_ , s=secret, u=url: (
-                    dialog.close(),
-                    store.show_popup(PopupType.BYPASS_PUSH_PROTECTION, secret=s, bypass_url=u),
-                ),
-            )
-            row.add_suffix(open_btn)
-        box.append(row)
+            open_btn = Gtk.Button(label="Bypass")
+            open_btn.add_css_class("flat")
+
+            def on_bypass(*_a: Any, s=secret, u=url, btn=open_btn, key=secret_id or title) -> None:
+                if getattr(s, "requires_approval", False):
+                    open_external(u)
+                    return
+                btn.set_sensitive(False)
+
+                def after(_exc: BaseException | None = None) -> None:
+                    widget = bypassed.get(key)
+                    if widget is not None:
+                        widget.set_visible(True)
+                    btn.set_visible(False)
+
+                show_bypass(parent, store, {"secret": s, "bypass_url": u}, on_bypassed=after)
+
+            open_btn.connect("clicked", on_bypass)
+            header_row.append(open_btn)
+        group.append(header_row)
+        locs = list(getattr(secret, "locations", None) or [])
+        extra = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        extra.set_visible(False)
+        if locs:
+            group.append(render_location(locs[0]))
+            for loc in locs[1:]:
+                extra.append(render_location(loc))
+            if len(locs) > 1:
+                group.append(extra)
+                more = Gtk.Button(label="Show More locations")
+                more.add_css_class("flat")
+
+                def toggle(*_a: Any, panel=extra, button=more) -> None:
+                    shown = panel.get_visible()
+                    panel.set_visible(not shown)
+                    button.set_label("Show Less Locations" if not shown else "Show More locations")
+
+                more.connect("clicked", toggle)
+                group.append(more)
+        box.append(group)
     docs = Gtk.Button(label="Remediation docs")
-    docs.connect("clicked", lambda *_: open_external("https://docs.github.com/code-security/secret-scanning"))
+    docs.connect(
+        "clicked",
+        lambda *_: open_external(
+            "https://docs.github.com/code-security/secret-scanning/working-with-secret-scanning-and-push-protection/working-with-push-protection-in-the-github-ui#resolving-a-blocked-commit"
+        ),
+    )
     box.append(docs)
     scroll = Gtk.ScrolledWindow(vexpand=True)
     scroll.set_child(box)
@@ -3616,7 +3774,7 @@ def show_unreachable_commits(parent: Gtk.Window, store: AppStore, payload: dict[
     dialog.present(parent)
 
 
-def show_bypass(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+def show_bypass(parent: Gtk.Window, store: AppStore, payload: dict[str, Any], on_bypassed: Callable[..., None] | None = None) -> None:
     repo = store.selected_repository
     if not repo or not repo.github:
         return
@@ -3706,9 +3864,18 @@ def show_bypass(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) ->
         placeholder_id = payload.get("placeholder_id") or (
             getattr(secret, "id", None) if secret is not None else None
         )
-        GitHubAPI.from_account(account).create_push_protection_bypass(
-            repo.github.owner, repo.github.name, selected["reason"].value, placeholder_id=placeholder_id
-        )
+        try:
+            GitHubAPI.from_account(account).create_push_protection_bypass(
+                repo.github.owner, repo.github.name, selected["reason"].value, placeholder_id=placeholder_id
+            )
+        except Exception as exc:
+            store.show_popup(PopupType.ERROR, error=str(exc))
+            if on_bypassed:
+                on_bypassed(exc)
+            return
+        if on_bypassed:
+            on_bypassed(None)
+            return
         store.push_repo(repo)
 
     cancel.connect("clicked", close)
@@ -3855,15 +4022,67 @@ def show_tutorial(parent: Gtk.Window, store: AppStore) -> None:
         return
     default = store.settings.clone_default_directory or os.path.expanduser("~/Documents/GitHub")
     path = os.path.join(default, "desktop-tutorial")
+    dialog = Adw.Dialog()
+    dialog.set_content_width(480)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(Adw.WindowTitle(title="Start tutorial"))
+    toolbar.add_top_bar(header)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+    box.set_margin_top(16)
+    box.set_margin_start(16)
+    box.set_margin_end(16)
+    box.set_margin_bottom(16)
+    host = account.friendly_endpoint
+    body = Gtk.Label(
+        label=(
+            f"This will create a repository on your local machine, and push it to "
+            f"your account @{account.login} on {host}. This repository will only be "
+            f"visible to you, and not visible publicly.\n\nIt will be created at {path}."
+        ),
+        wrap=True,
+        xalign=0,
+    )
+    box.append(body)
+    status = Gtk.Label(label="", xalign=0, wrap=True)
+    status.set_visible(False)
+    bar = Gtk.ProgressBar()
+    bar.set_visible(False)
+    box.append(status)
+    box.append(bar)
+    actions = Gtk.Box(spacing=8)
+    cancel = Gtk.Button(label="Cancel")
+    cont = Gtk.Button(label="Continue")
+    cont.add_css_class("suggested-action")
+    actions.append(cancel)
+    actions.append(cont)
+    box.append(actions)
+    closed = {"done": False}
 
-    def confirm() -> None:
-        from ..github.api import GitHubAPI
+    def close(*_a: Any) -> None:
+        if not closed["done"]:
+            closed["done"] = True
+            dialog.close()
 
-        api = GitHubAPI.from_account(account)
-        created = api.create_repository("desktop-tutorial", description="GitHub Desktop tutorial repository", private=True)
-        store.clone(created.clone_url, path, account=account, tutorial=True)
+    def on_progress(title: str, value: float, description: str = "") -> None:
+        status.set_visible(True)
+        bar.set_visible(True)
+        status.set_text(description or title)
+        bar.set_fraction(max(0.0, min(1.0, value)))
 
-    _alert(parent, "Create tutorial repository?", f"A private repository will be created for {account.login} and cloned to {path}.", confirm="Create", on_confirm=confirm)
+    def on_done(exc: BaseException | None) -> None:
+        close()
+
+    def confirm(*_a: Any) -> None:
+        cont.set_sensitive(False)
+        cancel.set_sensitive(False)
+        store.create_tutorial_repository(account, path, on_progress=on_progress, on_done=on_done)
+
+    cancel.connect("clicked", close)
+    cont.connect("clicked", confirm)
+    toolbar.set_content(box)
+    dialog.set_child(toolbar)
+    dialog.present(parent)
 
 
 def _pr_event_dialog(
