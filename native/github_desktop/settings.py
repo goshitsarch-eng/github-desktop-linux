@@ -25,6 +25,7 @@ class Settings:
     confirm_commit_message_override: bool = True
     confirm_stash_all_changes: bool = True
     commit_message_generation_disclaimer_last_seen: int = 0
+    commit_message_generation_button_clicked: bool = False
     uncommitted_changes_strategy: str = UncommittedChangesStrategy.ASK_FOR_CONFIRMATION.value
     selected_external_editor: str | None = None
     selected_shell: str | None = None

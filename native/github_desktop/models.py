@@ -1355,6 +1355,8 @@ class Account:
     plan: str | None = None
     copilot_endpoint: str | None = None
     copilot_token: str | None = None
+    is_copilot_desktop_enabled: bool = False
+    features: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         normalized: list[AccountEmail] = []
@@ -1382,6 +1384,16 @@ class Account:
         if self.is_dotcom:
             return "GitHub.com"
         return html_url_from_endpoint(self.endpoint)
+
+
+def enable_commit_message_generation(account: Account | None) -> bool:
+    """Desktop `enableCommitMessageGeneration`: feature flag + Copilot Desktop entitlement."""
+    if account is None:
+        return False
+    features = list(account.features or [])
+    return "desktop_copilot_generate_commit_message" in features and bool(
+        account.is_copilot_desktop_enabled
+    )
 
 
 def uncommitted_changes_strategy_choices() -> list[tuple[UncommittedChangesStrategy, str]]:

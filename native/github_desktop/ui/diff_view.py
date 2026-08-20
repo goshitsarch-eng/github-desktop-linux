@@ -1111,9 +1111,14 @@ class DiffViewer(Gtk.Box):
         if marker is not None:
             row.append(marker)
         self._register_line_widget(index, row)
-        if line.selectable and self.interactive:
-            self._attach_gutter_drag(old, index)
-            self._attach_gutter_drag(new, index)
+        if line.selectable:
+            hover = Gtk.EventControllerMotion()
+            hover.connect("enter", lambda *_a, i=index: self._set_hovered_hunk(i))
+            hover.connect("leave", lambda *_a: self._set_hovered_hunk(None))
+            row.add_controller(hover)
+            if self.interactive:
+                self._attach_gutter_drag(old, index)
+                self._attach_gutter_drag(new, index)
         attach_right_click(row, lambda *_ , i=index: self._line_menu(i, selection, line))
         return row
 
@@ -1174,8 +1179,13 @@ class DiffViewer(Gtk.Box):
             box.append(marker)
         if index is not None:
             self._register_line_widget(index, box)
-            if line.selectable and self.interactive:
-                self._attach_gutter_drag(nlab, index)
+            if line.selectable:
+                hover = Gtk.EventControllerMotion()
+                hover.connect("enter", lambda *_a, i=index: self._set_hovered_hunk(i))
+                hover.connect("leave", lambda *_a: self._set_hovered_hunk(None))
+                box.add_controller(hover)
+                if self.interactive:
+                    self._attach_gutter_drag(nlab, index)
             attach_right_click(box, lambda *_ , i=index, ln=line: self._line_menu(i, selection, ln))
         return box
 

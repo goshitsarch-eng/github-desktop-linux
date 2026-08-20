@@ -776,5 +776,15 @@ def test_window_actions_cover_menus() -> None:
         "_start_gutter_selection",
         "temporary_selection",
         "keyboard_reorder_intro_message",
+        "desktop_copilot_generate_commit_message",
+        "enable_commit_message_generation",
+        "secret-scanning/push-protection-bypasses",
+        "github-desktop-commit-message-generation",
+        "Show check marks in the diff",
+        "Show commit length warning",
+        "Overriding commit message with generated message",
+        "This is an example link",
+        "Files must be selected to generate a commit message",
+        "isCopilotDesktopEnabled",
     ]:
         assert phrase in src

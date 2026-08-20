@@ -3237,8 +3237,6 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
     clone_row = Adw.EntryRow(title="Clone default directory")
     clone_row.set_text(s.clone_default_directory or os.path.expanduser("~/Documents/GitHub"))
     git_group.add(clone_row)
-    length_row = Adw.SwitchRow(title="Show commit summary length warning", active=s.show_commit_length_warning)
-    git_group.add(length_row)
     edit_cfg = Gtk.Button(label="Edit global Git config")
     edit_cfg.connect("clicked", lambda *_: (store.edit_global_git_config(), dialog.close()))
     git_group.add(edit_cfg)
@@ -3323,10 +3321,10 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
         ("confirm_discard_changes", "Discarding changes"),
         ("confirm_discard_stash", "Discarding stashes"),
         ("confirm_force_push", "Force pushing"),
-        ("confirm_undo_commit", "Undoing commits"),
+        ("confirm_undo_commit", "Undo commit"),
         ("confirm_checkout_commit", "Checking out commits"),
         ("confirm_commit_filtered_changes", "Committing while a filter is active"),
-        ("confirm_commit_message_override", "Overwriting commit messages with Copilot"),
+        ("confirm_commit_message_override", "Overriding commit message with generated message"),
         ("confirm_stash_all_changes", "Stashing all changes"),
         ("confirm_discard_changes_permanently", "Discarding changes permanently"),
     ]:
@@ -3342,7 +3340,11 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
     except ValueError:
         strategy.set_selected(0)
     p_group.add(strategy)
+    length_group = Adw.PreferencesGroup(title="Commit Length")
+    length_row = Adw.SwitchRow(title="Show commit length warning", active=s.show_commit_length_warning)
+    length_group.add(length_row)
     prompts.add(p_group)
+    prompts.add(length_group)
 
     advanced = Adw.PreferencesPage(title="Advanced", icon_name="emblem-system-symbolic")
     a_group = Adw.PreferencesGroup(title="Background updates")
@@ -3377,8 +3379,22 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
 
     access = Adw.PreferencesPage(title="Accessibility", icon_name="preferences-desktop-accessibility-symbolic")
     ac_group = Adw.PreferencesGroup()
-    underline = Adw.SwitchRow(title="Underline links", active=s.underline_links)
-    checks = Adw.SwitchRow(title="Show diff check marks", active=s.show_diff_check_marks)
+    underline = Adw.SwitchRow(
+        title="Underline links",
+        subtitle=(
+            "When enabled, GitHub Desktop will underline links in commit messages, comments, "
+            "and other text fields. This can help make links easier to distinguish. This is an example link"
+        ),
+        active=s.underline_links,
+    )
+    checks = Adw.SwitchRow(
+        title="Show check marks in the diff",
+        subtitle=(
+            "When enabled, check marks will be displayed along side the line numbers and groups of "
+            "line numbers in the diff when committing. When disabled, the line number controls will be less prominent."
+        ),
+        active=s.show_diff_check_marks,
+    )
     spell = Adw.SwitchRow(title="Enable spellcheck in commit messages", active=s.spellcheck_enabled)
     ac_group.add(underline)
     ac_group.add(checks)

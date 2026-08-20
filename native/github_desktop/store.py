@@ -405,6 +405,8 @@ class AppStore:
                     id=int(item.get("id") or 0),
                     plan=item.get("plan"),
                     copilot_endpoint=item.get("copilot_endpoint"),
+                    is_copilot_desktop_enabled=bool(item.get("is_copilot_desktop_enabled")),
+                    features=list(item.get("features") or []),
                 )
             )
 
@@ -426,6 +428,8 @@ class AppStore:
                     "id": account.id,
                     "plan": account.plan,
                     "copilot_endpoint": account.copilot_endpoint,
+                    "is_copilot_desktop_enabled": account.is_copilot_desktop_enabled,
+                    "features": list(account.features or []),
                 }
             )
         accounts_path().write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -2875,6 +2879,14 @@ class AppStore:
         self.settings.commit_message_generation_disclaimer_last_seen = int(time.time() * 1000)
         self.persist_settings()
 
+    def mark_commit_message_generation_clicked(self) -> None:
+        """Desktop `commitMessageGenerationButtonClicked` — hide the Generate “New” callout."""
+        if self.settings.commit_message_generation_button_clicked:
+            return
+        self.settings.commit_message_generation_button_clicked = True
+        self.persist_settings()
+        self.emit()
+
     def edit_global_git_config(self) -> None:
         try:
             path = get_global_config_path()
@@ -4505,9 +4517,18 @@ class AppStore:
         self.refresh_repository(repo)
 
     def generate_commit_message(self, repo: Repository) -> None:
+        from .models import enable_commit_message_generation
+
         state = self.state_for(repo)
         if state.is_generating_commit_message or state.is_committing:
             return
+        account = self.account_for_repo(repo)
+        if not enable_commit_message_generation(account):
+            return
+        files = [f for f in (state.status.working_directory.files if state.status else []) if f.include]
+        if not files and not state.commit_to_amend:
+            return
+        self.mark_commit_message_generation_clicked()
         state.is_generating_commit_message = True
         self.emit()
 

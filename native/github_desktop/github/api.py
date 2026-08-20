@@ -62,6 +62,55 @@ class GitHubAPI:
     def from_account(cls, account: Account) -> "GitHubAPI":
         return cls(account.endpoint, account.token, account.copilot_endpoint)
 
+    def fetch_feature_flags(self) -> list[str]:
+        """Desktop `fetchFeatureFlags`: `GET /desktop_internal/features`."""
+        try:
+            data = self.get("/desktop_internal/features")
+        except APIError:
+            log.warn("fetchFeatureFlags: failed with endpoint %s", self.endpoint)
+            return []
+        if isinstance(data, dict) and isinstance(data.get("features"), list):
+            return [str(item) for item in data["features"]]
+        if isinstance(data, list):
+            return [str(item) for item in data]
+        return []
+
+    def fetch_user_copilot_info(self) -> dict[str, Any]:
+        """Desktop `fetchUserCopilotInfo`: GraphQL `isCopilotDesktopEnabled` + Copilot API endpoint."""
+        from ..models import is_ghes_endpoint
+
+        empty = {"copilot_endpoint": None, "is_copilot_desktop_enabled": False}
+        if is_ghes_endpoint(self.endpoint):
+            return empty
+        query = """
+        {
+          viewer {
+            copilotEndpoints { api }
+            isCopilotDesktopEnabled
+          }
+        }
+        """
+        try:
+            data = self.post("/graphql", {"query": query})
+            viewer = ((data or {}).get("data") or {}).get("viewer") or {}
+            endpoints = viewer.get("copilotEndpoints") or {}
+            return {
+                "copilot_endpoint": endpoints.get("api"),
+                "is_copilot_desktop_enabled": bool(viewer.get("isCopilotDesktopEnabled")),
+            }
+        except APIError:
+            log.warn("fetchUserCopilotInfo: failed with endpoint %s", self.endpoint)
+            info = self.fetch_copilot_info()
+            if not info:
+                return empty
+            return {
+                "copilot_endpoint": info.get("copilot_endpoint")
+                or (info.get("copilotEndpoints") or {}).get("api"),
+                "is_copilot_desktop_enabled": bool(
+                    info.get("isCopilotDesktopEnabled") or info.get("copilot_endpoint")
+                ),
+            }
+
     def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         headers = {
             "Accept": "application/vnd.github+json",
@@ -170,15 +219,14 @@ class GitHubAPI:
             if user.get("email"):
                 emails = [AccountEmail(email=user["email"], primary=True, verified=True, visibility="public")]
         copilot_endpoint = None
+        is_copilot_desktop_enabled = False
         try:
-            info = self.fetch_copilot_info()
-            if info:
-                copilot_endpoint = (
-                    info.get("copilot_endpoint")
-                    or (info.get("copilotEndpoints") or {}).get("api")
-                )
+            copilot = self.fetch_user_copilot_info()
+            copilot_endpoint = copilot.get("copilot_endpoint")
+            is_copilot_desktop_enabled = bool(copilot.get("is_copilot_desktop_enabled"))
         except APIError:
             pass
+        features = self.fetch_feature_flags()
         return Account(
             login=user.get("login", ""),
             endpoint=self.endpoint,
@@ -189,6 +237,8 @@ class GitHubAPI:
             id=int(user.get("id") or 0),
             plan=(user.get("plan") or {}).get("name") if isinstance(user.get("plan"), dict) else None,
             copilot_endpoint=copilot_endpoint,
+            is_copilot_desktop_enabled=is_copilot_desktop_enabled,
+            features=features,
         )
 
     def _paginate(self, path: str, query: dict[str, str] | None = None) -> list[Any]:
@@ -620,6 +670,30 @@ class GitHubAPI:
     def generate_commit_message(self, diff: str, files: Iterable[str]) -> tuple[str, str]:
         if not self.copilot_endpoint:
             raise CopilotError("Copilot is not available for this account")
+        import uuid
+
+        path = "/agents/github-desktop-commit-message-generation"
+        url = self.copilot_endpoint.rstrip("/") + path
+        body = {
+            "messages": [{"role": "user", "content": diff[:80_000]}],
+            "stream": False,
+            "response_format": {"type": "json_object"},
+        }
+        extra = {
+            "X-Initiator": "user",
+            "X-Interaction-ID": str(uuid.uuid4()),
+            "X-Interaction-Type": "generateCommitMessage",
+            "Authorization": f"Bearer {self.token}",
+        }
+        try:
+            payload = self.request("POST", path, body=body, extra_headers=extra, raw_url=url)
+        except APIError as exc:
+            if exc.status in {404, 405}:
+                return self._generate_commit_message_chat(diff, files)
+            raise CopilotError(self._copilot_error_message(exc)) from exc
+        return self._commit_message_from_payload(payload)
+
+    def _generate_commit_message_chat(self, diff: str, files: Iterable[str]) -> tuple[str, str]:
         body = {
             "messages": [
                 {
@@ -633,27 +707,41 @@ class GitHubAPI:
             ],
         }
         url = self.copilot_endpoint.rstrip("/") + "/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.token}",
-            "Content-Type": "application/json",
-            "User-Agent": USER_AGENT,
-        }
-        req = urllib.request.Request(
-            url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
-        )
+        extra = {"Authorization": f"Bearer {self.token}"}
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            raise CopilotError(f"Copilot request failed: {exc.code}") from exc
-        except urllib.error.URLError as exc:
-            raise CopilotError(f"Copilot network error: {exc}") from exc
+            payload = self.request("POST", "/v1/chat/completions", body=body, extra_headers=extra, raw_url=url)
+        except APIError as exc:
+            raise CopilotError(self._copilot_error_message(exc)) from exc
+        return self._commit_message_from_payload(payload)
+
+    def _commit_message_from_payload(self, payload: Any) -> tuple[str, str]:
         try:
             content = payload["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise CopilotError("Unexpected Copilot response") from exc
-        summary, description = _parse_generated_message(content)
-        return summary, description
+            raise CopilotError("No choice found in response") from exc
+        if not content:
+            raise CopilotError("No message found in response")
+        return _parse_generated_message(content)
+
+    def _copilot_error_message(self, exc: APIError) -> str:
+        body = exc.body or ""
+        if exc.status == 429:
+            retry = (exc.headers or {}).get("retry-after")
+            if retry:
+                return f"Rate limited, retry after {retry} seconds."
+            return "Rate limited, try again in a few minutes."
+        if exc.status == 402:
+            return body.strip() or "You have reached your quota limit."
+        if exc.status == 401:
+            return "Unauthorized: error with authentication."
+        if exc.status == 403:
+            if "not licensed to use Copilot" in body:
+                return "Unauthorized: not licensed to use Copilot."
+            if "not authorized to use this Copilot feature" in body:
+                return "Unauthorized: not authorized to use this Copilot feature."
+            if "integration does not have GitHub chat enabled" in body:
+                return "Integration does not have GitHub chat enabled."
+        return f"Copilot request failed: {exc.status or body[:200]}"
 
     def create_push_protection_bypass(
         self, owner: str, name: str, reason: str, placeholder_id: str | None = None
@@ -661,7 +749,7 @@ class GitHubAPI:
         body: dict[str, Any] = {"reason": reason}
         if placeholder_id:
             body["placeholder_id"] = placeholder_id
-        return self.post(f"/repos/{owner}/{name}/push-protection-bypasses", body)
+        return self.post(f"/repos/{owner}/{name}/secret-scanning/push-protection-bypasses", body)
 
     def _to_repo(self, data: dict[str, Any]) -> GitHubRepository:
         owner = data.get("owner") or {}

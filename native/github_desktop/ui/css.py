@@ -296,6 +296,11 @@ APP_CSS = """
 .history-commit.commit-reorder-moving {
   opacity: 0.45;
 }
+.copilot-new {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: @accent_color;
+}
 .reorder-commits-hint {
   padding: 10px 12px;
   margin: 6px 8px;

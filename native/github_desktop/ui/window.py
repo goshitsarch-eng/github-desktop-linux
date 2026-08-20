@@ -41,6 +41,7 @@ from ..models import (
     path_label,
     commit_summary_placeholder,
     submodule_include_tooltip,
+    enable_commit_message_generation,
 )
 from ..push_pull import describe_push_pull, format_commit_relative_time, format_last_fetched
 from ..shells import open_external, open_in_default_program
@@ -1356,13 +1357,21 @@ class MainWindow(Adw.ApplicationWindow):
         gen.set_tooltip_text("Generate commit message with Copilot")
         gen.set_action_name("win.generate-commit-message")
         self._generate_btn = gen
+        self._generate_new = Gtk.Label(label="New")
+        self._generate_new.add_css_class("copilot-new")
+        self._generate_new.set_visible(False)
+        gen_box = Gtk.Box(spacing=4)
+        gen_box.append(gen)
+        gen_box.append(self._generate_new)
+        gen_box.set_visible(False)
+        self._generate_box = gen_box
         self._amend_btn = Gtk.Button(label="Amend")
         self._amend_btn.connect("clicked", self._on_amend)
         self._stop_amend_btn = Gtk.Button(label="Stop amending")
         self._stop_amend_btn.set_visible(False)
         self._stop_amend_btn.connect("clicked", self._on_stop_amend)
         btn_row.append(self._commit_btn)
-        btn_row.append(gen)
+        btn_row.append(gen_box)
         btn_row.append(self._amend_btn)
         btn_row.append(self._stop_amend_btn)
         self._commit_btn_row = btn_row
@@ -2126,6 +2135,7 @@ class MainWindow(Adw.ApplicationWindow):
         repo = self.store.selected_repository
         if repo:
             self._update_commit_placeholder(repo, state)
+        self._update_copilot_button(state)
 
     def _on_changes_filter_text(self, *_args: object) -> None:
         if self._building:
@@ -2280,7 +2290,7 @@ class MainWindow(Adw.ApplicationWindow):
                 self._suggested_card(
                     "Open the repository page on GitHub in your browser",
                     "",
-                    "View on GitHub",
+                    view_on_github_label(enterprise=not is_dotcom_endpoint(repo.github.endpoint)),
                     lambda: self.store.view_on_github(repo),
                     discoverability="Always available from the Repository menu or Ctrl+Shift+G",
                 )
@@ -3086,22 +3096,23 @@ class MainWindow(Adw.ApplicationWindow):
         selected = list(state.selected_commits) or [commit]
         is_tip = bool(state.commits and state.commits[0].sha == commit.sha)
         local = commit.sha in set(state.local_commit_shas)
+        rewrite = self._can_rewrite_history()
         items = []
         if len(selected) > 1:
             items.extend(
                 [
                     (f"Cherry-pick {len(selected)} commits…", lambda: self.store.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind="Cherry-pick", shas=[c.sha for c in selected]), True),
-                    (f"Squash {len(selected)} commits…", lambda: self._squash_selected(selected, commit), True),
+                    (f"Squash {len(selected)} commits…", lambda: self._squash_selected(selected, commit), rewrite),
                     (f"Reorder {len(selected)} commits…", lambda: self._start_keyboard_reorder(selected), self._can_keyboard_reorder()),
                 ]
             )
         else:
             if is_tip:
-                items.append(("Amend commit…", self._on_amend, True))
-                items.append(("Undo commit…", self._undo, local))
+                items.append(("Amend commit…", self._on_amend, rewrite))
+                items.append(("Undo commit…", self._undo, local and rewrite))
             items.extend(
                 [
-                    ("Reset to commit…", lambda: self.store.reset_to_commit(repo, commit), (not is_tip) and local),
+                    ("Reset to commit…", lambda: self.store.reset_to_commit(repo, commit), (not is_tip) and local and rewrite),
                     ("Checkout commit", lambda: self.store.checkout_commit_sha(repo, commit.sha), not is_tip),
                     ("Reorder commit", lambda: self._start_keyboard_reorder([commit]), self._can_keyboard_reorder()),
                     ("Revert changes in commit", lambda: self.store.revert_commit(repo, commit), True),
@@ -3115,12 +3126,13 @@ class MainWindow(Adw.ApplicationWindow):
                             True,
                         )
                         for name in (commit.tags or [])
+                        if name in set(getattr(state, "local_tags_to_push", None) or [])
                     ],
                     ("Cherry-pick commit…", lambda: self.store.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind="Cherry-pick", shas=[commit.sha]), True),
                     None,
                     ("Copy SHA", lambda: copy_text(commit.sha), True),
                     ("Copy tags", lambda: copy_text(" ".join(commit.tags)), bool(commit.tags)),
-                    ("View on GitHub", lambda: self.store.view_commit_on_github(repo, commit.sha), bool(repo.github) and not local),
+                    (view_on_github_label(enterprise=bool(repo.github and not is_dotcom_endpoint(repo.github.endpoint))), lambda: self.store.view_commit_on_github(repo, commit.sha), bool(repo.github) and not local),
                 ]
             )
         show_context_menu(row, items)
@@ -3139,6 +3151,9 @@ class MainWindow(Adw.ApplicationWindow):
         return commits
 
     def _can_keyboard_reorder(self) -> bool:
+        return self._can_rewrite_history()
+
+    def _can_rewrite_history(self) -> bool:
         repo = self.store.selected_repository
         if not repo:
             return False
@@ -3309,11 +3324,15 @@ class MainWindow(Adw.ApplicationWindow):
                     return False
                 kind = commit_drop_kind(float(y or 0), float(widget.get_allocated_height() or 1))
                 if kind == "squash":
+                    if not self._can_rewrite_history():
+                        return False
                     others = [c for c in moving if c.sha != target.sha]
                     if not others:
                         return False
                     self._squash_selected([*others, target], target)
                     return True
+                if not self._can_rewrite_history():
+                    return False
                 idx = next((i for i, c in enumerate(state.commits) if c.sha == target.sha), None)
                 if idx is None:
                     return False
@@ -3612,7 +3631,7 @@ class MainWindow(Adw.ApplicationWindow):
                 ("Copy repo name", lambda: copy_text(repo.name), True),
                 ("Copy repo path", lambda: copy_text(repo.path), True),
                 None,
-                ("View on GitHub", lambda: self.store.view_on_github(repo), bool(repo.github)),
+                (view_on_github_label(enterprise=bool(repo.github and not is_dotcom_endpoint(repo.github.endpoint))), lambda: self.store.view_on_github(repo), bool(repo.github)),
                 (self._open_in_shell_label(), lambda: self.store.open_in_shell(repo), True),
                 (RevealInFileManagerLabel, lambda: self.store.reveal_in_file_manager(repo, ""), True),
                 (self._open_in_editor_label(), lambda: self.store.open_in_editor(repo, repo.path), True),
@@ -3951,7 +3970,7 @@ class MainWindow(Adw.ApplicationWindow):
         if hasattr(self, "_description"):
             self._description.set_editable(not busy)
         if hasattr(self, "_generate_btn"):
-            self._generate_btn.set_sensitive(not busy)
+            self._update_copilot_button(state)
         if hasattr(self, "_commit_btn") and busy:
             self._commit_btn.set_sensitive(False)
         if hasattr(self, "_copilot_hint"):
@@ -3962,6 +3981,36 @@ class MainWindow(Adw.ApplicationWindow):
                 self._copilot_hint.set_text("Generated by Copilot")
                 generated = bool(state and getattr(state.commit_message, "generated_by_copilot", False))
                 self._copilot_hint.set_visible(generated)
+
+    def _update_copilot_button(self, state=None) -> None:
+        if not hasattr(self, "_generate_btn"):
+            return
+        repo = self.store.selected_repository
+        account = self.store.account_for_repo(repo) if repo else None
+        entitled = enable_commit_message_generation(account)
+        self._generate_btn.set_visible(entitled)
+        if hasattr(self, "_generate_box"):
+            self._generate_box.set_visible(entitled)
+        if hasattr(self, "_generate_new"):
+            self._generate_new.set_visible(
+                entitled and not self.store.settings.commit_message_generation_button_clicked
+            )
+        if not entitled:
+            return
+        files: list = []
+        if state and state.status:
+            files = [item for item in state.status.working_directory.files if item.include]
+        amending = bool(state and state.commit_to_amend)
+        no_changes = not amending and not files
+        busy = bool(state and (state.is_committing or state.is_generating_commit_message))
+        generating = bool(state and state.is_generating_commit_message)
+        self._generate_btn.set_sensitive(not busy and not no_changes)
+        tip = "Generate commit message with Copilot"
+        if generating:
+            tip = "Generating commit details…"
+        elif no_changes:
+            tip = "Generate commit message with Copilot. Files must be selected to generate a commit message."
+        self._generate_btn.set_tooltip_text(tip)
 
     def _clear_commit_warning_links(self) -> None:
         if not hasattr(self, "_rules_box"):

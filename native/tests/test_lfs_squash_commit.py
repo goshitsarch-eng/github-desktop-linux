@@ -147,8 +147,17 @@ def test_generate_commit_message_busy_flag(isolated_config, git_repo: Path, monk
     store.add_repositories([str(git_repo)])
     repo = store.selected_repository
     assert repo is not None
-    store.accounts = [Account(login="octocat", endpoint="https://api.github.com", token="t")]
+    store.accounts = [
+        Account(
+            login="octocat",
+            endpoint="https://api.github.com",
+            token="t",
+            is_copilot_desktop_enabled=True,
+            features=["desktop_copilot_generate_commit_message"],
+        )
+    ]
     monkeypatch.setattr(store, "account_for_repo", lambda *_: store.accounts[0])
+    store.state_for(repo).commit_to_amend = type("Commit", (), {"sha": "abc123"})()
     monkeypatch.setattr("github_desktop.store.get_files_diff_text", lambda *_a, **_k: "diff")
     monkeypatch.setattr(
         GitHubAPI,
@@ -168,6 +177,20 @@ def test_generate_commit_message_busy_flag(isolated_config, git_repo: Path, monk
     assert state.is_generating_commit_message is False
     assert state.commit_message.summary == "summary"
     assert state.commit_message.generated_by_copilot is True
+
+
+def test_generate_commit_message_requires_entitlement(isolated_config, git_repo: Path, monkeypatch) -> None:
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    store.accounts = [Account(login="octocat", endpoint="https://api.github.com", token="t")]
+    monkeypatch.setattr(store, "account_for_repo", lambda *_: store.accounts[0])
+    called = []
+    monkeypatch.setattr(store, "_run", lambda work, done: called.append(True))
+    store.generate_commit_message(repo)
+    assert called == []
+    assert store.state_for(repo).is_generating_commit_message is False
 
 
 def test_fetch_repository_clone_info_protocol_and_404(monkeypatch) -> None:

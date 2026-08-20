@@ -289,3 +289,42 @@ def test_keyboard_reorder_copy() -> None:
     assert keyboard_reorder_insert_message(2, 5, 5) == (
         "Press Enter to insert the selected commits after commit 5 or Escape to cancel."
     )
+
+
+def test_enable_commit_message_generation_requires_flag_and_entitlement() -> None:
+    from github_desktop.models import Account, enable_commit_message_generation
+
+    none = Account(login="hubot", endpoint="https://api.github.com", token="t")
+    assert enable_commit_message_generation(none) is False
+    assert enable_commit_message_generation(None) is False
+    flagged = Account(
+        login="hubot",
+        endpoint="https://api.github.com",
+        token="t",
+        features=["desktop_copilot_generate_commit_message"],
+        is_copilot_desktop_enabled=False,
+    )
+    assert enable_commit_message_generation(flagged) is False
+    entitled = Account(
+        login="hubot",
+        endpoint="https://api.github.com",
+        token="t",
+        features=["desktop_copilot_generate_commit_message"],
+        is_copilot_desktop_enabled=True,
+    )
+    assert enable_commit_message_generation(entitled) is True
+
+
+def test_push_protection_bypass_uses_secret_scanning_path() -> None:
+    from github_desktop.github.api import GitHubAPI
+
+    api = GitHubAPI("https://api.github.com", "tok")
+    seen: list[str] = []
+
+    def fake_post(path, body=None, **kwargs):
+        seen.append(path)
+        return {"id": 1}
+
+    api.post = fake_post  # type: ignore[method-assign]
+    api.create_push_protection_bypass("desktop", "desktop", "false_positive", "ph")
+    assert seen == ["/repos/desktop/desktop/secret-scanning/push-protection-bypasses"]
