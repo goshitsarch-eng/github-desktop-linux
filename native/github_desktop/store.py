@@ -2653,7 +2653,8 @@ class AppStore:
             self.state_for(repo).pending_force_push_before = undo_sha
             self.show_banner(Banner(BannerType.SUCCESSFUL_SQUASH, count=len(targets) + 1, undo_sha=undo_sha))
         elif result == RebaseResult.CONFLICTS_ENCOUNTERED:
-            self.show_banner(Banner(BannerType.CONFLICTS_FOUND, operation_description="Squash", operation_kind=MultiCommitOperationKind.SQUASH.value))
+            current = self.state_for(repo).status.current_branch if self.state_for(repo).status else None
+            self.show_banner(Banner(BannerType.CONFLICTS_FOUND, operation_description="squashing commits on", target_branch=current, operation_kind=MultiCommitOperationKind.SQUASH.value))
             self.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind=MultiCommitOperationKind.SQUASH, step="conflicts")
         self.refresh_repository(repo)
 
@@ -2701,7 +2702,8 @@ class AppStore:
             self.state_for(repo).pending_force_push_before = undo_sha
             self.show_banner(Banner(BannerType.SUCCESSFUL_REORDER, count=len(moving), undo_sha=undo_sha))
         elif result == RebaseResult.CONFLICTS_ENCOUNTERED:
-            self.show_banner(Banner(BannerType.CONFLICTS_FOUND, operation_description="Reorder", operation_kind=MultiCommitOperationKind.REORDER.value))
+            current = self.state_for(repo).status.current_branch if self.state_for(repo).status else None
+            self.show_banner(Banner(BannerType.CONFLICTS_FOUND, operation_description="reordering commits on", target_branch=current, operation_kind=MultiCommitOperationKind.REORDER.value))
             self.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind=MultiCommitOperationKind.REORDER, step="conflicts")
         self.refresh_repository(repo)
 
@@ -3568,6 +3570,8 @@ class AppStore:
         state = self.state_for(repo)
         sha = (self.banner.undo_sha if self.banner else None) or state.undo_sha
         banner_type = self.banner.type if self.banner else None
+        count = self.banner.count if self.banner else 0
+        target_branch = self.banner.target_branch if self.banner else None
         if not sha:
             return
         try:
@@ -3581,7 +3585,7 @@ class AppStore:
             BannerType.SUCCESSFUL_REORDER: BannerType.REORDER_UNDONE,
         }.get(banner_type or BannerType.SUCCESSFUL_MERGE)
         if undone:
-            self.show_banner(Banner(undone))
+            self.show_banner(Banner(undone, count=count, target_branch=target_branch))
         else:
             self.clear_banner()
         state.undo_sha = None
@@ -3624,7 +3628,7 @@ class AppStore:
                     step="conflicts",
                 )
             elif merge_result == MergeResult.ALREADY_UP_TO_DATE:
-                self.show_banner(Banner(BannerType.BRANCH_ALREADY_UP_TO_DATE, their_branch=branch))
+                self.show_banner(Banner(BannerType.BRANCH_ALREADY_UP_TO_DATE, our_branch=our_branch, their_branch=branch))
             else:
                 self.show_banner(Banner(BannerType.SUCCESSFUL_MERGE, our_branch=our_branch, their_branch=branch, undo_sha=undo_sha))
             self.refresh_repository(repo)
@@ -3657,10 +3661,10 @@ class AppStore:
                 if not self._maybe_local_changes_overwritten(repo, exc, retry):
                     self.show_popup(PopupType.ERROR, error=str(exc))
             elif rebase_result == RebaseResult.CONFLICTS_ENCOUNTERED:
-                self.show_banner(Banner(BannerType.REBASE_CONFLICTS_FOUND, target_branch=base, operation_kind=MultiCommitOperationKind.REBASE.value))
+                self.show_banner(Banner(BannerType.REBASE_CONFLICTS_FOUND, target_branch=target_branch, their_branch=base, operation_kind=MultiCommitOperationKind.REBASE.value))
                 self.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind=MultiCommitOperationKind.REBASE, step="conflicts")
             elif rebase_result == RebaseResult.ALREADY_UP_TO_DATE:
-                self.show_banner(Banner(BannerType.BRANCH_ALREADY_UP_TO_DATE, their_branch=base))
+                self.show_banner(Banner(BannerType.BRANCH_ALREADY_UP_TO_DATE, our_branch=target_branch, their_branch=base))
             elif rebase_result == RebaseResult.COMPLETED_WITHOUT_ERROR:
                 self.state_for(repo).pending_force_push_before = undo_sha
                 self.show_banner(Banner(BannerType.SUCCESSFUL_REBASE, target_branch=target_branch, their_branch=base, undo_sha=undo_sha))

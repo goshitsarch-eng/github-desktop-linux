@@ -54,6 +54,30 @@ def test_success_banner_copy() -> None:
     assert format_banner_text(BannerType.SUCCESSFUL_CHERRY_PICK, cherry) == "Successfully copied 2 commits to main."
     squash = Banner(BannerType.SUCCESSFUL_SQUASH, count=1)
     assert format_banner_text(BannerType.SUCCESSFUL_SQUASH, squash) == "Successfully squashed 1 commit."
+    merge_conflicts = Banner(BannerType.MERGE_CONFLICTS_FOUND, our_branch="main")
+    assert format_banner_text(BannerType.MERGE_CONFLICTS_FOUND, merge_conflicts) == (
+        "Resolve conflicts and commit to merge into main."
+    )
+    rebase_conflicts = Banner(BannerType.REBASE_CONFLICTS_FOUND, target_branch="topic")
+    assert format_banner_text(BannerType.REBASE_CONFLICTS_FOUND, rebase_conflicts) == (
+        "Resolve conflicts to continue rebasing topic."
+    )
+    cherry_conflicts = Banner(BannerType.CHERRY_PICK_CONFLICTS_FOUND, target_branch="main")
+    assert format_banner_text(BannerType.CHERRY_PICK_CONFLICTS_FOUND, cherry_conflicts) == (
+        "Resolve conflicts to continue cherry-picking onto main."
+    )
+    up_to_date = Banner(BannerType.BRANCH_ALREADY_UP_TO_DATE, our_branch="main", their_branch="origin/main")
+    assert format_banner_text(BannerType.BRANCH_ALREADY_UP_TO_DATE, up_to_date) == (
+        "main is already up to date with origin/main"
+    )
+    cherry_undone = Banner(BannerType.CHERRY_PICK_UNDONE, count=2, target_branch="main")
+    assert "Cherry-pick undone. Successfully removed the 2 copied commits from main." in format_banner_text(
+        BannerType.CHERRY_PICK_UNDONE, cherry_undone
+    )
+    squash_undone = Banner(BannerType.SQUASH_UNDONE, count=1)
+    assert format_banner_text(BannerType.SQUASH_UNDONE, squash_undone) == "Squash of 1 commit undone."
+    reorder = Banner(BannerType.SUCCESSFUL_REORDER, count=3)
+    assert format_banner_text(BannerType.SUCCESSFUL_REORDER, reorder) == "Successfully reordered 3 commits."
 
 
 def test_clone_list_empty_copy() -> None:

@@ -412,10 +412,15 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         ),
         PopupType.ADD_SSH_HOST: lambda: _alert(
             parent,
-            f"Unknown SSH host {payload.get('host', '')}",
-            f"The authenticity of host {payload.get('host', '')} ({payload.get('ip', '')}) can't be established.\n"
-            f"{payload.get('key_type', '')} key fingerprint is {payload.get('fingerprint', '')}.",
-            confirm="Trust",
+            "SSH Host",
+            (
+                f"The authenticity of host '{payload.get('host', '')} ({payload.get('ip', '')})' can't "
+                f"be established. {payload.get('key_type', '')} key fingerprint is "
+                f"{payload.get('fingerprint', '')}.\n\n"
+                "Are you sure you want to continue connecting?"
+            ),
+            confirm="Yes",
+            cancel="No",
             on_confirm=lambda: payload.get("on_submit") and payload["on_submit"](True),
             on_cancel=lambda: payload.get("on_submit") and payload["on_submit"](False),
         ),
@@ -3318,14 +3323,35 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
     prompts.add(p_group)
 
     advanced = Adw.PreferencesPage(title="Advanced", icon_name="emblem-system-symbolic")
-    a_group = Adw.PreferencesGroup()
-    tracking = Adw.SwitchRow(title="Opt out of usage reporting", active=s.opt_out_of_usage_tracking)
-    cred = Adw.SwitchRow(title="Use an external Git credential helper", active=s.use_external_credential_helper)
-    indicators = Adw.SwitchRow(title="Show repository indicators", active=s.repository_indicators_enabled)
-    a_group.add(tracking)
-    a_group.add(cred)
+    a_group = Adw.PreferencesGroup(title="Background updates")
+    indicators = Adw.SwitchRow(
+        title="Show status icons in the repository list",
+        subtitle="These icons indicate which repositories have local or remote changes, and require the periodic fetching of repositories that are not currently selected.",
+        active=s.repository_indicators_enabled,
+    )
     a_group.add(indicators)
+    usage_group = Adw.PreferencesGroup(title="Usage")
+    tracking = Adw.SwitchRow(
+        title="Help GitHub Desktop improve by submitting usage stats",
+        active=not s.opt_out_of_usage_tracking,
+    )
+    usage_link = Gtk.LinkButton(uri="https://desktop.github.com/usage-data/", label="usage stats")
+    usage_link.set_valign(Gtk.Align.CENTER)
+    tracking.add_suffix(usage_link)
+    usage_group.add(tracking)
+    cred_group = Adw.PreferencesGroup(title="Network and credentials")
+    cred = Adw.SwitchRow(
+        title="Use Git Credential Manager",
+        subtitle="Use Git Credential Manager for private repositories outside of GitHub.com. This feature is experimental and subject to change.",
+        active=s.use_external_credential_helper,
+    )
+    gcm_link = Gtk.LinkButton(uri="https://gh.io/gcm", label="Git Credential Manager")
+    gcm_link.set_valign(Gtk.Align.CENTER)
+    cred.add_suffix(gcm_link)
+    cred_group.add(cred)
     advanced.add(a_group)
+    advanced.add(usage_group)
+    advanced.add(cred_group)
 
     access = Adw.PreferencesPage(title="Accessibility", icon_name="preferences-desktop-accessibility-symbolic")
     ac_group = Adw.PreferencesGroup()
@@ -3355,7 +3381,7 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
         s.show_side_by_side_diff = side_row.get_active()
         s.hide_whitespace_in_diffs = ws_row.get_active()
         s.notifications_enabled = n_row.get_active()
-        s.opt_out_of_usage_tracking = tracking.get_active()
+        s.opt_out_of_usage_tracking = not tracking.get_active()
         s.use_external_credential_helper = cred.get_active()
         s.repository_indicators_enabled = indicators.get_active()
         s.underline_links = underline.get_active()

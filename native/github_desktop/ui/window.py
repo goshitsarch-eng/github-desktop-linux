@@ -102,6 +102,10 @@ SUCCESS_BANNER_KINDS = {
 }
 
 
+def _banner_noun(count: int) -> str:
+    return "commit" if count == 1 else "commits"
+
+
 def format_banner_text(kind: BannerType, banner) -> str:
     """Desktop success/conflict banner copy."""
     if kind == BannerType.SUCCESSFUL_MERGE:
@@ -113,22 +117,39 @@ def format_banner_text(kind: BannerType, banner) -> str:
             return f"Successfully rebased {banner.target_branch} onto {banner.their_branch}"
         return f"Successfully rebased {banner.target_branch or ''}"
     if kind == BannerType.SUCCESSFUL_CHERRY_PICK:
-        noun = "commit" if banner.count == 1 else "commits"
         target = banner.target_branch or ""
-        return f"Successfully copied {banner.count} {noun} to {target}."
+        return f"Successfully copied {banner.count} {_banner_noun(banner.count)} to {target}."
     if kind == BannerType.SUCCESSFUL_SQUASH:
-        noun = "commit" if banner.count == 1 else "commits"
-        return f"Successfully squashed {banner.count} {noun}."
+        return f"Successfully squashed {banner.count} {_banner_noun(banner.count)}."
+    if kind == BannerType.SUCCESSFUL_REORDER:
+        return f"Successfully reordered {banner.count} {_banner_noun(banner.count)}."
+    if kind == BannerType.MERGE_CONFLICTS_FOUND:
+        return f"Resolve conflicts and commit to merge into {banner.our_branch or ''}."
+    if kind == BannerType.REBASE_CONFLICTS_FOUND:
+        return f"Resolve conflicts to continue rebasing {banner.target_branch or ''}."
+    if kind == BannerType.CHERRY_PICK_CONFLICTS_FOUND:
+        return f"Resolve conflicts to continue cherry-picking onto {banner.target_branch or ''}."
+    if kind == BannerType.CONFLICTS_FOUND:
+        op = banner.operation_description or "the operation"
+        if banner.target_branch:
+            return f"Resolve conflicts to continue {op} {banner.target_branch}."
+        return f"Resolve conflicts to continue {op}."
+    if kind == BannerType.BRANCH_ALREADY_UP_TO_DATE:
+        ours = banner.our_branch or ""
+        if banner.their_branch:
+            return f"{ours} is already up to date with {banner.their_branch}"
+        return f"{ours} is already up to date"
+    if kind == BannerType.CHERRY_PICK_UNDONE:
+        target = banner.target_branch or ""
+        return (
+            f"Cherry-pick undone. Successfully removed the {banner.count} copied "
+            f"{_banner_noun(banner.count)} from {target}."
+        )
+    if kind == BannerType.SQUASH_UNDONE:
+        return f"Squash of {banner.count} {_banner_noun(banner.count)} undone."
+    if kind == BannerType.REORDER_UNDONE:
+        return f"Reorder of {banner.count} {_banner_noun(banner.count)} undone."
     mapping = {
-        BannerType.MERGE_CONFLICTS_FOUND: "Merge conflicts need to be resolved",
-        BannerType.REBASE_CONFLICTS_FOUND: "Rebase conflicts need to be resolved",
-        BannerType.BRANCH_ALREADY_UP_TO_DATE: "Branch is already up to date",
-        BannerType.CHERRY_PICK_CONFLICTS_FOUND: "Cherry-pick conflicts need to be resolved",
-        BannerType.CHERRY_PICK_UNDONE: "Cherry-pick undone",
-        BannerType.SQUASH_UNDONE: "Squash undone",
-        BannerType.SUCCESSFUL_REORDER: f"Reordered {banner.count} commit(s)",
-        BannerType.REORDER_UNDONE: "Reorder undone",
-        BannerType.CONFLICTS_FOUND: banner.operation_description or "Conflicts found",
         BannerType.OPEN_THANK_YOU_CARD: "The Desktop team would like to thank you for your contributions.",
         BannerType.DETACHED_HEAD: "You are in a detached HEAD state. Create a branch to keep your work.",
         BannerType.ACCESSIBILITY_SETTINGS: (
@@ -981,10 +1002,10 @@ class MainWindow(Adw.ApplicationWindow):
         view.append("Branches list", "win.show-branches")
         view.append("Go to summary", "win.go-to-commit-message")
         view.append(self._stash_menu_label(), "win.toggle-stash")
-        view.append("Toggle changes filter", "win.toggle-changes-filter")
+        view.append(self._changes_filter_menu_label(), "win.toggle-changes-filter")
         view.append("Toggle full screen", "win.toggle-fullscreen")
-        view.append("Increase active resizable", "win.increase-resizable")
-        view.append("Decrease active resizable", "win.decrease-resizable")
+        view.append("Expand active resizable", "win.increase-resizable")
+        view.append("Contract active resizable", "win.decrease-resizable")
         view.append("Reset zoom", "win.zoom-reset")
         view.append("Zoom in", "win.zoom-in")
         view.append("Zoom out", "win.zoom-out")
@@ -1010,7 +1031,7 @@ class MainWindow(Adw.ApplicationWindow):
         branch.append(self._update_from_default_label(), "win.update-from-default")
         branch.append("Compare to branch", "win.compare-to-branch")
         branch.append("Merge into current branch…", "win.merge-branch")
-        branch.append("Squash and merge…", "win.squash-merge")
+        branch.append("Squash and merge into current branch…", "win.squash-merge")
         branch.append("Rebase current branch…", "win.rebase-branch")
         branch.append("Compare on GitHub", "win.compare-on-github")
         branch.append("View branch on GitHub", "win.branch-on-github")
@@ -1020,7 +1041,7 @@ class MainWindow(Adw.ApplicationWindow):
         help_m = Gio.Menu()
         help_m.append("Report issue…", "win.report-issue")
         help_m.append("Contact GitHub support…", "win.contact-support")
-        help_m.append("Show user guides", "win.show-guides")
+        help_m.append("Show User Guides", "win.show-guides")
         help_m.append("Explore GitHub", "win.github-explore")
         help_m.append("Show keyboard shortcuts", "win.show-shortcuts")
         help_m.append("Show logs in your File Manager", "win.show-logs")
@@ -1056,6 +1077,9 @@ class MainWindow(Adw.ApplicationWindow):
             return "Hide stashed changes"
         return "Show stashed changes"
 
+    def _changes_filter_menu_label(self) -> str:
+        return "Hide changes filter" if self.store.settings.show_changes_filter else "Show changes filter"
+
     def _update_from_default_label(self) -> str:
         repo = self.store.selected_repository
         name = self.store.default_branch_name(repo) if repo else None
@@ -1078,6 +1102,7 @@ class MainWindow(Adw.ApplicationWindow):
             self._push_menu_label(),
             self._pull_request_menu_label(),
             self._stash_menu_label(),
+            self._changes_filter_menu_label(),
             self._update_from_default_label(),
             self._open_in_editor_label(),
             self._open_in_shell_label(),
@@ -1117,7 +1142,6 @@ class MainWindow(Adw.ApplicationWindow):
         self._filter = Gtk.SearchEntry()
         self._filter.set_placeholder_text("Filter changed files")
         self._filter.connect("search-changed", self._on_changes_filter_text)
-        left.append(self._filter)
         chips = Gtk.Box(spacing=4)
         chips.add_css_class("filter-bar")
         self._filter_buttons: dict[str, Gtk.ToggleButton] = {}
@@ -1145,7 +1169,11 @@ class MainWindow(Adw.ApplicationWindow):
             self._kind_buttons[value] = btn
             chips.append(btn)
         self._filter_bar = chips
-        left.append(chips)
+        self._filter_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self._filter_box.append(self._filter)
+        self._filter_box.append(chips)
+        self._filter_box.set_visible(self.store.settings.show_changes_filter)
+        left.append(self._filter_box)
         tools = Gtk.Box(spacing=6)
         self._include_all = Gtk.CheckButton(label="Include all")
         self._include_all.connect("toggled", self._on_include_all)
@@ -1491,8 +1519,8 @@ class MainWindow(Adw.ApplicationWindow):
             is_on_default_branch=bool(current_branch and default_name and current_branch == default_name),
             prs_loading=bool(state.loading),
         )
-        if hasattr(self, "_filter_bar"):
-            self._filter_bar.set_visible(self.store.settings.show_changes_filter)
+        if hasattr(self, "_filter_box"):
+            self._filter_box.set_visible(self.store.settings.show_changes_filter)
         self._update_push_label(state)
         self._update_checks(state)
         self._update_tutorial_banner(repo, state)
@@ -1901,6 +1929,35 @@ class MainWindow(Adw.ApplicationWindow):
         row.set_child(box)
         return row
 
+    def _filtered_changes_empty_row(self, repo, filters) -> Gtk.Widget:
+        """Desktop `FilterChangesList` empty filtered slate."""
+        from ..filter_changes import get_no_results_message
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.add_css_class("no-changes-filtered")
+        box.set_margin_top(16)
+        box.set_margin_bottom(16)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        title = Gtk.Label(label="No files match your current filters", wrap=True, xalign=0)
+        title.add_css_class("title-4")
+        box.append(title)
+        subtitle = get_no_results_message(filters)
+        if subtitle:
+            hint = Gtk.Label(label=subtitle, wrap=True, xalign=0)
+            hint.add_css_class("dim-label")
+            box.append(hint)
+        clear_btn = Gtk.Button(label="Clear filters")
+        clear_btn.add_css_class("clear-filters-button")
+        clear_btn.set_halign(Gtk.Align.START)
+        clear_btn.connect("clicked", lambda *_: self.store.clear_changes_filter(repo))
+        box.append(clear_btn)
+        row = Gtk.ListBoxRow()
+        row.set_activatable(False)
+        row.set_selectable(False)
+        row.set_child(box)
+        return row
+
     def _refresh_files(self) -> None:
         repo = self.store.selected_repository
         if not repo or not hasattr(self, "_file_list"):
@@ -1909,7 +1966,6 @@ class MainWindow(Adw.ApplicationWindow):
         from ..filter_changes import (
             file_list_filter_state_from_view,
             filter_changed_files,
-            get_no_results_message,
         )
 
         self._building = True
@@ -1932,7 +1988,10 @@ class MainWindow(Adw.ApplicationWindow):
                     btn.set_active(want)
         all_files = list(state.status.working_directory.files) if state.status else []
         filters = file_list_filter_state_from_view(state)
-        files = filter_changed_files(all_files, filters)
+        if self.store.settings.show_changes_filter:
+            files = filter_changed_files(all_files, filters)
+        else:
+            files = all_files
         clear_box(self._file_list)
         if not all_files and hasattr(self, "_changes_pages"):
             self._changes_pages.set_visible_child_name("suggested")
@@ -1941,11 +2000,7 @@ class MainWindow(Adw.ApplicationWindow):
             if hasattr(self, "_changes_pages"):
                 self._changes_pages.set_visible_child_name("files")
             if not files:
-                msg = get_no_results_message(filters) or "No matching files"
-                empty = Adw.ActionRow(title=msg)
-                empty.set_activatable(False)
-                empty.set_selectable(False)
-                self._file_list.append(empty)
+                self._file_list.append(self._filtered_changes_empty_row(repo, filters))
             else:
                 for file in files:
                     self._file_list.append(self._file_row(file))
@@ -2764,8 +2819,13 @@ class MainWindow(Adw.ApplicationWindow):
             return
         selected = self._selected_change_files() or [file]
         paths = [f.path for f in selected]
+        confirm = self.store.settings.confirm_discard_changes
+        if len(paths) == 1:
+            discard_label = "Discard changes…" if confirm else "Discard changes"
+        else:
+            discard_label = f"Discard {len(paths)} selected changes" + ("…" if confirm else "")
         items = [
-            ("Discard changes…", lambda: self.store.show_popup(PopupType.CONFIRM_DISCARD_CHANGES, files=selected), True),
+            (discard_label, lambda: self.store.show_popup(PopupType.CONFIRM_DISCARD_CHANGES, files=selected), True),
             None,
         ]
         if len(paths) == 1:
@@ -2778,7 +2838,7 @@ class MainWindow(Adw.ApplicationWindow):
                 ext = "." + file.path.split(".")[-1]
                 items.append((f"Ignore all {ext} files", lambda: self.store.ignore_pattern(repo, f"*{ext}"), True))
         else:
-            items.append((f"Ignore {len(paths)} selected files", lambda: [self.store.ignore_path(repo, p) for p in paths], True))
+            items.append((f"Ignore {len(paths)} selected files (add to .gitignore)", lambda: [self.store.ignore_path(repo, p) for p in paths], True))
             items.append(("Include selected files", lambda: self.store.set_files_included(repo, paths, True), True))
             items.append(("Exclude selected files", lambda: self.store.set_files_included(repo, paths, False), True))
             items.append((CopySelectedPathsLabel, lambda: copy_text("\n".join(os.path.join(repo.path, p) for p in paths)), True))
@@ -3929,8 +3989,8 @@ class MainWindow(Adw.ApplicationWindow):
                         ("Zoom in", "<Control>plus"),
                         ("Zoom out", "<Control>minus"),
                         ("Reset zoom", "<Control>0"),
-                        ("Increase active resizable", "<Control>9"),
-                        ("Decrease active resizable", "<Control>8"),
+                        ("Expand active resizable", "<Control>9"),
+                        ("Contract active resizable", "<Control>8"),
                     ],
                 ),
                 (
