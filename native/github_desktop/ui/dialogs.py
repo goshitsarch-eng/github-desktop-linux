@@ -48,6 +48,9 @@ from ..models import (
     UncommittedChangesStrategy,
     git_author_name_is_valid,
     group_pr_base_branches,
+    is_dotcom_endpoint,
+    map_status,
+    path_label,
     pr_base_branches,
     accounts_for_publish_tab,
     default_publish_tab,
@@ -59,6 +62,14 @@ from ..version import APP_NAME, __version__
 from .avatar import Avatar
 from .checks import show_checks, show_rerun_checks
 from .diff_view import DiffViewer
+from .menus import (
+    TrashNameLabel,
+    attach_right_click,
+    committed_file_context_items,
+    open_in_editor_label,
+    show_context_menu,
+    view_on_github_label,
+)
 from .multi_commit import show_multi_commit, show_warn_force_push
 
 
@@ -1569,6 +1580,15 @@ def _render_grouped_clone_list(
         listbox.append(Adw.ActionRow(title=empty_title))
 
 
+def _clone_list_empty_title(account, needle: str) -> str:
+    """Desktop `CloneableRepositoryFilterList` empty copy."""
+    if needle:
+        return f"Sorry, I can't find any repository matching {needle}"
+    login = getattr(account, "login", "") or ""
+    host = getattr(account, "friendly_endpoint", None) or "GitHub"
+    return f"Looks like there are no repositories for {login} on {host}."
+
+
 def show_config_lock_file_exists(
     parent: Gtk.Window | None,
     lock_path: str,
@@ -1798,7 +1818,7 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
             _clear_listbox(repo_list)
             return
         needle = gh_filter.get_text().strip()
-        empty = "Sorry, I can't find that repository" if needle else "No matching repositories"
+        empty = _clone_list_empty_title(account, needle)
         _render_grouped_clone_list(
             repo_list,
             loaded,
@@ -1849,7 +1869,7 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
             _clear_listbox(ent_list)
             return
         needle = ent_filter.get_text().strip()
-        empty = "Sorry, I can't find that repository" if needle else "No matching repositories"
+        empty = _clone_list_empty_title(account, needle)
         _render_grouped_clone_list(
             ent_list,
             loaded_ent,
@@ -2690,23 +2710,29 @@ def show_remove_repository(parent: Gtk.Window, store: AppStore) -> None:
     if not repo:
         return
     dialog = Adw.AlertDialog(
-        heading="Remove repository?",
-        body=f"Remove {repo.display_name} from GitHub Desktop? Files on disk can optionally be deleted.",
+        heading="Remove repository",
+        body=(
+            f'Are you sure you want to remove the repository "{repo.name}" from GitHub Desktop?\n\n'
+            f"The repository will be removed from GitHub Desktop:\n{repo.path}"
+        ),
     )
     dialog.add_response("cancel", "Cancel")
-    dialog.add_response("keep", "Remove")
-    dialog.add_response("delete", "Remove and delete files")
-    dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+    dialog.add_response("remove", "Remove")
+    dialog.set_response_appearance("remove", Adw.ResponseAppearance.DESTRUCTIVE)
+    dialog.set_default_response("remove")
+    check = Gtk.CheckButton(label=f"Also move this repository to {TrashNameLabel}")
+    try:
+        dialog.set_extra_child(check)
+    except Exception:
+        pass
 
     def done(d, result) -> None:
         try:
             response = d.choose_finish(result)
         except Exception:
             return
-        if response == "keep":
-            store.remove_repository(repo, False)
-        elif response == "delete":
-            store.remove_repository(repo, True)
+        if response == "remove":
+            store.remove_repository(repo, check.get_active())
 
     dialog.choose(parent, None, done)
 
@@ -3701,6 +3727,33 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     actions.append(create_btn)
     root.append(actions)
 
+    def _pr_file_menu(file, widget) -> None:
+        st = store.state_for(repo)
+        full = os.path.join(repo.path, file.path)
+        exists = os.path.exists(full)
+        head = st.status.current_tip if st.status else None
+        local = set(st.local_commit_shas or [])
+        non_local = head if head and head not in local else None
+        enterprise = bool(repo.github and not is_dotcom_endpoint(repo.github.endpoint))
+
+        def view_on_github() -> None:
+            if repo.github and non_local:
+                open_external(f"{repo.github.html_url}/blob/{non_local}/{file.path}")
+
+        items = committed_file_context_items(
+            full_path=full,
+            relative_path=file.path,
+            exists=exists,
+            editor_label=open_in_editor_label(store.settings.selected_external_editor),
+            on_reveal=lambda: store.reveal_in_file_manager(repo, file.path),
+            on_open_editor=lambda: store.open_in_editor(repo, full),
+            on_open_default=lambda: store.open_file_default(repo, file.path),
+            view_github_label=view_on_github_label(enterprise=enterprise),
+            on_view_github=view_on_github,
+            view_github_enabled=bool(non_local and repo.github),
+        )
+        show_context_menu(widget, items)
+
     def _preview_kwargs():
         st = store.state_for(repo)
         return {
@@ -3784,9 +3837,10 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
                 break
             file_list.remove(row)
         for file in st.pr_files:
-            row = Adw.ActionRow(title=file.path, subtitle=file.status.kind.value)
+            row = Adw.ActionRow(title=path_label(file.path, file.status), subtitle=map_status(file.status))
             row.set_activatable(True)
             row._file = file  # type: ignore[attr-defined]
+            attach_right_click(row, lambda *_ , f=file, widget=row: _pr_file_menu(f, widget))
             file_list.append(row)
         kwargs = _preview_kwargs()
         if st.pr_files:

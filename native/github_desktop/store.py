@@ -94,6 +94,7 @@ from .git import (
     init_repository,
     install_lfs_hooks as git_install_lfs_hooks,
     merge,
+    move_item_to_trash,
     move_stash_entry,
     prune_forked_remotes,
     prune_merged_branches,
@@ -321,6 +322,7 @@ class RepositoryViewState:
     changed_files_count: int = 0
     is_committing: bool = False  # Desktop isCommitting
     is_generating_commit_message: bool = False  # Desktop isGeneratingCommitMessage
+    non_contiguous_selection: bool = False
 
 
 class AppStore:
@@ -723,17 +725,19 @@ class AppStore:
             repo.github = github_from_remote(origin.url, endpoint)
 
     def remove_repository(self, repo: Repository, delete_files: bool = False) -> None:
+        if delete_files and not move_item_to_trash(repo.path):
+            self.show_popup(
+                PopupType.ERROR,
+                error=(
+                    "Failed to move the repository directory to Trash.\n\n"
+                    "A common reason for this is that the directory or one of its files is open in another program."
+                ),
+            )
+            return
         self.repositories = [r for r in self.repositories if r.id != repo.id]
         self.repo_state.pop(repo.id, None)
         if self.selected_repository_id == repo.id:
             self.selected_repository_id = self.repositories[0].id if self.repositories else None
-        if delete_files:
-            import shutil
-
-            try:
-                shutil.rmtree(repo.path)
-            except OSError as exc:
-                log.warning("Failed to delete %s: %s", repo.path, exc)
         self._save_repositories()
         self.emit()
 
@@ -2566,6 +2570,7 @@ class AppStore:
             state.selected_commit = None
             state.selected_commit_files = []
             state.changeset = None
+            state.non_contiguous_selection = False
             self.emit()
             return
         if len(commits) == 1:
@@ -2579,6 +2584,7 @@ class AppStore:
         if contiguous and len(ordered_newest_first) >= 2:
             newest = ordered_newest_first[0]
             oldest = ordered_newest_first[-1]
+            state.non_contiguous_selection = False
             state.shas_in_diff = [c.sha for c in ordered_newest_first]
             try:
                 state.changeset = get_commit_range_changed_files(repo.path, oldest.sha, newest.sha)
@@ -2595,8 +2601,12 @@ class AppStore:
                 except GitError:
                     state.current_diff = None
         else:
-            self.select_commit(repo, state.selected_commit)
-            state.shas_in_diff = [state.selected_commit.sha] if state.selected_commit else []
+            # Desktop `SelectedCommits`: blank slate, keep the multi-selection.
+            state.non_contiguous_selection = True
+            state.selected_commit_files = []
+            state.changeset = None
+            state.current_diff = None
+            state.shas_in_diff = []
             self.emit()
             return
         self.emit()
@@ -3002,6 +3012,7 @@ class AppStore:
     def select_commit(self, repo: Repository, commit: Commit | None) -> None:
         state = self.state_for(repo)
         state.selected_commit = commit
+        state.non_contiguous_selection = False
         if commit and commit not in state.selected_commits:
             state.selected_commits = [commit]
         if commit:
@@ -3584,6 +3595,7 @@ class AppStore:
             squash=squash,
         )
         undo_sha = self._capture_undo(repo)
+        our_branch = self.state_for(repo).status.current_branch if self.state_for(repo).status else None
 
         def work() -> tuple:
             return merge(repo.path, branch, squash=squash), get_status(repo.path)
@@ -3614,7 +3626,7 @@ class AppStore:
             elif merge_result == MergeResult.ALREADY_UP_TO_DATE:
                 self.show_banner(Banner(BannerType.BRANCH_ALREADY_UP_TO_DATE, their_branch=branch))
             else:
-                self.show_banner(Banner(BannerType.SUCCESSFUL_MERGE, their_branch=branch, undo_sha=undo_sha))
+                self.show_banner(Banner(BannerType.SUCCESSFUL_MERGE, our_branch=our_branch, their_branch=branch, undo_sha=undo_sha))
             self.refresh_repository(repo)
 
         self._run(work, done)
@@ -3622,6 +3634,7 @@ class AppStore:
     def rebase_branch(self, repo: Repository, base: str, on_done: Callable[..., None] | None = None, on_progress: Callable[..., None] | None = None) -> None:
         retry = RetryAction(type=RetryActionType.REBASE, repo_id=repo.id, base_branch=base)
         undo_sha = self._capture_undo(repo)
+        target_branch = self.state_for(repo).status.current_branch if self.state_for(repo).status else None
 
         def work() -> tuple:
             commits = get_commits_between(repo.path, base, "HEAD") or []
@@ -3650,7 +3663,7 @@ class AppStore:
                 self.show_banner(Banner(BannerType.BRANCH_ALREADY_UP_TO_DATE, their_branch=base))
             elif rebase_result == RebaseResult.COMPLETED_WITHOUT_ERROR:
                 self.state_for(repo).pending_force_push_before = undo_sha
-                self.show_banner(Banner(BannerType.SUCCESSFUL_REBASE, target_branch=base, undo_sha=undo_sha))
+                self.show_banner(Banner(BannerType.SUCCESSFUL_REBASE, target_branch=target_branch, their_branch=base, undo_sha=undo_sha))
             self.refresh_repository(repo)
 
         self._run(work, done)

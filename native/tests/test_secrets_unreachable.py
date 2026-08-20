@@ -47,5 +47,8 @@ def test_noncontiguous_commits_are_unreachable(isolated_config, git_repo) -> Non
     state = store.state_for(repo)
     state.commits = commits
     store.select_commits(repo, selected)
-    assert state.shas_in_diff == [commits[0].sha]
+    assert state.non_contiguous_selection
+    assert state.shas_in_diff == []
+    assert [c.sha for c in state.selected_commits] == [commits[0].sha, commits[2].sha]
+    assert not state.selected_commit_files
     assert commits[2].sha not in state.shas_in_diff

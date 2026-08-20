@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Sequence
 
 import gi
@@ -21,6 +22,8 @@ DefaultEditorLabel = "Open in external editor"
 DefaultShellLabel = "Open in shell"
 RevealInFileManagerLabel = "Show in your File Manager"
 OpenWithDefaultProgramLabel = "Open with default program"
+TrashNameLabel = "Trash"
+FileDoesNotExistOnDiskLabel = "File does not exist on disk"
 
 
 def open_in_editor_label(editor_name: str | None) -> str:
@@ -37,6 +40,44 @@ def remove_repository_label(confirm: bool) -> str:
 
 def alias_verb(alias: str | None) -> str:
     return "Change" if alias else "Create"
+
+
+def is_safe_file_extension(extension: str) -> bool:
+    """Desktop `isSafeFileExtension`. Linux allows every extension (Windows rejects `.cmd`/`.exe`/`.bat`/`.sh`)."""
+    return True
+
+
+def view_on_github_label(*, enterprise: bool) -> str:
+    return "View on GitHub Enterprise" if enterprise else "View on GitHub"
+
+
+def committed_file_context_items(
+    *,
+    full_path: str,
+    relative_path: str,
+    exists: bool,
+    editor_label: str,
+    on_reveal: Callable[[], None],
+    on_open_editor: Callable[[], None],
+    on_open_default: Callable[[], None],
+    view_github_label: str,
+    on_view_github: Callable[[], None],
+    view_github_enabled: bool,
+) -> list[MenuItem]:
+    """History and Start PR file context menus (`selected-commits` / `pull-request-files-changed`)."""
+    if not exists:
+        return [(FileDoesNotExistOnDiskLabel, lambda: None, False)]
+    extension = os.path.splitext(relative_path)[1]
+    return [
+        (RevealInFileManagerLabel, on_reveal, True),
+        (editor_label, on_open_editor, True),
+        (OpenWithDefaultProgramLabel, on_open_default, is_safe_file_extension(extension)),
+        None,
+        (CopyFilePathLabel, lambda: copy_text(full_path), True),
+        (CopyRelativeFilePathLabel, lambda: copy_text(os.path.normpath(relative_path)), True),
+        None,
+        (view_github_label, on_view_github, view_github_enabled),
+    ]
 
 
 def clear_box(box: Gtk.Widget) -> None:

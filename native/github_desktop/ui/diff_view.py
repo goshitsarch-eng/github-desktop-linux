@@ -12,6 +12,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GObject, Gtk, Pango
 
 from ..git.diff import hunk_line_span, side_by_side_rows
+from ..git.progress import format_bytes
 from ..models import (
     DiffHunkExpansionType,
     DiffLine,
@@ -1002,6 +1003,8 @@ class DiffViewer(Gtk.Box):
             self._inner.append(_onion_images(prev_tex, cur_tex))
         elif mode == ImageDiffType.DIFFERENCE.value and prev_tex and cur_tex:
             self._inner.append(_difference_images(diff.previous, diff.current))
+        elif prev_tex and cur_tex:
+            self._inner.append(_two_up_images(prev_tex, cur_tex, diff.previous, diff.current))
         else:
             box = Gtk.Box(spacing=12)
             for tex, blob, title in panels:
@@ -1022,11 +1025,7 @@ class DiffViewer(Gtk.Box):
 
 
 def _format_byte_size(n: int) -> str:
-    if n < 1024:
-        return f"{n} bytes"
-    if n < 1024 * 1024:
-        return f"{n / 1024:.1f} KB"
-    return f"{n / (1024 * 1024):.1f} MB"
+    return format_bytes(n, 2, False)
 
 
 def _image_dimensions_label(tex: Gdk.Texture | None, blob: bytes | None) -> str:
@@ -1036,6 +1035,57 @@ def _image_dimensions_label(tex: Gdk.Texture | None, blob: bytes | None) -> str:
     if blob:
         parts.append(_format_byte_size(len(blob)))
     return " · ".join(parts)
+
+
+def _image_two_up_footer(tex: Gdk.Texture | None, blob: bytes | None) -> str:
+    width = tex.get_width() if tex is not None else 0
+    height = tex.get_height() if tex is not None else 0
+    size = format_bytes(len(blob) if blob else 0, 2, False)
+    return f"W: {width}px | H: {height}px | Size: {size}"
+
+
+def _image_two_up_summary(previous: bytes | None, current: bytes | None) -> str:
+    prev = len(previous or b"")
+    cur = len(current or b"")
+    diff_bytes = cur - prev
+    if diff_bytes == 0:
+        return "Diff: No size difference"
+    sign = "+" if diff_bytes >= 0 else ""
+    rendered = f"{sign}{format_bytes(diff_bytes, 2, False)}"
+    if prev == 0:
+        return f"Diff: {rendered}"
+    percent = abs(round((cur / prev) * 100))
+    return f"Diff: {rendered} ({percent}%)"
+
+
+def _two_up_images(
+    prev_tex: Gdk.Texture | None,
+    cur_tex: Gdk.Texture | None,
+    prev_blob: bytes | None,
+    cur_blob: bytes | None,
+) -> Gtk.Widget:
+    outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+    box = Gtk.Box(spacing=12)
+    for tex, blob, title, css in (
+        (prev_tex, prev_blob, "Deleted", "image-diff-previous"),
+        (cur_tex, cur_blob, "Added", "image-diff-current"),
+    ):
+        col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        col.add_css_class(css)
+        heading = Gtk.Label(label=title, xalign=0)
+        heading.add_css_class("image-diff-header")
+        col.append(heading)
+        col.append(_picture(tex))
+        footer = Gtk.Label(label=_image_two_up_footer(tex, blob), xalign=0)
+        footer.add_css_class("image-diff-footer")
+        footer.add_css_class("dim-label")
+        col.append(footer)
+        box.append(col)
+    outer.append(box)
+    summary = Gtk.Label(label=_image_two_up_summary(prev_blob, cur_blob), xalign=0)
+    summary.add_css_class("image-diff-summary")
+    outer.append(summary)
+    return outer
 
 
 def _picture(tex: Gdk.Texture | None) -> Gtk.Widget:

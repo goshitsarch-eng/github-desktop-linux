@@ -561,26 +561,36 @@ def _diff_from_result(
     return parsed
 
 
+def _show_blob(repo: str, spec: str, name: str) -> bytes | None:
+    try:
+        result = git(["show", spec], repo, name=name, success_exit_codes={0, 128})
+        if result.exit_code != 0:
+            return None
+        return result.stdout_bytes or result.stdout.encode("utf-8", errors="replace")
+    except GitError:
+        return None
+
+
 def _image_diff(repo: str, path: str, status: FileStatus, commitish: str | None) -> ImageDiff:
     previous = current = None
     full = os.path.join(repo, path)
     old_path = get_old_path_or_default(path=path, status=status)
-    if status.kind not in (AppFileStatusKind.NEW, AppFileStatusKind.UNTRACKED):
-        spec = f"{commitish or 'HEAD'}:{old_path}"
-        try:
-            previous = git(["show", spec], repo, name="showImage", success_exit_codes={0, 128}).stdout_bytes
-        except GitError:
-            previous = None
-    if status.kind != AppFileStatusKind.DELETED:
-        try:
-            with open(full, "rb") as fh:
-                current = fh.read()
-        except OSError:
-            if commitish:
-                try:
-                    current = git(["show", f"{commitish}:{path}"], repo, name="showImageNew").stdout_bytes
-                except GitError:
-                    current = None
+    if commitish:
+        if status.kind != AppFileStatusKind.DELETED:
+            current = _show_blob(repo, f"{commitish}:{path}", "showImageNew")
+        if status.kind == AppFileStatusKind.DELETED:
+            previous = _show_blob(repo, f"{commitish}^:{old_path}", "showImage")
+        elif status.kind not in (AppFileStatusKind.NEW, AppFileStatusKind.UNTRACKED):
+            previous = _show_blob(repo, f"{commitish}^:{old_path}", "showImage")
+    else:
+        if status.kind not in (AppFileStatusKind.NEW, AppFileStatusKind.UNTRACKED):
+            previous = _show_blob(repo, f"HEAD:{old_path}", "showImage")
+        if status.kind != AppFileStatusKind.DELETED:
+            try:
+                with open(full, "rb") as fh:
+                    current = fh.read()
+            except OSError:
+                current = None
     media = {
         ".png": "image/png",
         ".jpg": "image/jpeg",

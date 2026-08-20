@@ -544,6 +544,24 @@ def is_conflict_with_markers(status: FileStatus) -> bool:
     return status.is_conflicted and status.conflict_marker_count is not None
 
 
+def map_status(status: FileStatus) -> str:
+    """Desktop `mapStatus`: human-readable file status for lists."""
+    if status.kind in (AppFileStatusKind.NEW, AppFileStatusKind.UNTRACKED):
+        return "New"
+    if status.kind == AppFileStatusKind.CONFLICTED:
+        if is_conflict_with_markers(status):
+            return "Conflicted" if (status.conflict_marker_count or 0) > 0 else "Resolved"
+        return "Conflicted"
+    return status.kind.value
+
+
+def path_label(path: str, status: FileStatus | None) -> str:
+    """Desktop `PathLabel`: `old → new` for renamed/copied files."""
+    if status is not None and status.kind in (AppFileStatusKind.RENAMED, AppFileStatusKind.COPIED) and status.old_path:
+        return f"{status.old_path} → {path}"
+    return path
+
+
 def is_manual_conflict(status: FileStatus) -> bool:
     """Desktop `isManualConflict` (added/deleted by us/them, no markers)."""
     return status.is_conflicted and status.conflict_marker_count is None

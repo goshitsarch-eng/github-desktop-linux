@@ -10,7 +10,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk
 
-from ..models import CommittedFileChange, StashEntry
+from ..models import CommittedFileChange, StashEntry, map_status, path_label
 from .diff_view import DiffViewer
 from .menus import clear_box
 
@@ -97,8 +97,8 @@ class StashDiffViewer(Gtk.Box):
         for file in files:
             row = Gtk.ListBoxRow()
             box = Gtk.Box(spacing=8)
-            label = Gtk.Label(label=file.path, xalign=0, hexpand=True)
-            badge = Gtk.Label(label=file.status.kind.value)
+            label = Gtk.Label(label=path_label(file.path, file.status), xalign=0, hexpand=True)
+            badge = Gtk.Label(label=map_status(file.status))
             box.append(label)
             box.append(badge)
             row.set_child(box)

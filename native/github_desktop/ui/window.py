@@ -33,8 +33,11 @@ from ..models import (
     WorkingDirectoryFileChange,
     format_commit_attribution,
     get_conflicted_files,
+    is_dotcom_endpoint,
     is_partially_committable_submodule,
     is_uncommittable_submodule,
+    map_status,
+    path_label,
     submodule_include_tooltip,
 )
 from ..push_pull import describe_push_pull, format_commit_relative_time, format_last_fetched
@@ -59,11 +62,13 @@ from .menus import (
     alias_verb,
     attach_right_click,
     clear_box,
+    committed_file_context_items,
     copy_text,
     open_in_editor_label,
     open_in_shell_label,
     remove_repository_label,
     show_context_menu,
+    view_on_github_label,
 )
 from .multi_commit import MERGE_OPTIONS, merge_cta_message, show_confirm_abort, show_conflicts_dialog
 from .spellcheck import attach_spellcheck
@@ -95,6 +100,46 @@ SUCCESS_BANNER_KINDS = {
     BannerType.SUCCESSFUL_SQUASH,
     BannerType.SUCCESSFUL_REORDER,
 }
+
+
+def format_banner_text(kind: BannerType, banner) -> str:
+    """Desktop success/conflict banner copy."""
+    if kind == BannerType.SUCCESSFUL_MERGE:
+        if banner.their_branch:
+            return f"Successfully merged {banner.their_branch} into {banner.our_branch or ''}"
+        return f"Successfully merged into {banner.our_branch or ''}"
+    if kind == BannerType.SUCCESSFUL_REBASE:
+        if banner.target_branch and banner.their_branch:
+            return f"Successfully rebased {banner.target_branch} onto {banner.their_branch}"
+        return f"Successfully rebased {banner.target_branch or ''}"
+    if kind == BannerType.SUCCESSFUL_CHERRY_PICK:
+        noun = "commit" if banner.count == 1 else "commits"
+        target = banner.target_branch or ""
+        return f"Successfully copied {banner.count} {noun} to {target}."
+    if kind == BannerType.SUCCESSFUL_SQUASH:
+        noun = "commit" if banner.count == 1 else "commits"
+        return f"Successfully squashed {banner.count} {noun}."
+    mapping = {
+        BannerType.MERGE_CONFLICTS_FOUND: "Merge conflicts need to be resolved",
+        BannerType.REBASE_CONFLICTS_FOUND: "Rebase conflicts need to be resolved",
+        BannerType.BRANCH_ALREADY_UP_TO_DATE: "Branch is already up to date",
+        BannerType.CHERRY_PICK_CONFLICTS_FOUND: "Cherry-pick conflicts need to be resolved",
+        BannerType.CHERRY_PICK_UNDONE: "Cherry-pick undone",
+        BannerType.SQUASH_UNDONE: "Squash undone",
+        BannerType.SUCCESSFUL_REORDER: f"Reordered {banner.count} commit(s)",
+        BannerType.REORDER_UNDONE: "Reorder undone",
+        BannerType.CONFLICTS_FOUND: banner.operation_description or "Conflicts found",
+        BannerType.OPEN_THANK_YOU_CARD: "The Desktop team would like to thank you for your contributions.",
+        BannerType.DETACHED_HEAD: "You are in a detached HEAD state. Create a branch to keep your work.",
+        BannerType.ACCESSIBILITY_SETTINGS: (
+            "Check out the new accessibility settings to control the visibility of "
+            "the link underlines and diff check marks."
+        ),
+        BannerType.OS_VERSION_NO_LONGER_SUPPORTED: (
+            "This operating system is no longer supported. Software updates have been disabled."
+        ),
+    }
+    return mapping.get(kind, kind.value)
 
 
 class MainWindow(Adw.ApplicationWindow):
@@ -221,7 +266,7 @@ class MainWindow(Adw.ApplicationWindow):
             self._refresh_repo()
         if self.store.banner:
             kind = self.store.banner.type
-            self._banner.set_title(self._banner_text(kind, self.store.banner))
+            self._banner.set_title(format_banner_text(kind, self.store.banner))
             if kind == BannerType.OPEN_THANK_YOU_CARD:
                 self._banner.set_button_label("Open Your Card")
             elif kind == BannerType.DETACHED_HEAD:
@@ -256,31 +301,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.remove_css_class("underline-links")
 
     def _banner_text(self, kind: BannerType, banner) -> str:
-        mapping = {
-            BannerType.SUCCESSFUL_MERGE: f"Successfully merged {banner.their_branch or ''}",
-            BannerType.MERGE_CONFLICTS_FOUND: "Merge conflicts need to be resolved",
-            BannerType.SUCCESSFUL_REBASE: f"Successfully rebased onto {banner.target_branch or ''}",
-            BannerType.REBASE_CONFLICTS_FOUND: "Rebase conflicts need to be resolved",
-            BannerType.BRANCH_ALREADY_UP_TO_DATE: "Branch is already up to date",
-            BannerType.SUCCESSFUL_CHERRY_PICK: f"Cherry-picked {banner.count} commit(s)",
-            BannerType.CHERRY_PICK_CONFLICTS_FOUND: "Cherry-pick conflicts need to be resolved",
-            BannerType.CHERRY_PICK_UNDONE: "Cherry-pick undone",
-            BannerType.SUCCESSFUL_SQUASH: f"Squashed {banner.count} commit(s)",
-            BannerType.SQUASH_UNDONE: "Squash undone",
-            BannerType.SUCCESSFUL_REORDER: f"Reordered {banner.count} commit(s)",
-            BannerType.REORDER_UNDONE: "Reorder undone",
-            BannerType.CONFLICTS_FOUND: banner.operation_description or "Conflicts found",
-            BannerType.OPEN_THANK_YOU_CARD: "The Desktop team would like to thank you for your contributions.",
-            BannerType.DETACHED_HEAD: "You are in a detached HEAD state. Create a branch to keep your work.",
-            BannerType.ACCESSIBILITY_SETTINGS: (
-                "Check out the new accessibility settings to control the visibility of "
-                "the link underlines and diff check marks."
-            ),
-            BannerType.OS_VERSION_NO_LONGER_SUPPORTED: (
-                "This operating system is no longer supported. Software updates have been disabled."
-            ),
-        }
-        return mapping.get(kind, kind.value)
+        return format_banner_text(kind, banner)
 
     def _on_banner_clicked(self, *_args: object) -> None:
         banner = self.store.banner
@@ -1002,7 +1023,7 @@ class MainWindow(Adw.ApplicationWindow):
         help_m.append("Show user guides", "win.show-guides")
         help_m.append("Explore GitHub", "win.github-explore")
         help_m.append("Show keyboard shortcuts", "win.show-shortcuts")
-        help_m.append("Show logs in file manager", "win.show-logs")
+        help_m.append("Show logs in your File Manager", "win.show-logs")
         help_m.append("Release notes", "win.release-notes")
         help_m.append("About GitHub Desktop", "win.about")
         menu.append_submenu("Help", help_m)
@@ -1357,15 +1378,19 @@ class MainWindow(Adw.ApplicationWindow):
         left.append(scroller)
         paned.set_start_child(left)
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self._hist_detail = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self._hist_detail.set_hexpand(True)
+        self._hist_detail.set_vexpand(True)
         self._commit_summary = ExpandableCommitSummary()
-        right.append(self._commit_summary)
+        self._hist_detail.append(self._commit_summary)
         self._commit_header = self._commit_summary
         self._hist_files = Gtk.ListBox()
         self._hist_files.connect("row-activated", self._on_hist_file)
         files_scroll = Gtk.ScrolledWindow()
         files_scroll.set_min_content_height(120)
         files_scroll.set_child(self._hist_files)
-        right.append(files_scroll)
+        self._hist_files_scroll = files_scroll
+        self._hist_detail.append(files_scroll)
         self._hist_diff_view = DiffViewer(
             interactive=False,
             on_expand_hunk=self._on_expand_hunk,
@@ -1376,7 +1401,34 @@ class MainWindow(Adw.ApplicationWindow):
             on_hide_whitespace_changed=self._set_history_hide_whitespace,
             on_side_by_side_changed=lambda enabled: self._set_side_by_side_value(enabled),
         )
-        right.append(self._hist_diff_view)
+        self._hist_detail.append(self._hist_diff_view)
+        self._hist_blank = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self._hist_blank.add_css_class("blankslate")
+        self._hist_blank.set_valign(Gtk.Align.CENTER)
+        self._hist_blank.set_halign(Gtk.Align.CENTER)
+        blank_title = Gtk.Label(
+            label="Unable to display diff when multiple non-consecutive selected.",
+            wrap=True,
+            xalign=0,
+        )
+        blank_title.add_css_class("heading")
+        blank_hint = Gtk.Label(label="You can:", xalign=0)
+        blank_list = Gtk.Label(
+            label=(
+                "• Select a single commit or a range of consecutive commits to view a diff.\n"
+                "• Drag the commits to the branch menu to cherry-pick them.\n"
+                "• Drag the commits to squash or reorder them.\n"
+                "• Right click on multiple commits to see options."
+            ),
+            wrap=True,
+            xalign=0,
+        )
+        self._hist_blank.append(blank_title)
+        self._hist_blank.append(blank_hint)
+        self._hist_blank.append(blank_list)
+        self._hist_blank.set_visible(False)
+        right.append(self._hist_detail)
+        right.append(self._hist_blank)
         paned.set_end_child(right)
         self._history_paned = paned
         try:
@@ -2139,9 +2191,9 @@ class MainWindow(Adw.ApplicationWindow):
             check.set_tooltip_text(tooltip)
             row.set_tooltip_text(tooltip)
         check.connect("toggled", lambda btn, p=file.path: self._toggle_file(p, btn.get_active()))
-        label = Gtk.Label(label=file.path, xalign=0, hexpand=True)
+        label = Gtk.Label(label=path_label(file.path, file.status), xalign=0, hexpand=True)
         label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
-        badge = Gtk.Label(label=file.status.kind.value)
+        badge = Gtk.Label(label=map_status(file.status))
         badge.add_css_class(STATUS_CLASS.get(file.status.kind, ""))
         box.append(check)
         box.append(label)
@@ -2284,6 +2336,7 @@ class MainWindow(Adw.ApplicationWindow):
                 self._commit_list.append(self._commit_row(commit))
             self._history_shas = new_shas
             self._refresh_compare_cta(state)
+            self._refresh_history_detail(state)
             return
         self._building = True
         clear_box(self._commit_list)
@@ -2292,6 +2345,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._history_shas = new_shas
         self._refresh_compare_cta(state)
         self._building = False
+        self._refresh_history_detail(state)
 
     def _commit_row(self, commit) -> Gtk.ListBoxRow:
         row = Gtk.ListBoxRow()
@@ -2308,6 +2362,8 @@ class MainWindow(Adw.ApplicationWindow):
         summary_text = "Empty commit message" if has_empty_summary else expand_shortcodes(commit.summary)
         summary = Gtk.Label(label=summary_text, xalign=0)
         summary.add_css_class("commit-summary")
+        summary.set_ellipsize(Pango.EllipsizeMode.END)
+        summary.set_hexpand(True)
         if has_empty_summary:
             summary.add_css_class("empty-summary")
         attribution = format_commit_attribution(commit, github)
@@ -2374,8 +2430,22 @@ class MainWindow(Adw.ApplicationWindow):
             self.store.select_commits(repo, selected)
         elif commit:
             self.store.select_commit(repo, commit)
-        commit = self.store.state_for(repo).selected_commit or commit
-        state = self.store.state_for(repo)
+        self._refresh_history_detail(self.store.state_for(repo))
+
+    def _refresh_history_detail(self, state) -> None:
+        if not hasattr(self, "_hist_files"):
+            return
+        non_contig = bool(getattr(state, "non_contiguous_selection", False))
+        if hasattr(self, "_hist_blank"):
+            self._hist_blank.set_visible(non_contig)
+        if hasattr(self, "_hist_detail"):
+            self._hist_detail.set_visible(not non_contig)
+        if non_contig:
+            if hasattr(self, "_hist_diff_view"):
+                self._hist_diff_view.render(None)
+            return
+        repo = self.store.selected_repository
+        commit = state.selected_commit
         if hasattr(self, "_commit_summary"):
             self._commit_summary.bind(
                 list(state.selected_commits) or ([commit] if commit else []),
@@ -2388,10 +2458,10 @@ class MainWindow(Adw.ApplicationWindow):
             )
         clear_box(self._hist_files)
         for f in state.selected_commit_files:
-            r = Adw.ActionRow(title=f.path, subtitle=f.status.kind.value)
+            r = Adw.ActionRow(title=path_label(f.path, f.status), subtitle=map_status(f.status))
             r._file = f  # type: ignore[attr-defined]
             r.set_activatable(True)
-            attach_right_click(r, lambda *_ , file=f: self._hist_file_menu(file))
+            attach_right_click(r, lambda *_ , file=f, row=r: self._hist_file_menu(file, row))
             self._hist_files.append(r)
         self._render_history_diff(state)
 
@@ -2734,30 +2804,36 @@ class MainWindow(Adw.ApplicationWindow):
             )
         show_context_menu(row, items)
 
-    def _hist_file_menu(self, file) -> None:
+    def _hist_file_menu(self, file, anchor: Gtk.Widget | None = None) -> None:
         repo = self.store.selected_repository
         if not repo:
             return
         full = os.path.join(repo.path, file.path)
         exists = os.path.exists(full)
         state = self.store.state_for(repo)
-        commit = state.selected_commit
-        items = [
-            (CopyFilePathLabel, lambda: copy_text(full), True),
-            (CopyRelativeFilePathLabel, lambda: copy_text(file.path), True),
-            (OpenWithDefaultProgramLabel, lambda: self.store.open_file_default(repo, file.path), exists),
-            (RevealInFileManagerLabel, lambda: self.store.reveal_in_file_manager(repo, file.path), exists),
-            (self._open_in_editor_label(), lambda: self.store.open_in_editor(repo, full), exists),
-        ]
-        if repo.github and commit:
-            items.append(
-                (
-                    "View on GitHub",
-                    lambda: open_external(f"{repo.github.html_url}/blob/{commit.sha}/{file.path}"),
-                    True,
-                )
-            )
-        show_context_menu(self._hist_files, items)
+        selected = list(state.selected_commits) or ([state.selected_commit] if state.selected_commit else [])
+        sha = selected[0].sha if selected else None
+        local = set(state.local_commit_shas or [])
+        enterprise = bool(repo.github and not is_dotcom_endpoint(repo.github.endpoint))
+        view_enabled = bool(repo.github and len(selected) == 1 and sha and sha not in local)
+
+        def view_on_github() -> None:
+            if repo.github and sha:
+                open_external(f"{repo.github.html_url}/blob/{sha}/{file.path}")
+
+        items = committed_file_context_items(
+            full_path=full,
+            relative_path=file.path,
+            exists=exists,
+            editor_label=self._open_in_editor_label(),
+            on_reveal=lambda: self.store.reveal_in_file_manager(repo, file.path),
+            on_open_editor=lambda: self.store.open_in_editor(repo, full),
+            on_open_default=lambda: self.store.open_file_default(repo, file.path),
+            view_github_label=view_on_github_label(enterprise=enterprise),
+            on_view_github=view_on_github,
+            view_github_enabled=view_enabled,
+        )
+        show_context_menu(anchor or self._hist_files, items)
 
     def _commit_item_menu(self, row: Gtk.ListBoxRow) -> None:
         repo = self.store.selected_repository

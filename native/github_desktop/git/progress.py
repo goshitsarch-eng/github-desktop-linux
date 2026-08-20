@@ -67,14 +67,18 @@ REVERT_STEPS: tuple[ProgressStep, ...] = (ProgressStep("Checking out files", 1.0
 _BYTE_UNITS = ("B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB")
 
 
-def format_bytes(byte_count: int, decimals: int = 1) -> str:
+def format_bytes(byte_count: int, decimals: int = 1, fixed: bool = True) -> str:
     """Desktop `formatBytes` (IEC units so LFS progress matches Git)."""
     if byte_count == 0:
-        return f"{0:.{decimals}f} B"
+        return f"{0:.{decimals}f} B" if fixed else "0 B"
     magnitude = min(int(math.log(abs(byte_count), 1024)), len(_BYTE_UNITS) - 1)
     value = abs(byte_count) / (1024**magnitude)
     sign = "-" if byte_count < 0 else ""
-    return f"{sign}{value:.{decimals}f} {_BYTE_UNITS[magnitude]}"
+    if fixed:
+        rendered = f"{value:.{decimals}f}"
+    else:
+        rendered = f"{value:.{decimals}f}".rstrip("0").rstrip(".")
+    return f"{sign}{rendered} {_BYTE_UNITS[magnitude]}"
 
 
 def create_lfs_progress_file() -> str:
