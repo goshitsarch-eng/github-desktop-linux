@@ -34,6 +34,7 @@ from .git import (
     delete_local_branch,
     delete_remote_branch,
     delete_tag,
+    discard_changes_from_selection,
     discard_paths,
     env_for_remote,
     fetch,
@@ -95,6 +96,7 @@ from .models import (
     BannerType,
     Branch,
     BranchType,
+    ChangesListFilter,
     CherryPickResult,
     CloningRepository,
     Commit,
@@ -105,6 +107,7 @@ from .models import (
     FileDiff,
     FoldoutType,
     HistoryTabMode,
+    ImageDiffType,
     IStatusResult,
     ManualConflictResolution,
     MergeResult,
@@ -118,6 +121,7 @@ from .models import (
     RepositorySectionTab,
     SignInStep,
     StashEntry,
+    TextDiff,
     TutorialStep,
     UncommittedChangesStrategy,
     WelcomeStep,
@@ -166,6 +170,15 @@ class RepositoryViewState:
     filter_text: str = ""
     hide_whitespace: bool = False
     side_by_side: bool = False
+    image_diff_type: str = ImageDiffType.TWO_UP.value
+    file_filter: str = ChangesListFilter.ALL.value
+    check_runs: list = field(default_factory=list)
+    selected_commits: list[Commit] = field(default_factory=list)
+    compare_ahead: list[Commit] = field(default_factory=list)
+    compare_behind: list[Commit] = field(default_factory=list)
+    mentions: list[str] = field(default_factory=list)
+    diff_context: int | None = None
+    local_commit_shas: list[str] = field(default_factory=list)
 
 
 class AppStore:
@@ -186,6 +199,7 @@ class AppStore:
         self.cloning: list[CloningRepository] = []
         self.repo_state: dict[int, RepositoryViewState] = {}
         self.tutorial_step = TutorialStep.NOT_APPLICABLE
+        self._seen_notifications: set[str] = set()
         self._listeners: list[Listener] = []
         self._lock = threading.RLock()
         self._pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="desktop")
@@ -461,6 +475,7 @@ class AppStore:
         path: str,
         branch: str | None = None,
         account: Account | None = None,
+        tutorial: bool = False,
     ) -> None:
         clone_id = -abs(int(uuid.uuid4().int % 10_000_000) or 1)
         cloning = CloningRepository(id=clone_id, path=path, url=url)
@@ -481,7 +496,11 @@ class AppStore:
             if exc:
                 self.show_popup(PopupType.ERROR, error=str(exc))
             else:
-                self.add_repositories([path])
+                repos = self.add_repositories([path])
+                if tutorial and repos:
+                    repos[0].tutorial = True
+                    self.tutorial_step = TutorialStep.PICK_EDITOR
+                    self._save_repositories()
             self.emit()
 
         self._run(work, done)
@@ -530,55 +549,158 @@ class AppStore:
         if not repo or repo.is_missing:
             return
         state = self.state_for(repo)
+        previous_files = list(state.status.working_directory.files) if state.status else []
+        previous_selected = state.selected_file.path if state.selected_file else None
+        previous_commit = state.selected_commit.sha if state.selected_commit else None
         state.loading = True
         self.emit()
 
-        def work() -> RepositoryViewState:
+        def work() -> dict:
             status = get_status(repo.path)
             commits = get_commits(repo.path, limit=100)
             branches = get_branches(repo.path)
             remotes = get_remotes(repo.path)
             tags = get_all_tags(repo.path)
             stashes, stash_count = get_stashes(repo.path)
-            state.status = status
-            state.commits = commits
-            state.branches = branches
-            state.remotes = remotes
-            state.tags = tags
-            state.stashes = stashes
-            state.stash_count = stash_count
-            state.ahead_behind = status.branch_ahead_behind if status else None
-            state.loading = False
-            if state.selected_file is None and status and status.working_directory.files:
-                state.selected_file = status.working_directory.files[0]
-            if state.selected_file:
-                try:
-                    state.current_diff = get_working_directory_diff(
-                        repo.path, state.selected_file, state.hide_whitespace
-                    )
-                except GitError as exc:
-                    log.debug("diff failed: %s", exc)
+            payload: dict = {
+                "status": status,
+                "commits": commits,
+                "branches": branches,
+                "remotes": remotes,
+                "tags": tags,
+                "stashes": stashes,
+                "stash_count": stash_count,
+                "ahead_behind": status.branch_ahead_behind if status else None,
+                "pull_requests": [],
+                "current_pull_request": None,
+                "issues": [],
+                "check_runs": [],
+                "mentions": [],
+                "local_commit_shas": [],
+            }
+            if status and status.current_branch and status.current_upstream_branch:
+                payload["local_commit_shas"] = [
+                    c.sha for c in get_commits(repo.path, f"{status.current_upstream_branch}..HEAD", limit=200)
+                ]
+            elif commits:
+                payload["local_commit_shas"] = [commits[0].sha]
             if repo.github and self.accounts:
                 account = self.account_for_repo(repo)
                 if account:
                     try:
                         api = GitHubAPI.from_account(account)
-                        state.pull_requests = api.fetch_pull_requests(repo.github.owner, repo.github.name)
+                        prs = api.fetch_pull_requests(repo.github.owner, repo.github.name)
+                        payload["pull_requests"] = prs
                         current = status.current_branch if status else None
-                        state.current_pull_request = next(
-                            (pr for pr in state.pull_requests if pr.head_ref == current), None
-                        )
+                        payload["current_pull_request"] = next((pr for pr in prs if pr.head_ref == current), None)
+                        try:
+                            payload["issues"] = [(i.number, i.title) for i in api.fetch_issues(repo.github.owner, repo.github.name)[:80]]
+                        except APIError:
+                            pass
+                        ref = (status.current_tip if status else None) or "HEAD"
+                        try:
+                            payload["check_runs"] = api.fetch_check_runs(repo.github.owner, repo.github.name, ref)
+                        except APIError:
+                            pass
+                        try:
+                            payload["mentions"] = api.fetch_mentions(repo.github.owner, repo.github.name)
+                        except APIError:
+                            pass
                     except APIError as exc:
-                        log.debug("PR fetch failed: %s", exc)
-            return state
+                        log.debug("GitHub metadata fetch failed: %s", exc)
+            return payload
 
-        def done(exc: BaseException | None) -> None:
+        def done(exc: BaseException | None, result: dict | None = None) -> None:
             state.loading = False
             if exc:
                 state.error = str(exc)
+                self.emit()
+                return
+            data = result or {}
+            status = data.get("status")
+            if status and previous_files:
+                old_sel = {f.path: f.selection for f in previous_files}
+                from .models import WorkingDirectoryStatus
+
+                merged = []
+                for f in status.working_directory.files:
+                    if f.path in old_sel:
+                        merged.append(f.with_selection(old_sel[f.path]))
+                    else:
+                        merged.append(f)
+                status.working_directory = WorkingDirectoryStatus.from_files(merged)
+            state.status = status
+            state.commits = data.get("commits") or []
+            state.branches = data.get("branches") or []
+            state.remotes = data.get("remotes") or []
+            state.tags = data.get("tags") or {}
+            state.stashes = data.get("stashes") or []
+            state.stash_count = data.get("stash_count") or 0
+            state.ahead_behind = data.get("ahead_behind")
+            state.pull_requests = data.get("pull_requests") or []
+            state.current_pull_request = data.get("current_pull_request")
+            state.issues = data.get("issues") or []
+            state.check_runs = data.get("check_runs") or []
+            state.mentions = data.get("mentions") or []
+            state.local_commit_shas = data.get("local_commit_shas") or []
+            if previous_selected and status:
+                state.selected_file = next((f for f in status.working_directory.files if f.path == previous_selected), None)
+            if state.selected_file is None and status and status.working_directory.files:
+                state.selected_file = status.working_directory.files[0]
+            if previous_commit:
+                state.selected_commit = next((c for c in state.commits if c.sha == previous_commit), None)
+            if state.selected_file and self.section == RepositorySectionTab.CHANGES:
+                self._load_working_diff(repo, state)
+            self._advance_tutorial(repo, state)
             self.emit()
 
         self._run(work, done)
+
+    def _load_working_diff(self, repo: Repository, state: RepositoryViewState) -> None:
+        file = state.selected_file
+        if not file:
+            state.current_diff = None
+            return
+        try:
+            diff = get_working_directory_diff(repo.path, file, state.hide_whitespace, state.diff_context)
+            state.current_diff = diff
+            if isinstance(diff, TextDiff):
+                from .git.diff import selectable_line_indices
+
+                selectable = set(selectable_line_indices(diff))
+                updated = file.with_selection(file.selection.with_selectable_lines(selectable))
+                if state.status:
+                    files = [updated if f.path == file.path else f for f in state.status.working_directory.files]
+                    from .models import WorkingDirectoryStatus
+
+                    state.status.working_directory = WorkingDirectoryStatus.from_files(files)
+                state.selected_file = updated
+        except GitError as exc:
+            state.error = str(exc)
+
+    def _advance_tutorial(self, repo: Repository, state: RepositoryViewState) -> None:
+        if not repo.tutorial:
+            return
+        if self.tutorial_step in (TutorialStep.NOT_APPLICABLE, TutorialStep.PAUSED):
+            self.tutorial_step = TutorialStep.PICK_EDITOR
+        locals_ = [b for b in state.branches if b.type == BranchType.LOCAL]
+        if self.tutorial_step == TutorialStep.PICK_EDITOR:
+            return
+        if self.tutorial_step == TutorialStep.CREATE_BRANCH and len(locals_) > 1:
+            self.tutorial_step = TutorialStep.EDIT_FILE
+        elif self.tutorial_step == TutorialStep.EDIT_FILE and state.status and state.status.working_directory.files:
+            self.tutorial_step = TutorialStep.MAKE_COMMIT
+        elif self.tutorial_step == TutorialStep.MAKE_COMMIT and len(state.commits) > 1:
+            self.tutorial_step = TutorialStep.PUSH_BRANCH
+        elif self.tutorial_step == TutorialStep.PUSH_BRANCH and state.status and state.status.current_upstream_branch:
+            self.tutorial_step = TutorialStep.OPEN_PULL_REQUEST
+        elif self.tutorial_step == TutorialStep.OPEN_PULL_REQUEST and state.current_pull_request:
+            self.tutorial_step = TutorialStep.ALL_COMPLETE
+
+    def complete_tutorial_editor_step(self) -> None:
+        if self.tutorial_step == TutorialStep.PICK_EDITOR:
+            self.tutorial_step = TutorialStep.CREATE_BRANCH
+            self.emit()
 
     def account_for_repo(self, repo: Repository) -> Account | None:
         if repo.github:
@@ -672,6 +794,174 @@ class AppStore:
         state.status.working_directory = WorkingDirectoryStatus.from_files(files)
         self.emit()
 
+    def set_line_included(self, repo: Repository, path: str, index: int, included: bool) -> None:
+        state = self.state_for(repo)
+        if not state.status:
+            return
+        files = []
+        for f in state.status.working_directory.files:
+            if f.path == path:
+                files.append(f.with_selection(f.selection.with_line_selection(index, included)))
+            else:
+                files.append(f)
+        from .models import WorkingDirectoryStatus
+
+        state.status.working_directory = WorkingDirectoryStatus.from_files(files)
+        state.selected_file = next((f for f in files if f.path == path), state.selected_file)
+        self.emit()
+
+    def set_hunk_included(self, repo: Repository, path: str, start: int, length: int, included: bool) -> None:
+        state = self.state_for(repo)
+        if not state.status:
+            return
+        files = []
+        for f in state.status.working_directory.files:
+            if f.path == path:
+                files.append(f.with_selection(f.selection.with_range_selection(start, length, included)))
+            else:
+                files.append(f)
+        from .models import WorkingDirectoryStatus
+
+        state.status.working_directory = WorkingDirectoryStatus.from_files(files)
+        state.selected_file = next((f for f in files if f.path == path), state.selected_file)
+        self.emit()
+
+    def set_files_included(self, repo: Repository, paths: Sequence[str], included: bool) -> None:
+        wanted = set(paths)
+        state = self.state_for(repo)
+        if not state.status:
+            return
+        files = [f.with_include(included) if f.path in wanted else f for f in state.status.working_directory.files]
+        from .models import WorkingDirectoryStatus
+
+        state.status.working_directory = WorkingDirectoryStatus.from_files(files)
+        self.emit()
+
+    def set_file_filter(self, repo: Repository, value: str) -> None:
+        self.state_for(repo).file_filter = value
+        self.emit()
+
+    def set_side_by_side(self, repo: Repository, enabled: bool) -> None:
+        state = self.state_for(repo)
+        state.side_by_side = enabled
+        self.settings.show_side_by_side_diff = enabled
+        self.persist_settings()
+        self.emit()
+
+    def set_image_diff_type(self, repo: Repository, kind: str) -> None:
+        self.state_for(repo).image_diff_type = kind
+        self.settings.image_diff_type = kind
+        self.persist_settings()
+        self.emit()
+
+    def expand_diff_context(self, repo: Repository) -> None:
+        state = self.state_for(repo)
+        current = state.diff_context or 3
+        state.diff_context = min(200, current * 3)
+        if state.selected_file:
+            self.select_file(repo, state.selected_file)
+
+    def discard_selection(self, repo: Repository, path: str) -> None:
+        state = self.state_for(repo)
+        file = next((f for f in (state.status.working_directory.files if state.status else []) if f.path == path), None)
+        diff = state.current_diff
+        if file is None or not isinstance(diff, TextDiff):
+            return
+        discard_changes_from_selection(repo.path, path, diff, file.selection)
+        self.refresh_repository(repo)
+
+    def ignore_pattern(self, repo: Repository, pattern: str) -> None:
+        append_ignore_rule(repo.path, pattern)
+        self.refresh_repository(repo)
+
+    def compare_to_branch(self, repo: Repository, branch_name: str | None) -> None:
+        state = self.state_for(repo)
+        if not branch_name:
+            state.compare_branch = None
+            state.history_mode = HistoryTabMode.HISTORY
+            state.compare_ahead = []
+            state.compare_behind = []
+            self.refresh_repository(repo)
+            return
+        branch = next((b for b in state.branches if b.name == branch_name), None)
+        state.compare_branch = branch
+        state.history_mode = HistoryTabMode.COMPARE
+        state.compare_ahead = get_commits(repo.path, f"{branch_name}..HEAD", limit=100)
+        state.compare_behind = get_commits(repo.path, f"HEAD..{branch_name}", limit=100)
+        state.commits = state.compare_ahead
+        self.emit()
+
+    def select_commits(self, repo: Repository, commits: Sequence[Commit]) -> None:
+        state = self.state_for(repo)
+        state.selected_commits = list(commits)
+        if commits:
+            self.select_commit(repo, commits[0])
+        else:
+            self.emit()
+
+    def squash_onto(self, repo: Repository, to_squash: Sequence[Commit], onto: Commit, message: str) -> None:
+        last_retained = onto.parent_shas[0] if onto.parent_shas else None
+        result = squash_commits(repo.path, list(to_squash), onto, last_retained, message)
+        if result == RebaseResult.COMPLETED_WITHOUT_ERROR:
+            self.show_banner(Banner(BannerType.SUCCESSFUL_SQUASH, count=len(to_squash) + 1))
+        elif result == RebaseResult.CONFLICTS_ENCOUNTERED:
+            self.show_banner(Banner(BannerType.CONFLICTS_FOUND, operation_description="Squash"))
+        self.refresh_repository(repo)
+
+    def reorder_onto(self, repo: Repository, to_move: Sequence[Commit], before: Commit | None) -> None:
+        last_retained = None
+        if before and before.parent_shas:
+            last_retained = before.parent_shas[0]
+        elif to_move:
+            last_retained = to_move[-1].parent_shas[0] if to_move[-1].parent_shas else None
+        result = reorder_commits(repo.path, list(to_move), before, last_retained)
+        if result == RebaseResult.COMPLETED_WITHOUT_ERROR:
+            self.show_banner(Banner(BannerType.SUCCESSFUL_REORDER, count=len(to_move)))
+        elif result == RebaseResult.CONFLICTS_ENCOUNTERED:
+            self.show_banner(Banner(BannerType.CONFLICTS_FOUND, operation_description="Reorder"))
+        self.refresh_repository(repo)
+
+    def revert_commit(self, repo: Repository, commit: Commit) -> None:
+        revert(repo.path, commit.sha)
+        self.refresh_repository(repo)
+
+    def reset_to_commit(self, repo: Repository, commit: Commit) -> None:
+        reset(repo.path, commit.sha, "mixed")
+        self.refresh_repository(repo)
+
+    def checkout_commit_sha(self, repo: Repository, sha: str) -> None:
+        if self.settings.confirm_checkout_commit:
+            self.show_popup(PopupType.CONFIRM_CHECKOUT_COMMIT, sha=sha)
+            return
+        checkout_commit(repo.path, sha)
+        self.refresh_repository(repo)
+
+    def amend_last(self, repo: Repository, summary: str, description: str = "") -> None:
+        self.commit(repo, summary, description, amend=True)
+
+    def view_commit_on_github(self, repo: Repository, sha: str) -> None:
+        if repo.github:
+            open_external(f"{repo.github.html_url}/commit/{sha}")
+
+    def reveal_in_file_manager(self, repo: Repository, relpath: str) -> None:
+        full = os.path.join(repo.path, relpath)
+        open_file_manager(full if os.path.exists(full) else repo.path)
+
+    def open_file_default(self, repo: Repository, relpath: str) -> None:
+        full = os.path.join(repo.path, relpath)
+        if os.path.exists(full):
+            open_external(full)
+
+    def ignore_path(self, repo: Repository, path: str) -> None:
+        append_ignore_rule(repo.path, "/" + path.lstrip("/"))
+        self.refresh_repository(repo)
+
+    def resolve_conflict(self, repo: Repository, path: str, resolution: ManualConflictResolution) -> None:
+        from .git.ops import stage_manual_resolution
+
+        stage_manual_resolution(repo.path, path, resolution)
+        self.refresh_repository(repo)
+
     def set_include_all(self, repo: Repository, included: bool) -> None:
         state = self.state_for(repo)
         if not state.status:
@@ -683,10 +973,7 @@ class AppStore:
         state = self.state_for(repo)
         state.selected_file = file
         if file:
-            try:
-                state.current_diff = get_working_directory_diff(repo.path, file, state.hide_whitespace)
-            except GitError as exc:
-                state.error = str(exc)
+            self._load_working_diff(repo, state)
         else:
             state.current_diff = None
         self.emit()
@@ -694,11 +981,15 @@ class AppStore:
     def select_commit(self, repo: Repository, commit: Commit | None) -> None:
         state = self.state_for(repo)
         state.selected_commit = commit
+        if commit and commit not in state.selected_commits:
+            state.selected_commits = [commit]
         if commit:
             state.selected_commit_files = get_changed_files(repo.path, commit.sha)
             if state.selected_commit_files:
                 f = state.selected_commit_files[0]
-                state.current_diff = get_commit_diff(repo.path, f.path, commit.sha, f.status, state.hide_whitespace)
+                state.current_diff = get_commit_diff(
+                    repo.path, f.path, commit.sha, f.status, state.hide_whitespace, state.diff_context
+                )
         self.emit()
 
     def discard_files(self, repo: Repository, files: Sequence[WorkingDirectoryFileChange]) -> None:
@@ -1087,22 +1378,59 @@ class AppStore:
             self.settings.default_branch = default_branch
             self.persist_settings()
 
-    def _run(self, work: Callable[[], Any], done: Callable[[BaseException | None], None]) -> None:
+    def _run(self, work: Callable[[], Any], done: Callable[..., None]) -> None:
         def runner() -> None:
             err: BaseException | None = None
+            result: Any = None
             try:
-                work()
+                result = work()
             except BaseException as exc:
                 err = exc
                 log.debug("background work failed: %s", exc)
-            try:
-                from gi.repository import GLib
 
-                GLib.idle_add(lambda: (done(err), False)[1])
+            def finish() -> bool:
+                try:
+                    done(err, result)
+                except TypeError:
+                    done(err)
+                return False
+
+            invoked = False
+            try:
+                from gi.repository import Gio, GLib
+
+                if Gio.Application.get_default() is not None:
+                    GLib.idle_add(finish)
+                    invoked = True
             except Exception:
-                done(err)
+                invoked = False
+            if not invoked:
+                finish()
 
         self._pool.submit(runner)
+
+    def poll_notifications(self) -> None:
+        if not self.settings.notifications_enabled or not self.accounts:
+            return
+        account = self.accounts[0]
+
+        def work() -> list:
+            return GitHubAPI.from_account(account).fetch_notifications()
+
+        def done(exc: BaseException | None, result: list | None = None) -> None:
+            if exc or not result:
+                return
+            for note in result[:8]:
+                ident = str(note.get("id") or "")
+                if not ident or ident in self._seen_notifications:
+                    continue
+                self._seen_notifications.add(ident)
+                subject = note.get("subject") or {}
+                title = subject.get("title") or "GitHub notification"
+                repo_name = ((note.get("repository") or {}).get("full_name")) or "GitHub"
+                show_notification(repo_name, title, enabled=True)
+
+        self._run(work, done)
 
     def handle_cli(self, argv: Sequence[str]) -> None:
         clone_url = None

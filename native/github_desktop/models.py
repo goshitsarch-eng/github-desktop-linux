@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum, IntEnum, StrEnum
 from typing import Any, Iterable, Iterator, Sequence
 
@@ -67,6 +67,12 @@ class ImageDiffType(StrEnum):
     SWIPE = "Swipe"
     ONION = "OnionSkin"
     DIFFERENCE = "Difference"
+
+
+class ChangesListFilter(StrEnum):
+    ALL = "All"
+    INCLUDED = "Included"
+    EXCLUDED = "Excluded"
 
 
 class TipState(StrEnum):
@@ -650,9 +656,9 @@ class CommitIdentity:
             hours = int(tz[1:3] or 0)
             minutes = int(tz[3:5] or 0)
             offset = sign * (hours * 60 + minutes)
-            return cls(name.strip(), email.strip(), datetime.utcfromtimestamp(ts), offset)
+            return cls(name.strip(), email.strip(), datetime.fromtimestamp(ts, tz=timezone.utc), offset)
         except (ValueError, IndexError):
-            return cls(raw, "", datetime.utcfromtimestamp(0), 0)
+            return cls(raw, "", datetime.fromtimestamp(0, tz=timezone.utc), 0)
 
 
 @dataclass

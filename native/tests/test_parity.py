@@ -31,6 +31,7 @@ REQUIRED_GIT_FUNCS = [
     "stash_pop",
     "create_tag",
     "discard_paths",
+    "discard_changes_from_selection",
     "undo_commit",
     "reset",
     "revert",
@@ -113,5 +114,15 @@ def test_window_actions_cover_menus() -> None:
         "generate-commit-message",
         "open-in-shell",
         "open-external-editor",
+        "create-tag",
+        "stash-all",
     ]:
         assert action in src
+    for phrase in [
+        "Discard changes",
+        "Copy SHA",
+        "Side-by-side",
+        "Cherry-pick",
+        "Ignore file",
+    ]:
+        assert phrase in src

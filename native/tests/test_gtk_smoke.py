@@ -12,7 +12,7 @@ os.environ.setdefault("ADW_DISABLE_PORTAL", "1")
 pytest.importorskip("gi")
 
 
-def test_gtk_window_preferences_and_theme(isolated_config) -> None:
+def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
     import gi
 
     gi.require_version("Gtk", "4.0")
@@ -36,6 +36,12 @@ def test_gtk_window_preferences_and_theme(isolated_config) -> None:
             apply_theme(ApplicationTheme.DARK)
             apply_theme(ApplicationTheme.SYSTEM)
             store = AppStore()
+            repos = store.add_repositories([str(git_repo)])
+            (git_repo / "README.md").write_text("hello\nchanged\n", encoding="utf-8")
+            from github_desktop.git.ops import get_status
+
+            store.state_for(repos[0]).status = get_status(str(git_repo))
+            store.select_repository(repos[0].id)
             win = MainWindow(application, store)
             assert win.lookup_action("clone-repository")
             assert win.lookup_action("preferences")
@@ -44,8 +50,25 @@ def test_gtk_window_preferences_and_theme(isolated_config) -> None:
             assert win.lookup_action("open-pull-request")
             child = win._stack.get_visible_child_name()
             assert child in {"welcome", "empty", "repo"}
+            win._refresh_files()
+            win._refresh_history()
             show_about(win)
             show_preferences(win, store)
+            from github_desktop.ui.diff_view import DiffViewer
+            from github_desktop.git.diff import parse_unified_diff
+            from github_desktop.models import DiffSelection, DiffSelectionType
+
+            viewer = DiffViewer(
+                interactive=True,
+                on_line_toggle=lambda *_: None,
+                on_hunk_toggle=lambda *_: None,
+            )
+            sample = parse_unified_diff(
+                "@@ -1,1 +1,2 @@\n hello\n+world\n"
+            )
+            selection = DiffSelection.from_initial_selection(DiffSelectionType.ALL)
+            viewer.render(sample, path="README.md", selection=selection, side_by_side=True)
+            viewer.render(sample, path="README.md", selection=selection, side_by_side=False)
             win.close()
         except Exception as exc:
             errors.append(repr(exc))

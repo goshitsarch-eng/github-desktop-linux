@@ -244,6 +244,13 @@ class GitHubAPI:
             issues.append(Issue(number=item["number"], title=item["title"], state=item.get("state", "open")))
         return issues
 
+    def fetch_notifications(self) -> list[dict[str, Any]]:
+        try:
+            data = self.get("/notifications", query={"all": "false", "participating": "false"})
+        except APIError:
+            return []
+        return data if isinstance(data, list) else []
+
     def fetch_check_runs(self, owner: str, name: str, ref: str) -> list[RefCheck]:
         try:
             data = self.get(f"/repos/{owner}/{name}/commits/{urllib.parse.quote(ref)}/check-runs")

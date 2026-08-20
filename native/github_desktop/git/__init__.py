@@ -1,6 +1,6 @@
 """Git operations package."""
 
-from .diff import format_partial_patch, parse_unified_diff, selectable_line_indices
+from .diff import format_discard_patch, format_partial_patch, parse_unified_diff, selectable_line_indices, side_by_side_rows
 from .ops import (
     abort_cherry_pick,
     abort_merge,
@@ -23,6 +23,7 @@ from .ops import (
     delete_local_branch,
     delete_remote_branch,
     delete_tag,
+    discard_changes_from_selection,
     discard_paths,
     ensure_repository,
     fetch,

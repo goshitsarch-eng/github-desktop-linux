@@ -49,3 +49,35 @@ def test_binary_marker() -> None:
     text = "diff --git a/x.bin b/x.bin\nBinary files a/x.bin and b/x.bin differ\n"
     diff = parse_unified_diff(text)
     assert diff.is_binary
+
+
+def test_diff_line_numbers_are_sequential() -> None:
+    diff = parse_unified_diff(SAMPLE)
+    numbers = [line.diff_line_number for hunk in diff.hunks for line in hunk.lines]
+    assert numbers == list(range(len(numbers)))
+
+
+def test_side_by_side_pairs_delete_and_add() -> None:
+    from github_desktop.git.diff import side_by_side_rows
+
+    diff = parse_unified_diff(SAMPLE)
+    rows = side_by_side_rows(diff.hunks[0])
+    kinds = [r[0] for r in rows]
+    assert "hunk" in kinds
+    assert "change" in kinds
+    change = next(r for r in rows if r[0] == "change")
+    assert change[1] is not None or change[2] is not None
+
+
+def test_discard_patch_reverses_selected_addition() -> None:
+    from github_desktop.git.diff import format_discard_patch
+
+    diff = parse_unified_diff(SAMPLE)
+    selectable = selectable_line_indices(diff)
+    keep = {selectable[-1]}
+
+    patch = format_discard_patch("file.txt", diff, lambda idx: idx in keep)
+    assert patch is not None
+    assert patch.startswith("--- a/file.txt\n+++ b/file.txt\n")
+    assert "-line4" in patch
+    assert "line2 changed" not in patch or "+line2 changed" not in patch

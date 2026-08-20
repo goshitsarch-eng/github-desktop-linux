@@ -118,3 +118,48 @@ def test_popup_and_banner(isolated_config) -> None:
     assert store.popup and store.popup.type == PopupType.ABOUT
     store.close_popup()
     assert store.popup is None
+
+
+def test_line_and_hunk_selection(isolated_config, git_repo: Path) -> None:
+    store = AppStore()
+    added = store.add_repositories([str(git_repo)])
+    repo = added[0]
+    (git_repo / "README.md").write_text("hello\nA\nB\n", encoding="utf-8")
+    from github_desktop.git.ops import get_status, get_working_directory_diff
+    from github_desktop.git.diff import selectable_line_indices
+    from github_desktop.models import TextDiff
+
+    status = get_status(str(git_repo))
+    store.state_for(repo).status = status
+    file = status.working_directory.files[0]
+    store.set_line_included(repo, file.path, 0, False)
+    updated = store.state_for(repo).status.working_directory.files[0]
+    assert updated.selection.is_selected(0) is False
+    store.set_hunk_included(repo, file.path, 0, 4, True)
+    updated = store.state_for(repo).status.working_directory.files[0]
+    diff = get_working_directory_diff(str(git_repo), file)
+    assert isinstance(diff, TextDiff)
+    assert selectable_line_indices(diff)
+
+
+def test_compare_to_branch(isolated_config, git_repo: Path) -> None:
+    from tests.conftest import run_git
+    from github_desktop.git.ops import create_branch, checkout_branch, create_commit, get_status
+
+    store = AppStore()
+    repo = store.add_repositories([str(git_repo)])[0]
+    create_branch(str(git_repo), "topic")
+    checkout_branch(str(git_repo), "topic")
+    (git_repo / "t.txt").write_text("t\n", encoding="utf-8")
+    status = get_status(str(git_repo))
+    create_commit(str(git_repo), "on topic\n", status.working_directory.files)
+    checkout_branch(str(git_repo), "main")
+    from github_desktop.git.ops import get_branches
+
+    store.state_for(repo).branches = get_branches(str(git_repo))
+    store.compare_to_branch(repo, "topic")
+    state = store.state_for(repo)
+    assert state.history_mode.value == "Compare"
+    assert state.compare_behind
+    store.compare_to_branch(repo, None)
+    assert store.state_for(repo).history_mode.value == "History"

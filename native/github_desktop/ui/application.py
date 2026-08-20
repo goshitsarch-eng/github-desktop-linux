@@ -68,6 +68,11 @@ class DesktopApplication(Adw.Application):
         repo = self.store.selected_repository
         if repo:
             self.store.refresh_repository(repo)
+        GLib.timeout_add_seconds(120, self._poll_notifications)
+
+    def _poll_notifications(self) -> bool:
+        self.store.poll_notifications()
+        return True
 
     def _on_open(self, _app, files, _n, _hint) -> None:
         self.activate()

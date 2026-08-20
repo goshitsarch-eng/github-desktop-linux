@@ -48,6 +48,7 @@ from ..models import (
     WorkingDirectoryStatus,
 )
 from .diff import (
+    format_discard_patch,
     format_partial_patch,
     is_buffer_too_large,
     is_valid_buffer,
@@ -188,22 +189,34 @@ def is_binary_path(repo: str, path: str) -> bool:
     return False
 
 
+def _diff_flags(hide_whitespace: bool = False, context_lines: int | None = None) -> list[str]:
+    args = ["diff", "--no-ext-diff", "--patch", "--no-color"]
+    if hide_whitespace:
+        args.append("-w")
+    if context_lines is not None:
+        args.append(f"-U{int(context_lines)}")
+    return args
+
+
 def get_working_directory_diff(
     repo: str,
     file: WorkingDirectoryFileChange,
     hide_whitespace: bool = False,
+    context_lines: int | None = None,
 ) -> FileDiff:
-    args = ["diff", "--no-ext-diff", "--patch", "--no-color"]
-    if hide_whitespace:
-        args.append("-w")
     if file.status.kind in (AppFileStatusKind.NEW, AppFileStatusKind.UNTRACKED):
-        args = ["diff", "--no-ext-diff", "--no-index", "--patch", "--no-color", "--", "/dev/null", file.path]
+        args = ["diff", "--no-ext-diff", "--no-index", "--patch", "--no-color"]
+        if hide_whitespace:
+            args.append("-w")
+        if context_lines is not None:
+            args.append(f"-U{int(context_lines)}")
+        args += ["--", "/dev/null", file.path]
         result = git(args, repo, success_exit_codes={0, 1, 2}, name="diffNew")
     elif file.status.kind == AppFileStatusKind.RENAMED and file.status.old_path:
-        args += ["HEAD", "--", file.status.old_path, file.path]
+        args = _diff_flags(hide_whitespace, context_lines) + ["HEAD", "--", file.status.old_path, file.path]
         result = git(args, repo, success_exit_codes={0, 1}, name="diffRename")
     else:
-        args += ["HEAD", "--", file.path]
+        args = _diff_flags(hide_whitespace, context_lines) + ["HEAD", "--", file.path]
         result = git(args, repo, success_exit_codes={0, 1}, name="diffWd")
     return _diff_from_result(repo, file.path, file.status, result, commitish=None)
 
@@ -214,10 +227,9 @@ def get_commit_diff(
     commitish: str,
     status: FileStatus | None = None,
     hide_whitespace: bool = False,
+    context_lines: int | None = None,
 ) -> FileDiff:
-    args = ["diff", "--no-ext-diff", "--patch", "--no-color"]
-    if hide_whitespace:
-        args.append("-w")
+    args = _diff_flags(hide_whitespace, context_lines)
     args += [f"{commitish}^", commitish, "--", path]
     result = git(args, repo, success_exit_codes={0, 1, 128}, name="commitDiff")
     if result.exit_code == 128:
@@ -839,6 +851,29 @@ def reset(repo: str, sha: str, mode: str = "mixed") -> None:
 
 def undo_commit(repo: str) -> None:
     git(["reset", "--soft", "HEAD~1"], repo, name="undoCommit")
+
+
+def discard_changes_from_selection(
+    repo: str,
+    file_path: str,
+    diff: TextDiff,
+    selection: DiffSelection,
+) -> None:
+    kind = selection.get_selection_type()
+    if kind == DiffSelectionType.NONE:
+        return
+    if kind == DiffSelectionType.ALL:
+        discard_paths(repo, [file_path])
+        return
+    patch = format_discard_patch(file_path, diff, selection.is_selected)
+    if not patch:
+        return
+    git(
+        ["apply", "--unidiff-zero", "--whitespace=nowarn", "-"],
+        repo,
+        stdin=patch,
+        name="discardSelection",
+    )
 
 
 def discard_paths(repo: str, paths: Sequence[str]) -> None:

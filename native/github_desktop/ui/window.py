@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime
 
 import gi
 
@@ -12,39 +11,22 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 from ..git.ops import (
-    abort_cherry_pick,
-    abort_merge,
-    abort_rebase,
-    append_ignore_rule,
-    checkout_branch,
-    continue_cherry_pick,
-    continue_rebase,
-    create_merge_commit,
     get_commit_diff,
-    get_working_directory_diff,
-    merge,
-    rebase,
-    revert,
-    squash_commits,
     stash_pop,
     undo_commit,
 )
 from ..models import (
     AppFileStatusKind,
-    ApplicationTheme,
     BannerType,
     BranchType,
-    DiffLineType,
-    DiffType,
-    FileDiff,
+    ChangesListFilter,
+    DiffSelectionType,
     HistoryTabMode,
-    ImageDiff,
-    MergeResult,
+    ManualConflictResolution,
     MultiCommitOperationKind,
     PopupType,
-    RebaseResult,
     RepositorySectionTab,
-    TextDiff,
+    TutorialStep,
     WelcomeStep,
     WorkingDirectoryFileChange,
 )
@@ -52,6 +34,8 @@ from ..shells import open_external
 from ..store import AppStore
 from ..version import APP_NAME
 from .dialogs import present_popup, show_preferences
+from .diff_view import DiffViewer
+from .menus import attach_right_click, clear_box, copy_text, show_context_menu
 
 
 STATUS_CLASS = {
@@ -71,6 +55,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.store = store
         self.set_default_size(store.settings.window_width, store.settings.window_height)
         self._building = False
+        self._light_update = False
         self._toast = Adw.ToastOverlay()
         self.set_content(self._toast)
         self._root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -103,6 +88,8 @@ class MainWindow(Adw.ApplicationWindow):
         return False
 
     def _on_store(self) -> None:
+        if self._building or self._light_update:
+            return
         if self.store.welcome_step is not None:
             self._refresh_welcome()
             self._stack.set_visible_child_name("welcome")
@@ -358,6 +345,15 @@ class MainWindow(Adw.ApplicationWindow):
         self._push_btn.connect("clicked", self._on_push_pull)
         header.pack_end(self._push_btn)
 
+        self._ahead_label = Gtk.Label()
+        self._ahead_label.add_css_class("ahead-behind")
+        header.pack_end(self._ahead_label)
+
+        self._checks_btn = Gtk.Button(icon_name="emblem-ok-symbolic")
+        self._checks_btn.set_tooltip_text("Pull request checks")
+        self._checks_btn.connect("clicked", self._on_checks)
+        header.pack_end(self._checks_btn)
+
         pr_btn = Gtk.Button(icon_name="network-transmit-receive-symbolic")
         pr_btn.set_tooltip_text("Create or view pull request")
         pr_btn.set_action_name("win.open-pull-request")
@@ -372,6 +368,10 @@ class MainWindow(Adw.ApplicationWindow):
         switcher.set_stack(self._view_stack)
         header.set_title_widget(switcher)
         toolbar.add_top_bar(header)
+
+        self._tutorial_banner = Adw.Banner()
+        self._tutorial_banner.set_revealed(False)
+        toolbar.add_top_bar(self._tutorial_banner)
 
         self._changes_page = self._build_changes()
         self._history_page = self._build_history()
@@ -459,6 +459,21 @@ class MainWindow(Adw.ApplicationWindow):
         self._filter.set_placeholder_text("Filter changed files")
         self._filter.connect("search-changed", lambda *_: self._refresh_files())
         left.append(self._filter)
+        chips = Gtk.Box(spacing=4)
+        chips.add_css_class("filter-bar")
+        self._filter_buttons: dict[str, Gtk.ToggleButton] = {}
+        for value, label in (
+            (ChangesListFilter.ALL.value, "All"),
+            (ChangesListFilter.INCLUDED.value, "Included"),
+            (ChangesListFilter.EXCLUDED.value, "Excluded"),
+        ):
+            btn = Gtk.ToggleButton(label=label)
+            btn.add_css_class("filter-chip")
+            btn.set_active(value == ChangesListFilter.ALL.value)
+            btn.connect("toggled", lambda b, v=value: b.get_active() and self._set_file_filter(v))
+            self._filter_buttons[value] = btn
+            chips.append(btn)
+        left.append(chips)
         tools = Gtk.Box(spacing=6)
         self._include_all = Gtk.CheckButton(label="Include all")
         self._include_all.connect("toggled", self._on_include_all)
@@ -466,11 +481,16 @@ class MainWindow(Adw.ApplicationWindow):
         ignore_ws = Gtk.CheckButton(label="Hide whitespace")
         ignore_ws.connect("toggled", self._on_hide_ws)
         tools.append(ignore_ws)
+        self._side_toggle = Gtk.CheckButton(label="Side-by-side")
+        self._side_toggle.connect("toggled", self._on_side_by_side)
+        tools.append(self._side_toggle)
         left.append(tools)
         scroller = Gtk.ScrolledWindow(vexpand=True)
         self._file_list = Gtk.ListBox()
         self._file_list.add_css_class("boxed-list")
+        self._file_list.set_selection_mode(Gtk.SelectionMode.MULTIPLE)
         self._file_list.connect("row-selected", self._on_file_selected)
+        attach_right_click(self._file_list, lambda *_: self._file_list_menu())
         scroller.set_child(self._file_list)
         left.append(scroller)
         self._stash_bar = Gtk.Box()
@@ -480,13 +500,20 @@ class MainWindow(Adw.ApplicationWindow):
         self._summary = Gtk.Entry()
         self._summary.set_placeholder_text("Summary (required)")
         self._summary.set_max_length(72)
+        self._issue_store = Gtk.ListStore(str)
+        completion = Gtk.EntryCompletion()
+        completion.set_model(self._issue_store)
+        completion.set_text_column(0)
+        completion.set_popup_completion(True)
+        completion.set_minimum_key_length(1)
+        self._summary.set_completion(completion)
         self._description = Gtk.TextView()
         self._description.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self._description.set_size_request(-1, 70)
         co = Gtk.CheckButton(label="Co-authors")
         co.connect("toggled", self._on_coauthors)
         self._coauthor_entry = Gtk.Entry()
-        self._coauthor_entry.set_placeholder_text("Name <email>")
+        self._coauthor_entry.set_placeholder_text("Name <email> or @username")
         self._coauthor_entry.set_visible(False)
         btn_row = Gtk.Box(spacing=6)
         commit_btn = Gtk.Button(label="Commit to branch")
@@ -497,9 +524,12 @@ class MainWindow(Adw.ApplicationWindow):
         gen.set_action_name("win.generate-commit-message")
         undo = Gtk.Button(label="Undo")
         undo.set_action_name("win.undo-commit")
+        amend = Gtk.Button(label="Amend")
+        amend.connect("clicked", self._on_amend)
         btn_row.append(commit_btn)
         btn_row.append(gen)
         btn_row.append(undo)
+        btn_row.append(amend)
         commit_box.append(self._summary)
         commit_box.append(self._description)
         commit_box.append(co)
@@ -509,11 +539,15 @@ class MainWindow(Adw.ApplicationWindow):
         commit_box.append(self._conflict_bar)
         left.append(commit_box)
         paned.set_start_child(left)
-        self._diff_scroll = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
-        self._diff_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self._diff_box.add_css_class("diff-view")
-        self._diff_scroll.set_child(self._diff_box)
-        paned.set_end_child(self._diff_scroll)
+        self._diff_view = DiffViewer(
+            interactive=True,
+            on_line_toggle=self._on_line_toggle,
+            on_hunk_toggle=self._on_hunk_toggle,
+            on_discard_selection=self._on_discard_selection,
+            on_expand=self._on_expand_diff,
+            on_image_mode=self._on_image_mode,
+        )
+        paned.set_end_child(self._diff_view)
         return paned
 
     def _build_history(self) -> Gtk.Widget:
@@ -521,11 +555,18 @@ class MainWindow(Adw.ApplicationWindow):
         paned.set_resize_start_child(False)
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         left.set_size_request(300, -1)
-        compare = Gtk.Button(label="Compare to branch…")
-        compare.connect("clicked", self._on_compare)
-        left.append(compare)
+        compare_row = Gtk.Box(spacing=6)
+        compare_row.append(Gtk.Label(label="Compare to"))
+        self._compare_dropdown = Gtk.DropDown.new_from_strings(["History"])
+        self._compare_dropdown.connect("notify::selected", self._on_compare_changed)
+        compare_row.append(self._compare_dropdown)
+        left.append(compare_row)
+        self._compare_cta = Gtk.Box(spacing=6)
+        self._compare_cta.add_css_class("compare-cta")
+        left.append(self._compare_cta)
         scroller = Gtk.ScrolledWindow(vexpand=True)
         self._commit_list = Gtk.ListBox()
+        self._commit_list.set_selection_mode(Gtk.SelectionMode.MULTIPLE)
         self._commit_list.connect("row-selected", self._on_commit_selected)
         scroller.set_child(self._commit_list)
         left.append(scroller)
@@ -541,11 +582,8 @@ class MainWindow(Adw.ApplicationWindow):
         files_scroll.set_min_content_height(120)
         files_scroll.set_child(self._hist_files)
         right.append(files_scroll)
-        self._hist_diff = Gtk.ScrolledWindow(vexpand=True)
-        self._hist_diff_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self._hist_diff_box.add_css_class("diff-view")
-        self._hist_diff.set_child(self._hist_diff_box)
-        right.append(self._hist_diff)
+        self._hist_diff_view = DiffViewer(interactive=False)
+        right.append(self._hist_diff_view)
         paned.set_end_child(right)
         return paned
 
@@ -569,11 +607,25 @@ class MainWindow(Adw.ApplicationWindow):
         self._branch_btn.set_label(branch or "detached HEAD")
         self._branch_btn.set_menu_model(self._branch_menu(state))
         self._update_push_label(state)
+        self._update_checks(state)
+        self._update_tutorial_banner(repo, state)
+        self._refresh_issue_completion(state)
+        self._refresh_compare_dropdown(state)
         self._refresh_repo_list()
         self._refresh_files()
         self._refresh_history()
         self._refresh_conflict_bar(state)
         self._refresh_stash_bar(state)
+        if hasattr(self, "_side_toggle"):
+            self._building = True
+            self._side_toggle.set_active(state.side_by_side or self.store.settings.show_side_by_side_diff)
+            self._building = False
+        page = self._view_stack.get_page(self._changes_page)
+        n = len(state.status.working_directory.files) if state.status else 0
+        try:
+            page.set_badge_number(n)
+        except Exception:
+            pass
         if self.store.section == RepositorySectionTab.HISTORY:
             self._view_stack.set_visible_child_name("history")
         else:
@@ -659,6 +711,15 @@ class MainWindow(Adw.ApplicationWindow):
             row = Adw.ActionRow(title=repo.display_name, subtitle=repo.path)
             if repo.is_missing:
                 row.set_subtitle("Can't find this repository")
+            ab = self.store.state_for(repo).ahead_behind
+            if ab and self.store.settings.repository_indicators_enabled:
+                extra = []
+                if ab.ahead:
+                    extra.append(f"↑{ab.ahead}")
+                if ab.behind:
+                    extra.append(f"↓{ab.behind}")
+                if extra:
+                    row.add_suffix(Gtk.Label(label=" ".join(extra)))
             if repo.github:
                 row.add_prefix(Gtk.Image.new_from_icon_name("user-bookmarks-symbolic"))
             row.set_activatable(True)
@@ -670,29 +731,35 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _refresh_files(self) -> None:
         repo = self.store.selected_repository
-        if not repo:
+        if not repo or not hasattr(self, "_file_list"):
             return
         state = self.store.state_for(repo)
         files = list(state.status.working_directory.files) if state.status else []
         needle = self._filter.get_text().lower()
         if needle:
             files = [f for f in files if needle in f.path.lower()]
-        while True:
-            row = self._file_list.get_first_child()
-            if row is None:
-                break
-            self._file_list.remove(row)
+        mode = state.file_filter
+        if mode == ChangesListFilter.INCLUDED.value:
+            files = [f for f in files if f.include]
+        elif mode == ChangesListFilter.EXCLUDED.value:
+            files = [f for f in files if not f.include]
+        self._building = True
+        clear_box(self._file_list)
         for file in files:
-            row = self._file_row(file)
-            self._file_list.append(row)
-        if state.selected_file:
-            self._render_diff(self._diff_box, state.current_diff)
+            self._file_list.append(self._file_row(file))
+        include_all = state.status.working_directory.include_all if state.status else True
+        self._include_all.set_inconsistent(include_all is None)
+        self._include_all.set_active(bool(include_all))
+        self._building = False
+        self._render_working_diff(state)
 
     def _file_row(self, file: WorkingDirectoryFileChange) -> Gtk.Widget:
         row = Gtk.ListBoxRow()
         box = Gtk.Box(spacing=8)
         check = Gtk.CheckButton()
-        check.set_active(file.include)
+        kind = file.selection.get_selection_type()
+        check.set_active(kind != DiffSelectionType.NONE)
+        check.set_inconsistent(kind == DiffSelectionType.PARTIAL)
         check.connect("toggled", lambda btn, p=file.path: self._toggle_file(p, btn.get_active()))
         label = Gtk.Label(label=file.path, xalign=0, hexpand=True)
         label.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
@@ -701,16 +768,33 @@ class MainWindow(Adw.ApplicationWindow):
         box.append(check)
         box.append(label)
         box.append(badge)
+        if file.status.is_conflicted:
+            ours = Gtk.Button(label="Ours")
+            theirs = Gtk.Button(label="Theirs")
+            ours.connect("clicked", lambda *_ , p=file.path: self._resolve(p, ManualConflictResolution.OURS))
+            theirs.connect("clicked", lambda *_ , p=file.path: self._resolve(p, ManualConflictResolution.THEIRS))
+            box.append(ours)
+            box.append(theirs)
         row.set_child(box)
         row._file = file  # type: ignore[attr-defined]
+        attach_right_click(row, lambda *_ , r=row: self._file_item_menu(r))
         return row
 
     def _toggle_file(self, path: str, included: bool) -> None:
+        if self._building:
+            return
         repo = self.store.selected_repository
-        if repo:
+        if not repo:
+            return
+        self._light_update = True
+        try:
             self.store.set_file_included(repo, path, included)
+        finally:
+            self._light_update = False
 
     def _on_include_all(self, btn: Gtk.CheckButton) -> None:
+        if self._building:
+            return
         repo = self.store.selected_repository
         if repo:
             self.store.set_include_all(repo, btn.get_active())
@@ -723,6 +807,13 @@ class MainWindow(Adw.ApplicationWindow):
         state.hide_whitespace = btn.get_active()
         if state.selected_file:
             self.store.select_file(repo, state.selected_file)
+
+    def _on_side_by_side(self, btn: Gtk.CheckButton) -> None:
+        if self._building:
+            return
+        repo = self.store.selected_repository
+        if repo:
+            self.store.set_side_by_side(repo, btn.get_active())
 
     def _on_file_selected(self, _list: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
         repo = self.store.selected_repository
@@ -760,21 +851,22 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _refresh_history(self) -> None:
         repo = self.store.selected_repository
-        if not repo:
+        if not repo or not hasattr(self, "_commit_list"):
             return
         state = self.store.state_for(repo)
-        while True:
-            row = self._commit_list.get_first_child()
-            if row is None:
-                break
-            self._commit_list.remove(row)
-        for commit in state.commits:
+        self._building = True
+        clear_box(self._commit_list)
+        commits = state.compare_ahead if state.history_mode == HistoryTabMode.COMPARE else state.commits
+        if state.history_mode == HistoryTabMode.COMPARE and not commits:
+            commits = state.commits
+        for commit in commits:
             row = Gtk.ListBoxRow()
             box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
             summary = Gtk.Label(label=commit.summary, xalign=0)
             summary.add_css_class("commit-summary")
+            tags = (" · " + ", ".join(commit.tags)) if commit.tags else ""
             meta = Gtk.Label(
-                label=f"{commit.short_sha} · {commit.author.name} · {commit.author.date.strftime('%Y-%m-%d %H:%M')}",
+                label=f"{commit.short_sha} · {commit.author.name} · {commit.author.date.strftime('%Y-%m-%d %H:%M')}{tags}",
                 xalign=0,
             )
             meta.add_css_class("commit-sha")
@@ -782,28 +874,43 @@ class MainWindow(Adw.ApplicationWindow):
             box.append(meta)
             row.set_child(box)
             row._commit = commit  # type: ignore[attr-defined]
+            attach_right_click(row, lambda *_ , r=row: self._commit_item_menu(r))
+            self._install_commit_dnd(row, commit)
             self._commit_list.append(row)
+        self._refresh_compare_cta(state)
+        self._building = False
 
     def _on_commit_selected(self, _l, row) -> None:
+        if self._building:
+            return
         repo = self.store.selected_repository
         if not repo or row is None:
             return
+        selected = []
+        child = self._commit_list.get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.ListBoxRow) and child.is_selected():
+                c = getattr(child, "_commit", None)
+                if c:
+                    selected.append(c)
+            child = child.get_next_sibling()
         commit = getattr(row, "_commit", None)
-        if commit:
+        if selected:
+            self.store.select_commits(repo, selected)
+        elif commit:
             self.store.select_commit(repo, commit)
+        commit = self.store.state_for(repo).selected_commit or commit
+        if commit:
             self._commit_header.set_text(f"{commit.summary}\n{commit.body}".strip())
-            while True:
-                child = self._hist_files.get_first_child()
-                if child is None:
-                    break
-                self._hist_files.remove(child)
-            state = self.store.state_for(repo)
-            for f in state.selected_commit_files:
-                r = Adw.ActionRow(title=f.path, subtitle=f.status.kind.value)
-                r._file = f  # type: ignore[attr-defined]
-                r.set_activatable(True)
-                self._hist_files.append(r)
-            self._render_diff(self._hist_diff_box, state.current_diff)
+        state = self.store.state_for(repo)
+        clear_box(self._hist_files)
+        for f in state.selected_commit_files:
+            r = Adw.ActionRow(title=f.path, subtitle=f.status.kind.value)
+            r._file = f  # type: ignore[attr-defined]
+            r.set_activatable(True)
+            attach_right_click(r, lambda *_ , file=f: self._hist_file_menu(file))
+            self._hist_files.append(r)
+        self._render_history_diff(state)
 
     def _on_hist_file(self, _l, row) -> None:
         repo = self.store.selected_repository
@@ -812,8 +919,16 @@ class MainWindow(Adw.ApplicationWindow):
         f = getattr(row, "_file", None)
         state = self.store.state_for(repo)
         if f and state.selected_commit:
-            diff = get_commit_diff(repo.path, f.path, state.selected_commit.sha, f.status, state.hide_whitespace)
-            self._render_diff(self._hist_diff_box, diff)
+            diff = get_commit_diff(
+                repo.path, f.path, state.selected_commit.sha, f.status, state.hide_whitespace, state.diff_context
+            )
+            self._hist_diff_view.render(
+                diff,
+                path=f.path,
+                side_by_side=state.side_by_side or self.store.settings.show_side_by_side_diff,
+                image_mode=state.image_diff_type,
+                show_checks=False,
+            )
 
     def _on_compare(self, *_args: object) -> None:
         repo = self.store.selected_repository
@@ -874,72 +989,383 @@ class MainWindow(Adw.ApplicationWindow):
         self._stash_bar.append(restore)
         self._stash_bar.append(discard)
 
-    def _render_diff(self, container: Gtk.Box, diff: FileDiff | None) -> None:
-        child = container.get_first_child()
-        while child is not None:
-            nxt = child.get_next_sibling()
-            container.remove(child)
-            child = nxt
-        if diff is None:
-            container.append(Adw.StatusPage(title="No file selected", icon_name="document-symbolic"))
+    def _render_working_diff(self, state) -> None:
+        if not hasattr(self, "_diff_view"):
             return
-        kind = getattr(diff, "kind", None)
-        if kind == DiffType.BINARY:
-            container.append(Adw.StatusPage(title="Binary file", description="This file can't be displayed as text."))
-            return
-        if kind == DiffType.IMAGE and isinstance(diff, ImageDiff):
-            box = Gtk.Box(spacing=12)
-            for blob, title in ((diff.previous, "Previous"), (diff.current, "Current")):
-                col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-                col.append(Gtk.Label(label=title))
-                if blob:
-                    try:
-                        from gi.repository import GdkPixbuf
+        file = state.selected_file
+        self._diff_view.render(
+            state.current_diff,
+            path=file.path if file else "",
+            selection=file.selection if file else None,
+            side_by_side=state.side_by_side or self.store.settings.show_side_by_side_diff,
+            image_mode=state.image_diff_type or self.store.settings.image_diff_type,
+            show_checks=self.store.settings.show_diff_check_marks,
+        )
 
-                        loader = GdkPixbuf.PixbufLoader()
-                        loader.write(blob)
-                        loader.close()
-                        pix = loader.get_pixbuf()
-                        if pix:
-                            tex = Gdk.Texture.new_for_pixbuf(pix)
-                            pic = Gtk.Picture.new_for_paintable(tex)
-                            pic.set_size_request(240, 240)
-                            col.append(pic)
-                    except Exception:
-                        col.append(Gtk.Label(label="(unable to render image)"))
-                box.append(col)
-            container.append(box)
+    def _render_history_diff(self, state) -> None:
+        if not hasattr(self, "_hist_diff_view"):
             return
-        if kind in (DiffType.LARGE_TEXT, DiffType.UNRENDERABLE):
-            container.append(Adw.StatusPage(title="Diff too large to display"))
+        path = state.selected_commit_files[0].path if state.selected_commit_files else ""
+        self._hist_diff_view.render(
+            state.current_diff,
+            path=path,
+            side_by_side=state.side_by_side or self.store.settings.show_side_by_side_diff,
+            image_mode=state.image_diff_type or self.store.settings.image_diff_type,
+            show_checks=False,
+        )
+
+    def _on_line_toggle(self, path: str, index: int, included: bool) -> None:
+        repo = self.store.selected_repository
+        if not repo:
             return
-        if kind == DiffType.SUBMODULE:
-            container.append(Adw.StatusPage(title="Submodule", description=getattr(diff, "path", "")))
+        self._light_update = True
+        try:
+            self.store.set_line_included(repo, path, index, included)
+        finally:
+            self._light_update = False
+
+    def _on_hunk_toggle(self, path: str, start: int, length: int, included: bool) -> None:
+        repo = self.store.selected_repository
+        if not repo:
             return
-        if not isinstance(diff, TextDiff):
-            container.append(Gtk.Label(label="Unable to display this diff"))
+        self._light_update = True
+        try:
+            self.store.set_hunk_included(repo, path, start, length, included)
+        finally:
+            self._light_update = False
+
+    def _on_discard_selection(self, path: str) -> None:
+        repo = self.store.selected_repository
+        if not repo:
             return
-        if diff.has_hidden_bidi_chars:
-            warn = Gtk.Label(label="This diff contains hidden bidirectional Unicode characters.")
-            container.append(warn)
-        for hunk in diff.hunks:
-            for line in hunk.lines:
-                row = Gtk.Box(spacing=8)
-                row.add_css_class("diff-line")
-                if line.kind == DiffLineType.ADD:
-                    row.add_css_class("diff-add")
-                elif line.kind == DiffLineType.DELETE:
-                    row.add_css_class("diff-del")
-                elif line.kind == DiffLineType.HUNK:
-                    row.add_css_class("diff-hunk")
-                old = Gtk.Label(label=str(line.old_line_number or ""))
-                new = Gtk.Label(label=str(line.new_line_number or ""))
-                old.add_css_class("diff-num")
-                new.add_css_class("diff-num")
-                text = Gtk.Label(label=line.text, xalign=0, hexpand=True)
-                text.set_selectable(True)
-                text.set_ellipsize(Pango.EllipsizeMode.END)
-                row.append(old)
-                row.append(new)
-                row.append(text)
-                container.append(row)
+        if self.store.settings.confirm_discard_changes:
+            self.store.show_popup(
+                PopupType.CONFIRM_DISCARD_SELECTION,
+                on_discard=lambda: self.store.discard_selection(repo, path),
+            )
+        else:
+            self.store.discard_selection(repo, path)
+
+    def _on_expand_diff(self) -> None:
+        repo = self.store.selected_repository
+        if repo:
+            self.store.expand_diff_context(repo)
+
+    def _on_image_mode(self, mode: str) -> None:
+        repo = self.store.selected_repository
+        if repo:
+            self.store.set_image_diff_type(repo, mode)
+
+    def _set_file_filter(self, value: str) -> None:
+        repo = self.store.selected_repository
+        if not repo:
+            return
+        for key, btn in self._filter_buttons.items():
+            btn.set_active(key == value)
+        self.store.set_file_filter(repo, value)
+
+    def _selected_change_files(self) -> list[WorkingDirectoryFileChange]:
+        files = []
+        child = self._file_list.get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.ListBoxRow) and child.is_selected():
+                f = getattr(child, "_file", None)
+                if f:
+                    files.append(f)
+            child = child.get_next_sibling()
+        return files
+
+    def _file_list_menu(self) -> None:
+        repo = self.store.selected_repository
+        if not repo:
+            return
+        state = self.store.state_for(repo)
+        has = bool(state.status and state.status.working_directory.files)
+        show_context_menu(
+            self._file_list,
+            [
+                ("Discard all changes…", lambda: self.store.show_popup(PopupType.CONFIRM_DISCARD_CHANGES), has),
+                ("Stash all changes…", self._stash_all, has),
+            ],
+        )
+
+    def _file_item_menu(self, row: Gtk.ListBoxRow) -> None:
+        repo = self.store.selected_repository
+        file = getattr(row, "_file", None)
+        if not repo or file is None:
+            return
+        selected = self._selected_change_files() or [file]
+        paths = [f.path for f in selected]
+        items = [
+            ("Discard changes…", lambda: self.store.show_popup(PopupType.CONFIRM_DISCARD_CHANGES, files=selected), True),
+            None,
+        ]
+        if len(paths) == 1:
+            items.append(("Ignore file (add to .gitignore)", lambda: self.store.ignore_path(repo, file.path), True))
+            folder = "/".join(file.path.split("/")[:-1])
+            if folder:
+                items.append((f"Ignore folder /{folder}", lambda: self.store.ignore_path(repo, folder), True))
+            ext = ""
+            if "." in file.path.split("/")[-1]:
+                ext = "." + file.path.split(".")[-1]
+                items.append((f"Ignore all {ext} files", lambda: self.store.ignore_pattern(repo, f"*{ext}"), True))
+        else:
+            items.append((f"Ignore {len(paths)} selected files", lambda: [self.store.ignore_path(repo, p) for p in paths], True))
+            items.append(("Include selected files", lambda: self.store.set_files_included(repo, paths, True), True))
+            items.append(("Exclude selected files", lambda: self.store.set_files_included(repo, paths, False), True))
+        items.extend(
+            [
+                None,
+                ("Copy path", lambda: copy_text(os.path.join(repo.path, file.path)), True),
+                ("Copy relative path", lambda: copy_text(file.path), True),
+                None,
+                ("Show in file manager", lambda: self.store.reveal_in_file_manager(repo, file.path), file.status.kind != AppFileStatusKind.DELETED),
+                ("Open in external editor", lambda: self.store.open_in_editor(repo, os.path.join(repo.path, file.path)), file.status.kind != AppFileStatusKind.DELETED),
+                ("Open with default program", lambda: self.store.open_file_default(repo, file.path), file.status.kind != AppFileStatusKind.DELETED),
+            ]
+        )
+        if file.status.is_conflicted:
+            items.extend(
+                [
+                    None,
+                    ("Use ours", lambda: self._resolve(file.path, ManualConflictResolution.OURS), True),
+                    ("Use theirs", lambda: self._resolve(file.path, ManualConflictResolution.THEIRS), True),
+                ]
+            )
+        show_context_menu(row, items)
+
+    def _hist_file_menu(self, file) -> None:
+        repo = self.store.selected_repository
+        if not repo:
+            return
+        show_context_menu(
+            self._hist_files,
+            [
+                ("Copy path", lambda: copy_text(os.path.join(repo.path, file.path)), True),
+                ("Show in file manager", lambda: self.store.reveal_in_file_manager(repo, file.path), True),
+                ("Open in external editor", lambda: self.store.open_in_editor(repo, os.path.join(repo.path, file.path)), True),
+            ],
+        )
+
+    def _commit_item_menu(self, row: Gtk.ListBoxRow) -> None:
+        repo = self.store.selected_repository
+        commit = getattr(row, "_commit", None)
+        if not repo or commit is None:
+            return
+        state = self.store.state_for(repo)
+        selected = list(state.selected_commits) or [commit]
+        is_tip = bool(state.commits and state.commits[0].sha == commit.sha)
+        local = commit.sha in set(state.local_commit_shas)
+        items = []
+        if len(selected) > 1:
+            items.extend(
+                [
+                    (f"Cherry-pick {len(selected)} commits…", lambda: self.store.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind="Cherry-pick", shas=[c.sha for c in selected]), True),
+                    (f"Squash {len(selected)} commits…", lambda: self._squash_selected(selected, commit), True),
+                    (f"Reorder {len(selected)} commits…", lambda: self.store.reorder_onto(repo, selected, commit), True),
+                ]
+            )
+        else:
+            if is_tip:
+                items.append(("Amend commit…", self._on_amend, True))
+                items.append(("Undo commit…", self._undo, local))
+            items.extend(
+                [
+                    ("Reset to commit…", lambda: self.store.show_popup(PopupType.WARNING_BEFORE_RESET, sha=commit.sha), (not is_tip) and local),
+                    ("Checkout commit", lambda: self.store.checkout_commit_sha(repo, commit.sha), not is_tip),
+                    ("Reorder commit", lambda: self.store.reorder_onto(repo, [commit], None), True),
+                    ("Revert changes in commit", lambda: self.store.revert_commit(repo, commit), True),
+                    None,
+                    ("Create branch from commit", lambda: self.store.show_popup(PopupType.CREATE_BRANCH, start=commit.sha), True),
+                    ("Create tag…", lambda: self.store.show_popup(PopupType.CREATE_TAG, sha=commit.sha), True),
+                    ("Cherry-pick commit…", lambda: self.store.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind="Cherry-pick", shas=[commit.sha]), True),
+                    None,
+                    ("Copy SHA", lambda: copy_text(commit.sha), True),
+                    ("Copy tags", lambda: copy_text(" ".join(commit.tags)), bool(commit.tags)),
+                    ("View on GitHub", lambda: self.store.view_commit_on_github(repo, commit.sha), bool(repo.github) and not local),
+                ]
+            )
+        show_context_menu(row, items)
+
+    def _squash_selected(self, selected, onto) -> None:
+        repo = self.store.selected_repository
+        if not repo:
+            return
+        others = [c for c in selected if c.sha != onto.sha]
+        if not others:
+            return
+        self.store.show_popup(
+            PopupType.COMMIT_MESSAGE,
+            title="Squash commits",
+            summary=onto.summary,
+            description=onto.body,
+            button="Squash",
+            on_submit=lambda summary, description: self.store.squash_onto(repo, others, onto, f"{summary}\n\n{description}".strip()),
+        )
+
+    def _install_commit_dnd(self, row: Gtk.ListBoxRow, commit) -> None:
+        try:
+            drag = Gtk.DragSource()
+            drag.set_actions(Gdk.DragAction.MOVE)
+
+            def prepare(_src, _x, _y, sha=commit.sha):
+                return Gdk.ContentProvider.new_for_value(sha)
+
+            drag.connect("prepare", prepare)
+            row.add_controller(drag)
+            drop = Gtk.DropTarget.new(str, Gdk.DragAction.MOVE)
+
+            def on_drop(_t, value, _x, _y, target=commit):
+                repo = self.store.selected_repository
+                if not repo or not value:
+                    return False
+                state = self.store.state_for(repo)
+                moving = [c for c in (state.selected_commits or state.commits) if c.sha == value]
+                if not moving:
+                    moving = [c for c in state.commits if c.sha == value]
+                if not moving or moving[0].sha == target.sha:
+                    return False
+                self.store.squash_onto(repo, moving, target, target.summary)
+                return True
+
+            drop.connect("drop", on_drop)
+            row.add_controller(drop)
+        except Exception:
+            pass
+
+    def _on_amend(self, *_args: object) -> None:
+        repo = self.store.selected_repository
+        if not repo:
+            return
+        summary = self._summary.get_text().strip()
+        start, end = self._description.get_buffer().get_bounds()
+        description = self._description.get_buffer().get_text(start, end, True).strip()
+        state = self.store.state_for(repo)
+        if not summary and state.commits:
+            summary = state.commits[0].summary
+            description = state.commits[0].body
+        if not summary:
+            self._toast.add_toast(Adw.Toast(title="A commit summary is required"))
+            return
+        self.store.commit(repo, summary, description, amend=True)
+
+    def _resolve(self, path: str, resolution: ManualConflictResolution) -> None:
+        repo = self.store.selected_repository
+        if repo:
+            self.store.resolve_conflict(repo, path, resolution)
+
+    def _update_checks(self, state) -> None:
+        if not hasattr(self, "_checks_btn"):
+            return
+        runs = state.check_runs or []
+        failed = [r for r in runs if r.conclusion in {"failure", "timed_out", "cancelled"}]
+        pending = [r for r in runs if r.status != "completed"]
+        if failed:
+            self._checks_btn.set_icon_name("dialog-error-symbolic")
+            self._checks_btn.add_css_class("checks-failure")
+            self._checks_btn.set_tooltip_text(f"{len(failed)} check(s) failed")
+        elif pending:
+            self._checks_btn.set_icon_name("content-loading-symbolic")
+            self._checks_btn.set_tooltip_text(f"{len(pending)} check(s) pending")
+        elif runs:
+            self._checks_btn.set_icon_name("emblem-ok-symbolic")
+            self._checks_btn.set_tooltip_text(f"{len(runs)} check(s) passed")
+        else:
+            self._checks_btn.set_icon_name("emblem-system-symbolic")
+            self._checks_btn.set_tooltip_text("No checks")
+        ab = state.ahead_behind
+        if hasattr(self, "_ahead_label"):
+            if ab and (ab.ahead or ab.behind):
+                self._ahead_label.set_text(f"↑{ab.ahead} ↓{ab.behind}")
+            else:
+                self._ahead_label.set_text("")
+
+    def _on_checks(self, *_args: object) -> None:
+        repo = self.store.selected_repository
+        if not repo:
+            return
+        state = self.store.state_for(repo)
+        failed = [r for r in (state.check_runs or []) if r.conclusion in {"failure", "timed_out", "cancelled"}]
+        if failed:
+            self.store.show_popup(PopupType.PULL_REQUEST_CHECKS_FAILED, error="\n".join(f"{r.name}: {r.conclusion}" for r in failed))
+        elif state.current_pull_request:
+            open_external(state.current_pull_request.html_url + "/checks")
+
+    def _update_tutorial_banner(self, repo, state) -> None:
+        if not hasattr(self, "_tutorial_banner"):
+            return
+        if not repo.tutorial or self.store.tutorial_step in {TutorialStep.NOT_APPLICABLE, TutorialStep.ALL_COMPLETE, TutorialStep.PAUSED}:
+            self._tutorial_banner.set_revealed(False)
+            return
+        messages = {
+            TutorialStep.PICK_EDITOR: ("Install an editor, then open this repository in it.", "Mark done"),
+            TutorialStep.CREATE_BRANCH: ("Create a branch using Branch → New branch.", None),
+            TutorialStep.EDIT_FILE: ("Edit a file in this repository, then come back.", None),
+            TutorialStep.MAKE_COMMIT: ("Write a summary and commit your changes.", None),
+            TutorialStep.PUSH_BRANCH: ("Publish this branch to GitHub.", None),
+            TutorialStep.OPEN_PULL_REQUEST: ("Create a pull request for this branch.", None),
+        }
+        title, button = messages.get(self.store.tutorial_step, ("", None))
+        self._tutorial_banner.set_title(title)
+        self._tutorial_banner.set_button_label(button)
+        self._tutorial_banner.set_revealed(True)
+        if self.store.tutorial_step == TutorialStep.PICK_EDITOR and not getattr(self, "_tutorial_bound", False):
+            self._tutorial_bound = True
+            self._tutorial_banner.connect("button-clicked", lambda *_: self.store.complete_tutorial_editor_step())
+
+    def _refresh_issue_completion(self, state) -> None:
+        if not hasattr(self, "_issue_store"):
+            return
+        self._issue_store.clear()
+        for number, title in state.issues:
+            self._issue_store.append([f"#{number} {title}"])
+        for login in state.mentions:
+            self._issue_store.append([f"@{login}"])
+
+    def _refresh_compare_dropdown(self, state) -> None:
+        if not hasattr(self, "_compare_dropdown"):
+            return
+        names = ["History"] + [b.name for b in state.branches]
+        current = 0
+        if state.compare_branch:
+            try:
+                current = names.index(state.compare_branch.name)
+            except ValueError:
+                current = 0
+        self._building = True
+        self._compare_dropdown.set_model(Gtk.StringList.new(names))
+        self._compare_dropdown.set_selected(current)
+        self._building = False
+
+    def _on_compare_changed(self, dropdown, *_args: object) -> None:
+        if self._building:
+            return
+        repo = self.store.selected_repository
+        if not repo:
+            return
+        model = dropdown.get_model()
+        idx = dropdown.get_selected()
+        if model is None or idx < 0:
+            return
+        name = model.get_string(idx)
+        if name == "History":
+            self.store.compare_to_branch(repo, None)
+        else:
+            self.store.compare_to_branch(repo, name)
+
+    def _refresh_compare_cta(self, state) -> None:
+        if not hasattr(self, "_compare_cta"):
+            return
+        clear_box(self._compare_cta)
+        if state.history_mode != HistoryTabMode.COMPARE or not state.compare_branch:
+            return
+        repo = self.store.selected_repository
+        ahead = len(state.compare_ahead)
+        behind = len(state.compare_behind)
+        self._compare_cta.append(Gtk.Label(label=f"{ahead} ahead · {behind} behind {state.compare_branch.name}"))
+        if behind and repo:
+            merge = Gtk.Button(label=f"Merge {state.compare_branch.name} into current branch")
+            merge.add_css_class("suggested-action")
+            merge.connect("clicked", lambda *_: self.store.merge_branch(repo, state.compare_branch.name))
+            self._compare_cta.append(merge)
+

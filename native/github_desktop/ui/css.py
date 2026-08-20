@@ -59,6 +59,34 @@ APP_CSS = """
 .checks-success { color: @success_color; }
 .checks-failure { color: @error_color; }
 .checks-pending { color: @warning_color; }
+.diff-excluded {
+  opacity: 0.45;
+}
+.diff-side {
+  min-width: 12em;
+  padding: 0 6px;
+}
+.diff-empty {
+  background-color: alpha(@window_fg_color, 0.04);
+}
+.context-menu-item {
+  padding: 4px 10px;
+}
+.image-diff-toolbar {
+  padding: 6px;
+}
+.ahead-behind {
+  font-size: 0.85rem;
+  opacity: 0.8;
+  padding: 0 8px;
+}
+.filter-chip {
+  font-size: 0.85rem;
+}
+.compare-cta {
+  padding: 8px;
+}
+
 """
 
 

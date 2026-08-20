@@ -104,6 +104,12 @@ def parse_unified_diff(text: str) -> TextDiff:
             i += 1
         hunks.append(DiffHunk(header, hunk_lines, start_index, i))
 
+    n = 0
+    for hunk in hunks:
+        for line in hunk.lines:
+            line.diff_line_number = n
+            n += 1
+
     too_wide = any(
         len(line.text) > MAX_CHARACTERS_PER_LINE for hunk in hunks for line in hunk.lines
     )
@@ -218,3 +224,110 @@ def format_partial_patch(
             if line.no_trailing_newline:
                 parts.append("\\ No newline at end of file\n")
     return "".join(parts)
+
+
+def hunk_line_span(diff: TextDiff, hunk_index: int) -> tuple[int, int]:
+    n = 0
+    for i, hunk in enumerate(diff.hunks):
+        if i == hunk_index:
+            return n, len(hunk.lines)
+        n += len(hunk.lines)
+    return 0, 0
+
+
+def format_discard_patch(file_path: str, diff: TextDiff, is_selected) -> str | None:
+    """Build a reverse patch that discards selected working-directory lines.
+
+    Indexing matches `format_partial_patch` / `selectable_line_indices`.
+    """
+    chunks: list[str] = []
+    line_index = 0
+    for hunk in diff.hunks:
+        hunk_buf: list[str] = []
+        old_count = 0
+        new_count = 0
+        any_change = False
+        line_index += 1  # hunk header
+        for line in hunk.lines[1:]:
+            idx = line_index
+            line_index += 1
+            if line.kind == DiffLineType.HUNK:
+                continue
+            body = line.text[1:] if line.text[:1] in "+- " else line.text
+            selected = bool(is_selected(idx))
+            if line.kind == DiffLineType.CONTEXT:
+                hunk_buf.append(f" {body}\n")
+                old_count += 1
+                new_count += 1
+            elif selected:
+                any_change = True
+                if line.kind == DiffLineType.ADD:
+                    hunk_buf.append(f"-{body}\n")
+                    new_count += 1
+                elif line.kind == DiffLineType.DELETE:
+                    hunk_buf.append(f"+{body}\n")
+                    old_count += 1
+            elif line.kind == DiffLineType.ADD:
+                hunk_buf.append(f" {body}\n")
+                old_count += 1
+                new_count += 1
+            if line.no_trailing_newline:
+                hunk_buf.append("\\ No newline at end of file\n")
+        if not any_change:
+            continue
+        reversed_header = DiffHunkHeader(
+            hunk.header.new_start_line,
+            new_count,
+            hunk.header.old_start_line,
+            old_count,
+        )
+        chunks.append(format_hunk_header(reversed_header))
+        chunks.extend(hunk_buf)
+    if not chunks:
+        return None
+    return format_patch_header(file_path, file_path) + "".join(chunks)
+
+
+def side_by_side_rows(hunk: DiffHunk) -> list[tuple[str, DiffLine | None, DiffLine | None, int | None, int | None]]:
+    """Pair hunk lines into unified-to-split rows.
+
+    Each tuple is (kind, left, right, left_index, right_index) where kind is
+    ``hunk``, ``context``, or ``change``.
+    """
+    rows: list[tuple[str, DiffLine | None, DiffLine | None, int | None, int | None]] = []
+    lines = hunk.lines
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        idx = line.diff_line_number
+        if line.kind == DiffLineType.HUNK:
+            rows.append(("hunk", line, None, idx, None))
+            i += 1
+            continue
+        if line.kind == DiffLineType.CONTEXT:
+            rows.append(("context", line, line, idx, idx))
+            i += 1
+            continue
+        deletes: list[DiffLine] = []
+        while i < len(lines) and lines[i].kind == DiffLineType.DELETE:
+            deletes.append(lines[i])
+            i += 1
+        adds: list[DiffLine] = []
+        while i < len(lines) and lines[i].kind == DiffLineType.ADD:
+            adds.append(lines[i])
+            i += 1
+        for j in range(max(len(deletes), len(adds), 1 if not deletes and not adds else 0)):
+            left = deletes[j] if j < len(deletes) else None
+            right = adds[j] if j < len(adds) else None
+            rows.append(
+                (
+                    "change",
+                    left,
+                    right,
+                    left.diff_line_number if left else None,
+                    right.diff_line_number if right else None,
+                )
+            )
+        if not deletes and not adds:
+            i += 1
+    return rows

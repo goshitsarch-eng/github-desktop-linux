@@ -125,7 +125,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         PopupType.CREATE_REPOSITORY: lambda: show_create_repository(parent, store, payload.get("path", "")),
         PopupType.CLONE_REPOSITORY: lambda: show_clone_repository(parent, store, payload),
         PopupType.SIGN_IN: lambda: show_sign_in(parent, store, bool(payload.get("enterprise"))),
-        PopupType.CREATE_BRANCH: lambda: show_create_branch(parent, store),
+        PopupType.CREATE_BRANCH: lambda: show_create_branch(parent, store, payload),
         PopupType.RENAME_BRANCH: lambda: show_rename_branch(parent, store),
         PopupType.DELETE_BRANCH: lambda: show_delete_branch(parent, store, payload),
         PopupType.DELETE_REMOTE_BRANCH: lambda: show_delete_branch(parent, store, payload, remote=True),
@@ -142,7 +142,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
             on_confirm=lambda: repo and store.fetch_repo(repo),
         ),
         PopupType.GENERIC_GIT_AUTHENTICATION: lambda: show_generic_auth(parent, store, payload),
-        PopupType.CREATE_TAG: lambda: show_create_tag(parent, store),
+        PopupType.CREATE_TAG: lambda: show_create_tag(parent, store, payload),
         PopupType.DELETE_TAG: lambda: show_delete_tag(parent, store, payload),
         PopupType.STASH_AND_SWITCH_BRANCH: lambda: show_stash_switch(parent, store, payload),
         PopupType.CONFIRM_DISCARD_STASH: lambda: _alert(
@@ -649,7 +649,7 @@ def show_sign_in(parent: Gtk.Window, store: AppStore, enterprise: bool) -> None:
     dialog.present(parent)
 
 
-def show_create_branch(parent: Gtk.Window, store: AppStore) -> None:
+def show_create_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, Any] | None = None) -> None:
     repo = store.selected_repository
     if not repo:
         return
@@ -661,7 +661,7 @@ def show_create_branch(parent: Gtk.Window, store: AppStore) -> None:
             store.create_branch_and_checkout(repo, name, start)
 
     state = store.state_for(repo)
-    start = state.status.current_branch if state.status else ""
+    start = (payload or {}).get("start") or (state.status.current_branch if state.status else "")
     _text_dialog(parent, "Create a branch", "The new branch will be checked out.", [("name", "Name", ""), ("start", "Create from", start or "")], submit, "Create branch")
 
 
@@ -1054,12 +1054,12 @@ def show_generic_auth(parent: Gtk.Window, store: AppStore, payload: dict[str, An
     _text_dialog(parent, "Authentication required", url, [("username", "Username", ""), ("password", "Password / token", "")], submit, "Save and retry")
 
 
-def show_create_tag(parent: Gtk.Window, store: AppStore) -> None:
+def show_create_tag(parent: Gtk.Window, store: AppStore, payload: dict[str, Any] | None = None) -> None:
     repo = store.selected_repository
     if not repo:
         return
     state = store.state_for(repo)
-    sha = state.selected_commit.sha if state.selected_commit else (state.status.current_tip if state.status else "")
+    sha = (payload or {}).get("sha") or (state.selected_commit.sha if state.selected_commit else (state.status.current_tip if state.status else ""))
 
     def submit(values: dict[str, str]) -> None:
         from ..git.ops import create_tag
@@ -1288,7 +1288,7 @@ def show_tutorial(parent: Gtk.Window, store: AppStore) -> None:
 
         api = GitHubAPI.from_account(account)
         created = api.create_repository("desktop-tutorial", description="GitHub Desktop tutorial repository", private=True)
-        store.clone(created.clone_url, path, account=account)
+        store.clone(created.clone_url, path, account=account, tutorial=True)
 
     _alert(parent, "Create tutorial repository?", f"A private repository will be created for {account.login} and cloned to {path}.", confirm="Create", on_confirm=confirm)
 
