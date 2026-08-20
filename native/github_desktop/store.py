@@ -103,6 +103,7 @@ from .git import (
     reorder_commits,
     reset,
     revert,
+    is_co_authored_by_trailer,
     set_config_value,
     set_default_branch,
     set_remote_url,
@@ -372,7 +373,9 @@ class AppStore:
                 {
                     "login": account.login,
                     "endpoint": account.endpoint,
-                    "emails": account.emails,
+                    "emails": [
+                        item.to_dict() if hasattr(item, "to_dict") else item for item in account.emails
+                    ],
                     "avatar_url": account.avatar_url,
                     "name": account.name,
                     "id": account.id,
@@ -2173,8 +2176,25 @@ class AppStore:
         return True
 
     def revert_commit(self, repo: Repository, commit: Commit) -> None:
-        revert(repo.path, commit.sha)
-        self.refresh_repository(repo)
+        mainline = 1 if commit.is_merge_commit else None
+        title = f"Reverting {commit.short_sha}"
+
+        def work() -> None:
+            revert(
+                repo.path,
+                commit.sha,
+                mainline=mainline,
+                progress=self._network_progress_cb("revert", title),
+            )
+
+        def done(exc: BaseException | None) -> None:
+            self._clear_network_progress()
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.refresh_repository(repo)
+
+        self._run(work, done)
 
     def reset_to_commit(self, repo: Repository, commit: Commit, *, show_confirmation: bool = True) -> None:
         state = self.state_for(repo)
@@ -2210,7 +2230,11 @@ class AppStore:
         authors = list(commit.co_authors)
         body = commit.body or ""
         if authors:
-            lines = [ln for ln in body.splitlines() if not ln.lower().startswith("co-authored-by")]
+            lines = [
+                ln
+                for ln in body.splitlines()
+                if not is_co_authored_by_trailer(ln.split(":", 1)[0] if ":" in ln else ln)
+            ]
             body = "\n".join(lines).strip()
             state.co_authors = authors
             state.show_co_authors = True
@@ -2250,21 +2274,45 @@ class AppStore:
         if repo:
             self.open_in_editor(repo, path)
             return
-        from .editors import find_editor, open_in_editor as launch
+        from .editors import SUGGESTED_EXTERNAL_EDITOR, find_editor, open_in_editor as launch
 
         editor = find_editor(self.settings.selected_external_editor)
         if not editor:
-            self.show_popup(PopupType.EXTERNAL_EDITOR_FAILED, message="No external editor found")
+            self.show_popup(
+                PopupType.EXTERNAL_EDITOR_FAILED,
+                message=(
+                    f"No suitable editors installed for GitHub Desktop to launch. "
+                    f"Install {SUGGESTED_EXTERNAL_EDITOR} for your platform and restart GitHub Desktop to try again."
+                ),
+                suggest_default_editor=True,
+            )
             return
-        launch(editor, path)
+        try:
+            launch(editor, path)
+        except OSError as exc:
+            self.show_popup(PopupType.EXTERNAL_EDITOR_FAILED, message=str(exc), open_preferences=True)
 
     def checkout_commit_sha(self, repo: Repository, sha: str, *, confirmed: bool = False) -> None:
         if self.settings.confirm_checkout_commit and not confirmed:
             self.show_popup(PopupType.CONFIRM_CHECKOUT_COMMIT, sha=sha)
             return
-        checkout_commit(repo.path, sha)
-        self.show_banner(Banner(BannerType.DETACHED_HEAD))
-        self.refresh_repository(repo)
+
+        def work() -> None:
+            checkout_commit(
+                repo.path,
+                sha,
+                progress=self._network_progress_cb("checkout", f"Checking out {sha[:7]}"),
+            )
+
+        def done(exc: BaseException | None) -> None:
+            self._clear_network_progress()
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.show_banner(Banner(BannerType.DETACHED_HEAD))
+            self.refresh_repository(repo)
+
+        self._run(work, done)
 
     def set_commit_author_email(self, repo: Repository, email: str, *, local: bool = True) -> None:
         if local:
@@ -2791,22 +2839,30 @@ class AppStore:
         if has_changes and strategy == UncommittedChangesStrategy.MOVE_TO_NEW_BRANCH:
             self.checkout_and_bring_changes(repo, branch)
             return
-        try:
-            checkout_branch(repo.path, name)
-        except GitError as exc:
-            if exc.is_local_changes_overwritten:
-                self.show_popup(
-                    PopupType.LOCAL_CHANGES_OVERWRITTEN,
-                    files=overwritten_files_from_error(f"{exc.stderr}\n{exc.stdout}"),
-                    retry_kind="checkout",
-                    branch=name,
-                    repo_id=repo.id,
-                    has_existing_stash=self._has_existing_desktop_stash(repo),
-                )
+        title = f"Checking out {branch.name}"
+
+        def work() -> None:
+            checkout_branch(repo.path, branch, progress=self._network_progress_cb("checkout", title))
+
+        def done(exc: BaseException | None) -> None:
+            self._clear_network_progress()
+            if exc:
+                if isinstance(exc, GitError) and exc.is_local_changes_overwritten:
+                    self.show_popup(
+                        PopupType.LOCAL_CHANGES_OVERWRITTEN,
+                        files=overwritten_files_from_error(f"{exc.stderr}\n{exc.stdout}"),
+                        retry_kind="checkout",
+                        branch=name,
+                        repo_id=repo.id,
+                        has_existing_stash=self._has_existing_desktop_stash(repo),
+                    )
+                    return
+                self.show_popup(PopupType.ERROR, error=str(exc))
                 return
-            raise
-        self.remember_branch(repo, name)
-        self.refresh_repository(repo)
+            self.remember_branch(repo, name)
+            self.refresh_repository(repo)
+
+        self._run(work, done)
 
     def stash_and_drop_previous(self, repo: Repository, branch_name: str) -> bool:
         previous = get_last_desktop_stash_entry_for_branch(repo.path, branch_name)
@@ -2829,7 +2885,7 @@ class AppStore:
     def checkout_and_bring_changes(self, repo: Repository, branch: Branch) -> None:
         name = branch.name_without_remote if branch.type == BranchType.REMOTE else branch.name
         try:
-            checkout_branch(repo.path, name)
+            checkout_branch(repo.path, branch)
         except GitError as exc:
             if not exc.is_local_changes_overwritten:
                 raise
@@ -2844,7 +2900,7 @@ class AppStore:
                     has_existing_stash=self._has_existing_desktop_stash(repo),
                 )
                 return
-            checkout_branch(repo.path, name)
+            checkout_branch(repo.path, branch)
             entry = get_last_desktop_stash_entry_for_branch(repo.path, name)
             if entry:
                 stash_pop(repo.path, entry.name)
@@ -3381,11 +3437,20 @@ class AppStore:
             return
         shell = find_shell(self.settings.selected_shell)
         if not shell:
-            self.show_popup(PopupType.OPEN_SHELL_FAILED, message="No terminal emulator found")
+            self.show_popup(
+                PopupType.OPEN_SHELL_FAILED,
+                message="No terminal emulator found",
+                open_preferences=True,
+            )
             return
-        open_shell(shell, repo.path)
+        try:
+            open_shell(shell, repo.path)
+        except OSError as exc:
+            self.show_popup(PopupType.OPEN_SHELL_FAILED, message=str(exc), open_preferences=True)
 
     def open_in_editor(self, repo: Repository, path: str | None = None) -> None:
+        from .editors import SUGGESTED_EXTERNAL_EDITOR
+
         target = path or repo.path
         if self.settings.use_custom_editor and self.settings.custom_editor_path:
             argv = command_for_custom_integration(
@@ -3394,13 +3459,26 @@ class AppStore:
                 target,
             )
             editor = Editor("Custom", argv[0], tuple(argv[1:]))
-            open_in_editor(editor, target, append_path=False)
+            try:
+                open_in_editor(editor, target, append_path=False)
+            except OSError as exc:
+                self.show_popup(PopupType.EXTERNAL_EDITOR_FAILED, message=str(exc), open_preferences=True)
             return
         editor = find_editor(self.settings.selected_external_editor)
         if not editor:
-            self.show_popup(PopupType.EXTERNAL_EDITOR_FAILED, message="No external editor found")
+            self.show_popup(
+                PopupType.EXTERNAL_EDITOR_FAILED,
+                message=(
+                    f"No suitable editors installed for GitHub Desktop to launch. "
+                    f"Install {SUGGESTED_EXTERNAL_EDITOR} for your platform and restart GitHub Desktop to try again."
+                ),
+                suggest_default_editor=True,
+            )
             return
-        open_in_editor(editor, target)
+        try:
+            open_in_editor(editor, target)
+        except OSError as exc:
+            self.show_popup(PopupType.EXTERNAL_EDITOR_FAILED, message=str(exc), open_preferences=True)
 
     def open_working_directory(self, repo: Repository) -> None:
         open_file_manager(repo.path)

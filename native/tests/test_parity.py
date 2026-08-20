@@ -140,6 +140,7 @@ REQUIRED_GIT_FUNCS = [
     "get_description_for_error",
     "is_auth_failure_error",
     "classify_git_error",
+    "is_co_authored_by_trailer",
 ]
 
 
@@ -265,6 +266,11 @@ def test_window_actions_cover_menus() -> None:
     src += open(create_branch_mod.__file__, encoding="utf-8").read()
     src += open(email_mod.__file__, encoding="utf-8").read()
     src += open(errors_mod.__file__, encoding="utf-8").read()
+    from github_desktop import editors as editors_mod
+    from github_desktop.ui import dds as dds_mod
+
+    src += open(editors_mod.__file__, encoding="utf-8").read()
+    src += open(dds_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -543,5 +549,21 @@ def test_window_actions_cover_menus() -> None:
         "File > Options.",
         "This branch is protected from force-push operations.",
         "Unable to switch branches as there are working directory changes",
+        "GIT_LFS_PROGRESS",
+        "--recurse-submodules=on-demand",
+        "Unable to open external editor",
+        "Unable to open shell",
+        "The diff is too large to be displayed by default",
+        "is_co_authored_by_trailer",
+        "Show whitespace changes?",
+        "Copy the full",
+        "create_lfs_progress_file",
+        "lookup_preferred_email",
+        "Open options",
+        "Download {SUGGESTED_EXTERNAL_EDITOR}",
+        "SUGGESTED_EXTERNAL_EDITOR",
+        "checkoutBranch",
+        "Show diff",
+        "pixbuf_from_dds",
     ]:
         assert phrase in src

@@ -787,6 +787,10 @@ class SubmoduleDiff:
 class LargeTextDiff:
     kind: DiffType = DiffType.LARGE_TEXT
     text: str = ""
+    hunks: list[DiffHunk] = field(default_factory=list)
+    line_endings_change: tuple[str, str] | None = None
+    max_line_number: int = 0
+    has_hidden_bidi_chars: bool = False
 
 
 @dataclass
@@ -1123,17 +1127,65 @@ class CloningRepository:
 
 
 @dataclass
+class AccountEmail:
+    """Desktop `IAPIEmail` fields used for preferred / attributable commit emails."""
+
+    email: str
+    primary: bool = False
+    verified: bool = True
+    visibility: str | None = None
+
+    def __str__(self) -> str:
+        return self.email
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "email": self.email,
+            "primary": self.primary,
+            "verified": self.verified,
+            "visibility": self.visibility,
+        }
+
+    @classmethod
+    def coerce(cls, value: Any) -> "AccountEmail":
+        if isinstance(value, AccountEmail):
+            return value
+        if isinstance(value, str):
+            return cls(email=value)
+        if isinstance(value, dict):
+            return cls(
+                email=str(value.get("email") or ""),
+                primary=bool(value.get("primary")),
+                verified=bool(value.get("verified", True)),
+                visibility=value.get("visibility"),
+            )
+        return cls(email=str(value) if value else "")
+
+
+@dataclass
 class Account:
     login: str
     endpoint: str
     token: str
-    emails: list[str] = field(default_factory=list)
+    emails: list[AccountEmail] = field(default_factory=list)
     avatar_url: str = ""
     name: str = ""
     id: int = 0
     plan: str | None = None
     copilot_endpoint: str | None = None
     copilot_token: str | None = None
+
+    def __post_init__(self) -> None:
+        normalized: list[AccountEmail] = []
+        for item in self.emails or []:
+            email = AccountEmail.coerce(item)
+            if email.email:
+                normalized.append(email)
+        object.__setattr__(self, "emails", normalized)
+
+    @property
+    def email_addresses(self) -> list[str]:
+        return [item.email for item in self.emails]
 
     @property
     def is_dotcom(self) -> bool:
@@ -1156,10 +1208,22 @@ def stealth_email_for_account(account: Account) -> str:
 
 
 def account_email_choices(account: Account) -> list[str]:
-    emails = [str(item) for item in (account.emails or []) if item]
-    stealth = stealth_email_for_account(account)
-    if stealth not in emails:
-        emails.append(stealth)
+    """Desktop `GitConfigUserForm` verified emails, plus stealth on GitHub.com."""
+    emails: list[str] = []
+    seen: set[str] = set()
+    for item in account.emails:
+        email = AccountEmail.coerce(item)
+        if not email.email or not email.verified:
+            continue
+        key = email.email.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        emails.append(email.email)
+    if account.is_dotcom:
+        stealth = stealth_email_for_account(account)
+        if stealth.lower() not in seen:
+            emails.append(stealth)
     return emails
 
 

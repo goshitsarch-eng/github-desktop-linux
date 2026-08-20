@@ -14,6 +14,9 @@ class Editor:
     args: tuple[str, ...] = ()
 
 
+SUGGESTED_EXTERNAL_EDITOR = "Visual Studio Code"
+SUGGESTED_EXTERNAL_EDITOR_URL = "https://code.visualstudio.com"
+
 KNOWN_EDITORS: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     ("Visual Studio Code", ("code", "code-oss", "codium", "code-insiders"), ("--wait",)),
     ("VSCodium", ("codium",), ("--wait",)),
@@ -71,4 +74,6 @@ def open_in_editor(
     cmd = [editor.executable, *editor.args, *extra_args]
     if append_path:
         cmd.append(path)
+    if not os.path.isfile(editor.executable) and not shutil.which(editor.executable):
+        raise FileNotFoundError(f"Couldn't find the executable '{editor.executable}' for editor '{editor.name}'")
     subprocess.Popen(cmd, cwd=os.path.dirname(path) if os.path.isfile(path) else path, start_new_session=True)

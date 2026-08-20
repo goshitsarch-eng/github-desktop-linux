@@ -13,6 +13,7 @@ from ..errors import APIError, CopilotError
 from ..logging import get_logger
 from ..models import (
     Account,
+    AccountEmail,
     CheckSuite,
     GitHubRepository,
     Issue,
@@ -130,12 +131,12 @@ class GitHubAPI:
         if token:
             self.token = token
         user = self.fetch_user()
-        emails = []
+        emails: list[AccountEmail] = []
         try:
-            emails = [e.get("email", "") for e in self.fetch_emails() if e.get("email")]
+            emails = [AccountEmail.coerce(item) for item in self.fetch_emails() if item.get("email")]
         except APIError:
             if user.get("email"):
-                emails = [user["email"]]
+                emails = [AccountEmail(email=user["email"], primary=True, verified=True, visibility="public")]
         copilot_endpoint = None
         try:
             info = self.fetch_copilot_info()

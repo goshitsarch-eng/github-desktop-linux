@@ -128,12 +128,20 @@ class DiffViewer(Gtk.Box):
         self._hint_box.set_visible(False)
         self._hint = Gtk.Label(xalign=0, wrap=True)
         self._hint_box.append(self._hint)
-        show_ws = Gtk.Button(label="Show whitespace changes")
+        show_ws = Gtk.Button(label="Yes")
         show_ws.add_css_class("pill")
+        show_ws.add_css_class("suggested-action")
         show_ws.set_halign(Gtk.Align.START)
         show_ws.connect("clicked", self._on_show_whitespace)
         self._hint_show = show_ws
-        self._hint_box.append(show_ws)
+        no_ws = Gtk.Button(label="No")
+        no_ws.add_css_class("pill")
+        no_ws.set_halign(Gtk.Align.START)
+        no_ws.connect("clicked", lambda *_: self._hint_box.set_visible(False))
+        hint_btns = Gtk.Box(spacing=8)
+        hint_btns.append(show_ws)
+        hint_btns.append(no_ws)
+        self._hint_box.append(hint_btns)
         self.append(self._hint_box)
         self._scroll = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
         self._inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -153,6 +161,7 @@ class DiffViewer(Gtk.Box):
         self._diff: FileDiff | None = None
         self._comments: list = []
         self._hide_whitespace = False
+        self._force_show_large = False
         self.set_focusable(True)
         key = Gtk.EventControllerKey()
         key.connect("key-pressed", self._on_key)
@@ -172,6 +181,8 @@ class DiffViewer(Gtk.Box):
         tab_size: int = 4,
         comments: list | None = None,
     ) -> None:
+        if path != self._path:
+            self._force_show_large = False
         self._path = path
         self._show_checks = show_checks
         self._tab_size = max(1, tab_size)
@@ -203,7 +214,9 @@ class DiffViewer(Gtk.Box):
             self._inner.append(page)
             return
         if kind == DiffType.IMAGE and isinstance(diff, ImageDiff):
-            if self._path.lower().endswith(".dds") and not _pixbuf_from_bytes(diff.previous) and not _pixbuf_from_bytes(diff.current):
+            prev = _pixbuf_from_bytes(diff.previous)
+            curr = _pixbuf_from_bytes(diff.current)
+            if self._path.lower().endswith(".dds") and not prev and not curr:
                 self._inner.append(
                     Adw.StatusPage(
                         title="Can't preview .dds on Linux",
@@ -213,8 +226,8 @@ class DiffViewer(Gtk.Box):
                 return
             self._render_image(diff, image_mode)
             return
-        if kind in (DiffType.LARGE_TEXT, DiffType.UNRENDERABLE):
-            page = Adw.StatusPage(title="Diff too large to display")
+        if kind == DiffType.UNRENDERABLE:
+            page = Adw.StatusPage(title="The diff is too large to be displayed.")
             if self.on_open_binary and path:
                 btn = Gtk.Button(label="Open in default program")
                 btn.add_css_class("pill")
@@ -222,6 +235,37 @@ class DiffViewer(Gtk.Box):
                 page.set_child(btn)
             self._inner.append(page)
             return
+        if kind == DiffType.LARGE_TEXT and not self._force_show_large:
+            page = Adw.StatusPage(
+                title="The diff is too large to be displayed by default.",
+                description="You can try to show it anyway, but performance may be negatively impacted.",
+            )
+            actions = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            actions.set_halign(Gtk.Align.CENTER)
+            show = Gtk.Button(label="Show diff")
+            show.add_css_class("pill")
+            show.add_css_class("suggested-action")
+            show.connect("clicked", lambda *_: self._show_large_diff())
+            actions.append(show)
+            if self.on_open_binary and path:
+                open_btn = Gtk.Button(label="Open in default program")
+                open_btn.add_css_class("pill")
+                open_btn.connect("clicked", lambda *_: self.on_open_binary and self.on_open_binary(self._path))
+                actions.append(open_btn)
+            page.set_child(actions)
+            self._inner.append(page)
+            return
+        if kind == DiffType.LARGE_TEXT:
+            from ..models import LargeTextDiff
+
+            if isinstance(diff, LargeTextDiff):
+                diff = TextDiff(
+                    text=diff.text,
+                    hunks=list(diff.hunks),
+                    line_endings_change=diff.line_endings_change,
+                    max_line_number=diff.max_line_number,
+                    has_hidden_bidi_chars=diff.has_hidden_bidi_chars,
+                )
         if kind == DiffType.SUBMODULE:
             self._render_submodule(diff)
             return
@@ -229,7 +273,7 @@ class DiffViewer(Gtk.Box):
             self._inner.append(Gtk.Label(label="Unable to display this diff"))
             return
         if hide_whitespace:
-            self._hint.set_text("Selecting lines is disabled when hiding whitespace changes.")
+            self._hint.set_text("Show whitespace changes?\nSelecting lines is disabled when hiding whitespace changes.")
             self._hint_box.set_visible(True)
         if diff.has_hidden_bidi_chars or diff.line_endings_change:
             warn_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -292,6 +336,16 @@ class DiffViewer(Gtk.Box):
     def start_search(self) -> None:
         self._search_revealer.set_reveal_child(True)
         self._search_entry.grab_focus()
+
+    def _show_large_diff(self, *_args: object) -> None:
+        self._force_show_large = True
+        if self._diff is not None:
+            self.render(
+                self._diff,
+                path=self._path,
+                selection=self._selection,
+                hide_whitespace=self._hide_whitespace,
+            )
 
     def _on_show_whitespace(self, *_args: object) -> None:
         self._hide_whitespace = False
@@ -406,16 +460,31 @@ class DiffViewer(Gtk.Box):
         box.append(Gtk.Label(label=path, xalign=0))
         url = getattr(diff, "url", None)
         if url:
-            box.append(Gtk.Label(label=f"Remote: {url}", xalign=0))
+            from ..remote_parsing import parse_remote
+
+            parsed = parse_remote(url)
+            if parsed:
+                link = Gtk.LinkButton(uri=url, label=f"{parsed.owner}/{parsed.name}")
+                link.set_halign(Gtk.Align.START)
+                box.append(link)
+            else:
+                box.append(Gtk.Label(label=f"Remote: {url}", xalign=0))
         old_sha = getattr(diff, "old_sha", None)
         new_sha = getattr(diff, "new_sha", None)
-        if old_sha or new_sha:
-            box.append(
-                Gtk.Label(
-                    label=f"{(old_sha or 'none')[:7]} → {(new_sha or 'none')[:7]}",
-                    xalign=0,
-                )
-            )
+
+        def _sha_row(label: str, sha: str | None) -> None:
+            if not sha:
+                return
+            row = Gtk.Box(spacing=8)
+            row.append(Gtk.Label(label=f"{label}: {sha[:7]}", xalign=0))
+            copy = Gtk.Button(label=f"Copy the full {label.lower()} SHA")
+            copy.add_css_class("flat")
+            copy.connect("clicked", lambda *_a, value=sha: copy_text(value))
+            row.append(copy)
+            box.append(row)
+
+        _sha_row("Previous", old_sha)
+        _sha_row("New", new_sha)
         status = getattr(diff, "status", None)
         if status:
             if status.commit_changed:
@@ -840,9 +909,16 @@ def _pixbuf_from_bytes(blob: bytes | None):
         loader = GdkPixbuf.PixbufLoader()
         loader.write(blob)
         loader.close()
-        return loader.get_pixbuf()
+        pix = loader.get_pixbuf()
+        if pix is not None:
+            return pix
     except Exception:
-        return None
+        pass
+    if blob[:4] == b"DDS ":
+        from .dds import pixbuf_from_dds
+
+        return pixbuf_from_dds(blob)
+    return None
 
 
 def _texture_from_bytes(blob: bytes | None) -> Gdk.Texture | None:

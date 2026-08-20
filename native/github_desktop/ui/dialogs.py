@@ -15,7 +15,7 @@ from gi.repository import Adw, Gio, Gtk
 from ..changelog import load_release_notes
 from ..thank_you import thank_you_note
 from ..custom_integration import TARGET_PATH_ARGUMENT
-from ..editors import get_available_editors
+from ..editors import SUGGESTED_EXTERNAL_EDITOR, SUGGESTED_EXTERNAL_EDITOR_URL, get_available_editors
 from ..errors import GitError, ValidationError
 from ..git.ops import (
     add_remote,
@@ -41,6 +41,7 @@ from ..models import (
     ForkContributionTarget,
     GitHubRepository,
     PopupType,
+    PreferencesTab,
     SignInStep,
     UncommittedChangesStrategy,
     git_author_name_is_valid,
@@ -90,6 +91,42 @@ def _alert(
             on_cancel()
 
     dialog.choose(parent, None, done)
+
+
+def show_editor_failed(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    message = str(payload.get("message") or "Unable to open the selected editor.")
+    if payload.get("open_preferences"):
+        _alert(
+            parent,
+            "Unable to open external editor",
+            message,
+            confirm="Close",
+            cancel="Open options",
+            on_cancel=lambda: show_preferences(parent, store, PreferencesTab.INTEGRATIONS),
+        )
+        return
+    if payload.get("suggest_default_editor"):
+        _alert(
+            parent,
+            "Unable to open external editor",
+            message,
+            confirm="Close",
+            cancel=f"Download {SUGGESTED_EXTERNAL_EDITOR}",
+            on_cancel=lambda: open_external(SUGGESTED_EXTERNAL_EDITOR_URL),
+        )
+        return
+    _alert(parent, "Unable to open external editor", message, cancel=None)
+
+
+def show_shell_failed(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    _alert(
+        parent,
+        "Unable to open shell",
+        str(payload.get("message") or "Unable to open the selected shell."),
+        confirm="Close",
+        cancel="Open options",
+        on_cancel=lambda: show_preferences(parent, store, PreferencesTab.INTEGRATIONS),
+    )
 
 
 def _alert_with_check(
@@ -301,8 +338,8 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         PopupType.CREATE_FORK: lambda: show_create_fork(parent, store),
         PopupType.CHOOSE_FORK_SETTINGS: lambda: show_fork_settings(parent, store),
         PopupType.CHANGE_REPOSITORY_ALIAS: lambda: show_alias(parent, store),
-        PopupType.EXTERNAL_EDITOR_FAILED: lambda: _alert(parent, "Editor failed", str(payload.get("message") or ""), cancel=None),
-        PopupType.OPEN_SHELL_FAILED: lambda: _alert(parent, "Shell failed", str(payload.get("message") or ""), cancel=None),
+        PopupType.EXTERNAL_EDITOR_FAILED: lambda: show_editor_failed(parent, store, payload),
+        PopupType.OPEN_SHELL_FAILED: lambda: show_shell_failed(parent, store, payload),
         PopupType.INVALIDATED_TOKEN: lambda: _alert(
             parent,
             "Invalidated account token",
@@ -2590,7 +2627,7 @@ def show_repository_settings(parent: Gtk.Window, store: AppStore) -> None:
     dialog.present(parent)
 
 
-def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
+def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | None = None) -> None:
     dialog = Adw.PreferencesDialog()
     dialog.set_title("Preferences")
     s = store.settings
@@ -2606,7 +2643,7 @@ def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
         row.add_prefix(
             Avatar(
                 account.name or account.login,
-                account.emails[0] if account.emails else "",
+                (account.email_addresses[0] if account.email_addresses else ""),
                 login=account.login,
                 avatar_url=account.avatar_url,
                 size=28,
@@ -2907,6 +2944,14 @@ def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
 
     for page in (accounts, integrations, git_page, appearance, notes, prompts, advanced, access):
         dialog.add(page)
+    accounts.set_name(PreferencesTab.ACCOUNTS.value)
+    integrations.set_name(PreferencesTab.INTEGRATIONS.value)
+    git_page.set_name(PreferencesTab.GIT.value)
+    appearance.set_name(PreferencesTab.APPEARANCE.value)
+    notes.set_name(PreferencesTab.NOTIFICATIONS.value)
+    prompts.set_name(PreferencesTab.PROMPTS.value)
+    advanced.set_name(PreferencesTab.ADVANCED.value)
+    access.set_name(PreferencesTab.ACCESSIBILITY.value)
 
     def persist(*_a: Any) -> None:
         s.theme = ["system", "light", "dark"][theme_row.get_selected()]
@@ -2970,6 +3015,11 @@ def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
         store.emit()
 
     dialog.connect("closed", persist)
+    if tab is not None:
+        try:
+            dialog.set_visible_page_name(tab.value)
+        except Exception:
+            pass
     dialog.present(parent)
 
 
@@ -3621,25 +3671,62 @@ def show_ssh_password(parent: Gtk.Window, payload: dict[str, Any]) -> None:
 
 
 def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
-    def submit(values: dict[str, str]) -> None:
+    from .author_input import AuthorInput
+    from .spellcheck import attach_spellcheck
+
+    dialog = Adw.Dialog()
+    dialog.set_content_width(480)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(Adw.WindowTitle(title=payload.get("title") or "Commit message"))
+    toolbar.add_top_bar(header)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+    box.set_margin_top(16)
+    box.set_margin_bottom(16)
+    box.set_margin_start(16)
+    box.set_margin_end(16)
+    if payload.get("body"):
+        box.append(Gtk.Label(label=str(payload.get("body")), wrap=True, xalign=0))
+    summary = Gtk.Entry()
+    summary.set_placeholder_text("Summary (required)")
+    summary.set_text(payload.get("summary") or "")
+    summary.set_max_length(72)
+    box.append(summary)
+    description = Gtk.TextView()
+    description.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+    description.set_size_request(-1, 120)
+    description.get_buffer().set_text(payload.get("description") or "")
+    scrolled = Gtk.ScrolledWindow()
+    scrolled.set_min_content_height(120)
+    scrolled.set_child(description)
+    box.append(scrolled)
+    attach_spellcheck(summary, description, enabled=store.settings.spellcheck_enabled)
+    author_input = None
+    if payload.get("show_co_authors"):
+        author_input = AuthorInput()
+        if payload.get("co_authors"):
+            from ..models import parse_co_authors
+
+            author_input.set_authors(parse_co_authors(payload.get("co_authors") or ""))
+        box.append(author_input)
+    save = Gtk.Button(label=payload.get("button") or "Save")
+    save.add_css_class("suggested-action")
+    save.set_halign(Gtk.Align.END)
+    box.append(save)
+    toolbar.set_content(box)
+    dialog.set_child(toolbar)
+
+    def submit(*_a: Any) -> None:
+        start, end = description.get_buffer().get_bounds()
+        desc = description.get_buffer().get_text(start, end, True)
         cb = payload.get("on_submit")
         if cb:
-            cb(values.get("summary") or "", values.get("description") or "")
+            cb(summary.get_text(), desc)
+        dialog.close()
 
-    fields = [
-        ("summary", "Summary", payload.get("summary") or ""),
-        ("description", "Description", payload.get("description") or ""),
-    ]
-    if payload.get("show_co_authors"):
-        fields.append(("co_authors", "Co-authors", payload.get("co_authors") or ""))
-    _text_dialog(
-        parent,
-        payload.get("title") or "Commit message",
-        payload.get("body") or "",
-        fields,
-        submit,
-        payload.get("button") or "Save",
-    )
+    save.connect("clicked", submit)
+    summary.connect("activate", submit)
+    dialog.present(parent)
 
 
 def show_tutorial(parent: Gtk.Window, store: AppStore) -> None:

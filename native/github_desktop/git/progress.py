@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import math
+import os
+import tempfile
 import re
 from dataclasses import dataclass
 from typing import Sequence
@@ -56,6 +59,31 @@ PUSH_STEPS: tuple[ProgressStep, ...] = (
     ProgressStep("Writing objects", 0.7),
     ProgressStep("remote: Resolving deltas", 0.1),
 )
+
+CHECKOUT_STEPS: tuple[ProgressStep, ...] = (ProgressStep("Checking out files", 1.0),)
+
+REVERT_STEPS: tuple[ProgressStep, ...] = (ProgressStep("Checking out files", 1.0),)
+
+_BYTE_UNITS = ("B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB")
+
+
+def format_bytes(byte_count: int, decimals: int = 1) -> str:
+    """Desktop `formatBytes` (IEC units so LFS progress matches Git)."""
+    if byte_count == 0:
+        return f"{0:.{decimals}f} B"
+    magnitude = min(int(math.log(abs(byte_count), 1024)), len(_BYTE_UNITS) - 1)
+    value = abs(byte_count) / (1024**magnitude)
+    sign = "-" if byte_count < 0 else ""
+    return f"{sign}{value:.{decimals}f} {_BYTE_UNITS[magnitude]}"
+
+
+def create_lfs_progress_file() -> str:
+    """Desktop `createLFSProgressFile`: empty file whose path is `GIT_LFS_PROGRESS`."""
+    directory = tempfile.mkdtemp(prefix="GitHubDesktop-lfs-progress-")
+    path = os.path.join(directory, "progress")
+    with open(path, "wb"):
+        pass
+    return path
 
 _PERCENT_RE = re.compile(r"^(\d{1,3})% \((\d+)/(\d+)\)$")
 _VALUE_ONLY_RE = re.compile(r"^\d+$")
@@ -143,9 +171,9 @@ class GitLFSProgressParser:
         verb = {"download": "Downloading", "upload": "Uploading", "checkout": "Checking out"}.get(
             direction, "Downloading"
         )
+        transfer = f"{format_bytes(total_transferred, 1)} / {format_bytes(total_size, 1)}"
         text = (
-            f"{verb} {name} ({finished} out of an estimated {file_count} completed, "
-            f"{total_transferred} / {total_size})"
+            f"{verb} {name} ({finished} out of an estimated {file_count} completed, {transfer})"
         )
         info = GitProgressInfo(
             title=f'{verb} "{name}"',
@@ -155,7 +183,8 @@ class GitLFSProgressParser:
             done=False,
             text=text,
         )
-        return GitProgress(kind="progress", percent=0.0, text=text, details=info)
+        ratio = (total_transferred / total_size) if total_size else 0.0
+        return GitProgress(kind="progress", percent=ratio, text=text, details=info)
 
 
 @dataclass(frozen=True)

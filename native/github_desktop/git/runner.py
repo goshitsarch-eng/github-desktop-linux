@@ -12,11 +12,63 @@ from typing import Callable, Mapping, Sequence
 
 from ..errors import GitError, GitNotFoundError
 from ..logging import get_logger
-from .progress import GitProgress, GitProgressParser, ProgressStep
+from .progress import GitLFSProgressParser, GitProgress, GitProgressParser, ProgressStep, create_lfs_progress_file
 
 log = get_logger()
 
 ProgressCallback = Callable[[GitProgress], None]
+
+
+class _LFSProgressWatch:
+    """Tail `GIT_LFS_PROGRESS` the way Desktop's `from-process.ts` does."""
+
+    def __init__(self, path: str, callback: ProgressCallback) -> None:
+        self.path = path
+        self.callback = callback
+        self.parser = GitLFSProgressParser()
+        self.active = False
+        self._stop = threading.Event()
+        self._pos = 0
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=1.5)
+        directory = os.path.dirname(self.path)
+        try:
+            os.unlink(self.path)
+        except OSError:
+            pass
+        try:
+            os.rmdir(directory)
+        except OSError:
+            pass
+
+    def _run(self) -> None:
+        while not self._stop.wait(0.08):
+            self._drain()
+        self._drain()
+
+    def _drain(self) -> None:
+        try:
+            with open(self.path, "rb") as fh:
+                fh.seek(self._pos)
+                chunk = fh.read()
+                self._pos = fh.tell()
+        except OSError:
+            return
+        if not chunk:
+            return
+        for line in chunk.decode("utf-8", errors="replace").splitlines():
+            if not line.strip():
+                continue
+            event = self.parser.parse(line)
+            if event.kind == "progress":
+                self.active = True
+                self.callback(event)
 
 
 def find_git() -> str:
@@ -147,9 +199,22 @@ def git(
     stdin_bytes = _stdin_bytes(stdin)
     stream = progress is not None or on_stdout_line is not None or on_stderr_line is not None
     use_popen = stream or process_holder is not None or cancel_event is not None
+    lfs_watch: _LFSProgressWatch | None = None
+    if progress is not None:
+        try:
+            lfs_path = create_lfs_progress_file()
+            merged_env["GIT_LFS_PROGRESS"] = lfs_path
+            lfs_watch = _LFSProgressWatch(lfs_path, progress)
+            lfs_watch.start()
+        except OSError:
+            log.debug("unable to create GIT_LFS_PROGRESS file", exc_info=True)
+            merged_env.pop("GIT_LFS_PROGRESS", None)
+            lfs_watch = None
 
     log.debug("git %s: %s (cwd=%s)", name, " ".join(cmd[1:]), cwd)
     if cancel_event is not None and cancel_event.is_set():
+        if lfs_watch is not None:
+            lfs_watch.stop()
         raise GitError("Git command aborted", args=list(args), exit_code=-1, stderr="aborted")
     try:
         if not use_popen:
@@ -173,7 +238,20 @@ def git(
 
             def handle_stderr(line: str) -> None:
                 if progress is not None and parser is not None:
-                    progress(parser.parse(line))
+                    event = parser.parse(line)
+                    if lfs_watch is not None and lfs_watch.active:
+                        if event.kind == "context":
+                            if on_stderr_line is not None:
+                                on_stderr_line(line)
+                            return
+                        title = event.details.title if event.details else ""
+                        if title == "Filtering content":
+                            if event.details and event.details.done:
+                                lfs_watch.active = False
+                            if on_stderr_line is not None:
+                                on_stderr_line(line)
+                            return
+                    progress(event)
                 if on_stderr_line is not None:
                     on_stderr_line(line)
 
@@ -236,6 +314,9 @@ def git(
             stdout=_decode(exc.stdout or b""),
             stderr=_decode(exc.stderr or b""),
         ) from exc
+    finally:
+        if lfs_watch is not None:
+            lfs_watch.stop()
 
     result = GitResult(
         stdout=_decode(stdout_bytes) if not binary else "",

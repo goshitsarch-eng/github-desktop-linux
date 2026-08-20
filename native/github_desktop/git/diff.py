@@ -41,6 +41,11 @@ def is_buffer_too_large(data: bytes) -> bool:
     return len(data) >= MAX_REASONABLE_DIFF_SIZE
 
 
+def is_diff_too_large(diff: TextDiff) -> bool:
+    """Desktop `isDiffTooLarge`: any line longer than `MaxCharactersPerLine`."""
+    return any(len(line.text) > MAX_CHARACTERS_PER_LINE for hunk in diff.hunks for line in hunk.lines)
+
+
 def parse_unified_diff(text: str) -> TextDiff:
     lines = text.splitlines()
     hunks: list[DiffHunk] = []
@@ -123,19 +128,13 @@ def parse_unified_diff(text: str) -> TextDiff:
             line.diff_line_number = n
             n += 1
 
-    too_wide = any(
-        len(line.text) > MAX_CHARACTERS_PER_LINE for hunk in hunks for line in hunk.lines
-    )
-    diff = TextDiff(
+    return TextDiff(
         text=text,
         hunks=hunks,
         max_line_number=max_line,
         has_hidden_bidi_chars=has_bidi,
         is_binary=is_binary,
     )
-    if too_wide:
-        diff.has_hidden_bidi_chars = has_bidi
-    return diff
 
 
 def selectable_line_indices(diff: TextDiff) -> list[int]:

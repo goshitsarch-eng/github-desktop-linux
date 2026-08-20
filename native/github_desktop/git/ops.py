@@ -76,16 +76,19 @@ from .diff import (
     format_discard_patch,
     format_partial_patch,
     is_buffer_too_large,
+    is_diff_too_large,
     is_valid_buffer,
     parse_line_endings_warning,
     parse_unified_diff,
     selectable_line_indices,
 )
 from .progress import (
+    CHECKOUT_STEPS,
     CLONE_STEPS,
     FETCH_STEPS,
     PULL_STEPS,
     PUSH_STEPS,
+    REVERT_STEPS,
     GitCherryPickParser,
     GitProgress,
     GitProgressParser,
@@ -154,11 +157,27 @@ def get_status(repo_path: str, include_untracked: bool = True) -> IStatusResult 
     files: dict[str, WorkingDirectoryFileChange] = {}
     conflicted = []
     marker_counts: dict[str, int] = {}
-    if any(entry.status_code in CONFLICT_STATUS_CODES for entry in entries):
+    binary_paths: set[str] = set()
+    merge_head_found = _path_exists(repo_path, ".git/MERGE_HEAD")
+    rebase_internal_state = get_rebase_internal_state(repo_path)
+    conflicted_entries = [entry for entry in entries if entry.status_code in CONFLICT_STATUS_CODES]
+    if conflicted_entries:
         try:
             marker_counts = get_files_with_conflict_markers(repo_path)
         except GitError:
             marker_counts = {}
+        try:
+            if merge_head_found:
+                binary_ref = "MERGE_HEAD"
+            elif rebase_internal_state is not None:
+                binary_ref = "REBASE_HEAD"
+            else:
+                binary_ref = "HEAD"
+            binary_paths = set(
+                get_binary_paths(repo_path, binary_ref, [entry.path for entry in conflicted_entries])
+            )
+        except GitError:
+            binary_paths = set()
     for entry in entries:
         if should_skip_entry(entry):
             continue
@@ -168,7 +187,8 @@ def get_status(repo_path: str, include_untracked: bool = True) -> IStatusResult 
             files.pop(entry.path, None)
         status = convert_to_app_status(entry)
         if status.kind == AppFileStatusKind.CONFLICTED:
-            if entry.status_code in {"UU", "AA"} or entry.path in marker_counts:
+            both_sides = entry.status_code in {"UU", "AA"} or entry.path in marker_counts
+            if both_sides and entry.path not in binary_paths:
                 status.conflict_marker_count = marker_counts.get(entry.path, 0)
             else:
                 status.conflict_marker_count = None
@@ -193,9 +213,9 @@ def get_status(repo_path: str, include_untracked: bool = True) -> IStatusResult 
         current_tip=info["current_tip"],  # type: ignore[arg-type]
         branch_ahead_behind=ahead_behind,
         working_directory=WorkingDirectoryStatus.from_files(list(files.values())),
-        merge_head_found=_path_exists(repo_path, ".git/MERGE_HEAD"),
+        merge_head_found=merge_head_found,
         squash_msg_found=_path_exists(repo_path, ".git/SQUASH_MSG"),
-        rebase_internal_state=get_rebase_internal_state(repo_path),
+        rebase_internal_state=rebase_internal_state,
         is_cherry_picking_head_found=_path_exists(repo_path, ".git/CHERRY_PICK_HEAD"),
         do_conflicted_files_exist=bool(conflicted),
     )
@@ -511,8 +531,6 @@ def _diff_from_result(
         return _image_diff(repo, path, status, commitish)
     if status.submodule_status is not None:
         return _submodule_diff(repo, path, status.submodule_status)
-    if is_buffer_too_large(data):
-        return LargeTextDiff(text=result.stdout[:50_000])
     parsed = parse_unified_diff(result.stdout)
     if parsed.is_binary or (
         "Binary files" in result.stdout or "GIT binary patch" in result.stdout
@@ -523,6 +541,14 @@ def _diff_from_result(
     endings = parse_line_endings_warning(result.stderr)
     if endings:
         parsed.line_endings_change = endings
+    if is_buffer_too_large(data) or is_diff_too_large(parsed):
+        return LargeTextDiff(
+            text=parsed.text,
+            hunks=parsed.hunks,
+            line_endings_change=parsed.line_endings_change,
+            max_line_number=parsed.max_line_number,
+            has_hidden_bidi_chars=parsed.has_hidden_bidi_chars,
+        )
     return parsed
 
 
@@ -801,6 +827,12 @@ def format_commit_message(
 def get_trailer_separator_characters(repo: str) -> str:
     """Desktop `getTrailerSeparatorCharacters` (default ``:``)."""
     return get_config_value(repo, "trailer.separators") or ":"
+
+
+def is_co_authored_by_trailer(trailer: tuple[str, str] | str) -> bool:
+    """Desktop `isCoAuthoredByTrailer`."""
+    token = trailer[0] if isinstance(trailer, tuple) else trailer
+    return token.lower() == "co-authored-by"
 
 
 def parse_trailers(repo: str, commit_message: str) -> list[tuple[str, str]]:
@@ -1195,18 +1227,58 @@ def delete_remote_branch(repo: str, remote: str, name: str, env: dict[str, str] 
     git(["push", remote, "--delete", name], repo, env=env, name="deleteRemoteBranch")
 
 
-def checkout_branch(repo: str, name: str) -> None:
-    git(["checkout", "--", name] if False else ["checkout", name], repo, name="checkout")
+def checkout_branch(
+    repo: str,
+    name: str | Branch,
+    *,
+    progress: ProgressCb | None = None,
+    env: dict[str, str] | None = None,
+    recurse_submodules: bool = True,
+) -> None:
+    """Desktop `checkoutBranch`: remotes use `-b nameWithoutRemote` plus submodules."""
+    branch = name if isinstance(name, Branch) else None
+    args = ["checkout"]
+    kwargs: dict = {"name": "checkoutBranch", "env": env}
+    if progress:
+        args.append("--progress")
+        kwargs["progress"] = _progress_adapter(progress)
+        kwargs["progress_parser"] = GitProgressParser(CHECKOUT_STEPS)
+        target = branch.name if branch is not None else str(name)
+        progress(f"Switching to {target}", 0.0)
+    if branch is not None:
+        args.append(branch.name)
+        if branch.type == BranchType.REMOTE:
+            args.extend(["-b", branch.name_without_remote])
+    else:
+        args.append(str(name))
+    if recurse_submodules:
+        args.append("--recurse-submodules")
+    args.append("--")
+    git(args, repo, **kwargs)
 
 
-def checkout_commit(repo: str, sha: str) -> None:
-    git(["checkout", sha], repo, name="checkoutCommit")
+def checkout_commit(
+    repo: str,
+    sha: str,
+    *,
+    progress: ProgressCb | None = None,
+    env: dict[str, str] | None = None,
+) -> None:
+    args = ["checkout"]
+    kwargs: dict = {"name": "checkoutCommit", "env": env}
+    if progress:
+        args.append("--progress")
+        kwargs["progress"] = _progress_adapter(progress)
+        kwargs["progress_parser"] = GitProgressParser(CHECKOUT_STEPS)
+        progress(f"Checking out commit {sha[:7]}", 0.0)
+    args.append(sha)
+    git(args, repo, **kwargs)
 
 
 def checkout_paths(repo: str, paths: Sequence[str]) -> None:
     if not paths:
         return
-    git(["checkout", "--", *paths], repo, name="checkoutPaths")
+    git(["checkout", "HEAD", "--", *paths], repo, name="checkoutPaths")
 
 
 def get_remotes(repo: str) -> list[Remote]:
@@ -1299,10 +1371,12 @@ def fetch(
     env: dict[str, str] | None = None,
     progress: ProgressCb | None = None,
 ) -> None:
-    args = ["fetch", "--prune", remote]
+    args = ["fetch"]
+    if progress:
+        args.append("--progress")
+    args.extend(["--prune", "--recurse-submodules=on-demand", remote])
     kwargs: dict = {"env": env, "name": "fetch"}
     if progress:
-        args.insert(1, "--progress")
         kwargs["progress"] = _progress_adapter(progress)
         kwargs["progress_parser"] = GitProgressParser(FETCH_STEPS)
         progress(f"Fetching {remote}", 0.0)
@@ -1658,8 +1732,25 @@ def get_cherry_pick_snapshot(repo: str) -> dict[str, object] | None:
     }
 
 
-def revert(repo: str, sha: str) -> None:
-    git(["revert", "--no-edit", sha], repo, name="revert")
+def revert(
+    repo: str,
+    sha: str,
+    *,
+    mainline: int | None = None,
+    progress: ProgressCb | None = None,
+    env: dict[str, str] | None = None,
+) -> None:
+    """Desktop `revertCommit`: merge commits pass `-m 1`."""
+    args = ["revert"]
+    if mainline is not None:
+        args.extend(["-m", str(mainline)])
+    args.extend(["--no-edit", sha])
+    kwargs: dict = {"env": env, "name": "revert"}
+    if progress:
+        kwargs["progress"] = _progress_adapter(progress)
+        kwargs["progress_parser"] = GitProgressParser(REVERT_STEPS)
+        progress("Reverting commit", 0.0)
+    git(args, repo, **kwargs)
 
 
 def reset(repo: str, sha: str, mode: str = "mixed") -> None:

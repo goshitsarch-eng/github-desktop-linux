@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from urllib.parse import urlparse
 
-from .models import Account
+from .models import Account, AccountEmail
 
 
 def stealth_email_host_for_endpoint(endpoint: str) -> str:
@@ -27,15 +27,27 @@ def legacy_stealth_email_for_user(login: str, endpoint: str) -> str:
     return f"{login}@{stealth_email_host_for_endpoint(endpoint)}"
 
 
+def _account_emails(account: Account) -> list[AccountEmail]:
+    return [AccountEmail.coerce(item) for item in account.emails if item]
+
+
+def _is_email_public(email: AccountEmail) -> bool:
+    return email.visibility == "public" or not email.visibility
+
+
 def lookup_preferred_email(account: Account) -> str:
-    emails = [e for e in account.emails if e]
+    """Desktop `lookupPreferredEmail`: public primary, else noreply, else first."""
+    emails = [item for item in _account_emails(account) if item.email]
     if not emails:
         return stealth_email_for_user(account.id, account.login, account.endpoint)
+    primary = next((item for item in emails if item.primary), None)
+    if primary is not None and _is_email_public(primary):
+        return primary.email
     stealth_suffix = f"@{stealth_email_host_for_endpoint(account.endpoint)}"
-    for email in emails:
-        if email.lower().endswith(stealth_suffix.lower()):
-            return email
-    return emails[0]
+    for item in emails:
+        if item.email.lower().endswith(stealth_suffix.lower()):
+            return item.email
+    return emails[0].email
 
 
 def is_attributable_email_for(account: Account, email: str) -> bool:
@@ -43,7 +55,7 @@ def is_attributable_email_for(account: Account, email: str) -> bool:
     needle = (email or "").strip().lower()
     if not needle:
         return False
-    known = {e.strip().lower() for e in account.emails if e}
+    known = {item.email.strip().lower() for item in _account_emails(account) if item.email and item.verified}
     if needle in known:
         return True
     return needle in {

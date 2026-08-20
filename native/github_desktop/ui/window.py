@@ -1017,7 +1017,20 @@ class MainWindow(Adw.ApplicationWindow):
             self._description.get_buffer().set_enable_undo(True)
         except Exception:
             pass
-        self._description.get_buffer().connect("changed", lambda *_: (self._flush_commit_form(), self._update_commit_warnings()))
+        self._description.get_buffer().connect(
+            "changed",
+            lambda *_: (self._flush_commit_form(), self._update_commit_warnings(), self._update_description_completion()),
+        )
+        self._desc_complete = Gtk.Popover()
+        self._desc_complete.set_parent(self._description)
+        self._desc_complete.set_autohide(True)
+        self._desc_list = Gtk.ListBox()
+        self._desc_list.connect("row-activated", self._on_description_complete)
+        desc_scroll = Gtk.ScrolledWindow()
+        desc_scroll.set_min_content_height(80)
+        desc_scroll.set_min_content_width(220)
+        desc_scroll.set_child(self._desc_list)
+        self._desc_complete.set_child(desc_scroll)
         co = Gtk.CheckButton(label="Co-authors")
         co.connect("toggled", self._on_coauthors)
         self._coauthor_check = co
@@ -2684,6 +2697,77 @@ class MainWindow(Adw.ApplicationWindow):
             for short in matching_shortcodes(token):
                 self._issue_store.append([short])
 
+    def _description_token(self) -> str:
+        if not hasattr(self, "_description"):
+            return ""
+        buf = self._description.get_buffer()
+        insert = buf.get_iter_at_mark(buf.get_insert())
+        start = insert.copy()
+        start.set_line_offset(0)
+        prefix = buf.get_text(start, insert, True)
+        if not prefix:
+            return ""
+        for index in range(len(prefix) - 1, -1, -1):
+            if prefix[index] in " \t":
+                return prefix[index + 1 :]
+        return prefix
+
+    def _update_description_completion(self) -> None:
+        if getattr(self, "_applying_commit_form", False):
+            return
+        if not hasattr(self, "_desc_list") or not hasattr(self, "_desc_complete"):
+            return
+        repo = self.store.selected_repository
+        state = self.store.state_for(repo) if repo else None
+        token = self._description_token()
+        while (child := self._desc_list.get_first_child()) is not None:
+            self._desc_list.remove(child)
+        if state is None or len(token) < 1 or token[0] not in "#@:":
+            self._desc_complete.popdown()
+            return
+        matches: list[str] = []
+        if token.startswith("#"):
+            needle = token[1:].lower()
+            for number, title in state.issues:
+                hay = f"#{number} {title}"
+                if not needle or needle in str(number) or needle in title.lower():
+                    matches.append(hay)
+        elif token.startswith("@"):
+            needle = token[1:].lower()
+            for login in state.mentions:
+                if not needle or login.lower().startswith(needle):
+                    matches.append(f"@{login}")
+        elif token.startswith(":"):
+            matches.extend(matching_shortcodes(token))
+        if not matches:
+            self._desc_complete.popdown()
+            return
+        for item in matches[:12]:
+            self._desc_list.append(Gtk.Label(label=item, xalign=0))
+        self._desc_complete.popup()
+
+    def _on_description_complete(self, _list: Gtk.ListBox, row: Gtk.ListBoxRow) -> None:
+        child = row.get_child()
+        text = child.get_text() if isinstance(child, Gtk.Label) else ""
+        if not text:
+            return
+        token = text.split()[0]
+        buf = self._description.get_buffer()
+        insert = buf.get_iter_at_mark(buf.get_insert())
+        start = insert.copy()
+        start.set_line_offset(0)
+        prefix = buf.get_text(start, insert, True)
+        cut = 0
+        for index in range(len(prefix) - 1, -1, -1):
+            if prefix[index] in " \t":
+                cut = index + 1
+                break
+        replace = insert.copy()
+        replace.set_line_offset(cut)
+        buf.delete(replace, insert)
+        buf.insert(replace, token + " ")
+        self._desc_complete.popdown()
+
     def _refresh_compare_list(self, state=None) -> None:
         if not hasattr(self, "_compare_list"):
             return
@@ -2877,7 +2961,7 @@ class MainWindow(Adw.ApplicationWindow):
             )
             warn.add_css_class("warning")
             self._author_popover_box.append(warn)
-        emails = list(account.emails) if account else []
+        emails = list(account.email_addresses) if account else []
         if account:
             preferred = lookup_preferred_email(account)
             if preferred not in emails:
