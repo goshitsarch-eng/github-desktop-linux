@@ -76,6 +76,50 @@ def _alert(
     dialog.choose(parent, None, done)
 
 
+def _alert_with_check(
+    parent: Gtk.Window,
+    heading: str,
+    body: str,
+    *,
+    confirm: str = "OK",
+    cancel: str | None = "Cancel",
+    destructive: bool = False,
+    check_label: str = "Do not show this message again",
+    extra_responses: list[tuple[str, str]] | None = None,
+    on_confirm: Callable[[bool], None] | None = None,
+    on_extra: Callable[[str], None] | None = None,
+) -> None:
+    dialog = Adw.AlertDialog(heading=heading, body=body)
+    if cancel:
+        dialog.add_response("cancel", cancel)
+    for key, label in extra_responses or []:
+        dialog.add_response(key, label)
+    dialog.add_response("ok", confirm)
+    if destructive:
+        dialog.set_response_appearance("ok", Adw.ResponseAppearance.DESTRUCTIVE)
+    else:
+        dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+    dialog.set_default_response("ok")
+    dialog.set_close_response(cancel and "cancel" or "ok")
+    check = Gtk.CheckButton(label=check_label)
+    try:
+        dialog.set_extra_child(check)
+    except Exception:
+        pass
+
+    def done(d, result) -> None:
+        try:
+            response = d.choose_finish(result)
+        except Exception:
+            return
+        if response == "ok" and on_confirm:
+            on_confirm(check.get_active())
+        elif response not in {"ok", "cancel", ""} and on_extra:
+            on_extra(response)
+
+    dialog.choose(parent, None, done)
+
+
 def _text_dialog(
     parent: Gtk.Window,
     heading: str,
@@ -174,19 +218,13 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
             confirm="Checkout",
             on_confirm=lambda: repo and payload.get("sha") and store.checkout.__wrapped__ if False else _checkout_sha(store, payload),
         ),
-        PopupType.WARN_LOCAL_CHANGES_BEFORE_UNDO: lambda: _alert(
-            parent,
-            "Undo commit?",
-            "You have local changes. Undoing the commit keeps them in the working directory.",
-            confirm="Undo",
-            on_confirm=lambda: repo and _undo(store),
-        ),
+        PopupType.WARN_LOCAL_CHANGES_BEFORE_UNDO: lambda: show_warn_undo(parent, store, payload),
         PopupType.WARNING_BEFORE_RESET: lambda: _alert(
             parent,
-            "Reset to this commit?",
-            "Commits after this point will be removed from the current branch.",
+            "Reset to commit?",
+            "You have changes in progress. Resetting to a previous commit might result in some of these changes being lost. Do you want to continue anyway?",
+            confirm="Continue",
             destructive=True,
-            confirm="Reset",
             on_confirm=lambda: _reset(store, payload),
         ),
         PopupType.START_PULL_REQUEST: lambda: show_start_pr(parent, store),
@@ -198,9 +236,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         ),
         PopupType.CLI_INSTALLED: lambda: _alert(parent, "CLI installed", "The github command is available.", cancel=None),
         PopupType.INITIALIZE_LFS: lambda: show_lfs(parent, store),
-        PopupType.LFS_ATTRIBUTE_MISMATCH: lambda: _alert(
-            parent, "LFS attributes mismatch", "The repository's Git LFS attributes don't match the global settings.", cancel=None
-        ),
+        PopupType.LFS_ATTRIBUTE_MISMATCH: lambda: show_lfs_mismatch(parent, store),
         PopupType.OVERSIZED_FILES: lambda: _alert(
             parent,
             "Files too large",
@@ -246,13 +282,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         ),
         PopupType.SSH_KEY_PASSPHRASE: lambda: show_ssh_passphrase(parent, payload),
         PopupType.SSH_USER_PASSWORD: lambda: show_ssh_password(parent, payload),
-        PopupType.CONFIRM_COMMIT_FILTERED_CHANGES: lambda: _alert(
-            parent,
-            "Hidden changes",
-            "Some files are hidden by the changes filter. Commit anyway?",
-            confirm="Commit anyway",
-            on_confirm=lambda: payload.get("on_commit") and payload["on_commit"](),
-        ),
+        PopupType.CONFIRM_COMMIT_FILTERED_CHANGES: lambda: show_filtered_commit(parent, store, payload),
         PopupType.GENERATE_COMMIT_MESSAGE_DISCLAIMER: lambda: show_copilot_disclaimer(parent, store),
         PopupType.GENERATE_COMMIT_MESSAGE_OVERRIDE: lambda: _alert(
             parent,
@@ -261,13 +291,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
             confirm="Replace",
             on_confirm=lambda: _generate(store),
         ),
-        PopupType.UNKNOWN_AUTHORS: lambda: _alert(
-            parent,
-            "Unknown authors",
-            "Some co-authors could not be matched to GitHub users.",
-            confirm="Commit anyway",
-            on_confirm=lambda: payload.get("on_commit") and payload["on_commit"](),
-        ),
+        PopupType.UNKNOWN_AUTHORS: lambda: show_unknown_authors(parent, payload),
         PopupType.MULTI_COMMIT_OPERATION: lambda: show_multi_commit(parent, store, payload),
         PopupType.UNREACHABLE_COMMITS: lambda: show_unreachable_commits(parent, store, payload),
         PopupType.RELEASE_NOTES: lambda: show_release_notes(parent),
@@ -379,24 +403,158 @@ def show_copilot_disclaimer(parent: Gtk.Window, store: AppStore) -> None:
         except Exception:
             return
         if response == "ok":
+            store.mark_copilot_disclaimer_seen()
             _generate(store)
 
     dialog.choose(parent, None, done)
 
 
-def _undo(store: AppStore) -> None:
+MERGE_UNDO_WARNING = (
+    "Undoing a merge commit will apply the changes from the merge into your working "
+    "directory, and committing again will create an entirely new commit. This means "
+    "you will lose the merge commit and, as a result, commits from the merged branch "
+    "could disappear from this branch."
+)
+
+
+def show_warn_undo(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    commit = payload.get("commit")
+    clean = bool(payload.get("is_working_directory_clean", True))
+    merge = bool(commit is not None and getattr(commit, "is_merge_commit", False))
+    if merge and clean:
+        body = f"{MERGE_UNDO_WARNING}\n\nDo you want to continue anyway?"
+        _alert(
+            parent,
+            "Undo commit?",
+            body,
+            confirm="Continue",
+            destructive=True,
+            on_confirm=lambda: _undo(store, confirmed=True),
+        )
+        return
+    if merge:
+        body = (
+            "You have changes in progress. Undoing the merge commit might result in some "
+            f"of these changes being lost.\n\n{MERGE_UNDO_WARNING}\n\nDo you want to continue anyway?"
+        )
+        _alert(
+            parent,
+            "Undo commit?",
+            body,
+            confirm="Continue",
+            destructive=True,
+            on_confirm=lambda: _undo(store, confirmed=True),
+        )
+        return
+    _alert_with_check(
+        parent,
+        "Undo commit?",
+        "You have changes in progress. Undoing the commit might result in some of these changes being lost. Do you want to continue anyway?",
+        confirm="Continue",
+        destructive=True,
+        on_confirm=lambda dont_show: _undo(store, confirmed=True, persist_skip=dont_show),
+    )
+
+
+def show_unknown_authors(parent: Gtk.Window, payload: dict[str, Any]) -> None:
+    authors = list(payload.get("authors") or [])
+    if len(authors) > 10:
+        body = (
+            f"{len(authors)} users weren't found and won't be added as co-authors of this commit. "
+            "Are you sure you want to commit?"
+        )
+    else:
+        names = "\n".join(
+            f"• {getattr(a, 'username', None) or getattr(a, 'name', '') or str(a)}" for a in authors
+        )
+        body = (
+            "These users weren't found and won't be added as co-authors of this commit. "
+            "Are you sure you want to commit?"
+        )
+        if names.strip():
+            body = f"{body}\n\n{names}"
+    _alert(
+        parent,
+        "Unknown co-authors",
+        body,
+        confirm="Commit anyway",
+        destructive=True,
+        on_confirm=lambda: payload.get("on_commit") and payload["on_commit"](),
+    )
+
+
+def show_filtered_commit(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    def commit_anyway(dont_show: bool) -> None:
+        if dont_show:
+            store.settings.confirm_commit_filtered_changes = False
+            store.persist_settings()
+        cb = payload.get("on_commit")
+        if cb:
+            cb()
+
+    def show_hidden(_response: str) -> None:
+        repo = store.selected_repository
+        if repo:
+            store.clear_changes_filter(repo)
+
+    _alert_with_check(
+        parent,
+        "Commit filtered changes?",
+        "You have a filter applied. There are hidden changes that will be committed. Are you sure you want to commit these changes?",
+        confirm="Commit anyway",
+        destructive=True,
+        extra_responses=[("show", "Show hidden changes")],
+        on_confirm=commit_anyway,
+        on_extra=show_hidden,
+    )
+
+
+def show_lfs_mismatch(parent: Gtk.Window, store: AppStore) -> None:
+    dialog = Adw.AlertDialog(
+        heading="Update existing Git LFS filters?",
+        body=(
+            "Git LFS filters are already configured in your global git config but are not "
+            "the values it expects. Would you like to update them now?"
+        ),
+    )
+    dialog.add_response("cancel", "Not now")
+    dialog.add_response("edit", "Open git config")
+    dialog.add_response("ok", "Update existing filters")
+    dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+    dialog.set_default_response("ok")
+
+    def done(d, result) -> None:
+        try:
+            response = d.choose_finish(result)
+        except Exception:
+            return
+        if response == "edit":
+            store.edit_global_git_config()
+        elif response == "ok":
+            from ..git.ops import install_global_lfs_filters
+
+            install_global_lfs_filters(force=True)
+
+    dialog.choose(parent, None, done)
+
+
+def _undo(store: AppStore, *, confirmed: bool = False, persist_skip: bool = False) -> None:
     repo = store.selected_repository
     if not repo:
         return
-    from ..git.ops import undo_commit
-
-    undo_commit(repo.path)
-    store.refresh_repository(repo)
+    if persist_skip:
+        store.settings.confirm_undo_commit = False
+        store.persist_settings()
+    store.undo_last_commit(repo, show_confirmation=not confirmed)
 
 
 def _reset(store: AppStore, payload: dict[str, Any]) -> None:
     repo = store.selected_repository
+    commit = payload.get("commit")
     sha = payload.get("sha")
+    if repo and commit is not None:
+        store.reset_to_commit(repo, commit, show_confirmation=False)
+        return
     if repo and sha:
         from ..git.ops import reset
 
@@ -1099,13 +1257,15 @@ def show_publish(parent: Gtk.Window, store: AppStore) -> None:
             account,
         )
 
+    from ..git.ops import read_description
+
     _text_dialog(
         parent,
         "Publish repository",
         f"Signed in as {account.login}",
         [
             ("name", "Name", repo.name),
-            ("description", "Description", ""),
+            ("description", "Description", read_description(repo.path)),
             ("visibility", "Visibility (private/public)", "private"),
             ("org", "Organization (optional)", ""),
         ],
@@ -1278,6 +1438,9 @@ def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
     git_group.add(name_row)
     git_group.add(email_row)
     git_group.add(branch_row)
+    edit_cfg = Gtk.Button(label="Edit global Git config")
+    edit_cfg.connect("clicked", lambda *_: (store.edit_global_git_config(), dialog.close()))
+    git_group.add(edit_cfg)
     git_page.add(git_group)
 
     appearance = Adw.PreferencesPage(title="Appearance", icon_name="applications-graphics-symbolic")
@@ -1658,9 +1821,18 @@ def show_lfs(parent: Gtk.Window, store: AppStore) -> None:
 
     def confirm(*_a: Any) -> None:
         items = [p for p in patterns.get_text().split() if p]
+        from ..errors import GitError
         from ..git.ops import install_global_lfs_filters, lfs_track
 
-        install_global_lfs_filters()
+        try:
+            install_global_lfs_filters()
+        except GitError as exc:
+            if exc.is_lfs_attribute_mismatch:
+                dialog.close()
+                store.show_popup(PopupType.LFS_ATTRIBUTE_MISMATCH)
+                return
+            store.show_popup(PopupType.ERROR, error=str(exc))
+            return
         lfs_track(repo.path, items or ["*"])
         dialog.close()
         store.refresh_repository(repo)

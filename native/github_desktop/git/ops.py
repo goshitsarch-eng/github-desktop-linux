@@ -62,6 +62,14 @@ from .diff import (
     parse_unified_diff,
     selectable_line_indices,
 )
+from .progress import (
+    CLONE_STEPS,
+    FETCH_STEPS,
+    PULL_STEPS,
+    PUSH_STEPS,
+    GitProgress,
+    GitProgressParser,
+)
 from .runner import GitResult, env_for_remote, git, git_path_is_repository, resolve_repository_root
 from .status import (
     CONFLICT_STATUS_CODES,
@@ -76,6 +84,14 @@ from .status import (
 log = get_logger()
 
 ProgressCb = Callable[[str, float], None]
+
+
+def _progress_adapter(cb: ProgressCb) -> Callable[[GitProgress], None]:
+    def on_event(event: GitProgress) -> None:
+        text = event.details.text if event.details else event.text
+        cb(text, event.percent)
+
+    return on_event
 
 
 def get_status(repo_path: str, include_untracked: bool = True) -> IStatusResult | None:
@@ -485,16 +501,81 @@ def format_commit_message(
     summary: str,
     description: str = "",
     trailers: Sequence[tuple[str, str]] = (),
+    *,
+    repo: str | None = None,
 ) -> str:
     parts = [summary.strip()]
     if description.strip():
         parts.append("")
         parts.append(description.strip())
+    message = "\n".join(parts) + "\n"
     if trailers:
-        parts.append("")
-        for token, value in trailers:
-            parts.append(f"{token}: {value}")
-    return "\n".join(parts) + "\n"
+        if repo:
+            try:
+                return merge_trailers(repo, message, trailers)
+            except GitError:
+                pass
+        if not message.endswith("\n"):
+            message += "\n"
+        if not message.endswith("\n\n"):
+            message += "\n"
+        extra = "\n".join(f"{token}: {value}" for token, value in trailers)
+        message = message.rstrip("\n") + "\n\n" + extra + "\n"
+    return message if message.endswith("\n") else message + "\n"
+
+
+def parse_trailers(repo: str, commit_message: str) -> list[tuple[str, str]]:
+    result = git(
+        ["interpret-trailers", "--parse"],
+        repo,
+        stdin=commit_message,
+        name="parseTrailers",
+    )
+    separators = get_config_value(repo, "trailer.separators") or ":"
+    return parse_raw_unfolded_trailers(result.stdout, separators)
+
+
+def parse_raw_unfolded_trailers(text: str, separators: str = ":") -> list[tuple[str, str]]:
+    parsed: list[tuple[str, str]] = []
+    for line in text.splitlines():
+        trailer = parse_single_unfolded_trailer(line, separators)
+        if trailer:
+            parsed.append(trailer)
+    return parsed
+
+
+def parse_single_unfolded_trailer(line: str, separators: str = ":") -> tuple[str, str] | None:
+    for separator in separators:
+        idx = line.find(separator)
+        if idx > 0:
+            return line[:idx].strip(), line[idx + 1 :].strip()
+    return None
+
+
+def merge_trailers(
+    repo: str,
+    commit_message: str,
+    trailers: Sequence[tuple[str, str]] = (),
+    *,
+    unfold: bool = False,
+) -> str:
+    args = ["interpret-trailers", "--no-divider"]
+    if unfold:
+        args.append("--unfold")
+    for token, value in trailers:
+        args += ["--trailer", f"{token}={value}"]
+    result = git(args, repo, stdin=commit_message, name="mergeTrailers")
+    return result.stdout
+
+
+def format_patch(repo: str, base: str, head: str) -> str:
+    range_spec = f"{base}..{head}"
+    result = git(
+        ["format-patch", "--unified=1", "--minimal", "--stdout", range_spec],
+        repo,
+        name="formatPatch",
+    )
+    return result.stdout
 
 
 def co_author_trailers(authors: Sequence[Author]) -> list[tuple[str, str]]:
@@ -860,7 +941,12 @@ def clone_repository(
         merged.update(env)
     parent = os.path.dirname(os.path.abspath(path)) or "."
     os.makedirs(parent, exist_ok=True)
-    git(args, parent, env=merged, name="clone")
+    kwargs: dict = {"env": merged, "name": "clone"}
+    if progress:
+        kwargs["progress"] = _progress_adapter(progress)
+        kwargs["progress_parser"] = GitProgressParser(CLONE_STEPS)
+        progress(f"Cloning into {path}", 0.0)
+    git(args, parent, **kwargs)
 
 
 def fetch(
@@ -868,8 +954,16 @@ def fetch(
     remote: str = "origin",
     *,
     env: dict[str, str] | None = None,
+    progress: ProgressCb | None = None,
 ) -> None:
-    git(["fetch", "--prune", remote], repo, env=env, name="fetch")
+    args = ["fetch", "--prune", remote]
+    kwargs: dict = {"env": env, "name": "fetch"}
+    if progress:
+        args.insert(1, "--progress")
+        kwargs["progress"] = _progress_adapter(progress)
+        kwargs["progress_parser"] = GitProgressParser(FETCH_STEPS)
+        progress(f"Fetching {remote}", 0.0)
+    git(args, repo, **kwargs)
 
 
 def pull(
@@ -878,11 +972,18 @@ def pull(
     branch: str | None = None,
     *,
     env: dict[str, str] | None = None,
+    progress: ProgressCb | None = None,
 ) -> None:
     args = ["pull", "--ff", "--no-rebase", remote]
     if branch:
         args.append(branch)
-    git(args, repo, env=env, name="pull")
+    kwargs: dict = {"env": env, "name": "pull"}
+    if progress:
+        args.insert(1, "--progress")
+        kwargs["progress"] = _progress_adapter(progress)
+        kwargs["progress_parser"] = GitProgressParser(PULL_STEPS)
+        progress(f"Pulling {remote}", 0.0)
+    git(args, repo, **kwargs)
 
 
 def push(
@@ -895,6 +996,7 @@ def push(
     force_with_lease: bool = False,
     set_upstream: bool = False,
     env: dict[str, str] | None = None,
+    progress: ProgressCb | None = None,
 ) -> None:
     refspec = f"{local_branch}:{remote_branch}" if remote_branch else local_branch
     args = ["push", remote, refspec]
@@ -904,7 +1006,13 @@ def push(
         args.append("--set-upstream")
     if force_with_lease:
         args.append("--force-with-lease")
-    git(args, repo, env=env, name="push")
+    kwargs: dict = {"env": env, "name": "push"}
+    if progress:
+        args.append("--progress")
+        kwargs["progress"] = _progress_adapter(progress)
+        kwargs["progress_parser"] = GitProgressParser(PUSH_STEPS)
+        progress(f"Pushing to {remote}", 0.0)
+    git(args, repo, **kwargs)
 
 
 def merge(
@@ -1220,14 +1328,49 @@ def install_global_lfs_filters(force: bool = False) -> None:
     args = ["lfs", "install", "--skip-repo"]
     if force:
         args.append("--force")
-    git(args, os.path.expanduser("~"), success_exit_codes={0, 1, 128}, name="installGlobalLFSFilter")
+    try:
+        git(args, os.path.expanduser("~"), name="installGlobalLFSFilter")
+    except GitError as exc:
+        if _lfs_missing(exc):
+            return
+        raise
 
 
 def install_lfs_hooks(repo: str, force: bool = False) -> None:
     args = ["lfs", "install"]
     if force:
         args.append("--force")
-    git(args, repo, success_exit_codes={0, 1, 128}, name="installLFSHooks")
+    try:
+        git(args, repo, name="installLFSHooks")
+    except GitError as exc:
+        if _lfs_missing(exc):
+            return
+        raise
+
+
+def _lfs_missing(exc: GitError) -> bool:
+    text = f"{exc.stderr}\n{exc.stdout}\n{exc}".lower()
+    return "is not a git command" in text or ("git-lfs" in text and "not found" in text)
+
+
+def is_using_lfs(repo: str) -> bool:
+    result = git(
+        ["lfs", "track"],
+        repo,
+        env={"GIT_LFS_TRACK_NO_INSTALL_HOOKS": "1"},
+        success_exit_codes={0, 1, 128},
+        name="isUsingLFS",
+    )
+    return bool(result.stdout.strip())
+
+
+def is_tracked_by_lfs(repo: str, path: str) -> bool:
+    result = git(["check-attr", "filter", "--", path], repo, name="checkAttrForLFS")
+    return bool(re.search(r": filter: lfs\b", result.stdout))
+
+
+def files_not_tracked_by_lfs(repo: str, paths: Sequence[str]) -> list[str]:
+    return [path for path in paths if not is_tracked_by_lfs(repo, path)]
 
 
 def is_lfs_repo(repo: str) -> bool:
@@ -1462,9 +1605,33 @@ def set_default_branch(name: str) -> None:
 
 
 def get_author_identity(repo: str | None = None) -> tuple[str | None, str | None]:
+    if repo:
+        try:
+            result = git(
+                ["var", "GIT_AUTHOR_IDENT"],
+                repo,
+                success_exit_codes={0, 128},
+                name="getAuthorIdentity",
+            )
+            if result.exit_code == 0 and result.stdout.strip():
+                ident = CommitIdentity.parse_raw(result.stdout.strip())
+                if ident.name:
+                    return ident.name, ident.email
+        except GitError:
+            pass
     name = get_config_value(repo, "user.name")
     email = get_config_value(repo, "user.email")
     return name, email
+
+
+def get_global_config_path() -> str:
+    result = git(
+        ["config", "--edit", "--global"],
+        os.path.expanduser("~"),
+        env={"GIT_EDITOR": "printf %s"},
+        name="getGlobalConfigPath",
+    )
+    return os.path.normpath(result.stdout.strip() or os.path.expanduser("~/.gitconfig"))
 
 
 def write_description(repo: str, description: str) -> None:

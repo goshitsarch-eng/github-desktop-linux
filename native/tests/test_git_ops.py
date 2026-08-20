@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from github_desktop.git.ops import (
     checkout_branch,
     clone_repository,
@@ -188,3 +190,46 @@ def test_revert_creates_new_commit(git_repo: Path) -> None:
     revert(str(git_repo), sha)
     assert not (git_repo / "z.txt").exists()
     assert get_commits(str(git_repo), limit=1)[0].summary.lower().startswith("revert")
+
+
+def test_clone_reports_initial_progress(git_repo: Path, tmp_path: Path) -> None:
+    dest = tmp_path / "clone-progress"
+    seen: list[tuple[str, float]] = []
+    clone_repository(str(git_repo), str(dest), progress=lambda text, value: seen.append((text, value)))
+    assert dest.is_dir()
+    assert seen
+    assert seen[0][1] == 0.0
+
+
+def test_format_patch_and_trailers(git_repo: Path) -> None:
+    from github_desktop.git.ops import format_patch, merge_trailers, parse_trailers, read_description, write_description
+
+    (git_repo / "p.txt").write_text("p\n", encoding="utf-8")
+    run_git(git_repo, "add", "p.txt")
+    run_git(git_repo, "commit", "-m", "add p")
+    commits = get_commits(str(git_repo), limit=2)
+    patch = format_patch(str(git_repo), commits[1].sha, commits[0].sha)
+    assert "add p" in patch or "p.txt" in patch
+    merged = merge_trailers(str(git_repo), "summary\n\nbody\n", [("Co-authored-by", "Ada <ada@example.com>")])
+    assert "Co-authored-by" in merged
+    parsed = parse_trailers(str(git_repo), merged)
+    assert any(token.lower() == "co-authored-by" for token, _value in parsed)
+    write_description(str(git_repo), "A test repository")
+    assert read_description(str(git_repo)) == "A test repository"
+
+
+def test_is_tracked_by_lfs_unspecified(git_repo: Path) -> None:
+    from github_desktop.git.ops import get_global_config_path, is_tracked_by_lfs
+
+    assert is_tracked_by_lfs(str(git_repo), "README.md") is False
+
+
+def test_get_global_config_path_creates_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from github_desktop.git.ops import get_global_config_path
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    path = get_global_config_path()
+    assert "gitconfig" in path.lower()
+

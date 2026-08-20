@@ -79,6 +79,11 @@ class GitError(DesktopError):
         return "workflow" in text and "scope" in text
 
     @property
+    def is_lfs_attribute_mismatch(self) -> bool:
+        text = f"{self.stderr}\n{self.stdout}".lower()
+        return "filter.lfs" in text and "match" in text
+
+    @property
     def is_force_needed(self) -> bool:
         text = f"{self.stderr}\n{self.stdout}".lower()
         return "non-fast-forward" in text or "failed to push some refs" in text

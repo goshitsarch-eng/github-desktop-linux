@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -53,6 +54,7 @@ from .git import (
     get_boolean_config_value,
     get_config_value,
     get_default_branch,
+    get_global_config_path,
     get_remotes,
     get_repository_kind,
     get_stashes,
@@ -233,6 +235,11 @@ class AppStore:
         self.cloning: list[CloningRepository] = []
         self.repo_state: dict[int, RepositoryViewState] = {}
         self.tutorial_step = TutorialStep.NOT_APPLICABLE
+        self.progress_kind: str | None = None
+        self.progress_title: str = ""
+        self.progress_value: float = 0.0
+        self._progress_only_emit: bool = False
+        self._last_progress_emit: float = 0.0
         self._seen_notifications: set[str] = set()
         self._listeners: list[Listener] = []
         self._lock = threading.RLock()
@@ -378,6 +385,54 @@ class AppStore:
                 listener()
             except Exception:
                 log.exception("listener failed")
+
+    def _set_network_progress(self, kind: str | None, title: str = "", value: float = 0.0) -> None:
+        self.progress_kind = kind
+        self.progress_title = title
+        self.progress_value = value
+        if kind is None:
+            self._progress_only_emit = False
+            return
+        now = time.monotonic()
+        if now - self._last_progress_emit < 0.12:
+            self.progress_kind = kind
+            return
+        self._last_progress_emit = now
+        self._progress_only_emit = True
+
+        def tick() -> bool:
+            self.emit()
+            return False
+
+        try:
+            from gi.repository import Gio, GLib
+
+            if Gio.Application.get_default() is not None:
+                GLib.idle_add(tick)
+                return
+        except Exception:
+            pass
+        self.emit()
+
+    def _clear_network_progress(self) -> None:
+        self.progress_kind = None
+        self.progress_title = ""
+        self.progress_value = 0.0
+        self._progress_only_emit = False
+
+    def _network_progress_cb(self, kind: str, title: str) -> Callable[[str, float], None]:
+        def cb(text: str, percent: float) -> None:
+            self._set_network_progress(kind, text or title, percent)
+
+        return cb
+
+    def _clone_progress_cb(self, cloning: CloningRepository) -> Callable[[str, float], None]:
+        def cb(text: str, percent: float) -> None:
+            cloning.progress = percent
+            cloning.description = text
+            self._set_network_progress("clone", text, percent)
+
+        return cb
 
     def persist_settings(self) -> None:
         self.settings.selected_repository_id = self.selected_repository_id
@@ -547,12 +602,17 @@ class AppStore:
         env = env_for_remote(url, token=account.token) if account else None
 
         def work() -> None:
-            try:
-                clone_repository(url, dest, default_branch=get_default_branch(), env=env)
-            finally:
-                self.cloning = [c for c in self.cloning if c.id != clone_id]
+            clone_repository(
+                url,
+                dest,
+                default_branch=get_default_branch(),
+                env=env,
+                progress=self._clone_progress_cb(cloning),
+            )
 
         def done(exc: BaseException | None) -> None:
+            self._clear_network_progress()
+            self.cloning = [c for c in self.cloning if c.id != clone_id]
             if exc:
                 self.show_popup(PopupType.ERROR, error=str(exc))
             else:
@@ -596,12 +656,18 @@ class AppStore:
             env = env_for_remote(url, token=account.token)
 
         def work() -> None:
-            try:
-                clone_repository(url, path, branch=branch, default_branch=get_default_branch(), env=env)
-            finally:
-                self.cloning = [c for c in self.cloning if c.id != clone_id]
+            clone_repository(
+                url,
+                path,
+                branch=branch,
+                default_branch=get_default_branch(),
+                env=env,
+                progress=self._clone_progress_cb(cloning),
+            )
 
         def done(exc: BaseException | None) -> None:
+            self._clear_network_progress()
+            self.cloning = [c for c in self.cloning if c.id != clone_id]
             if exc:
                 self.show_popup(PopupType.ERROR, error=str(exc))
             else:
@@ -1040,6 +1106,7 @@ class AppStore:
             if unknown:
                 self.show_popup(
                     PopupType.UNKNOWN_AUTHORS,
+                    authors=unknown,
                     on_commit=lambda: self._commit_now(repo, summary, description, amend=amend, co_authors=resolved),
                 )
                 return
@@ -1101,7 +1168,7 @@ class AppStore:
             self.show_popup(PopupType.COMMIT_CONFLICTS_WARNING)
             return
         trailers = co_author_trailers(co_authors)
-        message = format_commit_message(summary, description, trailers)
+        message = format_commit_message(summary, description, trailers, repo=repo.path)
 
         def work() -> None:
             create_commit(repo.path, message, files, amend=amend)
@@ -1548,9 +1615,70 @@ class AppStore:
         revert(repo.path, commit.sha)
         self.refresh_repository(repo)
 
-    def reset_to_commit(self, repo: Repository, commit: Commit) -> None:
+    def reset_to_commit(self, repo: Repository, commit: Commit, *, show_confirmation: bool = True) -> None:
+        state = self.state_for(repo)
+        dirty = bool(state.status and state.status.working_directory.files)
+        if show_confirmation and dirty:
+            self.show_popup(PopupType.WARNING_BEFORE_RESET, commit=commit, sha=commit.sha)
+            return
+        self.set_section(RepositorySectionTab.CHANGES)
         reset(repo.path, commit.sha, "mixed")
         self.refresh_repository(repo)
+
+    def undo_last_commit(self, repo: Repository, *, show_confirmation: bool = True) -> None:
+        state = self.state_for(repo)
+        commit = state.commits[0] if state.commits else None
+        if commit is None:
+            return
+        dirty = bool(state.status and state.status.working_directory.files)
+        if show_confirmation and ((self.settings.confirm_undo_commit and dirty) or commit.is_merge_commit):
+            self.show_popup(
+                PopupType.WARN_LOCAL_CHANGES_BEFORE_UNDO,
+                commit=commit,
+                is_working_directory_clean=not dirty,
+            )
+            return
+        self.set_section(RepositorySectionTab.CHANGES)
+        undo_commit(repo.path)
+        self.refresh_repository(repo)
+
+    def clear_changes_filter(self, repo: Repository) -> None:
+        state = self.state_for(repo)
+        state.file_filter = ChangesListFilter.ALL.value
+        state.filter_text = ""
+        state.filter_new = False
+        state.filter_modified = False
+        state.filter_deleted = False
+        self.emit()
+
+    def should_show_copilot_disclaimer(self) -> bool:
+        seen = self.settings.commit_message_generation_disclaimer_last_seen
+        if not seen:
+            return True
+        thirty_days_ms = 30 * 24 * 60 * 60 * 1000
+        return (time.time() * 1000) - seen > thirty_days_ms
+
+    def mark_copilot_disclaimer_seen(self) -> None:
+        self.settings.commit_message_generation_disclaimer_last_seen = int(time.time() * 1000)
+        self.persist_settings()
+
+    def edit_global_git_config(self) -> None:
+        try:
+            path = get_global_config_path()
+        except GitError as exc:
+            self.show_popup(PopupType.ERROR, error=str(exc))
+            return
+        repo = self.selected_repository
+        if repo:
+            self.open_in_editor(repo, path)
+            return
+        from .editors import find_editor, open_in_editor as launch
+
+        editor = find_editor(self.settings.selected_external_editor)
+        if not editor:
+            self.show_popup(PopupType.EXTERNAL_EDITOR_FAILED, message="No external editor found")
+            return
+        launch(editor, path)
 
     def checkout_commit_sha(self, repo: Repository, sha: str) -> None:
         if self.settings.confirm_checkout_commit:
@@ -1706,9 +1834,11 @@ class AppStore:
                 force_with_lease=force,
                 set_upstream=not status.current_upstream_branch,
                 env=env,
+                progress=self._network_progress_cb("push", f"Pushing to {remote.name}"),
             )
 
         def done(exc: BaseException | None) -> None:
+            self._clear_network_progress()
             if exc:
                 self._handle_remote_error(repo, exc)
             else:
@@ -1727,9 +1857,10 @@ class AppStore:
         env = self.env_for_repo(repo, remote.url)
 
         def work() -> None:
-            pull(repo.path, remote.name, env=env)
+            pull(repo.path, remote.name, env=env, progress=self._network_progress_cb("pull", f"Pulling {remote.name}"))
 
         def done(exc: BaseException | None) -> None:
+            self._clear_network_progress()
             if exc:
                 self._handle_remote_error(repo, exc)
             else:
@@ -1746,9 +1877,10 @@ class AppStore:
         env = self.env_for_repo(repo, remote.url)
 
         def work() -> None:
-            fetch(repo.path, remote.name, env=env)
+            fetch(repo.path, remote.name, env=env, progress=self._network_progress_cb("fetch", f"Fetching {remote.name}"))
 
         def done(exc: BaseException | None) -> None:
+            self._clear_network_progress()
             if exc:
                 self._handle_remote_error(repo, exc)
             else:

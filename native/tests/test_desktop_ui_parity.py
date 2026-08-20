@@ -130,3 +130,37 @@ def test_start_and_stop_amending(isolated_config, git_repo) -> None:
     assert state.commit_to_amend.sha == state.commits[0].sha
     store.stop_amending(repo)
     assert state.commit_to_amend is None
+
+
+def test_undo_last_commit_warns_when_dirty(isolated_config, git_repo) -> None:
+    store = AppStore()
+    repos = store.add_repositories([str(git_repo)])
+    repo = repos[0]
+    from github_desktop.git.ops import get_commits, get_status
+    from github_desktop.models import PopupType
+
+    (git_repo / "second.txt").write_text("s\n", encoding="utf-8")
+    run_git(git_repo, "add", "second.txt")
+    run_git(git_repo, "commit", "-m", "second")
+    state = store.state_for(repo)
+    state.status = get_status(str(git_repo))
+    state.commits = get_commits(str(git_repo), limit=5)
+    tip = state.commits[0].sha
+    (git_repo / "dirty.txt").write_text("x\n", encoding="utf-8")
+    state.status = get_status(str(git_repo))
+    store.undo_last_commit(repo)
+    assert store.popup is not None
+    assert store.popup.type == PopupType.WARN_LOCAL_CHANGES_BEFORE_UNDO
+    store.close_popup()
+    store.undo_last_commit(repo, show_confirmation=False)
+    commits = get_commits(str(git_repo), limit=5)
+    assert commits[0].sha != tip
+
+
+def test_copilot_disclaimer_interval(isolated_config) -> None:
+    store = AppStore()
+    assert store.should_show_copilot_disclaimer()
+    store.mark_copilot_disclaimer_seen()
+    assert not store.should_show_copilot_disclaimer()
+    store.settings.commit_message_generation_disclaimer_last_seen = 1
+    assert store.should_show_copilot_disclaimer()

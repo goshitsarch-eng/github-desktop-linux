@@ -745,6 +745,10 @@ class Commit:
                 authors.append(Author(name, email))
         return authors
 
+    @property
+    def is_merge_commit(self) -> bool:
+        return len(self.parent_shas) > 1
+
 
 @dataclass
 class CommitOneLine:

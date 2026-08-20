@@ -5,15 +5,17 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass
 from typing import Callable, Mapping, Sequence
 
 from ..errors import GitError, GitNotFoundError
 from ..logging import get_logger
+from .progress import GitProgress, GitProgressParser, ProgressStep
 
 log = get_logger()
 
-ProgressCallback = Callable[[str, float], None]
+ProgressCallback = Callable[[GitProgress], None]
 
 
 def find_git() -> str:
@@ -43,6 +45,54 @@ def _decode(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+def _prepare_env(env: Mapping[str, str] | None) -> dict[str, str]:
+    merged_env = os.environ.copy()
+    merged_env.setdefault("GIT_TERMINAL_PROMPT", "0")
+    merged_env.setdefault("GCM_INTERACTIVE", "Never")
+    merged_env.setdefault("GIT_OPTIONAL_LOCKS", "0")
+    merged_env.setdefault("LC_ALL", "C")
+    merged_env.setdefault("LANGUAGE", "C")
+    if env:
+        merged_env.update({k: v for k, v in env.items() if v is not None})
+    return merged_env
+
+
+def _stdin_bytes(stdin: str | bytes | None) -> bytes | None:
+    if stdin is None:
+        return None
+    if isinstance(stdin, bytes):
+        return stdin
+    return stdin.encode("utf-8")
+
+
+def _read_stream(
+    stream,
+    chunks: list[bytes],
+    on_line: Callable[[str], None] | None,
+) -> None:
+    buf = b""
+    while True:
+        data = stream.read(4096)
+        if not data:
+            break
+        chunks.append(data)
+        if on_line is None:
+            continue
+        buf += data
+        while True:
+            cr = buf.find(b"\r")
+            nl = buf.find(b"\n")
+            if cr < 0 and nl < 0:
+                break
+            idx = min(i for i in (cr, nl) if i >= 0)
+            line = buf[:idx]
+            buf = buf[idx + 1 :]
+            if line:
+                on_line(_decode(line))
+    if on_line and buf.strip():
+        on_line(_decode(buf))
+
+
 def git(
     args: Sequence[str],
     cwd: str | os.PathLike[str],
@@ -54,40 +104,75 @@ def git(
     name: str = "git",
     timeout: float | None = None,
     binary: bool = False,
+    progress: ProgressCallback | None = None,
+    progress_parser: GitProgressParser | None = None,
 ) -> GitResult:
     """Run a git command. Raises GitError unless the exit code is allowed."""
     git_bin = find_git()
     cmd = [git_bin, *args]
     success = success_exit_codes or {0}
-    merged_env = os.environ.copy()
-    merged_env.setdefault("GIT_TERMINAL_PROMPT", "0")
-    merged_env.setdefault("GCM_INTERACTIVE", "Never")
-    merged_env.setdefault("GIT_OPTIONAL_LOCKS", "0")
-    merged_env.setdefault("LC_ALL", "C")
-    merged_env.setdefault("LANGUAGE", "C")
-    if env:
-        merged_env.update({k: v for k, v in env.items() if v is not None})
-
-    stdin_bytes: bytes | None
-    if stdin is None:
-        stdin_bytes = None
-    elif isinstance(stdin, bytes):
-        stdin_bytes = stdin
-    else:
-        stdin_bytes = stdin.encode("utf-8")
+    merged_env = _prepare_env(env)
+    stdin_bytes = _stdin_bytes(stdin)
 
     log.debug("git %s: %s (cwd=%s)", name, " ".join(cmd[1:]), cwd)
     try:
-        completed = subprocess.run(
-            cmd,
-            cwd=str(cwd),
-            env=merged_env,
-            input=stdin_bytes,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout,
-            check=False,
-        )
+        if progress is None:
+            completed = subprocess.run(
+                cmd,
+                cwd=str(cwd),
+                env=merged_env,
+                input=stdin_bytes,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout,
+                check=False,
+            )
+            stdout_bytes = completed.stdout
+            stderr_bytes = completed.stderr
+            exit_code = completed.returncode
+        else:
+            parser = progress_parser or GitProgressParser((ProgressStep("Receiving objects", 1.0),))
+
+            def on_stderr_line(line: str) -> None:
+                progress(parser.parse(line))
+
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(cwd),
+                env=merged_env,
+                stdin=subprocess.PIPE if stdin_bytes is not None else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            stdout_chunks: list[bytes] = []
+            stderr_chunks: list[bytes] = []
+            stdout_thread = threading.Thread(
+                target=_read_stream, args=(proc.stdout, stdout_chunks, None), daemon=True
+            )
+            stderr_thread = threading.Thread(
+                target=_read_stream, args=(proc.stderr, stderr_chunks, on_stderr_line), daemon=True
+            )
+            stdout_thread.start()
+            stderr_thread.start()
+            if stdin_bytes is not None and proc.stdin is not None:
+                proc.stdin.write(stdin_bytes)
+                proc.stdin.close()
+            try:
+                exit_code = proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                proc.kill()
+                stdout_thread.join(timeout=1)
+                stderr_thread.join(timeout=1)
+                raise GitError(
+                    f"Git command timed out: {name}",
+                    args=list(args),
+                    stdout=_decode(b"".join(stdout_chunks)),
+                    stderr=_decode(b"".join(stderr_chunks)),
+                ) from exc
+            stdout_thread.join()
+            stderr_thread.join()
+            stdout_bytes = b"".join(stdout_chunks)
+            stderr_bytes = b"".join(stderr_chunks)
     except FileNotFoundError as exc:
         raise GitNotFoundError(str(exc)) from exc
     except subprocess.TimeoutExpired as exc:
@@ -99,11 +184,11 @@ def git(
         ) from exc
 
     result = GitResult(
-        stdout=_decode(completed.stdout),
-        stderr=_decode(completed.stderr),
-        exit_code=completed.returncode,
+        stdout=_decode(stdout_bytes) if not binary else "",
+        stderr=_decode(stderr_bytes),
+        exit_code=exit_code,
         args=list(args),
-        stdout_bytes=completed.stdout,
+        stdout_bytes=stdout_bytes,
     )
     if result.exit_code not in success:
         message = result.stderr.strip() or result.stdout.strip() or f"git {name} failed"

@@ -10,9 +10,6 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
-from ..git.ops import (
-    undo_commit,
-)
 from ..models import (
     AppFileStatusKind,
     BannerType,
@@ -95,7 +92,14 @@ class MainWindow(Adw.ApplicationWindow):
         return False
 
     def _on_store(self) -> None:
-        if self._building or self._light_update:
+        if self._building:
+            return
+        popup = self.store.popup
+        if self.store._progress_only_emit and not popup:
+            self.store._progress_only_emit = False
+            self._update_network_progress()
+            return
+        if self._light_update:
             return
         if self.store.welcome_step is not None:
             self._refresh_welcome()
@@ -319,11 +323,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _undo(self) -> None:
         repo = self.store.selected_repository
         if repo:
-            if self.store.settings.confirm_undo_commit:
-                self.store.show_popup(PopupType.WARN_LOCAL_CHANGES_BEFORE_UNDO)
-            else:
-                undo_commit(repo.path)
-                self.store.refresh_repository(repo)
+            self.store.undo_last_commit(repo)
 
     def _toggle_repo_sidebar(self) -> None:
         if hasattr(self, "_split"):
@@ -948,7 +948,38 @@ class MainWindow(Adw.ApplicationWindow):
             self._missing_trust_btn.set_visible(False)
             self._missing_clone_btn.set_visible(bool(repo.github and repo.github.clone_url))
 
+    def _update_network_progress(self) -> None:
+        if not hasattr(self, "_push_btn"):
+            return
+        kind = self.store.progress_kind
+        if not kind:
+            self._push_btn.set_sensitive(True)
+            repo = self.store.selected_repository
+            if repo:
+                self._update_push_label(self.store.state_for(repo))
+            if self.store.cloning:
+                c = self.store.cloning[0]
+                pct = int((c.progress or 0) * 100)
+                self._repo_btn.set_label(f"Cloning {c.url}… {pct}%" if pct else f"Cloning {c.url}…")
+            return
+        title = self.store.progress_title or kind.title()
+        pct = int(self.store.progress_value * 100)
+        if len(title) > 42:
+            title = title[:39] + "…"
+        if pct:
+            self._push_btn.set_label(f"{title} {pct}%")
+        else:
+            self._push_btn.set_label(title)
+        self._push_btn.set_sensitive(False)
+        if kind == "clone" and self.store.cloning:
+            c = self.store.cloning[0]
+            self._repo_btn.set_label(f"Cloning {c.url}… {pct}%" if pct else f"Cloning {c.url}…")
+
     def _update_push_label(self, state) -> None:
+        if self.store.progress_kind:
+            self._update_network_progress()
+            return
+        self._push_btn.set_sensitive(True)
         status = state.status
         if not status:
             self._push_btn.set_label("Fetch origin")
@@ -966,6 +997,8 @@ class MainWindow(Adw.ApplicationWindow):
             self._push_btn.set_label("Fetch origin")
 
     def _on_push_pull(self, *_args: object) -> None:
+        if self.store.progress_kind:
+            return
         repo = self.store.selected_repository
         if not repo:
             return
@@ -1055,7 +1088,10 @@ class MainWindow(Adw.ApplicationWindow):
         add_group("GitHub", github)
         add_group("Other", other)
         for cloning in self.store.cloning:
-            row = Adw.ActionRow(title="Cloning…", subtitle=cloning.url)
+            pct = int((cloning.progress or 0) * 100)
+            title = f"Cloning… {pct}%" if pct else "Cloning…"
+            subtitle = cloning.description or cloning.url
+            row = Adw.ActionRow(title=title, subtitle=subtitle)
             self._repo_list.append(row)
 
     def _refresh_files(self) -> None:
@@ -1605,7 +1641,7 @@ class MainWindow(Adw.ApplicationWindow):
                 items.append(("Undo commit…", self._undo, local))
             items.extend(
                 [
-                    ("Reset to commit…", lambda: self.store.show_popup(PopupType.WARNING_BEFORE_RESET, sha=commit.sha), (not is_tip) and local),
+                    ("Reset to commit…", lambda: self.store.reset_to_commit(repo, commit), (not is_tip) and local),
                     ("Checkout commit", lambda: self.store.checkout_commit_sha(repo, commit.sha), not is_tip),
                     ("Reorder commit", lambda: show_reorder_commits(self, self.store, [commit]), True),
                     ("Revert changes in commit", lambda: self.store.revert_commit(repo, commit), True),
@@ -1870,7 +1906,12 @@ class MainWindow(Adw.ApplicationWindow):
         if has_text and self.store.settings.confirm_commit_message_override:
             self.store.show_popup(PopupType.GENERATE_COMMIT_MESSAGE_OVERRIDE)
             return
-        self.store.show_popup(PopupType.GENERATE_COMMIT_MESSAGE_DISCLAIMER)
+        if self.store.should_show_copilot_disclaimer():
+            self.store.show_popup(PopupType.GENERATE_COMMIT_MESSAGE_DISCLAIMER)
+            return
+        repo = self.store.selected_repository
+        if repo:
+            self.store.generate_commit_message(repo)
 
     def _show_stash_diff(self, file, sha: str) -> None:
         repo = self.store.selected_repository

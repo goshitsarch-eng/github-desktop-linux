@@ -57,6 +57,12 @@ REQUIRED_GIT_FUNCS = [
     "warn_about_remote_commits",
     "install_global_lfs_filters",
     "install_lfs_hooks",
+    "format_patch",
+    "parse_trailers",
+    "merge_trailers",
+    "get_global_config_path",
+    "is_using_lfs",
+    "is_tracked_by_lfs",
 ]
 
 
@@ -189,5 +195,11 @@ def test_window_actions_cover_menus() -> None:
         "Able to merge automatically",
         "Stop amending",
         "most recent commit",
+        "Undo commit?",
+        "hidden changes",
+        "Update existing Git LFS filters",
+        "Edit global Git config",
+        "Unknown co-authors",
+        "Cloning…",
     ]:
         assert phrase in src
