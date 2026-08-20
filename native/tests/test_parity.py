@@ -664,5 +664,8 @@ def test_window_actions_cover_menus() -> None:
         "Creating fork…",
         "deleteMostRecentSSHCredential",
         "setMostRecentSSHCredential",
+        "License and Open Source Notices",
+        "Terms and Conditions",
+        "Responsible use of Copilot in GitHub Desktop",
     ]:
         assert phrase in src

@@ -942,20 +942,62 @@ def _delete_current_branch(store: AppStore) -> None:
 
 
 def show_about(parent: Gtk.Window) -> None:
-    dialog = Adw.AboutDialog(
-        application_name=APP_NAME,
-        application_icon="io.github.desktop.GitHubDesktop",
-        developer_name="GitHub, Inc. (unofficial Linux GTK 4 port)",
-        version=__version__,
-        comments="Native GTK 4 + libadwaita GitHub Desktop for Linux with full feature parity.",
-        website="https://github.com/goshitsarch-eng/github-desktop-linux",
-        issue_url="https://github.com/goshitsarch-eng/github-desktop-linux/issues",
-        license_type=Gtk.License.MIT_X11,
-        copyright="© GitHub, Inc. and contributors",
+    """Desktop `About` for Linux: version/arch, notes, terms, licenses; no auto-update."""
+    import platform
+
+    dialog = Adw.Dialog()
+    dialog.set_content_width(440)
+    try:
+        dialog.set_name("about")
+    except Exception:
+        pass
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(Adw.WindowTitle(title=f"About {APP_NAME}"))
+    close = Gtk.Button(label="Close")
+    close.add_css_class("suggested-action")
+    header.pack_end(close)
+    toolbar.add_top_bar(header)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+    box.set_margin_top(18)
+    box.set_margin_bottom(18)
+    box.set_margin_start(18)
+    box.set_margin_end(18)
+    icon = Gtk.Image.new_from_icon_name("io.github.desktop.GitHubDesktop")
+    icon.set_pixel_size(64)
+    icon.set_halign(Gtk.Align.CENTER)
+    title = Gtk.Label(label=f"About {APP_NAME}")
+    title.add_css_class("title-2")
+    arch = platform.machine() or "unknown"
+    version = Gtk.Label(label=f"Version {__version__} ({arch})", selectable=True)
+    version.add_css_class("dim-label")
+    notes = Gtk.Button(label="release notes")
+    notes.add_css_class("flat")
+    notes.set_halign(Gtk.Align.CENTER)
+    terms = Gtk.Button(label="Terms and Conditions")
+    terms.add_css_class("flat")
+    terms.set_halign(Gtk.Align.START)
+    notices = Gtk.Button(label="License and Open Source Notices")
+    notices.add_css_class("flat")
+    notices.set_halign(Gtk.Align.START)
+    copilot = Gtk.LinkButton(
+        uri="https://gh.io/copilot-for-desktop-transparency",
+        label="Responsible use of Copilot in GitHub Desktop",
     )
-    dialog.add_link("User guides", "https://docs.github.com/en/desktop")
-    dialog.add_link("Keyboard shortcuts", "https://docs.github.com/en/desktop/installing-and-configuring-github-desktop/overview/keyboard-shortcuts")
-    dialog.add_link("Copilot transparency", "https://gh.io/copilot-for-desktop-transparency")
+    copilot.set_halign(Gtk.Align.START)
+    box.append(icon)
+    box.append(title)
+    box.append(version)
+    box.append(notes)
+    box.append(terms)
+    box.append(notices)
+    box.append(copilot)
+    toolbar.set_content(box)
+    dialog.set_child(toolbar)
+    close.connect("clicked", lambda *_: dialog.close())
+    notes.connect("clicked", lambda *_: show_release_notes(parent))
+    terms.connect("clicked", lambda *_: show_terms(parent))
+    notices.connect("clicked", lambda *_: show_acknowledgements(parent))
     dialog.present(parent)
 
 
@@ -963,39 +1005,73 @@ def show_acknowledgements(parent: Gtk.Window) -> None:
     dialog = Adw.Dialog()
     dialog.set_content_width(560)
     dialog.set_content_height(480)
+    try:
+        dialog.set_name("acknowledgements")
+    except Exception:
+        pass
     toolbar = Adw.ToolbarView()
     header = Adw.HeaderBar()
-    header.set_title_widget(Adw.WindowTitle(title="Acknowledgements", subtitle="Open source licenses"))
+    header.set_title_widget(
+        Adw.WindowTitle(title="License and Open Source Notices", subtitle="Open source licenses")
+    )
     toolbar.add_top_bar(header)
     scroller = Gtk.ScrolledWindow(vexpand=True)
-    label = Gtk.Label(wrap=True, xalign=0, selectable=True)
-    label.add_css_class("monospace")
-    license_text = (
-        "GitHub Desktop is open source. This GTK 4 port preserves the original "
-        "workflows while using native Adwaita widgets.\n\n"
+    inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+    inner.set_margin_top(12)
+    inner.set_margin_bottom(12)
+    inner.set_margin_start(12)
+    inner.set_margin_end(12)
+    intro = Gtk.Label(
+        wrap=True,
+        xalign=0,
+        label=(
+            "GitHub Desktop is an open source project published under the MIT License. "
+            "You can view the source code and contribute to this project on GitHub."
+        ),
     )
+    links = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+    links.append(Gtk.LinkButton(uri="https://desktop.github.com", label="GitHub Desktop"))
+    links.append(
+        Gtk.LinkButton(
+            uri="https://github.com/goshitsarch-eng/github-desktop-linux",
+            label="GitHub",
+        )
+    )
+    inner.append(intro)
+    inner.append(links)
+    license_text = ""
     for candidate in (
         os.path.join(os.path.dirname(__file__), "..", "..", "..", "LICENSE"),
+        os.path.join(os.path.dirname(__file__), "..", "..", "LICENSE"),
         "/workspace/LICENSE",
     ):
         path = os.path.abspath(candidate)
         if os.path.isfile(path):
             try:
-                license_text += Path(path).read_text(encoding="utf-8")
+                license_text = Path(path).read_text(encoding="utf-8")
             except OSError:
-                license_text += "MIT License. See the LICENSE file in the repository."
+                license_text = ""
             break
-    else:
-        license_text += "MIT License. Copyright (c) GitHub, Inc."
-    label.set_text(license_text)
-    scroller.set_child(label)
-    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-    box.set_margin_top(12)
-    box.set_margin_bottom(12)
-    box.set_margin_start(12)
-    box.set_margin_end(12)
-    box.append(scroller)
-    toolbar.set_content(box)
+    if not license_text:
+        license_text = "MIT License. Copyright (c) GitHub, Inc."
+    mit = Gtk.Label(wrap=True, xalign=0, selectable=True, label=license_text)
+    mit.add_css_class("monospace")
+    inner.append(mit)
+    deps = Gtk.Label(label="This Linux port also uses:", xalign=0)
+    deps.add_css_class("heading")
+    inner.append(deps)
+    for name, license_id, url in (
+        ("GTK", "LGPL-2.1", "https://gitlab.gnome.org/GNOME/gtk"),
+        ("libadwaita", "LGPL-2.1", "https://gitlab.gnome.org/GNOME/libadwaita"),
+        ("PyGObject", "LGPL-2.1", "https://gitlab.gnome.org/GNOME/pygobject"),
+        ("Git", "GPL-2.0", "https://git-scm.com"),
+    ):
+        row = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        row.append(Gtk.LinkButton(uri=url, label=name))
+        row.append(Gtk.Label(label=f"License: {license_id}", xalign=0))
+        inner.append(row)
+    scroller.set_child(inner)
+    toolbar.set_content(scroller)
     dialog.set_child(toolbar)
     dialog.present(parent)
 
