@@ -19,7 +19,7 @@ import sys
 import threading
 from pathlib import Path
 from typing import Callable, Mapping, Sequence, TextIO
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import quote, urlparse, urlsplit, urlunsplit
 
 from ..logging import get_logger
 from ..models import Account, html_url_from_endpoint, is_dotcom_endpoint, is_ghe_endpoint
@@ -159,11 +159,11 @@ def stop_credential_helper_server() -> None:
 
 def url_without_credentials(url: str) -> str:
     """Desktop `urlWithoutCredentials`."""
-    parts = urlparse(url)
+    parts = urlsplit(url)
     host = parts.hostname or ""
     if parts.port:
         host = f"{host}:{parts.port}"
-    return urlunparse((parts.scheme, host, parts.path, parts.query, parts.fragment))
+    return urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
 
 
 def get_credential_url(cred: Mapping[str, str]) -> str:
@@ -223,11 +223,14 @@ def find_generic_trampoline_account(endpoint: str, username: str | None = None) 
 
 
 def _generic_host(endpoint: str) -> str:
-    parsed = parse_remote(endpoint)
+    raw = endpoint if "://" in endpoint else f"https://{endpoint}"
+    host = urlparse(raw).hostname
+    if host:
+        return host.lower()
+    parsed = parse_remote(url_without_credentials(endpoint) if "://" in endpoint else endpoint)
     if parsed:
         return parsed.hostname.lower()
-    host = urlparse(endpoint if "://" in endpoint else f"https://{endpoint}").hostname
-    return (host or endpoint).lower()
+    return endpoint.lower()
 
 
 def cred_with_account(cred: Mapping[str, str], login: str, token: str) -> dict[str, str]:

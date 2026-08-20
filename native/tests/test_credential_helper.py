@@ -18,11 +18,26 @@ from github_desktop.git.credential_helper import (
     get_endpoint_kind,
     store_credential,
     erase_credential,
+    url_without_credentials,
 )
 from github_desktop.git.runner import env_for_remote
 from github_desktop.models import Account
 from github_desktop.remote_parsing import get_api_endpoint, is_github_host, probe_github_host
 from github_desktop.store import AppStore
+
+
+def test_url_without_credentials_strips_userinfo() -> None:
+    assert url_without_credentials("https://alice@gitlab.example.com/org/repo.git") == (
+        "https://gitlab.example.com/org/repo.git"
+    )
+    cred = {
+        "protocol": "https",
+        "host": "gitlab.example.com",
+        "path": "org/repo.git",
+        "username": "alice",
+    }
+    assert "alice@" in get_credential_url(cred)
+    assert url_without_credentials(get_credential_url(cred)) == "https://gitlab.example.com/org/repo.git"
 
 
 def test_get_api_endpoint_matches_desktop() -> None:
@@ -108,6 +123,22 @@ def test_wwwauth_github_realm_prompts_sign_in() -> None:
 
 
 def test_gitlab_realm_is_generic(isolated_config) -> None:
+    cred = {
+        "protocol": "https",
+        "host": "gitlab.example.com",
+        "path": "org/repo.git",
+        "wwwauth[0]": 'Basic realm="GitLab"',
+        "username": "alice",
+        "password": "s3cret",
+    }
+    assert get_endpoint_kind(cred, []) == "generic"
+    store_credential(cred, [])
+    user, password = secrets.get_generic("gitlab.example.com")
+    assert user == "alice"
+    assert password == "s3cret"
+    erase_credential(cred, [])
+    _user, gone = secrets.get_generic("gitlab.example.com")
+    assert gone is None
     cred = {
         "protocol": "https",
         "host": "gitlab.example.com",
