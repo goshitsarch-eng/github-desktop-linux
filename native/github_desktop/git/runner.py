@@ -246,9 +246,12 @@ def git(
     )
     if result.exit_code not in success:
         message = result.stderr.strip() or result.stdout.strip() or f"git {name} failed"
-        git_error = None
-        if "could not lock config file" in result.stderr and "File exists" in result.stderr:
-            git_error = "ConfigLockFileAlreadyExists"
+        from ..errors import classify_git_error, get_description_for_error
+
+        git_error = classify_git_error(result.stderr, result.stdout)
+        friendly = get_description_for_error(git_error, result.stderr)
+        if friendly:
+            message = friendly
         raise GitError(
             message,
             args=list(args),

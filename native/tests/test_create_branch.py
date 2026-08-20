@@ -140,3 +140,28 @@ def test_git_rebase_and_auth_env_helpers() -> None:
     assert combined["GIT_TERMINAL_PROMPT"] == "0"
     assert get_fallback_url_for_proxy_resolve(remote_url="https://example.com/repo.git") == "https://example.com/repo.git"
     assert get_fallback_url_for_proxy_resolve() == "https://github.com"
+
+
+def test_get_description_for_error_matches_desktop() -> None:
+    from github_desktop.errors import (
+        classify_git_error,
+        get_description_for_error,
+        is_auth_failure_error,
+        parse_bad_config_value_error_info,
+    )
+
+    assert is_auth_failure_error("HTTPSAuthenticationFailed")
+    assert not is_auth_failure_error("PushNotFastForward")
+    auth = get_description_for_error("HTTPSAuthenticationFailed", "")
+    assert auth is not None
+    assert "Authentication failed. Some common reasons include" in auth
+    assert "File > Options." in auth
+    assert get_description_for_error("PushNotFastForward", "") == (
+        "The repository has been updated since you last pulled. Try pulling before pushing."
+    )
+    assert get_description_for_error("ConfigLockFileAlreadyExists", "") is None
+    assert classify_git_error("fatal: Authentication failed for 'https://github.com/x/y.git'") == "HTTPSAuthenticationFailed"
+    assert classify_git_error("error: failed to push some refs to 'origin'") == "PushNotFastForward"
+    info = parse_bad_config_value_error_info("fatal: bad config value 'foo' for 'core.pager'")
+    assert info == ("core.pager", "foo")
+    assert "Unsupported value 'foo'" in (get_description_for_error("BadConfigValue", "fatal: bad config value 'foo' for 'core.pager'") or "")

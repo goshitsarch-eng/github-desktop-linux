@@ -12,7 +12,14 @@ from pathlib import Path
 from threading import Event
 from typing import Callable, Iterable, Mapping, Sequence
 
-from ..errors import GitError, NotARepositoryError
+from ..errors import (
+    GitError,
+    NotARepositoryError,
+    classify_git_error,
+    get_description_for_error,
+    is_auth_failure_error,
+    parse_bad_config_value_error_info,
+)
 from ..logging import get_logger
 from ..models import (
     DESKTOP_STASH_MARKER,

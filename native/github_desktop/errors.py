@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 
 class DesktopError(Exception):
     """Base error for the native GitHub Desktop application."""
@@ -29,6 +31,8 @@ class GitError(DesktopError):
 
     @property
     def is_auth_failure(self) -> bool:
+        if is_auth_failure_error(self.git_error):
+            return True
         text = f"{self.stderr}\n{self.stdout}".lower()
         return any(
             needle in text
@@ -225,3 +229,201 @@ def extract_secret_scanning_results(text: str) -> list:
             )
         )
     return results
+
+
+AUTH_FAILURE_ERRORS = {
+    "HTTPSAuthenticationFailed",
+    "SSHAuthenticationFailed",
+    "SSHPermissionDenied",
+}
+
+_BAD_CONFIG_VALUE_RE = re.compile(
+    r"fatal: bad config value(?: for)? ['\"]?(?P<value>[^'\"]+)['\"]? for ['\"]?(?P<key>[^'\"]+)['\"]?",
+    re.IGNORECASE,
+)
+
+
+def is_auth_failure_error(git_error: str | None) -> bool:
+    """Desktop `isAuthFailureError`."""
+    return git_error in AUTH_FAILURE_ERRORS
+
+
+def parse_bad_config_value_error_info(stderr: str) -> tuple[str, str] | None:
+    """Desktop/dugite `parseBadConfigValueErrorInfo`."""
+    match = _BAD_CONFIG_VALUE_RE.search(stderr or "")
+    if not match:
+        return None
+    return match.group("key"), match.group("value")
+
+
+def classify_git_error(stderr: str, stdout: str = "") -> str | None:
+    """Map git output to a dugite-style `GitError` name."""
+    text = f"{stderr}\n{stdout}"
+    lower = text.lower()
+    if "could not lock config file" in stderr and "File exists" in stderr:
+        return "ConfigLockFileAlreadyExists"
+    if "bad config value" in lower:
+        return "BadConfigValue"
+    if any(
+        needle in lower
+        for needle in (
+            "authentication failed",
+            "could not read username",
+            "invalid username or password",
+            "error: 401",
+            "fatal: could not read password",
+        )
+    ):
+        return "HTTPSAuthenticationFailed"
+    if "permission denied (publickey)" in lower or "permission denied (keyboard-interactive)" in lower:
+        return "SSHAuthenticationFailed"
+    if "permission denied" in lower and "ssh" in lower:
+        return "SSHPermissionDenied"
+    if "host key verification failed" in lower:
+        return "SSHKeyAuditUnverified"
+    if "could not resolve hostname" in lower or "failed to connect" in lower:
+        return "HostDown"
+    if "the remote end hung up" in lower or "early eof" in lower:
+        return "RemoteDisconnection"
+    if "not a git repository" in lower:
+        return "NotAGitRepository"
+    if "unrelated histories" in lower:
+        return "CannotMergeUnrelatedHistories"
+    if "your local changes to the following files would be overwritten" in lower:
+        return "LocalChangesOverwritten"
+    if "gh013" in lower or "push cannot contain secrets" in lower:
+        return "PushWithSecretDetected"
+    if "keep my email address private" in lower or "you can only push using a verified email" in lower:
+        return "PushWithPrivateEmail"
+    if "file exceeds github's file size restriction" in lower or (
+        "100 mb" in lower and "file" in lower
+    ):
+        return "PushWithFileSizeExceedingLimit"
+    if "protected branch" in lower and "review" in lower:
+        return "ProtectedBranchRequiresReview"
+    if "required status check" in lower:
+        return "ProtectedBranchRequiredStatus"
+    if "protected branch" in lower and "delete" in lower:
+        return "ProtectedBranchDeleteRejected"
+    if "protected branch" in lower and "force" in lower:
+        return "ProtectedBranchForcePush"
+    if "force push has been rejected" in lower:
+        return "ForcePushRejected"
+    if "non-fast-forward" in lower or "failed to push some refs" in lower:
+        return "PushNotFastForward"
+    if "fix conflicts and then commit" in lower or "merge conflict" in lower:
+        return "MergeConflicts"
+    if "could not apply" in lower and "rebase" in lower:
+        return "RebaseConflicts"
+    if "nothing to commit" in lower:
+        return "NothingToCommit"
+    if "already exists" in lower and "branch" in lower:
+        return "BranchAlreadyExists"
+    if "already exists" in lower and "tag" in lower:
+        return "TagAlreadyExists"
+    if "filter.lfs" in lower and "match" in lower:
+        return "LFSAttributeDoesNotMatch"
+    if "is owned by" in lower and "safe.directory" in lower:
+        return "UnsafeDirectory"
+    if "path exists but not in" in lower:
+        return "PathExistsButNotInRef"
+    if "repository not found" in lower:
+        if "ssh://" in lower or "git@" in lower:
+            return "SSHRepositoryNotFound"
+        return "HTTPSRepositoryNotFound"
+    if "there is no merge to abort" in lower:
+        return "NoMergeToAbort"
+    if "unmerged files" in lower or "unresolved conflict" in lower:
+        return "UnresolvedConflicts"
+    if "lock file already exists" in lower:
+        return "LockFileAlreadyExists"
+    if "patch does not apply" in lower or "patch failed" in lower:
+        return "PatchDoesNotApply"
+    if "is outside repository" in lower:
+        return "OutsideRepository"
+    if "does not exist" in lower and "path" in lower:
+        return "PathDoesNotExist"
+    return None
+
+
+def get_description_for_error(error: str | None, stderr: str = "") -> str | None:
+    """Desktop `getDescriptionForError` — friendly copy for dugite GitError codes."""
+    if not error:
+        return None
+    if is_auth_failure_error(error):
+        return (
+            "Authentication failed. Some common reasons include:\n\n"
+            "- You are not logged in to your account: see File > Options.\n"
+            "- You may need to log out and log back in to refresh your token.\n"
+            "- You do not have permission to access this repository.\n"
+            "- The repository is archived on GitHub. Check the repository settings to confirm you are still permitted to push commits.\n"
+            "- If you use SSH authentication, check that your key is added to the ssh-agent and associated with your account.\n"
+            "- If you use SSH authentication, ensure the host key verification passes for your repository hosting service.\n"
+            "- If you used username / password authentication, you might need to use a Personal Access Token instead of your account password. Check the documentation of your repository hosting service."
+        )
+    descriptions = {
+        "BadConfigValue": None,  # filled below
+        "SSHKeyAuditUnverified": "The SSH key is unverified.",
+        "RemoteDisconnection": "The remote disconnected. Check your Internet connection and try again.",
+        "HostDown": "The host is down. Check your Internet connection and try again.",
+        "RebaseConflicts": "We found some conflicts while trying to rebase. Please resolve the conflicts before continuing.",
+        "MergeConflicts": "We found some conflicts while trying to merge. Please resolve the conflicts and commit the changes.",
+        "HTTPSRepositoryNotFound": "The repository does not seem to exist anymore. You may not have access, or it may have been deleted or renamed.",
+        "SSHRepositoryNotFound": "The repository does not seem to exist anymore. You may not have access, or it may have been deleted or renamed.",
+        "PushNotFastForward": "The repository has been updated since you last pulled. Try pulling before pushing.",
+        "BranchDeletionFailed": "Could not delete the branch. It was probably already deleted.",
+        "DefaultBranchDeletionFailed": "The branch is the repository's default branch and cannot be deleted.",
+        "RevertConflicts": "To finish reverting, please merge and commit the changes.",
+        "EmptyRebasePatch": "There aren’t any changes left to apply.",
+        "NoMatchingRemoteBranch": "There aren’t any remote branches that match the current branch.",
+        "NothingToCommit": "There are no changes to commit.",
+        "NoSubmoduleMapping": "A submodule was removed from .gitmodules, but the folder still exists in the repository. Delete the folder, commit the change, then try again.",
+        "SubmoduleRepositoryDoesNotExist": "A submodule points to a location which does not exist.",
+        "InvalidSubmoduleSHA": "A submodule points to a commit which does not exist.",
+        "LocalPermissionDenied": "Permission denied.",
+        "InvalidMerge": "This is not something we can merge.",
+        "InvalidRebase": "This is not something we can rebase.",
+        "NonFastForwardMergeIntoEmptyHead": "The merge you attempted is not a fast-forward, so it cannot be performed on an empty branch.",
+        "PatchDoesNotApply": "The requested changes conflict with one or more files in the repository.",
+        "BranchAlreadyExists": "A branch with that name already exists.",
+        "BadRevision": "Bad revision.",
+        "NotAGitRepository": "This is not a git repository.",
+        "ProtectedBranchForcePush": "This branch is protected from force-push operations.",
+        "ProtectedBranchRequiresReview": "This branch is protected and any changes requires an approved review. Open a pull request with changes targeting this branch instead.",
+        "PushWithFileSizeExceedingLimit": "The push operation includes a file which exceeds GitHub's file size restriction of 100MB. Please remove the file from history and try again.",
+        "HexBranchNameRejected": "The branch name cannot be a 40-character string of hexadecimal characters, as this is the format that Git uses for representing objects.",
+        "ForcePushRejected": "The force push has been rejected for the current branch.",
+        "InvalidRefLength": "A ref cannot be longer than 255 characters.",
+        "CannotMergeUnrelatedHistories": "Unable to merge unrelated histories in this repository.",
+        "PushWithPrivateEmail": 'Cannot push these commits as they contain an email address marked as private on GitHub. To push anyway, visit https://github.com/settings/emails, uncheck "Keep my email address private", then switch back to GitHub Desktop to push your commits. You can then enable the setting again.',
+        "LFSAttributeDoesNotMatch": "Git LFS attribute found in global Git configuration does not match expected value.",
+        "ProtectedBranchDeleteRejected": "This branch cannot be deleted from the remote repository because it is marked as protected.",
+        "ProtectedBranchRequiredStatus": "The push was rejected by the remote server because a required status check has not been satisfied.",
+        "BranchRenameFailed": "The branch could not be renamed.",
+        "PathDoesNotExist": "The path does not exist on disk.",
+        "InvalidObjectName": "The object was not found in the Git repository.",
+        "OutsideRepository": "This path is not a valid path inside the repository.",
+        "LockFileAlreadyExists": "A lock file already exists in the repository, which blocks this operation from completing.",
+        "NoMergeToAbort": "There is no merge in progress, so there is nothing to abort.",
+        "NoExistingRemoteBranch": "The remote branch does not exist.",
+        "LocalChangesOverwritten": "Unable to switch branches as there are working directory changes which would be overwritten. Please commit or stash your changes.",
+        "UnresolvedConflicts": "There are unresolved conflicts in the working directory.",
+        "TagAlreadyExists": "A tag with that name already exists",
+        "ConfigLockFileAlreadyExists": None,
+        "RemoteAlreadyExists": None,
+        "MergeWithLocalChanges": None,
+        "RebaseWithLocalChanges": None,
+        "GPGFailedToSignData": None,
+        "ConflictModifyDeletedInBranch": None,
+        "MergeCommitNoMainlineOption": None,
+        "UnsafeDirectory": None,
+        "PathExistsButNotInRef": None,
+        "PushWithSecretDetected": None,
+    }
+    if error == "BadConfigValue":
+        info = parse_bad_config_value_error_info(stderr)
+        if info is None:
+            return "Unsupported git configuration value."
+        key, value = info
+        return f"Unsupported value '{value}' for git config key '{key}'"
+    return descriptions.get(error)

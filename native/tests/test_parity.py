@@ -137,6 +137,9 @@ REQUIRED_GIT_FUNCS = [
     "get_fallback_url_for_proxy_resolve",
     "get_partial_blob_contents_catch_path_not_in_ref",
     "parse_commit_sha",
+    "get_description_for_error",
+    "is_auth_failure_error",
+    "classify_git_error",
 ]
 
 
@@ -257,10 +260,11 @@ def test_window_actions_cover_menus() -> None:
 
     src += open(git_runner_mod.__file__, encoding="utf-8").read()
     src += open(notifications_mod.__file__, encoding="utf-8").read()
-    from github_desktop import create_branch as create_branch_mod, email as email_mod
+    from github_desktop import create_branch as create_branch_mod, email as email_mod, errors as errors_mod
 
     src += open(create_branch_mod.__file__, encoding="utf-8").read()
     src += open(email_mod.__file__, encoding="utf-8").read()
+    src += open(errors_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -527,5 +531,11 @@ def test_window_actions_cover_menus() -> None:
         "switch branches",
         "GitEmailNotFoundWarning",
         "parseCommitSHA",
+        "getDescriptionForError",
+        "isAuthFailureError",
+        "Authentication failed. Some common reasons include",
+        "File > Options.",
+        "This branch is protected from force-push operations.",
+        "Unable to switch branches as there are working directory changes",
     ]:
         assert phrase in src
