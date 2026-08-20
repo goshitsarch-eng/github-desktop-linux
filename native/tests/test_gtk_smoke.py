@@ -121,7 +121,7 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
                 show_multi_commit,
                 show_warn_force_push,
             )
-            from github_desktop.ui.dialogs import show_create_branch
+            from github_desktop.ui.dialogs import show_acknowledgements, show_copilot_disclaimer, show_create_branch
 
             show_multi_commit(win, store, {"kind": "Merge"})
             show_multi_commit(win, store, {"kind": "Cherry-pick", "shas": ["deadbeef"]})
@@ -132,6 +132,8 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
 
             CompletenessDonut({"success": 2, "failure": 1, "in_progress": 1})
             show_create_branch(win, store, {})
+            show_acknowledgements(win)
+            show_copilot_disclaimer(win, store)
             repos[0].is_missing = True
             win._show_missing(repos[0])
             win._repo_content.set_visible_child_name("missing")

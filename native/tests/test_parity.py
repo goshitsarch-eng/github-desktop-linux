@@ -182,5 +182,8 @@ def test_window_actions_cover_menus() -> None:
         "Open with default program",
         "Completeness indicator",
         "protected branch",
+        "I understand",
+        "Copilot is powered by AI",
+        "Able to merge automatically",
     ]:
         assert phrase in src
