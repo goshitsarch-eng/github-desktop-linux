@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-from .models import ApplicationTheme, UncommittedChangesStrategy
+from .models import ApplicationTheme, PullRequestSuggestedNextAction, UncommittedChangesStrategy
 from .paths import settings_path
 
 
@@ -64,6 +64,7 @@ class Settings:
     recent_branches: dict[str, list[str]] = field(default_factory=dict)
     last_prune_dates: dict[str, float] = field(default_factory=dict)
     tutorial_paused: bool = False
+    pull_request_suggested_next_action: str = PullRequestSuggestedNextAction.PREVIEW_PULL_REQUEST.value
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

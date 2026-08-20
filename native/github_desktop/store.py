@@ -163,6 +163,7 @@ from .models import (
     Popup,
     PopupType,
     PullRequest,
+    PullRequestSuggestedNextAction,
     RebaseResult,
     Remote,
     Repository,
@@ -197,6 +198,12 @@ from .thank_you import (
 
 log = get_logger()
 Listener = Callable[[], None]
+
+# Desktop BackgroundFetchMinimumInterval (30 minutes) and BackgroundFetcher intervals.
+BACKGROUND_FETCH_MINIMUM_INTERVAL = 30 * 60
+BACKGROUND_FETCH_DEFAULT_INTERVAL = 60 * 60
+BACKGROUND_FETCH_SERVER_MINIMUM = 5 * 60
+INDICATOR_REFRESH_INTERVAL = 15 * 60
 
 
 @dataclass
@@ -268,6 +275,7 @@ class RepositoryViewState:
     pending_force_push_before: str | None = None
     pull_with_rebase: bool = False
     last_fetched: float | None = None
+    changed_files_count: int = 0
 
 
 class AppStore:
@@ -303,6 +311,8 @@ class AppStore:
         self._lock = threading.RLock()
         self._pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="desktop")
         self._next_id = 1
+        self._background_fetch_interval = BACKGROUND_FETCH_DEFAULT_INTERVAL
+        self._background_fetch_in_flight = False
         self._load_accounts()
         self._load_repositories()
         if not os.environ.get("PYTEST_CURRENT_TEST"):
@@ -974,6 +984,8 @@ class AppStore:
                 state.pull_with_rebase = bool(data.get("pull_with_rebase"))
             if "last_fetched" in data:
                 state.last_fetched = data.get("last_fetched")
+            if status:
+                state.changed_files_count = len(status.working_directory.files)
             pending_rewrite = state.pending_force_push_before
             if pending_rewrite:
                 state.pending_force_push_before = None
@@ -2311,16 +2323,125 @@ class AppStore:
 
         self._run(work, done)
 
+    def should_background_fetch(self, repo: Repository | None = None) -> bool:
+        """Desktop `shouldBackgroundFetch`: GitHub repos whose last fetch is at least 30 minutes ago."""
+        repo = repo or self.selected_repository
+        if repo is None or repo.github is None or repo.is_missing:
+            return False
+        if self.progress_kind:
+            return False
+        last = self.state_for(repo).last_fetched
+        if last is None:
+            try:
+                last = get_last_fetched(repo.path)
+            except Exception:
+                last = None
+        if last is None:
+            return True
+        return (time.time() - last) >= BACKGROUND_FETCH_MINIMUM_INTERVAL
+
+    @property
+    def background_fetch_interval(self) -> int:
+        """Seconds between background fetch attempts (Desktop DefaultFetchInterval plus server poll)."""
+        return int(self._background_fetch_interval)
+
+    def set_pull_request_suggested_next_action(self, value: str) -> None:
+        allowed = {item.value for item in PullRequestSuggestedNextAction}
+        if value not in allowed:
+            return
+        self.settings.pull_request_suggested_next_action = value
+        self.persist_settings()
+        self.emit()
+
+    def refresh_repo_indicators(self, *, fetch_remotes: bool = True) -> None:
+        """Populate ahead/behind and uncommitted counts for every registered repository.
+
+        Matches Desktop `updateSidebarIndicator` / `RepositoryIndicatorUpdater`. Unselected
+        GitHub remotes are fetched quietly when `should_background_fetch` is true.
+        """
+        if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("GITHUB_DESKTOP_OFFLINE"):
+            fetch_remotes = False
+        repos = list(self.repositories)
+        selected_id = self.selected_repository_id
+
+        def work() -> dict[int, tuple[object, int, float | None]]:
+            results: dict[int, tuple[object, int, float | None]] = {}
+            for repo in repos:
+                if repo.is_missing or not os.path.isdir(repo.path):
+                    continue
+                try:
+                    status = get_status(repo.path)
+                    last = get_last_fetched(repo.path)
+                    if (
+                        fetch_remotes
+                        and repo.github
+                        and repo.id != selected_id
+                        and self.should_background_fetch(repo)
+                    ):
+                        try:
+                            remotes = get_remotes(repo.path)
+                            remote = self._network_remote(repo, remotes, prefer_upstream=True)
+                            if remote:
+                                fetch(repo.path, remote.name, env=self.env_for_repo(repo, remote.url))
+                                status = get_status(repo.path)
+                                last = get_last_fetched(repo.path)
+                        except GitError as exc:
+                            log.debug("indicator fetch failed for %s: %s", repo.path, exc)
+                    count = len(status.working_directory.files) if status else 0
+                    ab = status.branch_ahead_behind if status else None
+                    results[repo.id] = (ab, count, last)
+                except Exception as exc:
+                    log.debug("indicator refresh failed for %s: %s", repo.path, exc)
+            return results
+
+        def apply(results: dict[int, tuple[object, int, float | None]]) -> None:
+            for repo in self.repositories:
+                payload = results.get(repo.id)
+                if payload is None:
+                    continue
+                ahead_behind, count, last = payload
+                state = self.state_for(repo)
+                state.ahead_behind = ahead_behind  # type: ignore[assignment]
+                state.changed_files_count = count
+                state.last_fetched = last
+            self.emit()
+
+        def done(exc: BaseException | None, results: dict[int, tuple[object, int, float | None]] | None = None) -> None:
+            if exc:
+                log.debug("refresh_repo_indicators failed: %s", exc)
+                return
+            apply(results or {})
+
+        try:
+            from gi.repository import Gio
+
+            if Gio.Application.get_default() is not None:
+                self._run(work, done)
+                return
+        except Exception:
+            pass
+        apply(work())
+
     def fetch_repo(self, repo: Repository, fetch_type: FetchType = FetchType.USER_INITIATED) -> None:
+        quiet = fetch_type == FetchType.BACKGROUND_TASK
+        if quiet:
+            if self._background_fetch_in_flight or self.progress_kind:
+                return
+            if not self.should_background_fetch(repo):
+                return
+            self._background_fetch_in_flight = True
         remotes = get_remotes(repo.path)
         remote = self._network_remote(repo, remotes, prefer_upstream=True)
         if not remote:
+            if quiet:
+                self._background_fetch_in_flight = False
             return
         env = self.env_for_repo(repo, remote.url)
         extra = [r for r in remotes if r.name == "upstream" and r.name != remote.name]
+        progress = None if quiet else self._network_progress_cb("fetch", f"Fetching {remote.name}")
 
         def work() -> list[str]:
-            fetch(repo.path, remote.name, env=env, progress=self._network_progress_cb("fetch", f"Fetching {remote.name}"))
+            fetch(repo.path, remote.name, env=env, progress=progress)
             for other in extra:
                 try:
                     fetch(repo.path, other.name, env=self.env_for_repo(repo, other.url))
@@ -2332,13 +2453,21 @@ class AppStore:
             except GitError as exc:
                 log.debug("Branch fast-forwarding failed: %s", exc)
             self._prune_merged_branches(repo)
+            if quiet and repo.github:
+                self._update_background_fetch_interval(repo)
             return self._tags_to_push(repo, remote)
 
         def done(exc: BaseException | None, tags: list[str] | None = None) -> None:
-            self._clear_network_progress()
+            if quiet:
+                self._background_fetch_in_flight = False
+            else:
+                self._clear_network_progress()
             if exc:
-                self._retry_action = {"kind": "fetch", "repo_id": repo.id}
-                self._handle_remote_error(repo, exc)
+                if quiet:
+                    log.debug("background fetch failed: %s", exc)
+                else:
+                    self._retry_action = {"kind": "fetch", "repo_id": repo.id}
+                    self._handle_remote_error(repo, exc)
             else:
                 if tags is not None:
                     self.state_for(repo).local_tags_to_push = list(tags)
@@ -2346,6 +2475,20 @@ class AppStore:
             self.emit()
 
         self._run(work, done)
+
+    def _update_background_fetch_interval(self, repo: Repository) -> None:
+        interval = BACKGROUND_FETCH_DEFAULT_INTERVAL
+        account = self.account_for_repo(repo)
+        github = repo.github
+        if account and github:
+            try:
+                poll = GitHubAPI.from_account(account).get_fetch_poll_interval(github.owner, github.name)
+                if poll is not None:
+                    # Desktop Math.max(parsedHeader, MinimumInterval) with both in milliseconds.
+                    interval = max(int(poll / 1000), BACKGROUND_FETCH_SERVER_MINIMUM)
+            except Exception as exc:
+                log.debug("fetch poll interval failed: %s", exc)
+        self._background_fetch_interval = interval
 
     def _tags_to_push(self, repo: Repository, remote: Remote) -> list[str]:
         status = self.state_for(repo).status or get_status(repo.path)

@@ -51,6 +51,12 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             assert win.lookup_action("install-cli")
             assert win.lookup_action("zoom-in")
             assert win.lookup_action("toggle-changes-filter")
+            assert win.lookup_action("edit-undo")
+            assert win.lookup_action("edit-redo")
+            assert win.lookup_action("increase-resizable")
+            assert win.lookup_action("pr-suggested-preview")
+            assert hasattr(win, "_menu_btn")
+            assert hasattr(win, "_changes_paned")
             assert hasattr(win, "_branches_foldout")
             child = win._stack.get_visible_child_name()
             assert child in {"welcome", "empty", "repo"}

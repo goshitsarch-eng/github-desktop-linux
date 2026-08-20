@@ -186,6 +186,11 @@ def test_window_actions_cover_menus() -> None:
     src += open(push_pull.__file__, encoding="utf-8").read()
     src += open(commit_dnd.__file__, encoding="utf-8").read()
     src += open(css_mod.__file__, encoding="utf-8").read()
+    from github_desktop.ui import application as app_mod
+    from github_desktop.github import api as api_mod
+
+    src += open(app_mod.__file__, encoding="utf-8").read()
+    src += open(api_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -207,6 +212,8 @@ def test_window_actions_cover_menus() -> None:
         "zoom-in",
         "update-from-default",
         "release-notes",
+        "edit-undo",
+        "increase-resizable",
     ]:
         assert action in src
     for phrase in [
@@ -300,5 +307,16 @@ def test_window_actions_cover_menus() -> None:
         "Showing changes from",
         "unreachable",
         "commit-highlight",
+        "edit-undo",
+        "Hide stashed changes",
+        "View pull request on GitHub",
+        "Force push…",
+        "Preview pull request",
+        "BACKGROUND_FETCH_MINIMUM_INTERVAL",
+        "Increase active resizable",
+        "repo-changes-dot",
+        "PullRequestSuggestedNextAction",
+        "BackgroundFetcher",
+        "get_fetch_poll_interval",
     ]:
         assert phrase in src

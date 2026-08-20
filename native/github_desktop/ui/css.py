@@ -99,6 +99,11 @@ APP_CSS = """
   opacity: 0.8;
   padding: 0 8px;
 }
+.repo-changes-dot {
+  font-size: 0.65rem;
+  color: @accent_color;
+  padding: 0 6px;
+}
 .filter-chip {
   font-size: 0.85rem;
 }

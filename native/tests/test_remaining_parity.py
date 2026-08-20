@@ -408,3 +408,64 @@ def test_pull_honors_desktop_flags(git_repo: Path, monkeypatch) -> None:
     monkeypatch.setattr(git_ops, "get_config_value", lambda repo, key: "true" if key == "pull.ff" else None)
     git_ops.pull(str(git_repo), "origin")
     assert "--ff" not in captured[0]
+
+
+def test_ctrl_z_is_text_undo_not_git_undo() -> None:
+    from github_desktop.ui.window import MainWindow
+
+    src = open(MainWindow.__init__.__code__.co_filename, encoding="utf-8").read()
+    assert '"<Ctrl>z": "edit-undo"' in src
+    assert '"<Ctrl>z": "undo-commit"' not in src
+    assert "win.edit-undo" in src
+    assert "Hide stashed changes" in src
+    assert "View pull request on GitHub" in src
+
+
+def test_should_background_fetch_respects_minimum_interval(isolated_config, git_repo: Path) -> None:
+    import time
+
+    from github_desktop.models import GitHubRepository
+    from github_desktop.store import BACKGROUND_FETCH_MINIMUM_INTERVAL, AppStore
+
+    assert BACKGROUND_FETCH_MINIMUM_INTERVAL == 30 * 60
+    store = AppStore()
+    assert store.should_background_fetch() is False
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    repo.github = GitHubRepository("app", "me", "https://github.com/me/app", "https://github.com/me/app.git")
+    store.state_for(repo).last_fetched = time.time()
+    assert store.should_background_fetch(repo) is False
+    store.state_for(repo).last_fetched = time.time() - BACKGROUND_FETCH_MINIMUM_INTERVAL - 1
+    assert store.should_background_fetch(repo) is True
+    store.progress_kind = "push"
+    assert store.should_background_fetch(repo) is False
+
+
+def test_refresh_repo_indicators_counts_changes(isolated_config, git_repo: Path) -> None:
+    from github_desktop.store import AppStore
+
+    (git_repo / "indicator.txt").write_text("changed\n", encoding="utf-8")
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    store.refresh_repo_indicators()
+    assert store.state_for(repo).changed_files_count >= 1
+
+
+def test_pull_request_suggested_next_action_defaults_to_preview(isolated_config) -> None:
+    from github_desktop.models import PullRequestSuggestedNextAction
+    from github_desktop.store import AppStore
+
+    store = AppStore()
+    assert store.settings.pull_request_suggested_next_action == PullRequestSuggestedNextAction.PREVIEW_PULL_REQUEST.value
+    store.set_pull_request_suggested_next_action(PullRequestSuggestedNextAction.CREATE_PULL_REQUEST.value)
+    assert store.settings.pull_request_suggested_next_action == PullRequestSuggestedNextAction.CREATE_PULL_REQUEST.value
+
+
+def test_fetch_poll_interval_helper_exists() -> None:
+    from github_desktop.github.api import GitHubAPI
+
+    assert callable(GitHubAPI.get_fetch_poll_interval)
+

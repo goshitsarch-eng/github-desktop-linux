@@ -310,6 +310,16 @@ class FetchType(StrEnum):
     USER_INITIATED = "UserInitiatedTask"
 
 
+class PullRequestSuggestedNextAction(StrEnum):
+    """Empty-Changes card: Preview vs Create pull request (Desktop `PullRequestSuggestedNextAction`)."""
+
+    PREVIEW_PULL_REQUEST = "PreviewPullRequest"
+    CREATE_PULL_REQUEST = "CreatePullRequest"
+
+
+DEFAULT_PULL_REQUEST_SUGGESTED_NEXT_ACTION = PullRequestSuggestedNextAction.PREVIEW_PULL_REQUEST
+
+
 class RebaseResult(StrEnum):
     COMPLETED_WITHOUT_ERROR = "CompletedWithoutError"
     ALREADY_UP_TO_DATE = "AlreadyUpToDate"

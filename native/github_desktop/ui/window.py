@@ -19,10 +19,12 @@ from ..models import (
     ComparisonMode,
     ComputedAction,
     DiffSelectionType,
+    ForcePushBranchState,
     HistoryTabMode,
     ManualConflictResolution,
     MultiCommitOperationKind,
     PopupType,
+    PullRequestSuggestedNextAction,
     RepositorySectionTab,
     TutorialStep,
     WelcomeStep,
@@ -109,6 +111,14 @@ class MainWindow(Adw.ApplicationWindow):
         if alloc[0] > 0:
             self.store.settings.window_width = alloc[0]
             self.store.settings.window_height = alloc[1]
+            if hasattr(self, "_changes_paned"):
+                pos = self._changes_paned.get_position()
+                if pos > 0:
+                    self.store.settings.sidebar_width = pos
+            if hasattr(self, "_history_paned"):
+                pos = self._history_paned.get_position()
+                if pos > 0:
+                    self.store.settings.commit_summary_width = pos
             self.store.persist_settings()
         self._flush_commit_form()
         return False
@@ -261,11 +271,17 @@ class MainWindow(Adw.ApplicationWindow):
         add("contact-support", lambda: open_external("https://github.com/contact?from_desktop_app=1"))
         add("show-guides", lambda: open_external("https://docs.github.com/en/desktop"))
         add("github-explore", lambda: self._repo_op(self.store.show_github_explore))
-        add("show-shortcuts", lambda: open_external("https://docs.github.com/en/desktop/installing-and-configuring-github-desktop/overview/keyboard-shortcuts"))
         add("cut", lambda: self._edit_action("cut"))
         add("copy", lambda: self._edit_action("copy"))
         add("paste", lambda: self._edit_action("paste"))
         add("select-all", lambda: self._edit_action("select-all"))
+        add("edit-undo", lambda: self._edit_action("undo"))
+        add("edit-redo", lambda: self._edit_action("redo"))
+        add("increase-resizable", lambda: self._nudge_paned(20))
+        add("decrease-resizable", lambda: self._nudge_paned(-20))
+        add("pr-suggested-preview", self._pr_suggested_preview)
+        add("pr-suggested-create", self._pr_suggested_create)
+        add("show-shortcuts", self._show_shortcuts)
         self.add_css_class("github-desktop-zoom")
         from .css import apply_zoom
 
@@ -302,7 +318,11 @@ class MainWindow(Adw.ApplicationWindow):
             "<Ctrl><Shift>c": "compare-on-github",
             "<Ctrl>r": "open-pull-request",
             "<Ctrl>f": "find",
-            "<Ctrl>z": "undo-commit",
+            "<Ctrl>z": "edit-undo",
+            "<Ctrl><Shift>z": "edit-redo",
+            "<Ctrl>y": "edit-redo",
+            "<Ctrl>9": "increase-resizable",
+            "<Ctrl>8": "decrease-resizable",
             "<Alt>p": "preview-pull-request",
             "<Ctrl>h": "toggle-stash",
             "<Ctrl>l": "toggle-changes-filter",
@@ -316,6 +336,8 @@ class MainWindow(Adw.ApplicationWindow):
         }
         for accel, name in ctrl.items():
             self.get_application().set_accels_for_action(f"win.{name}", [accel])
+        self.get_application().set_accels_for_action("win.edit-redo", ["<Ctrl><Shift>z", "<Ctrl>y"])
+        self.get_application().set_accels_for_action("win.zoom-in", ["<Ctrl>equal", "<Ctrl>plus"])
 
     def _repo_op(self, fn) -> None:
         repo = self.store.selected_repository
@@ -591,6 +613,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         menu_btn = Gtk.MenuButton(icon_name="open-menu-symbolic")
         menu_btn.set_menu_model(self._app_menu())
+        self._menu_btn = menu_btn
         header.pack_end(menu_btn)
 
         switcher = Adw.ViewSwitcher()
@@ -718,6 +741,8 @@ class MainWindow(Adw.ApplicationWindow):
         file_m.append("Quit", "app.quit")
         menu.append_submenu("File", file_m)
         edit = Gio.Menu()
+        edit.append("Undo", "win.edit-undo")
+        edit.append("Redo", "win.edit-redo")
         edit.append("Cut", "win.cut")
         edit.append("Copy", "win.copy")
         edit.append("Paste", "win.paste")
@@ -730,17 +755,18 @@ class MainWindow(Adw.ApplicationWindow):
         view.append("Repository list", "win.choose-repository")
         view.append("Branches list", "win.show-branches")
         view.append("Go to summary", "win.go-to-commit-message")
-        view.append("Show stashed changes", "win.toggle-stash")
+        view.append(self._stash_menu_label(), "win.toggle-stash")
         view.append("Toggle changes filter", "win.toggle-changes-filter")
+        view.append("Increase active resizable", "win.increase-resizable")
+        view.append("Decrease active resizable", "win.decrease-resizable")
         view.append("Reset zoom", "win.zoom-reset")
         view.append("Zoom in", "win.zoom-in")
         view.append("Zoom out", "win.zoom-out")
         menu.append_submenu("View", view)
         repo = Gio.Menu()
-        repo.append("Push", "win.push")
+        repo.append(self._push_menu_label(), self._push_menu_action())
         repo.append("Pull", "win.pull")
         repo.append("Fetch", "win.fetch")
-        repo.append("Force push", "win.force-push")
         repo.append("Remove…", "win.remove-repository")
         repo.append("View on GitHub", "win.view-on-github")
         repo.append("Open in shell", "win.open-in-shell")
@@ -755,7 +781,7 @@ class MainWindow(Adw.ApplicationWindow):
         branch.append("Delete…", "win.delete-branch")
         branch.append("Discard all changes…", "win.discard-all")
         branch.append("Stash all changes…", "win.stash-all")
-        branch.append("Update from default branch", "win.update-from-default")
+        branch.append(self._update_from_default_label(), "win.update-from-default")
         branch.append("Compare to branch", "win.compare-to-branch")
         branch.append("Merge into current branch…", "win.merge-branch")
         branch.append("Squash and merge…", "win.squash-merge")
@@ -763,7 +789,7 @@ class MainWindow(Adw.ApplicationWindow):
         branch.append("Compare on GitHub", "win.compare-on-github")
         branch.append("View branch on GitHub", "win.branch-on-github")
         branch.append("Preview pull request", "win.preview-pull-request")
-        branch.append("Create pull request", "win.open-pull-request")
+        branch.append(self._pull_request_menu_label(), "win.open-pull-request")
         menu.append_submenu("Branch", branch)
         help_m = Gio.Menu()
         help_m.append("Report issue…", "win.report-issue")
@@ -776,6 +802,54 @@ class MainWindow(Adw.ApplicationWindow):
         help_m.append("About GitHub Desktop", "win.about")
         menu.append_submenu("Help", help_m)
         return menu
+
+    def _selected_state(self):
+        repo = self.store.selected_repository
+        return self.store.state_for(repo) if repo else None
+
+    def _push_menu_label(self) -> str:
+        if self.store.current_branch_force_push_state() == ForcePushBranchState.RECOMMENDED:
+            confirm = self.store.settings.confirm_force_push or self.store.settings.ask_for_confirmation_on_force_push
+            return "Force push…" if confirm else "Force push"
+        return "Push"
+
+    def _push_menu_action(self) -> str:
+        if self.store.current_branch_force_push_state() == ForcePushBranchState.RECOMMENDED:
+            return "win.force-push"
+        return "win.push"
+
+    def _pull_request_menu_label(self) -> str:
+        state = self._selected_state()
+        if state and state.current_pull_request:
+            return "View pull request on GitHub"
+        return "Create pull request"
+
+    def _stash_menu_label(self) -> str:
+        state = self._selected_state()
+        if state and state.stashed_visible:
+            return "Hide stashed changes"
+        return "Show stashed changes"
+
+    def _update_from_default_label(self) -> str:
+        repo = self.store.selected_repository
+        name = self.store.default_branch_name(repo) if repo else None
+        return f"Update from {name or self.store.settings.default_branch or 'default branch'}"
+
+    def _rebuild_app_menu(self) -> None:
+        if not hasattr(self, "_menu_btn"):
+            return
+        state = self._selected_state()
+        sig = (
+            self._push_menu_label(),
+            self._pull_request_menu_label(),
+            self._stash_menu_label(),
+            self._update_from_default_label(),
+            bool(state and state.current_pull_request),
+        )
+        if getattr(self, "_menu_sig", None) == sig:
+            return
+        self._menu_sig = sig
+        self._menu_btn.set_menu_model(self._app_menu())
 
     def _build_repo_list(self) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -902,6 +976,10 @@ class MainWindow(Adw.ApplicationWindow):
         self._description = Gtk.TextView()
         self._description.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self._description.set_size_request(-1, 70)
+        try:
+            self._description.get_buffer().set_enable_undo(True)
+        except Exception:
+            pass
         self._description.get_buffer().connect("changed", lambda *_: (self._flush_commit_form(), self._update_commit_warnings()))
         co = Gtk.CheckButton(label="Co-authors")
         co.connect("toggled", self._on_coauthors)
@@ -948,6 +1026,11 @@ class MainWindow(Adw.ApplicationWindow):
         commit_box.append(self._conflict_bar)
         left.append(commit_box)
         paned.set_start_child(left)
+        self._changes_paned = paned
+        try:
+            paned.set_position(max(220, int(self.store.settings.sidebar_width or 320)))
+        except Exception:
+            pass
         self._diff_view = DiffViewer(
             interactive=True,
             on_line_toggle=self._on_line_toggle,
@@ -1038,6 +1121,11 @@ class MainWindow(Adw.ApplicationWindow):
         )
         right.append(self._hist_diff_view)
         paned.set_end_child(right)
+        self._history_paned = paned
+        try:
+            paned.set_position(max(220, int(self.store.settings.commit_summary_width or 360)))
+        except Exception:
+            pass
         return paned
 
     def _on_view_changed(self, *_args: object) -> None:
@@ -1087,6 +1175,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._refresh_conflict_bar(state)
         self._refresh_stash_bar(state)
         self._refresh_stash_viewer(state)
+        self._rebuild_app_menu()
         if hasattr(self, "_changes_stack"):
             self._changes_stack.set_visible_child_name(
                 "stash" if state.stashed_visible and state.stashes else "working"
@@ -1326,6 +1415,7 @@ class MainWindow(Adw.ApplicationWindow):
                 if repo.is_missing:
                     row.set_subtitle("Can't find this repository")
                 ab = self.store.state_for(repo).ahead_behind
+                extras: list[Gtk.Widget] = []
                 if ab and self.store.settings.repository_indicators_enabled:
                     extra = []
                     if ab.ahead:
@@ -1333,7 +1423,17 @@ class MainWindow(Adw.ApplicationWindow):
                     if ab.behind:
                         extra.append(f"↓{ab.behind}")
                     if extra:
-                        row.add_suffix(Gtk.Label(label=" ".join(extra)))
+                        badge = Gtk.Label(label=" ".join(extra))
+                        badge.add_css_class("ahead-behind")
+                        extras.append(badge)
+                changes = self.store.state_for(repo).changed_files_count
+                if changes and self.store.settings.repository_indicators_enabled:
+                    dot = Gtk.Label(label="●")
+                    dot.add_css_class("repo-changes-dot")
+                    dot.set_tooltip_text(f"{changes} uncommitted change(s)")
+                    extras.append(dot)
+                for widget in extras:
+                    row.add_suffix(widget)
                 if repo.github:
                     row.add_prefix(Gtk.Image.new_from_icon_name("user-bookmarks-symbolic"))
                 row.set_activatable(True)
@@ -1459,17 +1559,27 @@ class MainWindow(Adw.ApplicationWindow):
             )
         elif repo.github and not state.current_pull_request:
             current = state.status.current_branch if state.status else None
-            default = repo.github.default_branch
+            default = self.store.default_branch_name(repo)
             if current and current != default:
-                self._suggested.append(
-                    self._suggested_card(
-                        "Create a pull request",
-                        "The current branch has been published. Open a pull request to propose your changes.",
-                        "Create pull request",
-                        lambda: self.store.open_pull_request(repo),
-                        primary=True,
+                action = self.store.settings.pull_request_suggested_next_action
+                if action == PullRequestSuggestedNextAction.PREVIEW_PULL_REQUEST.value:
+                    self._suggested.append(
+                        self._suggested_pr_card(
+                            "Preview the pull request from your current branch",
+                            f"The current branch ({current}) is already published to GitHub. Preview the changes this pull request will have before proposing your changes.",
+                            "Preview pull request",
+                            lambda: self.store.preview_pull_request(repo),
+                        )
                     )
-                )
+                else:
+                    self._suggested.append(
+                        self._suggested_pr_card(
+                            "Create a pull request from your current branch",
+                            f"The current branch ({current}) is already published to GitHub. Create a pull request to propose and collaborate on your changes.",
+                            "Create pull request",
+                            lambda: self.store.open_pull_request(repo),
+                        )
+                    )
         self._suggested.append(
             self._suggested_card(
                 "Open the repository in your external editor",
@@ -1510,6 +1620,31 @@ class MainWindow(Adw.ApplicationWindow):
         box.append(heading)
         box.append(body)
         box.append(btn)
+        return box
+
+    def _suggested_pr_card(self, title: str, description: str, button: str, callback) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.add_css_class("suggested-action-card")
+        heading = Gtk.Label(label=title, xalign=0, wrap=True)
+        heading.add_css_class("heading")
+        body = Gtk.Label(label=description, xalign=0, wrap=True)
+        body.add_css_class("dim-label")
+        row = Gtk.Box(spacing=0)
+        row.add_css_class("linked")
+        btn = Gtk.Button(label=button, hexpand=True)
+        btn.add_css_class("suggested-action")
+        btn.connect("clicked", lambda *_: callback())
+        menu = Gio.Menu()
+        menu.append("Preview pull request", "win.pr-suggested-preview")
+        menu.append("Create pull request", "win.pr-suggested-create")
+        drop = Gtk.MenuButton(icon_name="pan-down-symbolic")
+        drop.set_menu_model(menu)
+        drop.set_tooltip_text("Choose Preview or Create pull request")
+        row.append(btn)
+        row.append(drop)
+        box.append(heading)
+        box.append(body)
+        box.append(row)
         return box
 
     def _file_row(self, file: WorkingDirectoryFileChange) -> Gtk.Widget:
@@ -2598,6 +2733,9 @@ class MainWindow(Adw.ApplicationWindow):
         if widget is None:
             return
         clipboard = self.get_clipboard()
+        if action in {"undo", "redo"}:
+            self._edit_undo_redo(widget, redo=action == "redo")
+            return
         if isinstance(widget, Gtk.Editable):
             if action == "cut":
                 widget.cut_clipboard()
@@ -2634,4 +2772,145 @@ class MainWindow(Adw.ApplicationWindow):
                 clipboard.read_text_async(None, _paste)
             elif action == "select-all":
                 buf.select_range(buf.get_start_iter(), buf.get_end_iter())
+
+    def _edit_undo_redo(self, widget, *, redo: bool) -> None:
+        """Undo/redo the focused text field. Never undoes a Git commit (Desktop Edit → Undo)."""
+        current = widget
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if isinstance(current, Gtk.TextView):
+                buf = current.get_buffer()
+                try:
+                    buf.set_enable_undo(True)
+                except Exception:
+                    pass
+                try:
+                    if redo:
+                        if buf.get_can_redo():
+                            buf.redo()
+                    elif buf.get_can_undo():
+                        buf.undo()
+                except Exception:
+                    pass
+                return
+            delegate = getattr(current, "get_delegate", None)
+            inner = delegate() if callable(delegate) else None
+            if inner is not None and inner is not current and hasattr(inner, "undo"):
+                current = inner
+                continue
+            if hasattr(current, "undo") and hasattr(current, "get_can_undo"):
+                try:
+                    if redo:
+                        if current.get_can_redo():
+                            current.redo()
+                    elif current.get_can_undo():
+                        current.undo()
+                except Exception:
+                    pass
+                return
+            current = current.get_parent() if hasattr(current, "get_parent") else None
+
+    def _nudge_paned(self, delta: int) -> None:
+        paned = None
+        if hasattr(self, "_view_stack") and self._view_stack.get_visible_child_name() == "history":
+            paned = getattr(self, "_history_paned", None)
+        else:
+            paned = getattr(self, "_changes_paned", None)
+        if paned is None:
+            return
+        pos = paned.get_position()
+        paned.set_position(max(180, min(720, pos + delta)))
+
+    def _pr_suggested_preview(self, *_args: object) -> None:
+        self.store.set_pull_request_suggested_next_action(PullRequestSuggestedNextAction.PREVIEW_PULL_REQUEST.value)
+        repo = self.store.selected_repository
+        if repo:
+            self.store.preview_pull_request(repo)
+
+    def _pr_suggested_create(self, *_args: object) -> None:
+        self.store.set_pull_request_suggested_next_action(PullRequestSuggestedNextAction.CREATE_PULL_REQUEST.value)
+        repo = self.store.selected_repository
+        if repo:
+            self.store.open_pull_request(repo)
+
+    def _show_shortcuts(self, *_args: object) -> None:
+        try:
+            win = Gtk.ShortcutsWindow()
+            win.set_transient_for(self)
+            win.set_modal(True)
+            section = Gtk.ShortcutsSection()
+            try:
+                section.set_property("section-name", "main")
+                section.set_property("title", "GitHub Desktop")
+            except Exception:
+                pass
+            groups = [
+                (
+                    "File",
+                    [
+                        ("New repository", "<Control>n"),
+                        ("Add local repository", "<Control>o"),
+                        ("Clone repository", "<Control><Shift>o"),
+                        ("Options", "<Control>comma"),
+                    ],
+                ),
+                (
+                    "Edit",
+                    [
+                        ("Undo", "<Control>z"),
+                        ("Redo", "<Control><Shift>z"),
+                        ("Find", "<Control>f"),
+                    ],
+                ),
+                (
+                    "View",
+                    [
+                        ("Changes", "<Control>1"),
+                        ("History", "<Control>2"),
+                        ("Repository list", "<Control>t"),
+                        ("Branches", "<Control>b"),
+                        ("Increase active resizable", "<Control>9"),
+                        ("Decrease active resizable", "<Control>8"),
+                    ],
+                ),
+                (
+                    "Repository",
+                    [
+                        ("Push", "<Control>p"),
+                        ("Pull", "<Control><Shift>p"),
+                        ("Fetch", "<Control><Shift>t"),
+                        ("Open in shell", "<Control>grave"),
+                        ("Show in file manager", "<Control><Shift>f"),
+                        ("Open in editor", "<Control><Shift>a"),
+                    ],
+                ),
+                (
+                    "Branch",
+                    [
+                        ("Create pull request", "<Control>r"),
+                        ("Preview pull request", "<Alt>p"),
+                        ("Update from default branch", "<Control><Shift>u"),
+                        ("Stashed changes", "<Control>h"),
+                    ],
+                ),
+            ]
+            for title, items in groups:
+                group = Gtk.ShortcutsGroup()
+                try:
+                    group.set_property("title", title)
+                except Exception:
+                    pass
+                for shortcut_title, accelerator in items:
+                    sc = Gtk.ShortcutsShortcut()
+                    sc.set_property("title", shortcut_title)
+                    sc.set_property("accelerator", accelerator)
+                    group.append(sc)
+                section.append(group)
+            win.set_child(section) if hasattr(win, "set_child") else win.add(section)
+            win.present()
+        except Exception:
+            open_external(
+                "https://docs.github.com/en/desktop/installing-and-configuring-github-desktop/overview/keyboard-shortcuts"
+            )
 

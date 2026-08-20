@@ -9,13 +9,13 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, GLib, Gtk
+from gi.repository import Adw, Gio, GLib
 
 from ..errors import GitNotFoundError
 from ..git.ops import checkout_branch
 from ..git.runner import find_git
 from ..logging import get_logger
-from ..models import PopupType
+from ..models import FetchType, PopupType
 from ..protocol import is_protocol_url, parse_app_url
 from ..store import AppStore
 from ..theme import apply_theme
@@ -73,10 +73,39 @@ class DesktopApplication(Adw.Application):
             self.store.refresh_repository(repo)
         GLib.timeout_add_seconds(30, self._poll_notifications)
         GLib.idle_add(lambda: self.store.check_thank_you() or False)
+        if not os.environ.get("PYTEST_CURRENT_TEST"):
+            skew = 1 + (os.getpid() % 30)
+            GLib.timeout_add_seconds(skew, self._background_fetch_tick)
+            GLib.timeout_add_seconds(skew, self._indicator_tick)
 
     def _poll_notifications(self) -> bool:
         self.store.poll_notifications()
         return True
+
+    def _background_fetch_tick(self) -> bool:
+        """Desktop BackgroundFetcher: quiet fetch of the selected GitHub repository."""
+        if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("GITHUB_DESKTOP_OFFLINE"):
+            return False
+        repo = self.store.selected_repository
+        if repo:
+            try:
+                self.store.fetch_repo(repo, FetchType.BACKGROUND_TASK)
+            except Exception as exc:
+                log.debug("background fetch tick failed: %s", exc)
+        interval = max(int(self.store.background_fetch_interval), 5 * 60)
+        GLib.timeout_add_seconds(interval, self._background_fetch_tick)
+        return False
+
+    def _indicator_tick(self) -> bool:
+        """Desktop RepositoryIndicatorUpdater: ahead/behind for every repository."""
+        if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("GITHUB_DESKTOP_OFFLINE"):
+            return False
+        try:
+            self.store.refresh_repo_indicators()
+        except Exception as exc:
+            log.debug("indicator tick failed: %s", exc)
+        GLib.timeout_add_seconds(15 * 60, self._indicator_tick)
+        return False
 
     def _on_open(self, _app, files, _n, _hint) -> None:
         self.activate()

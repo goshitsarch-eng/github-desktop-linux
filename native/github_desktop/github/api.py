@@ -252,6 +252,34 @@ class GitHubAPI:
             return []
         return data if isinstance(data, list) else []
 
+    def get_fetch_poll_interval(self, owner: str, name: str) -> int | None:
+        """Desktop `getFetchPollInterval`: parsed `x-poll-interval` from HEAD `/repos/{owner}/{name}/git`.
+
+        Returns the raw header integer (Desktop treats it as milliseconds) or None.
+        """
+        path = f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(name)}/git"
+        url = self.endpoint + path
+        req = urllib.request.Request(url, headers=self._headers(), method="HEAD")
+        headers = None
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                headers = resp.headers
+        except urllib.error.HTTPError as exc:
+            headers = exc.headers
+        except Exception as exc:
+            log.debug("get_fetch_poll_interval failed: %s", exc)
+            return None
+        if headers is None:
+            return None
+        raw = headers.get("X-Poll-Interval") or headers.get("x-poll-interval")
+        if not raw:
+            return None
+        try:
+            parsed = int(raw)
+        except ValueError:
+            return None
+        return parsed if parsed > 0 else None
+
     def get_alive_websocket_url(self) -> str | None:
         """Desktop `getAliveWebSocketURL`. Native polls `/notifications` instead of keeping a socket."""
         try:
