@@ -20,6 +20,11 @@ from typing import Callable, TextIO
 
 from ..logging import get_logger
 from ..paths import cache_dir
+from ..ssh_credentials import (
+    LEGACY_SSH_SERVICE,
+    lookup_ssh_key_passphrase,
+    lookup_ssh_user_password,
+)
 
 log = get_logger()
 
@@ -27,7 +32,7 @@ log = get_logger()
 GITHUB_RSA_FINGERPRINT = "SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8"
 
 SOCK_ENV = "GITHUB_DESKTOP_ASKPASS_SOCK"
-SSH_SERVICE = "GitHub Desktop SSH"
+SSH_SERVICE = LEGACY_SSH_SERVICE
 
 _HOST_RE = (
     r"^The authenticity of host '([^ ]+) \(([^\)]+)\)' can't be established[^.]*\.\n"
@@ -39,7 +44,7 @@ _USER_RE = r"^(.+@.+)'s password:\s*$"
 _prompt_callback: Callable[[str], str] | None = None
 _server_thread: threading.Thread | None = None
 _server_sock: socket.socket | None = None
-_most_recent_ssh_account: str | None = None
+_most_recent_ssh: tuple[str, str] | None = None  # (store, key)
 
 
 @dataclass
@@ -86,50 +91,49 @@ def auto_answer(parsed: AskpassRequest) -> str | None:
         return "yes"
     if parsed.kind == "key" and parsed.key_path:
         try:
-            from .. import secrets
-
-            stored = secrets.get_password(SSH_SERVICE, parsed.key_path)
-            if stored:
-                set_most_recent_ssh_credential(parsed.key_path)
+            found = lookup_ssh_key_passphrase(parsed.key_path)
+            if found:
+                stored, store, key = found
+                set_most_recent_ssh_credential(key, store)
                 return stored
         except Exception:
             pass
     if parsed.kind == "password" and parsed.username:
         try:
-            from .. import secrets
-
-            stored = secrets.get_password(SSH_SERVICE, parsed.username)
-            if stored:
-                set_most_recent_ssh_credential(parsed.username)
+            found = lookup_ssh_user_password(parsed.username)
+            if found:
+                stored, store, key = found
+                set_most_recent_ssh_credential(key, store)
                 return stored
         except Exception:
             pass
     return None
 
 
-def set_most_recent_ssh_credential(account: str) -> None:
+def set_most_recent_ssh_credential(account: str, store: str | None = None) -> None:
     """Desktop `setMostRecentSSHCredential` for this git operation."""
-    global _most_recent_ssh_account
-    _most_recent_ssh_account = account
+    global _most_recent_ssh
+    _most_recent_ssh = (store or SSH_SERVICE, account)
 
 
 def remove_most_recent_ssh_credential() -> None:
     """Desktop `removeMostRecentSSHCredential` (keep stored secret)."""
-    global _most_recent_ssh_account
-    _most_recent_ssh_account = None
+    global _most_recent_ssh
+    _most_recent_ssh = None
 
 
 def delete_most_recent_ssh_credential() -> None:
     """Desktop `deleteMostRecentSSHCredential` after SSH auth failure."""
-    global _most_recent_ssh_account
-    account = _most_recent_ssh_account
-    _most_recent_ssh_account = None
-    if not account:
+    global _most_recent_ssh
+    entry = _most_recent_ssh
+    _most_recent_ssh = None
+    if not entry:
         return
+    store, key = entry
     try:
         from .. import secrets
 
-        secrets.delete_password(SSH_SERVICE, account)
+        secrets.delete_password(store, key)
     except Exception:
         log.debug("could not delete rejected SSH credential", exc_info=True)
 

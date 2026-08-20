@@ -151,6 +151,14 @@ from .github.oauth import (
 from .popup_manager import PopupManager
 from .large_files import get_large_file_paths
 from .infer_last_push import infer_last_push_for_repository
+from .pull_request_matching import associated_pull_request_for
+from .enterprise import (
+    INVALID_PROTOCOL_ERROR_NAME,
+    INVALID_URL_ERROR_NAME,
+    EnterpriseURLError,
+    is_github_dotcom_address,
+    validate_url,
+)
 from .offset_from import offset_from_now
 from .logging import get_logger
 from .models import (
@@ -1263,7 +1271,12 @@ class AppStore:
                             prs = previous_prs
                             payload["pull_requests"] = prs
                         current = status.current_branch if status else None
-                        payload["current_pull_request"] = next((pr for pr in prs if pr.head_ref == current), None)
+                        payload["current_pull_request"] = associated_pull_request_for(
+                            prs,
+                            current_branch=current,
+                            branches=branches,
+                            remotes=remotes,
+                        )
                         pr = payload["current_pull_request"]
                         if pr:
                             try:
@@ -1921,12 +1934,16 @@ class AppStore:
             def finish(value: str | None, store_secret: bool = False) -> None:
                 box["value"] = value or ""
                 if store_secret and value:
-                    account = parsed.key_path or parsed.username
-                    if account:
-                        secrets.set_password("GitHub Desktop SSH", account, value)
-                        from .git.askpass import set_most_recent_ssh_credential
+                    from .git.askpass import set_most_recent_ssh_credential
+                    from .ssh_credentials import set_ssh_key_passphrase, set_ssh_user_password
 
-                        set_most_recent_ssh_credential(account)
+                    store_name = key = None
+                    if parsed.kind == "key" and parsed.key_path:
+                        store_name, key = set_ssh_key_passphrase(parsed.key_path, value)
+                    elif parsed.username:
+                        store_name, key = set_ssh_user_password(parsed.username, value)
+                    if store_name and key:
+                        set_most_recent_ssh_credential(key, store_name)
                 event.set()
 
             if parsed.kind == "host":
@@ -4208,8 +4225,22 @@ class AppStore:
         self.sign_in_error = None
 
     def set_sign_in_endpoint(self, url: str) -> None:
+        trimmed = (url or "").strip()
+        if is_github_dotcom_address(trimmed):
+            self.sign_in_error = None
+            self.sign_in_existing = None
+            self.sign_in_endpoint = dotcom_endpoint()
+            existing = next((account for account in self.accounts if account.is_dotcom), None)
+            if existing:
+                self.sign_in_step = SignInStep.EXISTING_ACCOUNT_WARNING
+                self.sign_in_existing = existing
+            else:
+                self.sign_in_step = SignInStep.AUTHENTICATION
+            self.emit()
+            return
         try:
-            self.sign_in_endpoint = enterprise_endpoint_from_url(url)
+            valid = validate_url(trimmed)
+            self.sign_in_endpoint = enterprise_endpoint_from_url(valid)
             existing = next((a for a in self.accounts if a.endpoint == self.sign_in_endpoint), None)
             if existing:
                 self.sign_in_step = SignInStep.EXISTING_ACCOUNT_WARNING
@@ -4218,6 +4249,19 @@ class AppStore:
                 self.sign_in_step = SignInStep.AUTHENTICATION
                 self.sign_in_existing = None
             self.sign_in_error = None
+        except EnterpriseURLError as exc:
+            if exc.name == INVALID_URL_ERROR_NAME:
+                self.sign_in_error = (
+                    "The GitHub Enterprise instance address doesn't appear to be a valid URL. "
+                    "We're expecting something like https://github.example.com."
+                )
+            elif exc.name == INVALID_PROTOCOL_ERROR_NAME:
+                self.sign_in_error = (
+                    "Unsupported protocol. Only https is supported when authenticating with "
+                    "GitHub Enterprise instances."
+                )
+            else:
+                self.sign_in_error = str(exc)
         except Exception as exc:
             self.sign_in_error = str(exc)
         self.emit()
@@ -4759,7 +4803,12 @@ class AppStore:
                 "pull_requests": prs,
                 "last_pr_updated_at": latest,
                 "last_pr_refresh": time.time(),
-                "current_pull_request": next((pr for pr in prs if pr.head_ref == current), None),
+                "current_pull_request": associated_pull_request_for(
+                    prs,
+                    current_branch=current,
+                    branches=state.branches,
+                    remotes=state.remotes,
+                ),
             }
 
         def done(exc: BaseException | None, result: dict | None = None) -> None:

@@ -308,6 +308,10 @@ def test_window_actions_cover_menus() -> None:
         truncate as truncate_mod,
         large_files as large_files_mod,
         infer_last_push as infer_last_push_mod,
+        pull_request_matching as pr_matching_mod,
+        get_file_hash as get_file_hash_mod,
+        ssh_credentials as ssh_credentials_mod,
+        enterprise as enterprise_mod,
     )
 
     src += open(parse_pac_mod.__file__, encoding="utf-8").read()
@@ -317,6 +321,10 @@ def test_window_actions_cover_menus() -> None:
     src += open(truncate_mod.__file__, encoding="utf-8").read()
     src += open(large_files_mod.__file__, encoding="utf-8").read()
     src += open(infer_last_push_mod.__file__, encoding="utf-8").read()
+    src += open(pr_matching_mod.__file__, encoding="utf-8").read()
+    src += open(get_file_hash_mod.__file__, encoding="utf-8").read()
+    src += open(ssh_credentials_mod.__file__, encoding="utf-8").read()
+    src += open(enterprise_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -847,5 +855,15 @@ def test_window_actions_cover_menus() -> None:
         "urlsMatch",
         "parseRepositoryIdentifier",
         "ReceiveLimit",
+        "findAssociatedPullRequest",
+        "isPullRequestAssociatedWithBranch",
+        "getFileHash",
+        "getSSHCredentialStoreKey",
+        "SSH key passphrases",
+        "SSH user password",
+        "validateURL",
+        "InvalidProtocolErrorName",
+        "InvalidURLErrorName",
+        "Only https is supported",
     ]:
         assert phrase in src
