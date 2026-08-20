@@ -50,6 +50,11 @@ REQUIRED_GIT_FUNCS = [
     "add_safe_directory",
     "stage_files",
     "apply_patch_to_index",
+    "determine_mergeability",
+    "get_commits_between",
+    "get_ahead_behind_range",
+    "get_boolean_config_value",
+    "warn_about_remote_commits",
 ]
 
 
@@ -114,11 +119,13 @@ def test_window_actions_cover_menus() -> None:
     src += open(diff_view.__file__, encoding="utf-8").read()
     from github_desktop.ui import dialogs as dialogs_mod, tutorial, checks
     from github_desktop.github import ci_checks
+    from github_desktop.ui import multi_commit
 
     src += open(dialogs_mod.__file__, encoding="utf-8").read()
     src += open(tutorial.__file__, encoding="utf-8").read()
     src += open(checks.__file__, encoding="utf-8").read()
     src += open(ci_checks.__file__, encoding="utf-8").read()
+    src += open(multi_commit.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -164,5 +171,13 @@ def test_window_actions_cover_menus() -> None:
         "View logs",
         "GitHub Enterprise",
         "line endings",
+        "Create a merge commit",
+        "Checking for ability to merge automatically",
+        "View conflicts",
+        "Confirm abort",
+        "will require force push",
+        "Do not show this message again",
+        "repository rules",
+        "Open with default program",
     ]:
         assert phrase in src

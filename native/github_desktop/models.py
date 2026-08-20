@@ -308,6 +308,26 @@ class MergeResult(StrEnum):
     FAILED = "Failed"
 
 
+class ComputedAction(StrEnum):
+    LOADING = "loading"
+    CLEAN = "clean"
+    CONFLICTS = "conflicts"
+    INVALID = "invalid"
+
+
+@dataclass
+class MergeTreeResult:
+    kind: ComputedAction
+    conflicted_files: int = 0
+
+
+@dataclass
+class RebasePreview:
+    kind: ComputedAction
+    commits_ahead: int = 0
+    commits_behind: int = 0
+
+
 class ManualConflictResolution(StrEnum):
     OURS = "ours"
     THEIRS = "theirs"

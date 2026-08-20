@@ -115,6 +115,20 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
                     "should_checkout": False,
                 },
             )
+            from github_desktop.ui.multi_commit import (
+                show_confirm_abort,
+                show_conflicts_dialog,
+                show_multi_commit,
+                show_warn_force_push,
+            )
+            from github_desktop.ui.dialogs import show_create_branch
+
+            show_multi_commit(win, store, {"kind": "Merge"})
+            show_multi_commit(win, store, {"kind": "Cherry-pick", "shas": ["deadbeef"]})
+            show_warn_force_push(win, store, {"operation": "Rebase"})
+            show_confirm_abort(win, "Merge", lambda: None)
+            show_conflicts_dialog(win, store, "Merge")
+            show_create_branch(win, store, {})
             repos[0].is_missing = True
             win._show_missing(repos[0])
             win._repo_content.set_visible_child_name("missing")

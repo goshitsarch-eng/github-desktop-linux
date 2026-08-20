@@ -50,6 +50,7 @@ from .git import (
     get_commit_range_changed_files,
     get_commit_range_diff,
     get_commits,
+    get_boolean_config_value,
     get_config_value,
     get_default_branch,
     get_remotes,
@@ -84,6 +85,7 @@ from .git import (
 from .git.runner import find_git, resolve_repository_root
 from .github.api import GitHubAPI
 from .github.ci_checks import attach_workflow_jobs_to_checks, failing_checks, is_failure, split_rerunnable_checks
+from .github.repo_rules import RepoRulesInfo, parse_repo_rules, use_repo_rules_logic
 from .github.notifications import classify_notification, pull_request_from_payload
 from .github.oauth import (
     dotcom_endpoint,
@@ -207,6 +209,7 @@ class RepositoryViewState:
     shas_in_diff: list[str] = field(default_factory=list)
     commit_summary_expanded: bool = False
     diff_comments: list = field(default_factory=list)
+    repo_rules: RepoRulesInfo = field(default_factory=RepoRulesInfo)
 
 
 class AppStore:
@@ -219,6 +222,7 @@ class AppStore:
         self.foldout: FoldoutType | None = None
         self.popup: Popup | None = None
         self.banner: Banner | None = None
+        self.cached_repo_rulesets: dict[int, dict] = {}
         self.welcome_step: WelcomeStep | None = None if self.settings.welcome_shown else WelcomeStep.START
         self.sign_in_step: SignInStep | None = None
         self.sign_in_endpoint: str = dotcom_endpoint()
@@ -741,6 +745,10 @@ class AppStore:
                             payload["mentions"] = api.fetch_mentions(repo.github.owner, repo.github.name)
                         except APIError:
                             pass
+                        try:
+                            payload["repo_rules"] = self._load_repo_rules(api, repo, status)
+                        except Exception as exc:
+                            log.debug("repo rules fetch failed: %s", exc)
                     except APIError as exc:
                         log.debug("GitHub metadata fetch failed: %s", exc)
             return payload
@@ -780,6 +788,8 @@ class AppStore:
             state.check_runs = data.get("check_runs") or []
             state.mentions = data.get("mentions") or []
             state.local_commit_shas = data.get("local_commit_shas") or []
+            if "repo_rules" in data:
+                state.repo_rules = data["repo_rules"]
             if previous_selected and status:
                 state.selected_file = next((f for f in status.working_directory.files if f.path == previous_selected), None)
             if state.selected_file is None and status and status.working_directory.files:
@@ -1758,25 +1768,67 @@ class AppStore:
         self.remember_branch(repo, name)
         self.refresh_repository(repo)
 
-    def merge_branch(self, repo: Repository, branch: str, squash: bool = False) -> None:
-        result = merge(repo.path, branch, squash=squash)
-        if result == MergeResult.FAILED:
-            self.show_banner(Banner(BannerType.MERGE_CONFLICTS_FOUND, our_branch=self.state_for(repo).status.current_branch if self.state_for(repo).status else None, their_branch=branch))
-        elif result == MergeResult.ALREADY_UP_TO_DATE:
-            self.show_banner(Banner(BannerType.BRANCH_ALREADY_UP_TO_DATE, their_branch=branch))
-        else:
-            self.show_banner(Banner(BannerType.SUCCESSFUL_MERGE, their_branch=branch))
-        self.refresh_repository(repo)
+    def merge_branch(self, repo: Repository, branch: str, squash: bool = False, on_done: Callable[..., None] | None = None) -> None:
+        def work() -> tuple:
+            return merge(repo.path, branch, squash=squash), get_status(repo.path)
 
-    def rebase_branch(self, repo: Repository, base: str) -> None:
-        result = rebase(repo.path, base)
-        if result == RebaseResult.CONFLICTS_ENCOUNTERED:
-            self.show_banner(Banner(BannerType.REBASE_CONFLICTS_FOUND, target_branch=base))
-        elif result == RebaseResult.ALREADY_UP_TO_DATE:
-            self.show_banner(Banner(BannerType.BRANCH_ALREADY_UP_TO_DATE, their_branch=base))
-        elif result == RebaseResult.COMPLETED_WITHOUT_ERROR:
-            self.show_banner(Banner(BannerType.SUCCESSFUL_REBASE, target_branch=base))
-        self.refresh_repository(repo)
+        def done(exc: BaseException | None, result: tuple | None = None) -> None:
+            if on_done:
+                try:
+                    on_done()
+                except Exception:
+                    pass
+            merge_result = None
+            status = None
+            if isinstance(result, tuple) and len(result) == 2:
+                merge_result, status = result
+            if status is not None:
+                self.state_for(repo).status = status
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+            elif merge_result == MergeResult.FAILED:
+                self.show_banner(Banner(BannerType.MERGE_CONFLICTS_FOUND, our_branch=self.state_for(repo).status.current_branch if self.state_for(repo).status else None, their_branch=branch))
+                self.show_popup(
+                    PopupType.MULTI_COMMIT_OPERATION,
+                    kind=MultiCommitOperationKind.SQUASH if squash else MultiCommitOperationKind.MERGE,
+                    step="conflicts",
+                )
+            elif merge_result == MergeResult.ALREADY_UP_TO_DATE:
+                self.show_banner(Banner(BannerType.BRANCH_ALREADY_UP_TO_DATE, their_branch=branch))
+            else:
+                self.show_banner(Banner(BannerType.SUCCESSFUL_MERGE, their_branch=branch))
+            self.refresh_repository(repo)
+
+        self._run(work, done)
+
+    def rebase_branch(self, repo: Repository, base: str, on_done: Callable[..., None] | None = None) -> None:
+        def work() -> tuple:
+            return rebase(repo.path, base), get_status(repo.path)
+
+        def done(exc: BaseException | None, result: tuple | None = None) -> None:
+            if on_done:
+                try:
+                    on_done()
+                except Exception:
+                    pass
+            rebase_result = None
+            status = None
+            if isinstance(result, tuple) and len(result) == 2:
+                rebase_result, status = result
+            if status is not None:
+                self.state_for(repo).status = status
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+            elif rebase_result == RebaseResult.CONFLICTS_ENCOUNTERED:
+                self.show_banner(Banner(BannerType.REBASE_CONFLICTS_FOUND, target_branch=base))
+                self.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind=MultiCommitOperationKind.REBASE, step="conflicts")
+            elif rebase_result == RebaseResult.ALREADY_UP_TO_DATE:
+                self.show_banner(Banner(BannerType.BRANCH_ALREADY_UP_TO_DATE, their_branch=base))
+            elif rebase_result == RebaseResult.COMPLETED_WITHOUT_ERROR:
+                self.show_banner(Banner(BannerType.SUCCESSFUL_REBASE, target_branch=base))
+            self.refresh_repository(repo)
+
+        self._run(work, done)
 
     def continue_conflict_operation(self, repo: Repository, kind: MultiCommitOperationKind) -> None:
         if kind == MultiCommitOperationKind.REBASE:
@@ -1798,15 +1850,34 @@ class AppStore:
             abort_merge(repo.path)
         self.refresh_repository(repo)
 
-    def cherry_pick_commits(self, repo: Repository, shas: Sequence[str], target_branch: str | None = None) -> None:
-        if target_branch:
-            checkout_branch(repo.path, target_branch)
-        result = cherry_pick(repo.path, shas)
-        if result == CherryPickResult.CONFLICTS_ENCOUNTERED:
-            self.show_banner(Banner(BannerType.CHERRY_PICK_CONFLICTS_FOUND, target_branch=target_branch))
-        elif result == CherryPickResult.COMPLETED_WITHOUT_ERROR:
-            self.show_banner(Banner(BannerType.SUCCESSFUL_CHERRY_PICK, count=len(shas), target_branch=target_branch))
-        self.refresh_repository(repo)
+    def cherry_pick_commits(self, repo: Repository, shas: Sequence[str], target_branch: str | None = None, on_done: Callable[..., None] | None = None) -> None:
+        def work() -> tuple:
+            if target_branch:
+                checkout_branch(repo.path, target_branch)
+            return cherry_pick(repo.path, shas), get_status(repo.path)
+
+        def done(exc: BaseException | None, result: tuple | None = None) -> None:
+            if on_done:
+                try:
+                    on_done()
+                except Exception:
+                    pass
+            cherry_result = None
+            status = None
+            if isinstance(result, tuple) and len(result) == 2:
+                cherry_result, status = result
+            if status is not None:
+                self.state_for(repo).status = status
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+            elif cherry_result == CherryPickResult.CONFLICTS_ENCOUNTERED:
+                self.show_banner(Banner(BannerType.CHERRY_PICK_CONFLICTS_FOUND, target_branch=target_branch))
+                self.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind=MultiCommitOperationKind.CHERRY_PICK, step="conflicts")
+            elif cherry_result == CherryPickResult.COMPLETED_WITHOUT_ERROR:
+                self.show_banner(Banner(BannerType.SUCCESSFUL_CHERRY_PICK, count=len(shas), target_branch=target_branch))
+            self.refresh_repository(repo)
+
+        self._run(work, done)
 
     def begin_sign_in(self, enterprise: bool = False) -> None:
         if enterprise:
@@ -1978,25 +2049,57 @@ class AppStore:
         self.refresh_repository(repo)
 
     def generate_commit_message(self, repo: Repository) -> None:
-        account = self.account_for_repo(repo)
-        if not account:
-            raise CopilotError("Sign in to GitHub to generate a commit message")
-        state = self.state_for(repo)
-        files = [f for f in (state.status.working_directory.files if state.status else []) if f.include]
-        diffs = []
-        for f in files[:20]:
-            try:
-                diff = get_working_directory_diff(repo.path, f)
-                from .models import TextDiff
+        def work() -> tuple[str, str]:
+            account = self.account_for_repo(repo)
+            if not account:
+                raise CopilotError("Sign in to GitHub to generate a commit message")
+            state = self.state_for(repo)
+            files = [f for f in (state.status.working_directory.files if state.status else []) if f.include]
+            diffs = []
+            for f in files[:20]:
+                try:
+                    diff = get_working_directory_diff(repo.path, f)
+                    if isinstance(diff, TextDiff):
+                        diffs.append(diff.text)
+                except GitError:
+                    pass
+            api = GitHubAPI.from_account(account)
+            return api.generate_commit_message("\n".join(diffs), [f.path for f in files])
 
-                if isinstance(diff, TextDiff):
-                    diffs.append(diff.text)
-            except GitError:
-                pass
-        api = GitHubAPI.from_account(account)
-        summary, description = api.generate_commit_message("\n".join(diffs), [f.path for f in files])
-        state.commit_message = CommitMessage(summary=summary, description=description)
-        self.emit()
+        def done(exc: BaseException | None, result: tuple[str, str] | None = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            if result:
+                self.state_for(repo).commit_message = CommitMessage(summary=result[0], description=result[1])
+                self.emit()
+
+        self._run(work, done)
+
+    def _load_repo_rules(self, api: GitHubAPI, repo: Repository, status: IStatusResult | None) -> RepoRulesInfo:
+        if not repo.github or not use_repo_rules_logic(self.account_for_repo(repo), repo):
+            return RepoRulesInfo()
+        branch = status.current_branch if status else None
+        if not branch:
+            return RepoRulesInfo()
+        rules = api.fetch_repo_rules_for_branch(repo.github.owner, repo.github.name, branch)
+        if not rules:
+            return RepoRulesInfo()
+        needed: dict[int, dict] = {}
+        for rule in rules:
+            rid = int(rule.get("ruleset_id") or 0)
+            if not rid:
+                continue
+            cached = self.cached_repo_rulesets.get(rid)
+            if cached is None:
+                fetched = api.fetch_repo_ruleset(repo.github.owner, repo.github.name, rid)
+                if fetched:
+                    self.cached_repo_rulesets[rid] = fetched
+                    cached = fetched
+            if cached is not None:
+                needed[rid] = cached
+        gpg = get_boolean_config_value(repo.path, "commit.gpgsign") or False
+        return parse_repo_rules(rules, needed, gpg_sign_enabled=gpg)
 
     def apply_theme(self) -> None:
         from .theme import apply_theme

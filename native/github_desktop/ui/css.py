@@ -94,8 +94,10 @@ APP_CSS = """
 .filter-chip {
   font-size: 0.85rem;
 }
-.compare-cta {
-  padding: 8px;
+.merge-info {
+  font-size: 0.9rem;
+  opacity: 0.85;
+  padding: 4px 0;
 }
 .diff-search {
   padding: 6px 8px;
@@ -166,10 +168,10 @@ APP_CSS = """
   border-radius: 8px;
 }
 
-.whitespace-hint {
-  padding: 6px 8px;
+.repo-rules-warning {
+  color: @warning_color;
   font-size: 0.85rem;
-  opacity: 0.8;
+  padding: 4px 0;
 }
 """
 

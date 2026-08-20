@@ -40,6 +40,7 @@ from ..version import APP_NAME, __version__
 from .avatar import Avatar
 from .checks import show_checks, show_rerun_checks
 from .diff_view import DiffViewer
+from .multi_commit import show_multi_commit, show_warn_force_push
 
 
 def _alert(
@@ -130,7 +131,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         PopupType.CLONE_REPOSITORY: lambda: show_clone_repository(parent, store, payload),
         PopupType.SIGN_IN: lambda: show_sign_in(parent, store, bool(payload.get("enterprise"))),
         PopupType.CREATE_BRANCH: lambda: show_create_branch(parent, store, payload),
-        PopupType.RENAME_BRANCH: lambda: show_rename_branch(parent, store),
+        PopupType.RENAME_BRANCH: lambda: show_rename_branch(parent, store, payload),
         PopupType.DELETE_BRANCH: lambda: show_delete_branch(parent, store, payload),
         PopupType.DELETE_REMOTE_BRANCH: lambda: show_delete_branch(parent, store, payload, remote=True),
         PopupType.CONFIRM_DISCARD_CHANGES: lambda: show_discard(parent, store, payload),
@@ -327,13 +328,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         ),
         PopupType.PULL_REQUEST_CHECKS_FAILED: lambda: show_checks(parent, store, payload),
         PopupType.CI_CHECK_RUN_RERUN: lambda: show_rerun_checks(parent, store, payload),
-        PopupType.WARN_FORCE_PUSH: lambda: _alert(
-            parent,
-            "Force push required",
-            f"{payload.get('operation', 'This operation')} will require a force push.",
-            confirm="Continue",
-            on_confirm=lambda: payload.get("on_begin") and payload["on_begin"](),
-        ),
+        PopupType.WARN_FORCE_PUSH: lambda: show_warn_force_push(parent, store, payload),
         PopupType.PULL_REQUEST_REVIEW: lambda: show_pull_request_review(parent, store, payload),
         PopupType.PULL_REQUEST_COMMENT: lambda: show_pull_request_comment(parent, store, payload),
         PopupType.INSTALLING_UPDATE: lambda: _alert(parent, "Installing update", "The update will be applied shortly.", cancel=None),
@@ -886,24 +881,95 @@ def show_create_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, A
     repo = store.selected_repository
     if not repo:
         return
-
-    def submit(values: dict[str, str]) -> None:
-        name = values.get("name", "").strip()
-        start = values.get("start", "").strip() or None
-        if name:
-            store.create_branch_and_checkout(repo, name, start)
+    from ..github.repo_rules import use_repo_rules_logic
+    from ..models import test_for_invalid_chars
 
     state = store.state_for(repo)
     start = (payload or {}).get("start") or (state.status.current_branch if state.status else "")
-    _text_dialog(parent, "Create a branch", "The new branch will be checked out.", [("name", "Name", ""), ("start", "Create from", start or "")], submit, "Create branch")
+    dialog = Adw.Dialog()
+    dialog.set_content_width(460)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(Adw.WindowTitle(title="Create a branch", subtitle="The new branch will be checked out."))
+    cancel = Gtk.Button(label="Cancel")
+    cancel.connect("clicked", lambda *_: dialog.close())
+    create = Gtk.Button(label="Create branch")
+    create.add_css_class("suggested-action")
+    header.pack_start(cancel)
+    header.pack_end(create)
+    toolbar.add_top_bar(header)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+    box.set_margin_top(18)
+    box.set_margin_bottom(18)
+    box.set_margin_start(18)
+    box.set_margin_end(18)
+    name_row = Adw.EntryRow(title="Name")
+    start_row = Adw.EntryRow(title="Create from")
+    start_row.set_text(start or "")
+    warn = Gtk.Label(wrap=True, xalign=0)
+    warn.add_css_class("repo-rules-warning")
+    warn.set_visible(False)
+    box.append(name_row)
+    box.append(start_row)
+    box.append(warn)
+    toolbar.set_content(box)
+    dialog.set_child(toolbar)
+
+    def refresh_warning(*_a: object) -> None:
+        name = name_row.get_text().strip()
+        if not name:
+            create.set_sensitive(False)
+            warn.set_visible(False)
+            return
+        if test_for_invalid_chars(name):
+            warn.set_text("Branch names can't contain spaces or Git special characters.")
+            warn.set_visible(True)
+            create.set_sensitive(False)
+            return
+        rules = state.repo_rules
+        if repo.github and use_repo_rules_logic(store.account_for_repo(repo), repo):
+            name_fail = rules.branch_name_patterns.get_failed_rules(name)
+            if rules.creation_restricted is True or name_fail.status == "fail":
+                extra = ", ".join(f.description for f in name_fail.failed)
+                warn.set_text(
+                    "Repository rules prevent creating this branch"
+                    + (f" ({extra})." if extra else ".")
+                )
+                warn.set_visible(True)
+                create.set_sensitive(False)
+                return
+            if rules.creation_restricted == "bypass" or name_fail.status == "bypass":
+                extra = ", ".join(f.description for f in name_fail.bypassed)
+                warn.set_text(
+                    "Repository rules restrict this branch name. You can bypass this rule"
+                    + (f" ({extra})." if extra else ".")
+                )
+                warn.set_visible(True)
+                create.set_sensitive(True)
+                return
+        warn.set_visible(False)
+        create.set_sensitive(True)
+
+    def submit(*_a: object) -> None:
+        name = name_row.get_text().strip()
+        start_point = start_row.get_text().strip() or None
+        if not name or not create.get_sensitive():
+            return
+        dialog.close()
+        store.create_branch_and_checkout(repo, name, start_point)
+
+    name_row.connect("notify::text", refresh_warning)
+    create.connect("clicked", submit)
+    refresh_warning()
+    dialog.present(parent)
 
 
-def show_rename_branch(parent: Gtk.Window, store: AppStore) -> None:
+def show_rename_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, Any] | None = None) -> None:
     repo = store.selected_repository
     if not repo:
         return
     state = store.state_for(repo)
-    current = payload.get("branch") or (state.status.current_branch if state.status else "")
+    current = (payload or {}).get("branch") or (state.status.current_branch if state.status else "")
 
     def submit(values: dict[str, str]) -> None:
         new = values.get("name", "").strip()
@@ -1690,26 +1756,6 @@ def show_ssh_password(parent: Gtk.Window, payload: dict[str, Any]) -> None:
             cb(values.get("password") or None, True)
 
     _text_dialog(parent, "SSH password", payload.get("username") or "", [("password", "Password", "")], submit, "Continue")
-
-
-def show_multi_commit(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
-    repo = store.selected_repository
-    if not repo:
-        return
-    kind = payload.get("kind") or "Merge"
-    branches = [b.name for b in store.state_for(repo).branches if b.is_local]
-
-    def submit(values: dict[str, str]) -> None:
-        target = values.get("branch", "")
-        if kind == "Rebase":
-            store.rebase_branch(repo, target)
-        elif kind == "Cherry-pick":
-            shas = payload.get("shas") or []
-            store.cherry_pick_commits(repo, shas, target)
-        else:
-            store.merge_branch(repo, target, squash=(kind == "Squash"))
-
-    _text_dialog(parent, f"{kind} current branch", "Choose the other branch.", [("branch", "Branch", branches[0] if branches else "")], submit, kind)
 
 
 def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:

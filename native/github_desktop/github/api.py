@@ -388,6 +388,25 @@ class GitHubAPI:
         except APIError:
             return []
 
+    def fetch_repo_rules_for_branch(self, owner: str, name: str, branch: str) -> list[dict[str, Any]]:
+        path = f"/repos/{owner}/{name}/rules/branches/{urllib.parse.quote(branch, safe='')}"
+        try:
+            data = self.get(path)
+            return data if isinstance(data, list) else []
+        except APIError as exc:
+            if exc.status in {403, 404}:
+                return []
+            log.info("fetch repo rules for %s/%s@%s failed: %s", owner, name, branch, exc)
+            return []
+
+    def fetch_repo_ruleset(self, owner: str, name: str, ruleset_id: int) -> dict[str, Any] | None:
+        try:
+            data = self.get(f"/repos/{owner}/{name}/rulesets/{int(ruleset_id)}")
+            return data if isinstance(data, dict) else None
+        except APIError as exc:
+            log.info("fetch repo ruleset %s failed: %s", ruleset_id, exc)
+            return None
+
     def fetch_mentions(self, owner: str, name: str) -> list[str]:
         try:
             items = self.get(f"/repos/{owner}/{name}/collaborators")

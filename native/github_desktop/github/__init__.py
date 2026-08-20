@@ -8,6 +8,12 @@ from .ci_checks import (
     failing_checks,
     get_combined_status_summary,
 )
+from .repo_rules import (
+    RepoRulesInfo,
+    commit_rule_warnings,
+    parse_repo_rules,
+    use_repo_rules_logic,
+)
 from .oauth import (
     dotcom_endpoint,
     enterprise_endpoint_from_url,

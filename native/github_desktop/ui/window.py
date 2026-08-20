@@ -39,6 +39,7 @@ from .diff_view import DiffViewer
 from .emoji import matching_shortcodes
 from .history import ExpandableCommitSummary
 from .menus import attach_right_click, clear_box, copy_text, show_context_menu
+from .multi_commit import show_confirm_abort, show_conflicts_dialog
 from .stash import StashDiffViewer
 from .tutorial import TutorialPanel
 
@@ -178,7 +179,7 @@ class MainWindow(Adw.ApplicationWindow):
         add("toggle-stash", lambda: self._repo_op(self.store.toggle_stash))
         add("undo-commit", self._undo)
         add("create-tag", lambda: self.store.show_popup(PopupType.CREATE_TAG))
-        add("generate-commit-message", lambda: self.store.show_popup(PopupType.GENERATE_COMMIT_MESSAGE_DISCLAIMER))
+        add("generate-commit-message", lambda: self._generate_commit_message())
         add("compare-to-branch", lambda: self.store.set_section(RepositorySectionTab.HISTORY))
         add("install-cli", self.store.install_cli)
         add("toggle-changes-filter", self.store.toggle_changes_filter)
@@ -720,9 +721,13 @@ class MainWindow(Adw.ApplicationWindow):
         self._summary_warn = Gtk.Label(xalign=0)
         self._summary_warn.add_css_class("warning")
         self._summary_warn.set_visible(False)
+        self._rules_warn = Gtk.Label(wrap=True, xalign=0)
+        self._rules_warn.add_css_class("repo-rules-warning")
+        self._rules_warn.set_visible(False)
         self._description = Gtk.TextView()
         self._description.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self._description.set_size_request(-1, 70)
+        self._description.get_buffer().connect("changed", lambda *_: self._update_commit_warnings())
         co = Gtk.CheckButton(label="Co-authors")
         co.connect("toggled", self._on_coauthors)
         self._coauthor_entry = Gtk.Entry()
@@ -736,9 +741,9 @@ class MainWindow(Adw.ApplicationWindow):
         self._coauthor_entry.set_completion(co_completion)
         self._summary.set_completion(completion)
         btn_row = Gtk.Box(spacing=6)
-        commit_btn = Gtk.Button(label="Commit to branch")
-        commit_btn.add_css_class("suggested-action")
-        commit_btn.connect("clicked", self._on_commit)
+        self._commit_btn = Gtk.Button(label="Commit to branch")
+        self._commit_btn.add_css_class("suggested-action")
+        self._commit_btn.connect("clicked", self._on_commit)
         gen = Gtk.Button(icon_name="emoji-objects-symbolic")
         gen.set_tooltip_text("Generate commit message with Copilot")
         gen.set_action_name("win.generate-commit-message")
@@ -746,12 +751,13 @@ class MainWindow(Adw.ApplicationWindow):
         undo.set_action_name("win.undo-commit")
         amend = Gtk.Button(label="Amend")
         amend.connect("clicked", self._on_amend)
-        btn_row.append(commit_btn)
+        btn_row.append(self._commit_btn)
         btn_row.append(gen)
         btn_row.append(undo)
         btn_row.append(amend)
         commit_box.append(self._summary)
         commit_box.append(self._summary_warn)
+        commit_box.append(self._rules_warn)
         commit_box.append(self._description)
         commit_box.append(co)
         commit_box.append(self._coauthor_entry)
@@ -906,6 +912,7 @@ class MainWindow(Adw.ApplicationWindow):
             self._summary.set_text(state.commit_message.summary)
         if state.commit_message.description:
             self._description.get_buffer().set_text(state.commit_message.description)
+        self._update_commit_warnings()
 
     def _show_missing(self, repo) -> None:
         if repo.unsafe:
@@ -1281,26 +1288,56 @@ class MainWindow(Adw.ApplicationWindow):
             return
         if status.merge_head_found:
             self._conflict_bar.append(Gtk.Label(label="Merge in progress"))
+            view = Gtk.Button(label="View conflicts")
+            view.connect("clicked", lambda *_: show_conflicts_dialog(self, self.store, MultiCommitOperationKind.MERGE))
             cont = Gtk.Button(label="Commit merge")
             abort = Gtk.Button(label="Abort merge")
             cont.connect("clicked", lambda *_: self.store.continue_conflict_operation(repo, MultiCommitOperationKind.MERGE))
-            abort.connect("clicked", lambda *_: self.store.abort_conflict_operation(repo, MultiCommitOperationKind.MERGE))
+            abort.connect(
+                "clicked",
+                lambda *_: show_confirm_abort(
+                    self,
+                    "Merge",
+                    lambda: self.store.abort_conflict_operation(repo, MultiCommitOperationKind.MERGE),
+                ),
+            )
+            self._conflict_bar.append(view)
             self._conflict_bar.append(cont)
             self._conflict_bar.append(abort)
         elif status.rebase_internal_state:
             self._conflict_bar.append(Gtk.Label(label="Rebase in progress"))
+            view = Gtk.Button(label="View conflicts")
+            view.connect("clicked", lambda *_: show_conflicts_dialog(self, self.store, MultiCommitOperationKind.REBASE))
             cont = Gtk.Button(label="Continue rebase")
             abort = Gtk.Button(label="Abort rebase")
             cont.connect("clicked", lambda *_: self.store.continue_conflict_operation(repo, MultiCommitOperationKind.REBASE))
-            abort.connect("clicked", lambda *_: self.store.abort_conflict_operation(repo, MultiCommitOperationKind.REBASE))
+            abort.connect(
+                "clicked",
+                lambda *_: show_confirm_abort(
+                    self,
+                    "Rebase",
+                    lambda: self.store.abort_conflict_operation(repo, MultiCommitOperationKind.REBASE),
+                ),
+            )
+            self._conflict_bar.append(view)
             self._conflict_bar.append(cont)
             self._conflict_bar.append(abort)
         elif status.is_cherry_picking_head_found:
             self._conflict_bar.append(Gtk.Label(label="Cherry-pick in progress"))
+            view = Gtk.Button(label="View conflicts")
+            view.connect("clicked", lambda *_: show_conflicts_dialog(self, self.store, MultiCommitOperationKind.CHERRY_PICK))
             cont = Gtk.Button(label="Continue")
             abort = Gtk.Button(label="Abort")
             cont.connect("clicked", lambda *_: self.store.continue_conflict_operation(repo, MultiCommitOperationKind.CHERRY_PICK))
-            abort.connect("clicked", lambda *_: self.store.abort_conflict_operation(repo, MultiCommitOperationKind.CHERRY_PICK))
+            abort.connect(
+                "clicked",
+                lambda *_: show_confirm_abort(
+                    self,
+                    "Cherry-pick",
+                    lambda: self.store.abort_conflict_operation(repo, MultiCommitOperationKind.CHERRY_PICK),
+                ),
+            )
+            self._conflict_bar.append(view)
             self._conflict_bar.append(cont)
             self._conflict_bar.append(abort)
 
@@ -1735,21 +1772,82 @@ class MainWindow(Adw.ApplicationWindow):
         ahead = len(state.compare_ahead)
         behind = len(state.compare_behind)
         self._compare_cta.append(Gtk.Label(label=f"{ahead} ahead · {behind} behind {state.compare_branch.name}"))
+        current = state.status.current_branch if state.status else "current branch"
         if behind and repo:
-            merge = Gtk.Button(label=f"Merge {state.compare_branch.name} into current branch")
+            msg = Gtk.Label(
+                label=f"This will merge {behind} commit{'s' if behind != 1 else ''} from {state.compare_branch.name} into {current}",
+                wrap=True,
+                xalign=0,
+            )
+            self._compare_cta.append(msg)
+            merge = Gtk.Button(label=f"Merge into {current}")
             merge.add_css_class("suggested-action")
-            merge.connect("clicked", lambda *_: self.store.merge_branch(repo, state.compare_branch.name))
+            merge.connect(
+                "clicked",
+                lambda *_: self.store.show_popup(
+                    PopupType.MULTI_COMMIT_OPERATION,
+                    kind="Merge",
+                    initial_branch=state.compare_branch.name,
+                ),
+            )
             self._compare_cta.append(merge)
 
     def _on_summary_changed(self, entry: Gtk.Entry) -> None:
+        self._update_commit_warnings()
+
+    def _update_commit_warnings(self) -> None:
         if not hasattr(self, "_summary_warn"):
             return
-        text = entry.get_text()
+        text = self._summary.get_text() if hasattr(self, "_summary") else ""
         if self.store.settings.show_commit_length_warning and len(text) > 50:
             self._summary_warn.set_text(f"{len(text)} / 72 characters — keep the summary short")
             self._summary_warn.set_visible(True)
         else:
             self._summary_warn.set_visible(False)
+        if not hasattr(self, "_rules_warn"):
+            return
+        repo = self.store.selected_repository
+        if not repo:
+            self._rules_warn.set_visible(False)
+            if hasattr(self, "_commit_btn"):
+                self._commit_btn.set_sensitive(True)
+            return
+        from ..github.repo_rules import commit_rule_warnings, use_repo_rules_logic
+        from ..git.ops import get_author_identity
+
+        state = self.store.state_for(repo)
+        if not use_repo_rules_logic(self.store.account_for_repo(repo), repo):
+            self._rules_warn.set_visible(False)
+            if hasattr(self, "_commit_btn"):
+                self._commit_btn.set_sensitive(True)
+            return
+        start, end = self._description.get_buffer().get_bounds()
+        description = self._description.get_buffer().get_text(start, end, True).strip()
+        message = "\n\n".join(part for part in (text.strip(), description) if part)
+        _name, email = get_author_identity(repo.path)
+        unpublished = state.ahead_behind is None
+        warnings, hard = commit_rule_warnings(
+            state.repo_rules,
+            message=message,
+            author_email=email,
+            branch=state.status.current_branch if state.status else None,
+            ahead_behind=state.ahead_behind,
+            unpublished=unpublished,
+        )
+        if warnings:
+            self._rules_warn.set_text("\n".join(warnings))
+            self._rules_warn.set_visible(True)
+        else:
+            self._rules_warn.set_visible(False)
+        if hasattr(self, "_commit_btn"):
+            self._commit_btn.set_sensitive(not hard)
+
+    def _generate_commit_message(self) -> None:
+        has_text = bool(self._summary.get_text().strip()) if hasattr(self, "_summary") else False
+        if has_text and self.store.settings.confirm_commit_message_override:
+            self.store.show_popup(PopupType.GENERATE_COMMIT_MESSAGE_OVERRIDE)
+            return
+        self.store.show_popup(PopupType.GENERATE_COMMIT_MESSAGE_DISCLAIMER)
 
     def _show_stash_diff(self, file, sha: str) -> None:
         repo = self.store.selected_repository

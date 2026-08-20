@@ -27,7 +27,9 @@ from ..models import (
     Commit,
     CommitIdentity,
     CommitMessage,
+    CommitOneLine,
     CommittedFileChange,
+    ComputedAction,
     DiffSelection,
     DiffSelectionType,
     DiffType,
@@ -38,6 +40,7 @@ from ..models import (
     LargeTextDiff,
     ManualConflictResolution,
     MergeResult,
+    MergeTreeResult,
     RebaseInternalState,
     RebaseResult,
     Remote,
@@ -1139,6 +1142,36 @@ def get_config_value(repo: str | None, key: str, global_only: bool = False) -> s
     return value or None
 
 
+def get_boolean_config_value(repo: str | None, key: str, global_only: bool = False) -> bool | None:
+    """Desktop getBooleanConfigValue: git config --bool, None when unset."""
+    args = ["config", "--bool"]
+    if global_only or not repo:
+        args.append("--global")
+    args += ["--get", key]
+    cwd = repo or os.path.expanduser("~")
+    result = git(args, cwd, success_exit_codes={0, 1}, name="getBoolConfig")
+    value = result.stdout.strip().lower()
+    if not value:
+        return None
+    return value != "false"
+
+
+def warn_about_remote_commits(repo: str, branch: Branch, oldest_ref: str | None) -> bool:
+    """True when rewriting this published branch would require a force push.
+
+    Port of Desktop dispatcher.warnAboutRemoteCommits.
+    """
+    if not branch.upstream:
+        return False
+    matching = get_branches(repo, f"refs/remotes/{branch.upstream}")
+    if not matching:
+        return False
+    if oldest_ref is None:
+        return True
+    remote_commits = get_commits_between(repo, oldest_ref, branch.upstream)
+    return remote_commits is not None and len(remote_commits) > 0
+
+
 def set_config_value(repo: str | None, key: str, value: str, global_only: bool = False) -> None:
     args = ["config"]
     if global_only or not repo:
@@ -1325,19 +1358,74 @@ def reorder_commits(
 
 def get_ahead_behind(repo: str, upstream: str, branch: str | None = None) -> AheadBehind | None:
     left = branch or "HEAD"
+    return get_ahead_behind_range(repo, f"{upstream}...{left}", swap=True)
+
+
+def get_ahead_behind_range(repo: str, range_spec: str, *, swap: bool = False) -> AheadBehind | None:
+    """Desktop getAheadBehind: left count is ahead, right count is behind.
+
+    `swap=True` matches the older local-vs-upstream helper where the first ref is the upstream.
+    """
     result = git(
-        ["rev-list", "--left-right", "--count", f"{upstream}...{left}"],
+        ["rev-list", "--left-right", "--count", range_spec, "--"],
         repo,
         success_exit_codes={0, 128},
         name="aheadBehind",
     )
     if result.exit_code != 0:
         return None
-    parts = result.stdout.strip().split()
+    parts = result.stdout.strip().replace("\t", " ").split()
     if len(parts) != 2:
         return None
-    behind, ahead = int(parts[0]), int(parts[1])
-    return AheadBehind(ahead=ahead, behind=behind)
+    left, right = int(parts[0]), int(parts[1])
+    if swap:
+        return AheadBehind(ahead=right, behind=left)
+    return AheadBehind(ahead=left, behind=right)
+
+
+def get_commits_between(repo: str, base_sha: str, target_sha: str) -> list[CommitOneLine] | None:
+    """Commits reachable from target but not base, oldest first (Desktop getCommitsBetweenCommits)."""
+    result = git(
+        ["rev-list", f"{base_sha}..{target_sha}", "--reverse", "--oneline", "--no-abbrev-commit", "--"],
+        repo,
+        success_exit_codes={0, 128},
+        name="commitsBetween",
+    )
+    if result.exit_code != 0:
+        return None
+    commits: list[CommitOneLine] = []
+    for line in result.stdout.splitlines():
+        sha, _, summary = line.partition(" ")
+        if sha:
+            commits.append(CommitOneLine(sha=sha, summary=summary))
+    return commits
+
+
+def determine_mergeability(repo: str, ours_sha: str, theirs_sha: str) -> MergeTreeResult:
+    """Port of Desktop determineMergeability using `git merge-tree --write-tree`."""
+    result = git(
+        [
+            "merge-tree",
+            "--write-tree",
+            "--name-only",
+            "--no-messages",
+            "-z",
+            ours_sha,
+            theirs_sha,
+        ],
+        repo,
+        success_exit_codes={0, 1, 128},
+        name="determineMergeability",
+    )
+    blob = f"{result.stderr}\n{result.stdout}".lower()
+    if "unrelated histories" in blob:
+        return MergeTreeResult(kind=ComputedAction.INVALID)
+    if result.exit_code not in {0, 1}:
+        return MergeTreeResult(kind=ComputedAction.CLEAN)
+    conflicted = max(0, result.stdout.count("\0") - 1)
+    if conflicted > 0:
+        return MergeTreeResult(kind=ComputedAction.CONFLICTS, conflicted_files=conflicted)
+    return MergeTreeResult(kind=ComputedAction.CLEAN)
 
 
 def get_merge_base(repo: str, a: str, b: str) -> str | None:
