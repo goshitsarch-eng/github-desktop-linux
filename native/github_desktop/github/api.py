@@ -252,6 +252,20 @@ class GitHubAPI:
             return []
         return data if isinstance(data, list) else []
 
+    def get_alive_websocket_url(self) -> str | None:
+        """Desktop `getAliveWebSocketURL`. Native polls `/notifications` instead of keeping a socket."""
+        try:
+            data = self.get("/alive_internal/websocket-url")
+        except APIError as exc:
+            if exc.status == 404:
+                return None
+            log.debug("Alive websocket URL failed: %s", exc)
+            return None
+        if isinstance(data, dict):
+            url = data.get("url")
+            return str(url) if url else None
+        return None
+
     def fetch_check_runs(self, owner: str, name: str, ref: str) -> list[RefCheck]:
         mapped: list[RefCheck] = []
         page = 1

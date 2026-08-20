@@ -233,3 +233,39 @@ def test_get_global_config_path_creates_file(tmp_path: Path, monkeypatch: pytest
     path = get_global_config_path()
     assert "gitconfig" in path.lower()
 
+
+def test_conflict_markers_and_credentials(git_repo: Path) -> None:
+    from github_desktop.git.ops import (
+        format_credential,
+        get_files_with_conflict_markers,
+        parse_credential,
+    )
+
+    (git_repo / "README.md").write_text("<<<<<<< HEAD\na\n=======\nb\n>>>>>>> topic\n", encoding="utf-8")
+    counts = get_files_with_conflict_markers(str(git_repo))
+    assert counts.get("README.md", 0) >= 1
+    parsed = parse_credential("wwwauth[]=foo\nwwwauth[]=bar\nusername=octocat\n")
+    assert parsed["wwwauth[0]"] == "foo"
+    assert parsed["wwwauth[1]"] == "bar"
+    assert parsed["username"] == "octocat"
+    formatted = format_credential({"wwwauth[0]": "foo", "wwwauth[1]": "bar"})
+    assert formatted == "wwwauth[]=foo\nwwwauth[]=bar\n"
+
+
+def test_recent_branches_from_reflog(git_repo: Path) -> None:
+    from github_desktop.git.ops import checkout_branch, create_branch, get_recent_branches
+
+    create_branch(str(git_repo), "branch-1")
+    checkout_branch(str(git_repo), "branch-1")
+    create_branch(str(git_repo), "branch-2")
+    checkout_branch(str(git_repo), "branch-2")
+    create_branch(str(git_repo), "branch-3")
+    checkout_branch(str(git_repo), "branch-3")
+    recent = get_recent_branches(str(git_repo), 2)
+    assert len(recent) == 2
+    assert "branch-3" in recent
+    assert "branch-2" in recent
+    limited = get_recent_branches(str(git_repo), 10)
+    assert "branch-1" in limited
+    assert "branch-2" in limited
+

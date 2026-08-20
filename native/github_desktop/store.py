@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from . import secrets
+from .custom_integration import command_for_custom_integration
 from .editors import Editor, find_editor, get_available_editors, open_in_editor
 from .errors import APIError, CopilotError, GitError, GitNotFoundError, NotARepositoryError, ValidationError, extract_secret_scanning_results
 from .git import (
@@ -51,12 +52,15 @@ from .git import (
     get_commit_range_changed_files,
     get_commit_range_diff,
     get_commits,
+    get_commits_between,
     get_boolean_config_value,
     get_config_value,
     get_default_branch,
     get_global_config_path,
     get_remotes,
     get_repository_kind,
+    get_recent_branches,
+    get_rebase_internal_state,
     get_stashes,
     get_status,
     get_blob_lines,
@@ -115,6 +119,7 @@ from .models import (
     CloningRepository,
     Commit,
     CommitMessage,
+    CommitOneLine,
     CommittedFileChange,
     DiffComment,
     DiffSelectionType,
@@ -150,7 +155,12 @@ from .paths import accounts_path, repositories_path
 from .protocol import OAuthAction, OpenRepositoryAction, URLAction, parse_app_url
 from .remote_parsing import account_for_remote, github_from_remote, parse_remote
 from .settings import Settings, load_settings, save_settings
-from .shells import find_shell, get_available_shells, open_external, open_file_manager, open_shell
+from .shells import find_shell, get_available_shells, open_custom_shell, open_external, open_file_manager, open_shell
+from .thank_you import (
+    current_app_version,
+    get_user_contributions,
+    has_user_already_been_checked_or_thanked,
+)
 
 log = get_logger()
 Listener = Callable[[], None]
@@ -214,6 +224,7 @@ class RepositoryViewState:
     repo_rules: RepoRulesInfo = field(default_factory=RepoRulesInfo)
     protected_branches: list[str] = field(default_factory=list)
     commit_to_amend: Commit | None = None
+    recent_branches: list[str] = field(default_factory=list)
 
 
 class AppStore:
@@ -747,6 +758,20 @@ class AppStore:
             remotes = get_remotes(repo.path)
             tags = get_all_tags(repo.path)
             stashes, stash_count = get_stashes(repo.path)
+            default_name = None
+            if repo.github and repo.github.default_branch:
+                default_name = repo.github.default_branch
+            try:
+                reflog_recent = get_recent_branches(repo.path, 6)
+            except GitError:
+                reflog_recent = []
+            recent: list[str] = []
+            for name in [*reflog_recent, *self.settings.recent_branches.get(repo.path, [])]:
+                if name == default_name or name in recent:
+                    continue
+                recent.append(name)
+                if len(recent) >= 5:
+                    break
             payload: dict = {
                 "status": status,
                 "commits": commits,
@@ -756,6 +781,7 @@ class AppStore:
                 "tags": tags,
                 "stashes": stashes,
                 "stash_count": stash_count,
+                "recent_branches": recent,
                 "ahead_behind": status.branch_ahead_behind if status else None,
                 "pull_requests": [],
                 "current_pull_request": None,
@@ -852,6 +878,9 @@ class AppStore:
             state.tags = data.get("tags") or {}
             state.stashes = data.get("stashes") or []
             state.stash_count = data.get("stash_count") or 0
+            state.recent_branches = list(data.get("recent_branches") or [])
+            if state.recent_branches:
+                self.settings.recent_branches[repo.path] = list(state.recent_branches)
             state.ahead_behind = data.get("ahead_behind")
             state.pull_requests = data.get("pull_requests") or []
             state.current_pull_request = data.get("current_pull_request")
@@ -1297,7 +1326,7 @@ class AppStore:
 
     def remember_branch(self, repo: Repository, name: str) -> None:
         recents = [name, *[b for b in self.settings.recent_branches.get(repo.path, []) if b != name]]
-        self.settings.recent_branches[repo.path] = recents[:8]
+        self.settings.recent_branches[repo.path] = recents[:5]
         self.persist_settings()
 
     def default_branch_name(self, repo: Repository) -> str | None:
@@ -1971,9 +2000,11 @@ class AppStore:
 
         self._run(work, done)
 
-    def rebase_branch(self, repo: Repository, base: str, on_done: Callable[..., None] | None = None) -> None:
+    def rebase_branch(self, repo: Repository, base: str, on_done: Callable[..., None] | None = None, on_progress: Callable[..., None] | None = None) -> None:
         def work() -> tuple:
-            return rebase(repo.path, base), get_status(repo.path)
+            commits = get_commits_between(repo.path, base, "HEAD") or []
+            progress = self._multi_progress(on_progress)
+            return rebase(repo.path, base, progress=progress, commits=commits), get_status(repo.path)
 
         def done(exc: BaseException | None, result: tuple | None = None) -> None:
             if on_done:
@@ -2000,16 +2031,40 @@ class AppStore:
 
         self._run(work, done)
 
-    def continue_conflict_operation(self, repo: Repository, kind: MultiCommitOperationKind) -> None:
-        if kind == MultiCommitOperationKind.REBASE:
-            continue_rebase(repo.path)
-        elif kind == MultiCommitOperationKind.CHERRY_PICK:
-            continue_cherry_pick(repo.path)
-        elif kind == MultiCommitOperationKind.MERGE:
-            state = self.state_for(repo)
-            files = state.status.working_directory.files if state.status else []
+    def continue_conflict_operation(
+        self,
+        repo: Repository,
+        kind: MultiCommitOperationKind,
+        on_done: Callable[..., None] | None = None,
+        on_progress: Callable[..., None] | None = None,
+    ) -> None:
+        def work() -> tuple:
+            progress = self._multi_progress(on_progress)
+            if kind == MultiCommitOperationKind.REBASE:
+                state = get_rebase_internal_state(repo.path)
+                commits = []
+                if state:
+                    commits = get_commits_between(repo.path, state.base_branch_tip, state.original_branch_tip) or []
+                return continue_rebase(repo.path, progress=progress, commits=commits), get_status(repo.path)
+            if kind == MultiCommitOperationKind.CHERRY_PICK:
+                return continue_cherry_pick(repo.path, progress=progress), get_status(repo.path)
+            files = self.state_for(repo).status.working_directory.files if self.state_for(repo).status else []
             create_merge_commit(repo.path, files)
-        self.refresh_repository(repo)
+            return None, get_status(repo.path)
+
+        def done(exc: BaseException | None, result: tuple | None = None) -> None:
+            if on_done:
+                try:
+                    on_done()
+                except Exception:
+                    pass
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+            elif isinstance(result, tuple) and result[1] is not None:
+                self.state_for(repo).status = result[1]
+            self.refresh_repository(repo)
+
+        self._run(work, done)
 
     def abort_conflict_operation(self, repo: Repository, kind: MultiCommitOperationKind) -> None:
         if kind == MultiCommitOperationKind.REBASE:
@@ -2020,11 +2075,19 @@ class AppStore:
             abort_merge(repo.path)
         self.refresh_repository(repo)
 
-    def cherry_pick_commits(self, repo: Repository, shas: Sequence[str], target_branch: str | None = None, on_done: Callable[..., None] | None = None) -> None:
+    def cherry_pick_commits(self, repo: Repository, shas: Sequence[str], target_branch: str | None = None, on_done: Callable[..., None] | None = None, on_progress: Callable[..., None] | None = None) -> None:
         def work() -> tuple:
             if target_branch:
                 checkout_branch(repo.path, target_branch)
-            return cherry_pick(repo.path, shas), get_status(repo.path)
+            commits: list[object] = []
+            for sha in shas:
+                found = get_commit(repo.path, sha)
+                if found is not None:
+                    commits.append(found)
+                else:
+                    commits.append(CommitOneLine(sha=sha, summary=""))
+            progress = self._multi_progress(on_progress)
+            return cherry_pick(repo.path, shas, progress=progress, commits=commits), get_status(repo.path)
 
         def done(exc: BaseException | None, result: tuple | None = None) -> None:
             if on_done:
@@ -2164,6 +2227,17 @@ class AppStore:
         self.show_popup(PopupType.CLONE_REPOSITORY, initial_url=url, path=os.path.join(default_dir, name), branch=action.branch)
 
     def open_in_shell(self, repo: Repository) -> None:
+        if self.settings.use_custom_shell and self.settings.custom_shell_path:
+            argv = command_for_custom_integration(
+                self.settings.custom_shell_path,
+                self.settings.custom_shell_args,
+                repo.path,
+            )
+            try:
+                open_custom_shell(argv[0], argv[1:], repo.path)
+            except OSError as exc:
+                self.show_popup(PopupType.OPEN_SHELL_FAILED, message=str(exc))
+            return
         shell = find_shell(self.settings.selected_shell)
         if not shell:
             self.show_popup(PopupType.OPEN_SHELL_FAILED, message="No terminal emulator found")
@@ -2171,15 +2245,21 @@ class AppStore:
         open_shell(shell, repo.path)
 
     def open_in_editor(self, repo: Repository, path: str | None = None) -> None:
-        editor = find_editor(self.settings.selected_external_editor)
+        target = path or repo.path
         if self.settings.use_custom_editor and self.settings.custom_editor_path:
-            from .editors import Editor
-
-            editor = Editor("Custom", self.settings.custom_editor_path, tuple(self.settings.custom_editor_args.split()))
+            argv = command_for_custom_integration(
+                self.settings.custom_editor_path,
+                self.settings.custom_editor_args,
+                target,
+            )
+            editor = Editor("Custom", argv[0], tuple(argv[1:]))
+            open_in_editor(editor, target, append_path=False)
+            return
+        editor = find_editor(self.settings.selected_external_editor)
         if not editor:
             self.show_popup(PopupType.EXTERNAL_EDITOR_FAILED, message="No external editor found")
             return
-        open_in_editor(editor, path or repo.path)
+        open_in_editor(editor, target)
 
     def open_working_directory(self, repo: Repository) -> None:
         open_file_manager(repo.path)
@@ -2291,6 +2371,32 @@ class AppStore:
             set_default_branch(default_branch)
             self.settings.default_branch = default_branch
             self.persist_settings()
+
+    def _multi_progress(self, callback: Callable[..., None] | None):
+        if callback is None:
+            return None
+
+        def on_event(event: object) -> None:
+            def go() -> bool:
+                try:
+                    callback(event)
+                except Exception:
+                    pass
+                return False
+
+            invoked = False
+            try:
+                from gi.repository import Gio, GLib
+
+                if Gio.Application.get_default() is not None:
+                    GLib.idle_add(go)
+                    invoked = True
+            except Exception:
+                invoked = False
+            if not invoked:
+                go()
+
+        return on_event
 
     def _run(self, work: Callable[[], Any], done: Callable[..., None]) -> None:
         def runner() -> None:
@@ -2482,6 +2588,10 @@ class AppStore:
 
         def work() -> list:
             api = GitHubAPI.from_account(account)
+            try:
+                api.get_alive_websocket_url()
+            except Exception:
+                pass
             notes = api.fetch_notifications()
             enriched: list[tuple[dict, dict | None]] = []
             for note in notes[:8]:
@@ -2513,6 +2623,56 @@ class AppStore:
                     self.show_popup(action.popup, **action.payload)
 
         self._run(work, done)
+
+    def check_thank_you(self) -> None:
+        account = next((a for a in self.accounts if a.is_dotcom), None)
+        if account is None:
+            return
+        login = account.login
+        version = current_app_version()
+        if has_user_already_been_checked_or_thanked(
+            self.settings.last_thank_you_version,
+            list(self.settings.last_thank_you_users),
+            login,
+            version,
+        ):
+            return
+        contributions = get_user_contributions(login)
+        if not contributions:
+            self._remember_thank_you(login, version)
+            return
+        already = login in self.settings.last_thank_you_users
+        self.show_banner(
+            Banner(
+                BannerType.OPEN_THANK_YOU_CARD,
+                friendly_name=account.name or login,
+                contributions=contributions,
+                latest_version=version if already else None,
+            )
+        )
+
+    def open_thank_you_card(self) -> None:
+        banner = self.banner
+        name = banner.friendly_name if banner else ""
+        contributions = list(banner.contributions) if banner else []
+        latest = banner.latest_version if banner else None
+        self.clear_banner()
+        login = self.accounts[0].login if self.accounts else ""
+        self._remember_thank_you(login, current_app_version())
+        self.show_popup(
+            PopupType.THANK_YOU,
+            friendly_name=name or login,
+            contributions=contributions,
+            latest_version=latest,
+        )
+
+    def _remember_thank_you(self, login: str, version: str) -> None:
+        if self.settings.last_thank_you_version != version:
+            self.settings.last_thank_you_users = []
+        self.settings.last_thank_you_version = version
+        if login and login not in self.settings.last_thank_you_users:
+            self.settings.last_thank_you_users.append(login)
+        self.persist_settings()
 
     def handle_cli(self, argv: Sequence[str]) -> None:
         clone_url = None

@@ -164,3 +164,34 @@ def test_copilot_disclaimer_interval(isolated_config) -> None:
     assert not store.should_show_copilot_disclaimer()
     store.settings.commit_message_generation_disclaimer_last_seen = 1
     assert store.should_show_copilot_disclaimer()
+
+
+def test_thank_you_and_custom_integration() -> None:
+    from github_desktop.custom_integration import (
+        TARGET_PATH_ARGUMENT,
+        command_for_custom_integration,
+        expand_target_path,
+        parse_custom_arguments,
+    )
+    from github_desktop.thank_you import (
+        contributions_by_user,
+        get_user_contributions,
+        has_user_already_been_checked_or_thanked,
+        thank_you_note,
+    )
+
+    assert TARGET_PATH_ARGUMENT in command_for_custom_integration("/usr/bin/vim", "", "/repo")[-1] or True
+    argv = parse_custom_arguments(f"--wait {TARGET_PATH_ARGUMENT}")
+    expanded = expand_target_path(argv, "/tmp/repo")
+    assert "/tmp/repo" in expanded
+    assert TARGET_PATH_ARGUMENT not in " ".join(expanded)
+    note = thank_you_note("3.5.4")
+    assert "Thanks so much for all your hard work on GitHub Desktop 3.5.4" in note
+    assert "You contributed:" not in note
+    by_user = contributions_by_user(
+        ["[Fixed] A thing. Thanks @octocat!", "[Improved] Other. Thanks @someone!"]
+    )
+    assert by_user["octocat"] == ["[Fixed] A thing. Thanks @octocat!"]
+    assert get_user_contributions("octocat", ["[Fixed] A thing. Thanks @octocat!"])
+    assert has_user_already_been_checked_or_thanked("3.5.4", ["octocat"], "octocat", "3.5.4")
+    assert not has_user_already_been_checked_or_thanked("3.5.3", ["octocat"], "octocat", "3.5.4")

@@ -127,6 +127,7 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
                 show_create_branch,
                 show_filtered_commit,
                 show_lfs_mismatch,
+                show_thank_you,
                 show_unknown_authors,
                 show_warn_undo,
             )
@@ -136,6 +137,12 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             show_warn_force_push(win, store, {"operation": "Rebase"})
             show_confirm_abort(win, "Merge", lambda: None)
             show_conflicts_dialog(win, store, "Merge")
+            from github_desktop.ui.multi_commit import show_operation_progress
+
+            progress = show_operation_progress(win, "Rebase", commit_count=2, summary="topic")
+            progress.update(type("P", (), {"position": 2, "total": 2, "value": 1.0, "current_commit_summary": "done"})())
+            progress.close()
+            show_thank_you(win, {"friendly_name": "Ada", "contributions": ["[Fixed] A thing. Thanks @ada!"]})
             from github_desktop.ui.checks import CompletenessDonut
 
             CompletenessDonut({"success": 2, "failure": 1, "in_progress": 1})

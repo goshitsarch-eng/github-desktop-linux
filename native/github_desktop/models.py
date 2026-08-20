@@ -201,6 +201,7 @@ class BannerType(StrEnum):
     SUCCESSFUL_REORDER = "SuccessfulReorder"
     CONFLICTS_FOUND = "ConflictsFound"
     OS_VERSION_NO_LONGER_SUPPORTED = "OSVersionNoLongerSupported"
+    OPEN_THANK_YOU_CARD = "OpenThankYouCard"
 
 
 class MultiCommitOperationKind(StrEnum):
@@ -990,6 +991,9 @@ class Banner:
     count: int = 0
     operation_description: str = ""
     target_branch: str | None = None
+    friendly_name: str = ""
+    contributions: list[str] = field(default_factory=list)
+    latest_version: str | None = None
 
 
 @dataclass

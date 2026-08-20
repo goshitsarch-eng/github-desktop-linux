@@ -68,7 +68,8 @@ class DesktopApplication(Adw.Application):
         repo = self.store.selected_repository
         if repo:
             self.store.refresh_repository(repo)
-        GLib.timeout_add_seconds(120, self._poll_notifications)
+        GLib.timeout_add_seconds(30, self._poll_notifications)
+        GLib.idle_add(lambda: self.store.check_thank_you() or False)
 
     def _poll_notifications(self) -> bool:
         self.store.poll_notifications()

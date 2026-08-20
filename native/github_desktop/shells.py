@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass
+from collections.abc import Sequence
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,10 @@ def open_shell(shell: Shell, cwd: str, extra_args: tuple[str, ...] = ()) -> None
     for arg in shell.args:
         args.append(arg.format(cwd=cwd))
     subprocess.Popen([shell.executable, *args, *extra_args], cwd=cwd, start_new_session=True)
+
+
+def open_custom_shell(executable: str, argv: Sequence[str], cwd: str) -> None:
+    subprocess.Popen([executable, *argv], cwd=cwd, start_new_session=True)
 
 
 def open_file_manager(path: str) -> None:

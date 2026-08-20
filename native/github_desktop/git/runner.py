@@ -106,6 +106,8 @@ def git(
     binary: bool = False,
     progress: ProgressCallback | None = None,
     progress_parser: GitProgressParser | None = None,
+    on_stdout_line: Callable[[str], None] | None = None,
+    on_stderr_line: Callable[[str], None] | None = None,
 ) -> GitResult:
     """Run a git command. Raises GitError unless the exit code is allowed."""
     git_bin = find_git()
@@ -113,10 +115,11 @@ def git(
     success = success_exit_codes or {0}
     merged_env = _prepare_env(env)
     stdin_bytes = _stdin_bytes(stdin)
+    stream = progress is not None or on_stdout_line is not None or on_stderr_line is not None
 
     log.debug("git %s: %s (cwd=%s)", name, " ".join(cmd[1:]), cwd)
     try:
-        if progress is None:
+        if not stream:
             completed = subprocess.run(
                 cmd,
                 cwd=str(cwd),
@@ -131,10 +134,15 @@ def git(
             stderr_bytes = completed.stderr
             exit_code = completed.returncode
         else:
-            parser = progress_parser or GitProgressParser((ProgressStep("Receiving objects", 1.0),))
+            parser = progress_parser
+            if progress is not None and parser is None:
+                parser = GitProgressParser((ProgressStep("Receiving objects", 1.0),))
 
-            def on_stderr_line(line: str) -> None:
-                progress(parser.parse(line))
+            def handle_stderr(line: str) -> None:
+                if progress is not None and parser is not None:
+                    progress(parser.parse(line))
+                if on_stderr_line is not None:
+                    on_stderr_line(line)
 
             proc = subprocess.Popen(
                 cmd,
@@ -147,10 +155,10 @@ def git(
             stdout_chunks: list[bytes] = []
             stderr_chunks: list[bytes] = []
             stdout_thread = threading.Thread(
-                target=_read_stream, args=(proc.stdout, stdout_chunks, None), daemon=True
+                target=_read_stream, args=(proc.stdout, stdout_chunks, on_stdout_line), daemon=True
             )
             stderr_thread = threading.Thread(
-                target=_read_stream, args=(proc.stderr, stderr_chunks, on_stderr_line), daemon=True
+                target=_read_stream, args=(proc.stderr, stderr_chunks, handle_stderr), daemon=True
             )
             stdout_thread.start()
             stderr_thread.start()

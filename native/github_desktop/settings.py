@@ -57,6 +57,8 @@ class Settings:
     repository_section: str = "Changes"
     ask_for_confirmation_on_force_push: bool = True
     zoom_factor: float = 1.0
+    last_thank_you_version: str = ""
+    last_thank_you_users: list[str] = field(default_factory=list)
     recent_branches: dict[str, list[str]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

@@ -59,7 +59,16 @@ def find_editor(name: str | None) -> Editor | None:
     return editors[0] if editors else None
 
 
-def open_in_editor(editor: Editor, path: str, extra_args: tuple[str, ...] = ()) -> None:
+def open_in_editor(
+    editor: Editor,
+    path: str,
+    extra_args: tuple[str, ...] = (),
+    *,
+    append_path: bool = True,
+) -> None:
     import subprocess
 
-    subprocess.Popen([editor.executable, *editor.args, *extra_args, path], start_new_session=True)
+    cmd = [editor.executable, *editor.args, *extra_args]
+    if append_path:
+        cmd.append(path)
+    subprocess.Popen(cmd, cwd=os.path.dirname(path) if os.path.isfile(path) else path, start_new_session=True)

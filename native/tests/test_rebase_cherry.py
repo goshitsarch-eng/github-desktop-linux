@@ -80,6 +80,36 @@ def test_squash_last_two(git_repo: Path) -> None:
         assert "squashed together" in summaries or "two" in summaries
 
 
+def test_rebase_reports_progress(git_repo: Path) -> None:
+    create_branch(git_repo.as_posix(), "topic")
+    _commit_file(git_repo, "on-main.txt", "m\n", "on main")
+    checkout_branch(git_repo.as_posix(), "topic")
+    _commit_file(git_repo, "t1.txt", "1\n", "topic one")
+    _commit_file(git_repo, "t2.txt", "2\n", "topic two")
+    events = []
+    commits = list(reversed(get_commits(git_repo.as_posix(), "main..HEAD", limit=10)))
+    result = rebase(git_repo.as_posix(), "main", progress=events.append, commits=commits)
+    assert result in (RebaseResult.COMPLETED_WITHOUT_ERROR, RebaseResult.ALREADY_UP_TO_DATE)
+    assert events
+    assert events[-1].position >= 1
+    assert events[-1].total >= 1
+
+
+def test_cherry_pick_reports_progress(git_repo: Path) -> None:
+    create_branch(git_repo.as_posix(), "topic")
+    checkout_branch(git_repo.as_posix(), "topic")
+    _commit_file(git_repo, "p1.txt", "1\n", "pick one")
+    _commit_file(git_repo, "p2.txt", "2\n", "pick two")
+    commits = get_commits(git_repo.as_posix(), limit=2)
+    shas = [c.sha for c in reversed(commits[:2])]
+    checkout_branch(git_repo.as_posix(), "main")
+    events = []
+    result = cherry_pick(git_repo.as_posix(), shas, progress=events.append, commits=list(reversed(commits[:2])))
+    assert result == CherryPickResult.COMPLETED_WITHOUT_ERROR
+    assert events
+    assert events[-1].position == 2
+
+
 def test_reset_mixed(git_repo: Path) -> None:
     _commit_file(git_repo, "later.txt", "l\n", "later")
     sha = get_commits(git_repo.as_posix(), limit=5)[-1].sha  # initial

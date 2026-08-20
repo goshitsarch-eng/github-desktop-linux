@@ -156,3 +156,60 @@ class GitLFSProgressParser:
             text=text,
         )
         return GitProgress(kind="progress", percent=0.0, text=text, details=info)
+
+
+@dataclass(frozen=True)
+class MultiCommitProgress:
+    position: int
+    total: int
+    current_commit_summary: str
+    value: float
+
+
+def format_rebase_value(value: float) -> float:
+    clamped = max(0.0, min(1.0, value))
+    return round(clamped * 100) / 100
+
+
+_REBASING_RE = re.compile(r"^Rebasing \((\d+)/(\d+)\)$")
+_CHERRY_PICK_RE = re.compile(r"^\[(.*\s.*)\]")
+
+
+class GitRebaseParser:
+    """Parse `Rebasing (n/m)` lines from git rebase stderr."""
+
+    def __init__(self, commits: Sequence[object] = ()) -> None:
+        self.commits = list(commits)
+
+    def parse(self, line: str) -> MultiCommitProgress | None:
+        match = _REBASING_RE.match(line.strip())
+        if match is None:
+            return None
+        position = int(match.group(1))
+        total = int(match.group(2))
+        summary = ""
+        if 0 < position <= len(self.commits):
+            commit = self.commits[position - 1]
+            summary = str(getattr(commit, "summary", "") or "")
+        value = format_rebase_value(position / total if total else 0)
+        return MultiCommitProgress(position, total, summary, value)
+
+
+class GitCherryPickParser:
+    """Parse `[branch sha] summary` lines from git cherry-pick stdout."""
+
+    def __init__(self, commits: Sequence[object] = (), count: int = 0) -> None:
+        self.commits = list(commits)
+        self.count = count
+
+    def parse(self, line: str) -> MultiCommitProgress | None:
+        if _CHERRY_PICK_RE.match(line) is None:
+            return None
+        self.count += 1
+        total = len(self.commits) or self.count
+        summary = ""
+        if 0 < self.count <= len(self.commits):
+            commit = self.commits[self.count - 1]
+            summary = str(getattr(commit, "summary", "") or "")
+        value = format_rebase_value(self.count / total if total else 0)
+        return MultiCommitProgress(self.count, total, summary, value)

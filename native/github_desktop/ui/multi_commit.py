@@ -16,8 +16,10 @@ from ..git.ops import (
     determine_mergeability,
     get_ahead_behind_range,
     get_commits_between,
+    get_files_with_conflict_markers,
     warn_about_remote_commits,
 )
+from ..git.progress import MultiCommitProgress
 from ..models import (
     ComputedAction,
     ManualConflictResolution,
@@ -111,7 +113,7 @@ def _show_choose_branch(parent: Gtk.Window, store: AppStore, kind: str, initial_
     current = state.status.current_branch if state.status else None
     default_name = store.default_branch_name(repo)
     branches = [b for b in state.branches if b.name != current]
-    recent_names = list(store.settings.recent_branches.get(repo.path, []))
+    recent_names = list(state.recent_branches or store.settings.recent_branches.get(repo.path, []))
     current_branch = next((b for b in state.branches if b.name == current), None)
 
     dialog = Adw.Dialog()
@@ -346,7 +348,7 @@ def _show_choose_branch(parent: Gtk.Window, store: AppStore, kind: str, initial_
             _on_main(close)
 
         if k == MultiCommitOperationKind.REBASE:
-            store.rebase_branch(repo, name, on_done=finished)
+            store.rebase_branch(repo, name, on_done=finished, on_progress=progress.update)
         else:
             store.merge_branch(repo, name, squash=(k == MultiCommitOperationKind.SQUASH), on_done=finished)
 
@@ -543,7 +545,7 @@ def _show_cherry_pick_target(parent: Gtk.Window, store: AppStore, payload: dict[
 
             _on_main(close)
 
-        store.cherry_pick_commits(repo, shas, target, on_done=finished)
+        store.cherry_pick_commits(repo, shas, target, on_done=finished, on_progress=progress.update)
 
     def start(*_a: object) -> None:
         if selected["create"]:
@@ -568,13 +570,50 @@ def _show_cherry_pick_target(parent: Gtk.Window, store: AppStore, payload: dict[
     dialog.present(parent)
 
 
+class OperationProgress:
+    """Desktop ProgressDialog: `Commit n of m` plus the current commit summary."""
+
+    def __init__(self, dialog: Adw.Dialog, bar: Gtk.ProgressBar, detail: Gtk.Label) -> None:
+        self.dialog = dialog
+        self._bar = bar
+        self._detail = detail
+        self._closed = False
+
+    def update(self, event: MultiCommitProgress | object) -> None:
+        position = int(getattr(event, "position", 0) or 0)
+        total = int(getattr(event, "total", 0) or 0)
+        value = float(getattr(event, "value", 0) or 0)
+        summary = str(getattr(event, "current_commit_summary", "") or "")
+
+        def apply() -> bool:
+            if self._closed:
+                return False
+            if total > 0:
+                self._bar.set_visible(True)
+                self._bar.set_fraction(max(0.0, min(1.0, value)))
+                text = f"Commit {position} of {total}"
+                if summary:
+                    text += f"\n{summary}"
+                self._detail.set_text(text)
+            return False
+
+        GLib.idle_add(apply)
+
+    def close(self) -> None:
+        self._closed = True
+        try:
+            self.dialog.close()
+        except Exception:
+            pass
+
+
 def show_operation_progress(
     parent: Gtk.Window,
     kind: str,
     *,
     commit_count: int | None = None,
     summary: str | None = None,
-) -> Adw.Dialog:
+) -> OperationProgress:
     dialog = Adw.Dialog()
     dialog.set_content_width(400)
     toolbar = Adw.ToolbarView()
@@ -594,7 +633,7 @@ def show_operation_progress(
     bar = Gtk.ProgressBar()
     bar.set_show_text(False)
     if commit_count and commit_count > 0:
-        bar.set_fraction(0.08)
+        bar.set_fraction(0.0)
         bar.set_visible(True)
     else:
         bar.set_visible(False)
@@ -609,7 +648,7 @@ def show_operation_progress(
     toolbar.set_content(box)
     dialog.set_child(toolbar)
     dialog.present(parent)
-    return dialog
+    return OperationProgress(dialog, bar, detail)
 
 
 def show_warn_force_push(parent: Gtk.Window, store: AppStore, payload: dict[str, Any] | None = None) -> None:
@@ -723,6 +762,12 @@ def show_conflicts_dialog(parent: Gtk.Window, store: AppStore, kind: str | None 
             kind = MultiCommitOperationKind.MERGE
     files = [f for f in status.working_directory.files if f.status.is_conflicted]
     resolved = [f for f in status.working_directory.files if not f.status.is_conflicted]
+    leftover = {}
+    try:
+        leftover = get_files_with_conflict_markers(repo.path)
+    except Exception:
+        leftover = {}
+    leftover_count = sum(leftover.values())
     dialog = Adw.Dialog()
     dialog.set_content_width(520)
     dialog.set_content_height(480)
@@ -740,6 +785,14 @@ def show_conflicts_dialog(parent: Gtk.Window, store: AppStore, kind: str | None 
     if count:
         noun = "file" if count == 1 else "files"
         box.append(Gtk.Label(label=f"{count} conflicted {noun}", xalign=0))
+    elif leftover_count:
+        leftover_label = Gtk.Label(
+            label="Leftover conflict markers remain. Resolve them before continuing.",
+            wrap=True,
+            xalign=0,
+        )
+        leftover_label.add_css_class("warning")
+        box.append(leftover_label)
     else:
         success = Gtk.Label(label="All conflicts have been resolved. You can continue.", xalign=0)
         success.add_css_class("success")
@@ -755,14 +808,40 @@ def show_conflicts_dialog(parent: Gtk.Window, store: AppStore, kind: str | None 
     actions = Gtk.Box(spacing=8)
     cont = Gtk.Button(label=_continue_label(kind))
     cont.add_css_class("suggested-action")
-    cont.set_sensitive(count == 0)
+    can_continue = count == 0 and leftover_count == 0
+    cont.set_sensitive(can_continue)
+    if leftover_count and count == 0:
+        cont.set_tooltip_text("Resolve leftover conflict markers before continuing")
+    elif count:
+        cont.set_tooltip_text("Resolve all changes before continuing")
     abort = Gtk.Button(label=_abort_label(kind))
     editor = Gtk.Button(label="Open in editor")
     shell = Gtk.Button(label="Open in command line")
 
     def do_continue(*_a: object) -> None:
         dialog.close()
-        store.continue_conflict_operation(repo, MultiCommitOperationKind(kind))
+        progress = None
+        if kind in (MultiCommitOperationKind.REBASE, MultiCommitOperationKind.CHERRY_PICK):
+            progress = show_operation_progress(parent, kind)
+
+        def finished(*_exc: object) -> None:
+            if progress is None:
+                return
+
+            def close() -> None:
+                try:
+                    progress.close()
+                except Exception:
+                    pass
+
+            _on_main(close)
+
+        store.continue_conflict_operation(
+            repo,
+            MultiCommitOperationKind(kind),
+            on_done=finished,
+            on_progress=progress.update if progress is not None else None,
+        )
 
     def do_abort(*_a: object) -> None:
         def confirm() -> None:

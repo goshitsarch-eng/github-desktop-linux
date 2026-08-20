@@ -12,8 +12,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, Gtk
 
-from ..changelog import load_release_notes
-from ..editors import get_available_editors
+from ..thank_you import thank_you_note
+from ..custom_integration import TARGET_PATH_ARGUMENT
 from ..errors import ValidationError
 from ..git.ops import (
     add_remote,
@@ -295,7 +295,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         PopupType.MULTI_COMMIT_OPERATION: lambda: show_multi_commit(parent, store, payload),
         PopupType.UNREACHABLE_COMMITS: lambda: show_unreachable_commits(parent, store, payload),
         PopupType.RELEASE_NOTES: lambda: show_release_notes(parent),
-        PopupType.THANK_YOU: lambda: show_thank_you(parent),
+        PopupType.THANK_YOU: lambda: show_thank_you(parent, payload),
         PopupType.PUSH_BRANCH_COMMITS: lambda: _alert(
             parent,
             "Publish branch?",
@@ -720,13 +720,21 @@ def show_release_notes(parent: Gtk.Window) -> None:
     dialog.present(parent)
 
 
-def show_thank_you(parent: Gtk.Window) -> None:
+def show_thank_you(parent: Gtk.Window, payload: dict[str, Any] | None = None) -> None:
+    payload = payload or {}
     version, notes = load_release_notes()
+    friendly = str(payload.get("friendly_name") or "contributor")
+    latest = payload.get("latest_version")
+    contributions = list(payload.get("contributions") or [])
+    if not contributions:
+        contributions = [n for n in notes if "Thanks @" in n][:8]
     dialog = Adw.Dialog()
     dialog.set_content_width(460)
     toolbar = Adw.ToolbarView()
     header = Adw.HeaderBar()
-    header.set_title_widget(Adw.WindowTitle(title="Thank you", subtitle=f"GitHub Desktop {version}"))
+    header.set_title_widget(
+        Adw.WindowTitle(title=f"Thank you {friendly}! 🎉", subtitle=f"GitHub Desktop {version}")
+    )
     toolbar.add_top_bar(header)
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
     box.set_margin_top(16)
@@ -734,13 +742,16 @@ def show_thank_you(parent: Gtk.Window) -> None:
     box.set_margin_start(16)
     box.set_margin_end(16)
     label = Gtk.Label(
-        label="Thanks for contributing to GitHub Desktop. This unofficial Linux port keeps the Desktop workflows on GTK 4 and libadwaita.",
+        label=thank_you_note(str(latest) if latest else None),
         wrap=True,
         xalign=0,
     )
     box.append(label)
-    if notes:
-        preview = Gtk.Label(label="\n".join(notes[:4]), wrap=True, xalign=0)
+    heading = Gtk.Label(label="You contributed:", xalign=0)
+    heading.add_css_class("heading")
+    box.append(heading)
+    if contributions:
+        preview = Gtk.Label(label="\n".join(contributions[:12]), wrap=True, xalign=0)
         preview.add_css_class("dim-label")
         box.append(preview)
     links = Gtk.Box(spacing=8)
@@ -1410,19 +1421,108 @@ def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
     integrations = Adw.PreferencesPage(title="Integrations", icon_name="applications-engineering-symbolic")
     ed_group = Adw.PreferencesGroup(title="External editor")
     editors = get_available_editors()
+    CUSTOM_EDITOR = "Configure custom editor…"
+    CUSTOM_SHELL = "Configure custom shell…"
+    editor_names = [e.name for e in editors] + [CUSTOM_EDITOR]
     editor_row = Adw.ComboRow(title="Editor")
-    model = Gtk.StringList.new([e.name for e in editors] or ["None found"])
-    editor_row.set_model(model)
-    if s.selected_external_editor:
+    editor_row.set_model(Gtk.StringList.new(editor_names or [CUSTOM_EDITOR]))
+    if s.use_custom_editor or not editors:
+        editor_row.set_selected(max(0, len(editor_names) - 1))
+    elif s.selected_external_editor:
         for i, e in enumerate(editors):
             if e.name == s.selected_external_editor:
                 editor_row.set_selected(i)
+                break
+    ed_path = Adw.EntryRow(title="Editor path")
+    ed_path.set_text(s.custom_editor_path)
+    ed_choose = Gtk.Button(label="Choose…")
+    ed_choose.add_css_class("flat")
+
+    def choose_editor(*_a: Any) -> None:
+        picker = Gtk.FileDialog(title="Choose editor")
+
+        def done(d, result) -> None:
+            try:
+                picked = d.open_finish(result)
+            except Exception:
+                return
+            if picked:
+                ed_path.set_text(picked.get_path() or "")
+
+        picker.open(parent, None, done)
+
+    ed_choose.connect("clicked", choose_editor)
+    ed_path.add_suffix(ed_choose)
+    ed_args = Adw.EntryRow(title="Arguments")
+    ed_args.set_text(s.custom_editor_args or TARGET_PATH_ARGUMENT)
+    ed_hint = Gtk.Label(
+        label=f"Use {TARGET_PATH_ARGUMENT} where the file or repository path should appear.",
+        wrap=True,
+        xalign=0,
+    )
+    ed_hint.add_css_class("dim-label")
     ed_group.add(editor_row)
+    ed_group.add(ed_path)
+    ed_group.add(ed_args)
+    ed_group.add(ed_hint)
     sh_group = Adw.PreferencesGroup(title="Shell")
     shells = get_available_shells()
+    shell_names = [sh.name for sh in shells] + [CUSTOM_SHELL]
     shell_row = Adw.ComboRow(title="Shell")
-    shell_row.set_model(Gtk.StringList.new([sh.name for sh in shells] or ["None found"]))
+    shell_row.set_model(Gtk.StringList.new(shell_names or [CUSTOM_SHELL]))
+    if s.use_custom_shell or not shells:
+        shell_row.set_selected(max(0, len(shell_names) - 1))
+    elif s.selected_shell:
+        for i, sh in enumerate(shells):
+            if sh.name == s.selected_shell:
+                shell_row.set_selected(i)
+                break
+    sh_path = Adw.EntryRow(title="Shell path")
+    sh_path.set_text(s.custom_shell_path)
+    sh_choose = Gtk.Button(label="Choose…")
+    sh_choose.add_css_class("flat")
+
+    def choose_shell(*_a: Any) -> None:
+        picker = Gtk.FileDialog(title="Choose shell")
+
+        def done(d, result) -> None:
+            try:
+                picked = d.open_finish(result)
+            except Exception:
+                return
+            if picked:
+                sh_path.set_text(picked.get_path() or "")
+
+        picker.open(parent, None, done)
+
+    sh_choose.connect("clicked", choose_shell)
+    sh_path.add_suffix(sh_choose)
+    sh_args = Adw.EntryRow(title="Arguments")
+    sh_args.set_text(s.custom_shell_args or TARGET_PATH_ARGUMENT)
+    sh_hint = Gtk.Label(
+        label=f"Use {TARGET_PATH_ARGUMENT} where the working directory should appear.",
+        wrap=True,
+        xalign=0,
+    )
+    sh_hint.add_css_class("dim-label")
     sh_group.add(shell_row)
+    sh_group.add(sh_path)
+    sh_group.add(sh_args)
+    sh_group.add(sh_hint)
+
+    def sync_custom_rows(*_a: Any) -> None:
+        custom_ed = editor_row.get_selected() >= len(editors)
+        ed_path.set_visible(custom_ed)
+        ed_args.set_visible(custom_ed)
+        ed_hint.set_visible(custom_ed)
+        custom_sh = shell_row.get_selected() >= len(shells)
+        sh_path.set_visible(custom_sh)
+        sh_args.set_visible(custom_sh)
+        sh_hint.set_visible(custom_sh)
+
+    editor_row.connect("notify::selected", sync_custom_rows)
+    shell_row.connect("notify::selected", sync_custom_rows)
+    sync_custom_rows()
     integrations.add(ed_group)
     integrations.add(sh_group)
 
@@ -1527,14 +1627,22 @@ def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
         s.show_diff_check_marks = checks.get_active()
         for key, row in switches.items():
             setattr(s, key, row.get_active())
-        if editors:
-            idx = editor_row.get_selected()
-            if 0 <= idx < len(editors):
-                s.selected_external_editor = editors[idx].name
-        if shells:
-            idx = shell_row.get_selected()
-            if 0 <= idx < len(shells):
-                s.selected_shell = shells[idx].name
+        idx = editor_row.get_selected()
+        if idx >= len(editors):
+            s.use_custom_editor = True
+            s.custom_editor_path = ed_path.get_text().strip()
+            s.custom_editor_args = ed_args.get_text().strip() or TARGET_PATH_ARGUMENT
+        elif 0 <= idx < len(editors):
+            s.use_custom_editor = False
+            s.selected_external_editor = editors[idx].name
+        idx = shell_row.get_selected()
+        if idx >= len(shells):
+            s.use_custom_shell = True
+            s.custom_shell_path = sh_path.get_text().strip()
+            s.custom_shell_args = sh_args.get_text().strip() or TARGET_PATH_ARGUMENT
+        elif 0 <= idx < len(shells):
+            s.use_custom_shell = False
+            s.selected_shell = shells[idx].name
         try:
             store.save_git_user(name_row.get_text(), email_row.get_text(), branch_row.get_text().strip() or None)
         except ValidationError:

@@ -65,7 +65,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._toast.set_child(self._root)
         self._banner = Adw.Banner()
         self._banner.set_revealed(False)
-        self._banner.connect("button-clicked", lambda *_: self.store.clear_banner())
+        self._banner.connect("button-clicked", self._on_banner_clicked)
         self._root.append(self._banner)
         self._stack = Gtk.Stack()
         self._stack.set_vexpand(True)
@@ -110,8 +110,12 @@ class MainWindow(Adw.ApplicationWindow):
             self._stack.set_visible_child_name("repo")
             self._refresh_repo()
         if self.store.banner:
-            self._banner.set_title(self._banner_text(self.store.banner.type, self.store.banner))
-            self._banner.set_button_label("Dismiss")
+            kind = self.store.banner.type
+            self._banner.set_title(self._banner_text(kind, self.store.banner))
+            if kind == BannerType.OPEN_THANK_YOU_CARD:
+                self._banner.set_button_label("Open Your Card")
+            else:
+                self._banner.set_button_label("Dismiss")
             self._banner.set_revealed(True)
         else:
             self._banner.set_revealed(False)
@@ -136,8 +140,16 @@ class MainWindow(Adw.ApplicationWindow):
             BannerType.SUCCESSFUL_REORDER: f"Reordered {banner.count} commit(s)",
             BannerType.REORDER_UNDONE: "Reorder undone",
             BannerType.CONFLICTS_FOUND: banner.operation_description or "Conflicts found",
+            BannerType.OPEN_THANK_YOU_CARD: "The Desktop team would like to thank you for your contributions.",
         }
         return mapping.get(kind, kind.value)
+
+    def _on_banner_clicked(self, *_args: object) -> None:
+        banner = self.store.banner
+        if banner and banner.type == BannerType.OPEN_THANK_YOU_CARD:
+            self.store.open_thank_you_card()
+            return
+        self.store.clear_banner()
 
     def _install_actions(self) -> None:
         def add(name: str, callback) -> None:
@@ -878,7 +890,7 @@ class MainWindow(Adw.ApplicationWindow):
             state.pull_requests,
             current=state.status.current_branch if state.status else None,
             default_name=self.store.default_branch_name(repo),
-            recent=self.store.settings.recent_branches.get(repo.path, []),
+            recent=list(state.recent_branches or self.store.settings.recent_branches.get(repo.path, [])),
             has_github=bool(repo.github),
         )
         if hasattr(self, "_filter_bar"):

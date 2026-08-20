@@ -92,3 +92,49 @@ def test_parses_with_total_and_throughput() -> None:
     assert result.percent == 99
     assert result.total == 167587
     assert result.done is False
+
+
+def test_format_rebase_value() -> None:
+    from github_desktop.git.progress import format_rebase_value
+
+    assert format_rebase_value(0.333) == 0.33
+    assert format_rebase_value(-1) == 0
+    assert format_rebase_value(2) == 1
+    assert format_rebase_value(0.5) == 0.5
+
+
+def test_rebase_parser() -> None:
+    from github_desktop.git.progress import GitRebaseParser
+    from github_desktop.models import CommitOneLine
+
+    parser = GitRebaseParser([CommitOneLine("aaa", "first"), CommitOneLine("bbb", "second")])
+    assert parser.parse("Applying: first") is None
+    event = parser.parse("Rebasing (1/2)")
+    assert event is not None
+    assert event.position == 1
+    assert event.total == 2
+    assert event.current_commit_summary == "first"
+    assert event.value == 0.5
+    event = parser.parse("Rebasing (2/2)")
+    assert event is not None
+    assert event.position == 2
+    assert event.current_commit_summary == "second"
+    assert event.value == 1.0
+
+
+def test_cherry_pick_parser() -> None:
+    from github_desktop.git.progress import GitCherryPickParser
+    from github_desktop.models import CommitOneLine
+
+    parser = GitCherryPickParser([CommitOneLine("aaa", "pick me"), CommitOneLine("bbb", "and me")])
+    assert parser.parse("Date: whenever") is None
+    event = parser.parse("[main abcdef0] pick me")
+    assert event is not None
+    assert event.position == 1
+    assert event.total == 2
+    assert event.current_commit_summary == "pick me"
+    assert event.value == 0.5
+    event = parser.parse("[main 1234567] and me")
+    assert event is not None
+    assert event.position == 2
+    assert event.value == 1.0

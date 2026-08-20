@@ -67,8 +67,11 @@ from .progress import (
     FETCH_STEPS,
     PULL_STEPS,
     PUSH_STEPS,
+    GitCherryPickParser,
     GitProgress,
     GitProgressParser,
+    GitRebaseParser,
+    MultiCommitProgress,
 )
 from .runner import GitResult, env_for_remote, git, git_path_is_repository, resolve_repository_root
 from .status import (
@@ -113,6 +116,12 @@ def get_status(repo_path: str, include_untracked: bool = True) -> IStatusResult 
     info = parse_status_headers(headers)
     files: dict[str, WorkingDirectoryFileChange] = {}
     conflicted = []
+    marker_counts: dict[str, int] = {}
+    if any(entry.status_code in CONFLICT_STATUS_CODES for entry in entries):
+        try:
+            marker_counts = get_files_with_conflict_markers(repo_path)
+        except GitError:
+            marker_counts = {}
     for entry in entries:
         if should_skip_entry(entry):
             continue
@@ -122,7 +131,7 @@ def get_status(repo_path: str, include_untracked: bool = True) -> IStatusResult 
             files.pop(entry.path, None)
         status = convert_to_app_status(entry)
         if status.kind == AppFileStatusKind.CONFLICTED:
-            status.conflict_marker_count = _conflict_marker_count(repo_path, entry.path)
+            status.conflict_marker_count = marker_counts.get(entry.path, 0)
         initial = DiffSelectionType.ALL
         if (
             status.kind == AppFileStatusKind.MODIFIED
@@ -1043,9 +1052,25 @@ def abort_merge(repo: str) -> None:
     git(["merge", "--abort"], repo, name="abortMerge")
 
 
-def rebase(repo: str, base_branch: str) -> RebaseResult:
+def rebase(
+    repo: str,
+    base_branch: str,
+    *,
+    progress: Callable[[MultiCommitProgress], None] | None = None,
+    commits: Sequence[object] = (),
+) -> RebaseResult:
+    kwargs: dict = {"name": "rebase"}
+    if progress is not None:
+        parser = GitRebaseParser(commits)
+
+        def on_line(line: str) -> None:
+            event = parser.parse(line)
+            if event is not None:
+                progress(event)
+
+        kwargs["on_stderr_line"] = on_line
     try:
-        result = git(["rebase", base_branch], repo, name="rebase")
+        result = git(["rebase", base_branch], repo, **kwargs)
         if "is up to date" in result.stdout.lower() or "up to date" in result.stderr.lower():
             return RebaseResult.ALREADY_UP_TO_DATE
         return RebaseResult.COMPLETED_WITHOUT_ERROR
@@ -1057,12 +1082,27 @@ def rebase(repo: str, base_branch: str) -> RebaseResult:
         return RebaseResult.ERROR
 
 
-def continue_rebase(repo: str) -> RebaseResult:
+def continue_rebase(
+    repo: str,
+    *,
+    progress: Callable[[MultiCommitProgress], None] | None = None,
+    commits: Sequence[object] = (),
+) -> RebaseResult:
     status = get_status(repo)
     if status and any(f.status.kind == AppFileStatusKind.CONFLICTED for f in status.working_directory.files):
         return RebaseResult.CONFLICTS_ENCOUNTERED
+    kwargs: dict = {"name": "rebaseContinue"}
+    if progress is not None:
+        parser = GitRebaseParser(commits)
+
+        def on_line(line: str) -> None:
+            event = parser.parse(line)
+            if event is not None:
+                progress(event)
+
+        kwargs["on_stderr_line"] = on_line
     try:
-        git(["-c", "core.editor=true", "rebase", "--continue"], repo, name="rebaseContinue")
+        git(["-c", "core.editor=true", "rebase", "--continue"], repo, **kwargs)
         return RebaseResult.COMPLETED_WITHOUT_ERROR
     except GitError:
         if get_rebase_internal_state(repo) is not None:
@@ -1074,11 +1114,27 @@ def abort_rebase(repo: str) -> None:
     git(["rebase", "--abort"], repo, name="abortRebase")
 
 
-def cherry_pick(repo: str, shas: Sequence[str]) -> CherryPickResult:
+def cherry_pick(
+    repo: str,
+    shas: Sequence[str],
+    *,
+    progress: Callable[[MultiCommitProgress], None] | None = None,
+    commits: Sequence[object] = (),
+) -> CherryPickResult:
     if not shas:
         return CherryPickResult.UNABLE_TO_START
+    kwargs: dict = {"name": "cherryPick"}
+    if progress is not None:
+        parser = GitCherryPickParser(commits or [CommitOneLine(sha=s, summary="") for s in shas])
+
+        def on_line(line: str) -> None:
+            event = parser.parse(line)
+            if event is not None:
+                progress(event)
+
+        kwargs["on_stdout_line"] = on_line
     try:
-        git(["cherry-pick", *shas], repo, name="cherryPick")
+        git(["cherry-pick", *shas], repo, **kwargs)
         return CherryPickResult.COMPLETED_WITHOUT_ERROR
     except GitError:
         if _path_exists(repo, ".git/CHERRY_PICK_HEAD"):
@@ -1086,9 +1142,24 @@ def cherry_pick(repo: str, shas: Sequence[str]) -> CherryPickResult:
         return CherryPickResult.ERROR
 
 
-def continue_cherry_pick(repo: str) -> CherryPickResult:
+def continue_cherry_pick(
+    repo: str,
+    *,
+    progress: Callable[[MultiCommitProgress], None] | None = None,
+    commits: Sequence[object] = (),
+) -> CherryPickResult:
+    kwargs: dict = {"name": "cherryContinue"}
+    if progress is not None:
+        parser = GitCherryPickParser(commits)
+
+        def on_line(line: str) -> None:
+            event = parser.parse(line)
+            if event is not None:
+                progress(event)
+
+        kwargs["on_stdout_line"] = on_line
     try:
-        git(["-c", "core.editor=true", "cherry-pick", "--continue"], repo, name="cherryContinue")
+        git(["-c", "core.editor=true", "cherry-pick", "--continue"], repo, **kwargs)
         return CherryPickResult.COMPLETED_WITHOUT_ERROR
     except GitError:
         if _path_exists(repo, ".git/CHERRY_PICK_HEAD"):
@@ -1556,6 +1627,123 @@ def get_commits_between(repo: str, base_sha: str, target_sha: str) -> list[Commi
         if sha:
             commits.append(CommitOneLine(sha=sha, summary=summary))
     return commits
+
+
+_RECENT_BRANCH_RE = re.compile(
+    r".*? (renamed|checkout)(?:: moving from|\s*) (?:refs/heads/|\s*)(.*?) to (?:refs/heads/|\s*)(.*?)$",
+    re.I,
+)
+_BRANCH_CHECKOUT_RE = re.compile(
+    r"^[a-f0-9]{40}\sHEAD@{(.*)}\scheckout: moving from\s.*\sto\s(.*)$"
+)
+_NO_COMMITS_ON_BRANCH_RE = re.compile(
+    r"fatal: your current branch '.*' does not have any commits yet"
+)
+_CONFLICT_MARKER_RE = re.compile(r"^(.+):\d+: leftover conflict marker", re.M)
+_CREDENTIAL_INDEX_RE = re.compile(r"\[\d+\]$")
+
+
+def get_recent_branches(repo: str, limit: int = 5) -> list[str]:
+    """Newest reflog checkouts first, matching Desktop `getRecentBranches`."""
+    result = git(
+        ["log", "-g", "--no-abbrev-commit", "--pretty=oneline", "HEAD", "-n", "2500", "--"],
+        repo,
+        success_exit_codes={0, 128},
+        name="getRecentBranches",
+    )
+    if result.exit_code == 128:
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+    excluded: set[str] = set()
+    for line in result.stdout.splitlines():
+        match = _RECENT_BRANCH_RE.search(line)
+        if match is None:
+            continue
+        operation, exclude_name, branch_name = match.group(1), match.group(2), match.group(3)
+        if operation.lower() == "renamed":
+            excluded.add(exclude_name)
+        if branch_name in excluded or branch_name in seen:
+            continue
+        seen.add(branch_name)
+        names.append(branch_name)
+        if len(names) >= limit:
+            break
+    return names
+
+
+def get_branch_checkouts(repo: str, after) -> dict[str, str]:
+    """Distinct branch checkouts on or after `after` (Desktop `getBranchCheckouts`)."""
+    stamp = after.isoformat() if hasattr(after, "isoformat") else str(after)
+    result = git(
+        [
+            "reflog",
+            "--date=iso",
+            f'--after="{stamp}"',
+            "--pretty=%H %gd %gs",
+            "--grep-reflog=checkout: moving from .* to .*$",
+            "--",
+        ],
+        repo,
+        success_exit_codes={0, 128},
+        name="getCheckoutsAfterDate",
+    )
+    checkouts: dict[str, str] = {}
+    if result.exit_code == 128 and _NO_COMMITS_ON_BRANCH_RE.search(result.stderr):
+        return checkouts
+    for line in result.stdout.splitlines():
+        parsed = _BRANCH_CHECKOUT_RE.match(line)
+        if parsed is None:
+            continue
+        timestamp, branch_name = parsed.group(1), parsed.group(2)
+        if branch_name not in checkouts:
+            checkouts[branch_name] = timestamp
+    return checkouts
+
+
+def get_files_with_conflict_markers(repo: str) -> dict[str, int]:
+    """Paths with leftover conflict-marker counts (Desktop `getFilesWithConflictMarkers`)."""
+    result = git(
+        ["diff", "--check"],
+        repo,
+        success_exit_codes={0, 2},
+        name="getFilesWithConflictMarkers",
+    )
+    files: dict[str, int] = {}
+    for match in _CONFLICT_MARKER_RE.finditer(result.stdout):
+        path = match.group(1)
+        files[path] = files.get(path, 0) + 1
+    return files
+
+
+def parse_credential(value: str) -> dict[str, str]:
+    """Parse Git credential helper stdin (Desktop `parseCredential`)."""
+    cred: dict[str, str] = {}
+    for line in re.split(r"\r?\n", value):
+        eq = line.find("=")
+        if eq < 0:
+            continue
+        key, val = line[:eq], line[eq + 1 :]
+        if key.endswith("[]"):
+            index = 0
+            new_key = f"{key[:-2]}[{index}]"
+            while new_key in cred:
+                index += 1
+                new_key = f"{key[:-2]}[{index}]"
+            cred[new_key] = val
+        else:
+            cred[key] = val
+    return cred
+
+
+def format_credential(credential: dict[str, str]) -> str:
+    """Serialize a credential map for Git helper stdin (Desktop `formatCredential`)."""
+    lines: list[str] = []
+    for key, val in credential.items():
+        if "\n" in val or "\0" in val:
+            raise GitError(f"forbidden characters in credential value: {key}")
+        lines.append(f"{_CREDENTIAL_INDEX_RE.sub('[]', key)}={val}\n")
+    return "".join(lines)
 
 
 def determine_mergeability(repo: str, ours_sha: str, theirs_sha: str) -> MergeTreeResult:

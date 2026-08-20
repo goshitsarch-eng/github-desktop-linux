@@ -63,6 +63,11 @@ REQUIRED_GIT_FUNCS = [
     "get_global_config_path",
     "is_using_lfs",
     "is_tracked_by_lfs",
+    "get_recent_branches",
+    "get_files_with_conflict_markers",
+    "parse_credential",
+    "format_credential",
+    "get_branch_checkouts",
 ]
 
 
@@ -115,7 +120,7 @@ def test_repository_settings_tabs() -> None:
 def test_banners_defined() -> None:
     assert BannerType.SUCCESSFUL_MERGE in BannerType
     assert BannerType.REBASE_CONFLICTS_FOUND in BannerType
-    assert BannerType.SUCCESSFUL_CHERRY_PICK in BannerType
+    assert BannerType.OPEN_THANK_YOU_CARD in BannerType
 
 
 def test_window_actions_cover_menus() -> None:
@@ -135,6 +140,13 @@ def test_window_actions_cover_menus() -> None:
     src += open(ci_checks.__file__, encoding="utf-8").read()
     src += open(multi_commit.__file__, encoding="utf-8").read()
     src += open(repo_rules.__file__, encoding="utf-8").read()
+    from github_desktop import thank_you, custom_integration
+    from github_desktop.git import progress as git_progress
+
+    src += open(thank_you.__file__, encoding="utf-8").read()
+    src += open(custom_integration.__file__, encoding="utf-8").read()
+    src += open(git_progress.__file__, encoding="utf-8").read()
+    src += open(git_ops.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -201,5 +213,12 @@ def test_window_actions_cover_menus() -> None:
         "Edit global Git config",
         "Unknown co-authors",
         "Cloning…",
+        "Thanks so much for all your hard work",
+        "You contributed:",
+        "Configure custom editor",
+        "%TARGET_PATH%",
+        "leftover conflict marker",
+        "Leftover conflict markers remain",
+        "Open Your Card",
     ]:
         assert phrase in src
