@@ -8,7 +8,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gtk
+from gi.repository import Adw, Gdk, Gtk
 
 from ..models import Branch, BranchType, PopupType, PullRequest
 from .menus import attach_right_click, clear_box, copy_text, show_context_menu
@@ -59,6 +59,7 @@ class BranchesFoldout(Gtk.Popover):
         on_merge: Callable[[Branch], None],
         on_pr: Callable[[PullRequest], None],
         on_view_github: Callable[[Branch], None],
+        on_cherry_pick: Callable[[Branch, str], None] | None = None,
     ) -> None:
         super().__init__()
         self.set_has_arrow(True)
@@ -70,6 +71,7 @@ class BranchesFoldout(Gtk.Popover):
         self._on_merge = on_merge
         self._on_pr = on_pr
         self._on_view_github = on_view_github
+        self._on_cherry_pick = on_cherry_pick
         self._current_name: str | None = None
         self._github = False
 
@@ -196,6 +198,21 @@ class BranchesFoldout(Gtk.Popover):
         row.set_activatable(True)
         row._branch = branch  # type: ignore[attr-defined]
         attach_right_click(row, lambda *_ , b=branch, r=row: self._branch_menu(r, b))
+        if self._on_cherry_pick:
+            try:
+                drop = Gtk.DropTarget.new(str, Gdk.DragAction.MOVE)
+
+                def on_drop(_t, value, _x, _y, target=branch):
+                    if value and self._on_cherry_pick:
+                        self.popdown()
+                        self._on_cherry_pick(target, str(value))
+                        return True
+                    return False
+
+                drop.connect("drop", on_drop)
+                row.add_controller(drop)
+            except Exception:
+                pass
         return row
 
     def _branch_menu(self, row: Gtk.Widget, branch: Branch) -> None:

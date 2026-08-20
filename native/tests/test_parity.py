@@ -16,6 +16,9 @@ REQUIRED_GIT_FUNCS = [
     "get_blob_lines",
     "get_commit_diff",
     "get_commits",
+    "get_changeset_data",
+    "get_commit_range_changed_files",
+    "get_commit_range_diff",
     "get_branches",
     "create_branch",
     "rename_branch",
@@ -102,6 +105,11 @@ def test_banners_defined() -> None:
 
 def test_window_actions_cover_menus() -> None:
     src = open(MainWindow.__init__.__code__.co_filename, encoding="utf-8").read()
+    from github_desktop.ui import stash, history, diff_view
+
+    src += open(stash.__file__, encoding="utf-8").read()
+    src += open(history.__file__, encoding="utf-8").read()
+    src += open(diff_view.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -133,5 +141,7 @@ def test_window_actions_cover_menus() -> None:
         "Install command line tool",
         "Zoom in",
         "Modified",
+        "Stashed changes",
+        "Search commits",
     ]:
         assert phrase in src

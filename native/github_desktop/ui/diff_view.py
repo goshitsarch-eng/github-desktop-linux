@@ -71,6 +71,7 @@ class DiffViewer(Gtk.Box):
         on_collapse: Callable[[], None] | None = None,
         on_expand: Callable[[], None] | None = None,
         on_image_mode: Callable[[str], None] | None = None,
+        on_open_submodule: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.add_css_class("diff-view")
@@ -83,9 +84,36 @@ class DiffViewer(Gtk.Box):
         self.on_collapse = on_collapse
         self.on_expand = on_expand
         self.on_image_mode = on_image_mode
+        self.on_open_submodule = on_open_submodule
         self._toolbar = Gtk.Box(spacing=6)
         self._toolbar.add_css_class("diff-toolbar")
         self.append(self._toolbar)
+        self._search_revealer = Gtk.Revealer()
+        search_row = Gtk.Box(spacing=6)
+        search_row.add_css_class("diff-search")
+        self._search_entry = Gtk.SearchEntry()
+        self._search_entry.set_placeholder_text("Search…")
+        self._search_entry.set_hexpand(True)
+        self._search_entry.connect("search-changed", lambda *_: self._run_search(self._search_entry.get_text(), "next"))
+        self._search_entry.connect("activate", lambda *_: self._run_search(self._search_entry.get_text(), "next"))
+        prev_btn = Gtk.Button(icon_name="go-up-symbolic")
+        prev_btn.add_css_class("flat")
+        prev_btn.connect("clicked", lambda *_: self._run_search(self._search_entry.get_text(), "previous"))
+        next_btn = Gtk.Button(icon_name="go-down-symbolic")
+        next_btn.add_css_class("flat")
+        next_btn.connect("clicked", lambda *_: self._run_search(self._search_entry.get_text(), "next"))
+        self._search_count = Gtk.Label(label="")
+        self._search_count.add_css_class("dim-label")
+        close_search = Gtk.Button(icon_name="window-close-symbolic")
+        close_search.add_css_class("flat")
+        close_search.connect("clicked", lambda *_: self.close_search())
+        search_row.append(self._search_entry)
+        search_row.append(prev_btn)
+        search_row.append(next_btn)
+        search_row.append(self._search_count)
+        search_row.append(close_search)
+        self._search_revealer.set_child(search_row)
+        self.append(self._search_revealer)
         self._hint = Gtk.Label(xalign=0)
         self._hint.add_css_class("whitespace-hint")
         self._hint.set_visible(False)
@@ -99,6 +127,16 @@ class DiffViewer(Gtk.Box):
         self._tab_size = 4
         self._selection: DiffSelection | None = None
         self._list_store: Gio.ListStore | None = None
+        self._list_view: Gtk.ListView | None = None
+        self._row_specs: list[RowSpec] = []
+        self._row_widgets: list[Gtk.Widget] = []
+        self._search_query = ""
+        self._search_matches: list[int] = []
+        self._search_cursor = 0
+        self.set_focusable(True)
+        key = Gtk.EventControllerKey()
+        key.connect("key-pressed", self._on_key)
+        self.add_controller(key)
 
     def render(
         self,
@@ -117,6 +155,9 @@ class DiffViewer(Gtk.Box):
         self._show_checks = show_checks
         self._tab_size = max(1, tab_size)
         self._selection = selection
+        self._row_specs = []
+        self._row_widgets = []
+        self._list_view = None
         clear_box(self._toolbar)
         self._hint.set_visible(False)
         self._scroll.set_child(self._inner)
@@ -136,7 +177,7 @@ class DiffViewer(Gtk.Box):
             self._inner.append(Adw.StatusPage(title="Diff too large to display"))
             return
         if kind == DiffType.SUBMODULE:
-            self._inner.append(Adw.StatusPage(title="Submodule", description=getattr(diff, "path", "") or path))
+            self._render_submodule(diff)
             return
         if not isinstance(diff, TextDiff):
             self._inner.append(Gtk.Label(label="Unable to display this diff"))
@@ -150,11 +191,16 @@ class DiffViewer(Gtk.Box):
             self._inner.append(warn)
         self._fill_toolbar(diff, can_collapse)
         rows = self._flatten(diff, side_by_side)
+        self._row_specs = rows
         if len(rows) >= VIRTUALIZE_AFTER:
             self._render_listview(rows, selection)
-            return
-        for spec in rows:
-            self._inner.append(self._widget_for(spec, selection))
+        else:
+            for spec in rows:
+                widget = self._widget_for(spec, selection)
+                self._row_widgets.append(widget)
+                self._inner.append(widget)
+        if self._search_revealer.get_reveal_child() and self._search_query:
+            self._run_search(self._search_query, "next")
 
     def _fill_toolbar(self, diff: TextDiff, can_collapse: bool) -> None:
         expandable = any(h.expansion_type != DiffHunkExpansionType.NONE for h in diff.hunks)
@@ -168,6 +214,151 @@ class DiffViewer(Gtk.Box):
             collapse.add_css_class("flat")
             collapse.connect("clicked", lambda *_: self.on_collapse and self.on_collapse())
             self._toolbar.append(collapse)
+        find = Gtk.Button(label="Find")
+        find.add_css_class("flat")
+        find.set_tooltip_text("Find in diff (Ctrl+F)")
+        find.connect("clicked", lambda *_: self.start_search())
+        self._toolbar.append(find)
+
+    def start_search(self) -> None:
+        self._search_revealer.set_reveal_child(True)
+        self._search_entry.grab_focus()
+
+    def close_search(self) -> None:
+        self._search_revealer.set_reveal_child(False)
+        self._search_query = ""
+        self._search_matches = []
+        self._search_cursor = 0
+        self._search_count.set_text("")
+        self._apply_search_highlight()
+
+    def _on_key(self, _controller, keyval: int, _keycode: int, state: Gdk.ModifierType) -> bool:
+        ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
+        shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
+        if ctrl and keyval in (Gdk.KEY_f, Gdk.KEY_F):
+            self.start_search()
+            return True
+        if keyval == Gdk.KEY_Escape and self._search_revealer.get_reveal_child():
+            self.close_search()
+            return True
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and self._search_revealer.get_reveal_child():
+            self._run_search(self._search_entry.get_text(), "previous" if shift else "next")
+            return True
+        return False
+
+    def _spec_text(self, spec: RowSpec) -> str:
+        parts = []
+        for line in (spec.line, spec.left, spec.right):
+            if line is not None and line.text:
+                parts.append(line.text)
+        return " ".join(parts)
+
+    def _run_search(self, query: str, direction: str) -> None:
+        query = query or ""
+        self._search_query = query
+        needle = query.lower().strip()
+        if not needle:
+            self._search_matches = []
+            self._search_cursor = 0
+            self._search_count.set_text("")
+            self._apply_search_highlight()
+            return
+        matches = [i for i, spec in enumerate(self._row_specs) if needle in self._spec_text(spec).lower()]
+        if query == getattr(self, "_last_search_query", None) and self._search_matches == matches and matches:
+            delta = -1 if direction == "previous" else 1
+            self._search_cursor = (self._search_cursor + delta) % len(matches)
+        else:
+            self._search_matches = matches
+            self._search_cursor = len(matches) - 1 if direction == "previous" and matches else 0
+        self._last_search_query = query
+        if not matches:
+            self._search_count.set_text("No results")
+            self._apply_search_highlight()
+            return
+        self._search_count.set_text(f"{self._search_cursor + 1} of {len(matches)}")
+        self._apply_search_highlight()
+        index = matches[self._search_cursor]
+        if self._list_view is not None:
+            try:
+                self._list_view.scroll_to(index, Gtk.ListScrollFlags.FOCUS, None)
+            except Exception:
+                pass
+        elif index < len(self._row_widgets):
+            widget = self._row_widgets[index]
+            try:
+                widget.grab_focus()
+            except Exception:
+                pass
+
+    def _apply_search_highlight(self) -> None:
+        current = None
+        if self._search_matches:
+            current = self._search_matches[self._search_cursor]
+        for i, widget in enumerate(self._row_widgets):
+            widget.remove_css_class("diff-search-hit")
+            widget.remove_css_class("diff-search-current")
+            if i in self._search_matches:
+                widget.add_css_class("diff-search-hit")
+            if current is not None and i == current:
+                widget.add_css_class("diff-search-current")
+        if self._list_view is not None and self._list_store is not None:
+            self._list_view.queue_draw()
+
+    def _decorate_search(self, widget: Gtk.Widget, spec: RowSpec) -> None:
+        needle = self._search_query.lower().strip()
+        if not needle or needle not in self._spec_text(spec).lower():
+            return
+        widget.add_css_class("diff-search-hit")
+        if self._search_matches and self._row_specs:
+            try:
+                index = self._row_specs.index(spec)
+            except ValueError:
+                return
+            if self._search_matches and index == self._search_matches[self._search_cursor]:
+                widget.add_css_class("diff-search-current")
+
+    def _render_submodule(self, diff) -> None:
+        from ..models import SubmoduleDiff
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.set_margin_top(24)
+        box.set_margin_start(24)
+        box.set_margin_end(24)
+        title = Gtk.Label(label="Submodule changes", xalign=0)
+        title.add_css_class("heading")
+        box.append(title)
+        path = getattr(diff, "path", "") or self._path
+        box.append(Gtk.Label(label=path, xalign=0))
+        url = getattr(diff, "url", None)
+        if url:
+            box.append(Gtk.Label(label=f"Remote: {url}", xalign=0))
+        old_sha = getattr(diff, "old_sha", None)
+        new_sha = getattr(diff, "new_sha", None)
+        if old_sha or new_sha:
+            box.append(
+                Gtk.Label(
+                    label=f"{(old_sha or 'none')[:7]} → {(new_sha or 'none')[:7]}",
+                    xalign=0,
+                )
+            )
+        status = getattr(diff, "status", None)
+        if status:
+            if status.commit_changed:
+                box.append(Gtk.Label(label="The checked-out commit changed.", xalign=0))
+            if status.modified_changes:
+                box.append(Gtk.Label(label="The submodule has modified content.", xalign=0))
+            if status.untracked_changes:
+                box.append(Gtk.Label(label="The submodule has untracked content.", xalign=0))
+        full = getattr(diff, "full_path", "") or ""
+        if full and self.on_open_submodule:
+            open_btn = Gtk.Button(label="Open submodule")
+            open_btn.add_css_class("suggested-action")
+            open_btn.set_halign(Gtk.Align.START)
+            open_btn.connect("clicked", lambda *_ , p=full: self.on_open_submodule and self.on_open_submodule(p))
+            box.append(open_btn)
+        elif isinstance(diff, SubmoduleDiff) and not full:
+            box.append(Gtk.Label(label="This submodule isn't checked out locally.", xalign=0))
+        self._inner.append(box)
 
     def _flatten(self, diff: TextDiff, side_by_side: bool) -> list[RowSpec]:
         rows: list[RowSpec] = []
@@ -222,6 +413,7 @@ class DiffViewer(Gtk.Box):
         factory.connect("bind", lambda _f, item: self._bind_list_item(item, selection))
         listview = Gtk.ListView.new(Gtk.NoSelection.new(store), factory)
         listview.add_css_class("diff-list")
+        self._list_view = listview
         self._scroll.set_child(listview)
 
     def _bind_list_item(self, list_item, selection: DiffSelection | None) -> None:
@@ -232,12 +424,15 @@ class DiffViewer(Gtk.Box):
 
     def _widget_for(self, spec: RowSpec, selection: DiffSelection | None) -> Gtk.Widget:
         if spec.kind == "hunk" and spec.line is not None:
-            return self._hunk_header(spec.line, spec.hunk_start, spec.hunk_length, selection, spec.hunk_index, spec.expansion)
-        if spec.kind == "split":
-            return self._split_row(spec, selection)
-        if spec.line is not None and spec.index is not None:
-            return self._unified_line(spec.line, spec.index, selection)
-        return Gtk.Box()
+            widget = self._hunk_header(spec.line, spec.hunk_start, spec.hunk_length, selection, spec.hunk_index, spec.expansion)
+        elif spec.kind == "split":
+            widget = self._split_row(spec, selection)
+        elif spec.line is not None and spec.index is not None:
+            widget = self._unified_line(spec.line, spec.index, selection)
+        else:
+            widget = Gtk.Box()
+        self._decorate_search(widget, spec)
+        return widget
 
     def _hunk_header(
         self,

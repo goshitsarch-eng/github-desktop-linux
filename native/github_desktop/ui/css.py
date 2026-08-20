@@ -97,9 +97,26 @@ APP_CSS = """
 .compare-cta {
   padding: 8px;
 }
-.diff-toolbar {
-  padding: 4px 8px;
+.diff-search {
+  padding: 6px 8px;
 }
+.diff-search-hit {
+  background-color: alpha(@warning_color, 0.28);
+}
+.diff-search-current {
+  background-color: alpha(@accent_bg_color, 0.45);
+}
+.stash-header {
+  padding: 10px 12px;
+}
+.commit-stats {
+  font-size: 0.85rem;
+  opacity: 0.8;
+}
+.expandable-commit-summary {
+  padding: 8px 12px;
+}
+
 .whitespace-hint {
   padding: 6px 8px;
   font-size: 0.85rem;

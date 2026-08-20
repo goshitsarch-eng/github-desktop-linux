@@ -21,6 +21,9 @@ from ..models import (
     Branch,
     BranchType,
     CherryPickResult,
+    COMMIT_BATCH_SIZE,
+    NULL_TREE_SHA,
+    ChangesetData,
     Commit,
     CommitIdentity,
     CommitMessage,
@@ -494,7 +497,7 @@ def co_author_trailers(authors: Sequence[Author]) -> list[tuple[str, str]]:
 def get_commits(
     repo: str,
     revision_range: str | None = None,
-    limit: int | None = 100,
+    limit: int | None = COMMIT_BATCH_SIZE,
     skip: int | None = None,
     extra: Sequence[str] = (),
 ) -> list[Commit]:
@@ -562,13 +565,65 @@ def get_commit(repo: str, sha: str) -> Commit | None:
 
 
 def get_changed_files(repo: str, sha: str) -> list[CommittedFileChange]:
-    args = ["log", sha, "-1", "--name-status", "-M", "-C", "--format=", "-z"]
+    return get_changeset_data(repo, sha).files
+
+
+def get_changeset_data(repo: str, sha: str) -> ChangesetData:
+    args = ["log", sha, "-C", "-M", "-m", "-1", "--first-parent", "--name-status", "--format=", "-z"]
     result = git(args, repo, name="nameStatus")
-    tokens = [t for t in result.stdout.split("\0") if t]
-    files: list[CommittedFileChange] = []
-    i = 0
     parents = get_commit(repo, sha)
     parent = parents.parent_shas[0] if parents and parents.parent_shas else None
+    files = _parse_name_status_z(result.stdout, sha, parent)
+    added, deleted = _numstat_totals_show(repo, sha)
+    return ChangesetData(files=files, lines_added=added, lines_deleted=deleted)
+
+
+def get_commit_range_changed_files(
+    repo: str,
+    oldest_sha: str,
+    newest_sha: str,
+    *,
+    use_null_tree: bool = False,
+) -> ChangesetData:
+    parent = NULL_TREE_SHA if use_null_tree else f"{oldest_sha}^"
+    result = git(
+        ["diff", "--name-status", "-M", "-C", "-z", parent, newest_sha, "--"],
+        repo,
+        success_exit_codes={0, 1, 128},
+        name="commitRangeFiles",
+    )
+    if result.exit_code == 128 and not use_null_tree:
+        return get_commit_range_changed_files(repo, oldest_sha, newest_sha, use_null_tree=True)
+    files = _parse_name_status_z(result.stdout, newest_sha, parent)
+    added, deleted = _numstat_totals(repo, [parent, newest_sha])
+    return ChangesetData(files=files, lines_added=added, lines_deleted=deleted)
+
+
+def get_commit_range_diff(
+    repo: str,
+    path: str,
+    oldest_sha: str,
+    newest_sha: str,
+    status: FileStatus | None = None,
+    hide_whitespace: bool = False,
+    context_lines: int | None = None,
+    *,
+    use_null_tree: bool = False,
+) -> FileDiff:
+    parent = NULL_TREE_SHA if use_null_tree else f"{oldest_sha}^"
+    args = _diff_flags(hide_whitespace, context_lines) + [parent, newest_sha, "--", path]
+    result = git(args, repo, success_exit_codes={0, 1, 128}, name="commitRangeDiff")
+    if result.exit_code == 128 and not use_null_tree:
+        return get_commit_range_diff(
+            repo, path, oldest_sha, newest_sha, status, hide_whitespace, context_lines, use_null_tree=True
+        )
+    return _diff_from_result(repo, path, status or FileStatus(AppFileStatusKind.MODIFIED), result, newest_sha)
+
+
+def _parse_name_status_z(stdout: str, sha: str, parent: str | None) -> list[CommittedFileChange]:
+    tokens = [t for t in stdout.split("\0") if t]
+    files: list[CommittedFileChange] = []
+    i = 0
     while i < len(tokens):
         status = tokens[i].strip()
         i += 1
@@ -595,12 +650,79 @@ def get_changed_files(repo: str, sha: str) -> list[CommittedFileChange]:
         files.append(
             CommittedFileChange(
                 path=path,
-                status=FileStatus(kind, old_path=old_path, rename_includes_modifications=kind_ch.startswith("R") and status != "R100"),
+                status=FileStatus(
+                    kind,
+                    old_path=old_path,
+                    rename_includes_modifications=kind_ch.startswith("R") and status != "R100",
+                ),
                 commitish=sha,
                 parent_commitish=parent,
             )
         )
     return files
+
+
+def _numstat_totals(repo: str, rev_args: Sequence[str]) -> tuple[int, int]:
+    result = git(
+        ["diff", "--numstat", *rev_args, "--"],
+        repo,
+        success_exit_codes={0, 1, 128},
+        name="numstat",
+    )
+    if result.exit_code == 128:
+        return 0, 0
+    return _parse_numstat(result.stdout)
+
+
+def _numstat_totals_show(repo: str, sha: str) -> tuple[int, int]:
+    result = git(
+        ["show", "--numstat", "--format=", "-C", "-M", sha, "--"],
+        repo,
+        success_exit_codes={0, 128},
+        name="showNumstat",
+    )
+    if result.exit_code == 128:
+        return 0, 0
+    return _parse_numstat(result.stdout)
+
+
+def _parse_numstat(stdout: str) -> tuple[int, int]:
+    added = deleted = 0
+    for line in stdout.splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) < 2:
+            continue
+        a, d = parts[0], parts[1]
+        if a.isdigit():
+            added += int(a)
+        if d.isdigit():
+            deleted += int(d)
+    return added, deleted
+
+
+def lfs_ls_files(repo: str) -> list[str]:
+    result = git(["lfs", "ls-files", "-n"], repo, success_exit_codes={0, 1, 128}, name="lfsLsFiles")
+    if result.exit_code != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def lfs_patterns_from_gitattributes(repo: str) -> list[str]:
+    path = Path(repo) / ".gitattributes"
+    if not path.is_file():
+        return []
+    patterns: list[str] = []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "filter=lfs" in stripped:
+            patterns.append(stripped.split()[0])
+    return patterns
 
 
 def get_branches(repo: str, *prefixes: str) -> list[Branch]:

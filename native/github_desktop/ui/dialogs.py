@@ -403,6 +403,8 @@ def _discard_stash(store: AppStore, payload: dict[str, Any]) -> None:
         from ..git.ops import stash_drop
 
         stash_drop(repo.path, name)
+        state = store.state_for(repo)
+        state.stashed_visible = False
         store.refresh_repository(repo)
 
 
@@ -528,17 +530,17 @@ def show_create_repository(parent: Gtk.Window, store: AppStore, initial: str) ->
 
 def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
     dialog = Adw.Dialog()
-    dialog.set_content_width(560)
-    dialog.set_content_height(480)
+    dialog.set_content_width(640)
+    dialog.set_content_height(560)
     toolbar = Adw.ToolbarView()
     header = Adw.HeaderBar()
-    header.set_title_widget(Adw.WindowTitle(title="Clone a repository", subtitle="GitHub or any Git URL"))
-    toolbar.add_top_bar(header)
     stack = Adw.ViewStack()
     switcher = Adw.ViewSwitcher()
     switcher.set_stack(stack)
     header.set_title_widget(switcher)
+    toolbar.add_top_bar(header)
 
+    default_dir = store.settings.clone_default_directory or os.path.expanduser("~/Documents/GitHub")
     url_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
     url_box.set_margin_top(18)
     url_box.set_margin_start(18)
@@ -546,12 +548,29 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
     url_row = Adw.EntryRow(title="URL")
     url_row.set_text(str(payload.get("initial_url") or payload.get("url") or ""))
     path_row = Adw.EntryRow(title="Local path")
-    default_dir = store.settings.clone_default_directory or os.path.expanduser("~/Documents/GitHub")
     path_row.set_text(str(payload.get("path") or default_dir))
     branch_row = Adw.EntryRow(title="Branch (optional)")
     branch_row.set_text(str(payload.get("branch") or ""))
+    choose = Gtk.Button(label="Choose…")
+    choose.set_halign(Gtk.Align.START)
+
+    def choose_folder(*_a: Any) -> None:
+        picker = Gtk.FileDialog(title="Clone into")
+
+        def done(d, result) -> None:
+            try:
+                folder = d.select_folder_finish(result)
+            except Exception:
+                return
+            if folder:
+                path_row.set_text(folder.get_path() or default_dir)
+
+        picker.select_folder(parent, None, done)
+
+    choose.connect("clicked", choose_folder)
     url_box.append(url_row)
     url_box.append(path_row)
+    url_box.append(choose)
     url_box.append(branch_row)
     clone_btn = Gtk.Button(label="Clone")
     clone_btn.add_css_class("suggested-action")
@@ -559,54 +578,114 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
     stack.add_titled(url_box, "url", "URL")
 
     list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-    list_box.set_margin_top(12)
+    list_box.set_margin_top(8)
+    list_box.set_margin_start(8)
+    list_box.set_margin_end(8)
+    filter_row = Gtk.Box(spacing=6)
+    gh_filter = Gtk.SearchEntry()
+    gh_filter.set_placeholder_text("Filter repositories")
+    gh_filter.set_hexpand(True)
+    refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic")
+    refresh_btn.set_tooltip_text("Refresh")
+    filter_row.append(gh_filter)
+    filter_row.append(refresh_btn)
+    list_box.append(filter_row)
+    accounts = list(store.accounts)
+    account_drop = None
+    if len(accounts) > 1:
+        account_drop = Gtk.DropDown.new_from_strings([a.login for a in accounts])
+        list_box.append(account_drop)
     scroller = Gtk.ScrolledWindow(vexpand=True)
     repo_list = Gtk.ListBox()
     repo_list.add_css_class("boxed-list")
     scroller.set_child(repo_list)
     list_box.append(scroller)
+    gh_clone = Gtk.Button(label="Clone selected")
+    gh_clone.add_css_class("suggested-action")
+    list_box.append(gh_clone)
     stack.add_titled(list_box, "github", "GitHub.com")
 
-    def fill_github() -> None:
+    selected_clone_url = {"url": "", "name": ""}
+    loaded: list = []
+
+    def selected_account():
+        if account_drop is not None and accounts:
+            idx = account_drop.get_selected()
+            if 0 <= idx < len(accounts):
+                return accounts[idx]
+        return next((a for a in store.accounts if a.is_dotcom), store.accounts[0] if store.accounts else None)
+
+    def render_github_list() -> None:
         while True:
             row = repo_list.get_first_child()
             if row is None:
                 break
             repo_list.remove(row)
-        account = next((a for a in store.accounts if a.is_dotcom), None)
+        needle = gh_filter.get_text().strip().lower()
+        shown = 0
+        for gh in loaded:
+            hay = f"{gh.full_name} {gh.html_url}".lower()
+            if needle and needle not in hay:
+                continue
+            row = Adw.ActionRow(title=gh.full_name, subtitle=gh.clone_url)
+            row.set_activatable(True)
+
+            def pick(_r, g=gh) -> None:
+                selected_clone_url["url"] = g.clone_url
+                selected_clone_url["name"] = g.name
+                url_row.set_text(g.clone_url)
+                path_row.set_text(os.path.join(default_dir, g.name))
+
+            row.connect("activated", pick)
+            repo_list.append(row)
+            shown += 1
+            if shown >= 300:
+                break
+        if shown == 0:
+            title = "Sign in to GitHub.com to see your repositories" if not selected_account() else "No matching repositories"
+            repo_list.append(Adw.ActionRow(title=title))
+
+    def fill_github(*_a: Any) -> None:
+        account = selected_account()
+        loaded.clear()
         if not account:
-            repo_list.append(Adw.ActionRow(title="Sign in to GitHub.com to see your repositories"))
+            render_github_list()
             return
         from ..github.api import GitHubAPI
 
         try:
-            repos = GitHubAPI.from_account(account).fetch_repos()
+            loaded.extend(GitHubAPI.from_account(account).fetch_repos())
         except Exception as exc:
+            loaded.clear()
+            while True:
+                row = repo_list.get_first_child()
+                if row is None:
+                    break
+                repo_list.remove(row)
             repo_list.append(Adw.ActionRow(title="Could not load repositories", subtitle=str(exc)))
             return
-        for gh in repos[:200]:
-            row = Adw.ActionRow(title=gh.full_name, subtitle=gh.html_url)
-            row.set_activatable(True)
-            row.connect(
-                "activated",
-                lambda _r, g=gh: (url_row.set_text(g.clone_url), path_row.set_text(os.path.join(default_dir, g.name)), stack.set_visible_child_name("url")),
-            )
-            repo_list.append(row)
+        render_github_list()
 
     fill_github()
+    gh_filter.connect("search-changed", lambda *_: render_github_list())
+    refresh_btn.connect("clicked", fill_github)
+    if account_drop is not None:
+        account_drop.connect("notify::selected", fill_github)
 
     def do_clone(*_a: Any) -> None:
-        url = url_row.get_text().strip()
+        url = url_row.get_text().strip() or selected_clone_url["url"]
         path = path_row.get_text().strip()
         branch = branch_row.get_text().strip() or None
         if not url or not path:
             return
         if os.path.isdir(path) and os.listdir(path):
-            path = os.path.join(path, os.path.basename(url.rstrip("/").removesuffix(".git")))
+            name = selected_clone_url["name"] or os.path.basename(url.rstrip("/").removesuffix(".git"))
+            path = os.path.join(path, name)
         dialog.close()
         store.clone(url, path, branch)
 
     clone_btn.connect("clicked", do_clone)
+    gh_clone.connect("clicked", do_clone)
     toolbar.set_content(stack)
     dialog.set_child(toolbar)
     dialog.present(parent)
@@ -1122,38 +1201,173 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     if not repo or not repo.github:
         store.show_popup(PopupType.ERROR, error="This repository isn't on GitHub.")
         return
+    store.load_pr_preview(repo)
     state = store.state_for(repo)
-    base_default = repo.github.default_branch
+    current = state.status.current_branch if state.status else "?"
+    base_names = [b.name for b in state.branches if b.name != current]
+    default = state.pr_base_branch or repo.github.default_branch
+    if default and default not in base_names:
+        base_names.insert(0, default)
 
-    def submit(values: dict[str, str]) -> None:
-        store.create_pull_request(repo, values.get("title") or "", values.get("base") or base_default, values.get("body") or "")
+    dialog = Adw.Dialog()
+    dialog.set_content_width(900)
+    dialog.set_content_height(640)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(Adw.WindowTitle(title="Preview pull request", subtitle=f"{current} → {default}"))
+    toolbar.add_top_bar(header)
 
-    _text_dialog(
-        parent,
-        "Create pull request",
-        f"From {state.status.current_branch if state.status else '?'} into the base branch.",
-        [
-            ("title", "Title", state.commit_message.summary if state.commit_message else ""),
-            ("base", "Base branch", base_default),
-            ("body", "Description", ""),
-        ],
-        submit,
-        "Create pull request",
-    )
+    root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+    root.set_margin_start(12)
+    root.set_margin_end(12)
+    root.set_margin_top(8)
+    root.set_margin_bottom(8)
+    top = Gtk.Box(spacing=8)
+    top.append(Gtk.Label(label="Base"))
+    base_drop = Gtk.DropDown.new_from_strings(base_names or [default])
+    if default in base_names:
+        base_drop.set_selected(base_names.index(default))
+    top.append(base_drop)
+    stats = Gtk.Label(xalign=0, hexpand=True)
+    top.append(stats)
+    root.append(top)
+
+    paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+    paned.set_resize_start_child(False)
+    files_scroll = Gtk.ScrolledWindow()
+    files_scroll.set_size_request(240, -1)
+    file_list = Gtk.ListBox()
+    file_list.add_css_class("boxed-list")
+    files_scroll.set_child(file_list)
+    paned.set_start_child(files_scroll)
+    from .diff_view import DiffViewer
+
+    viewer = DiffViewer(interactive=False)
+    paned.set_end_child(viewer)
+    root.append(paned)
+
+    title_row = Adw.EntryRow(title="Title")
+    title_row.set_text(state.commit_message.summary if state.commit_message else (state.pr_commits[0].summary if state.pr_commits else current or ""))
+    body_row = Adw.EntryRow(title="Description")
+    root.append(title_row)
+    root.append(body_row)
+    actions = Gtk.Box(spacing=8)
+    create_btn = Gtk.Button(label="Create pull request")
+    create_btn.add_css_class("suggested-action")
+    view_btn = Gtk.Button(label="View pull request")
+    view_btn.set_visible(bool(state.current_pull_request))
+    actions.append(create_btn)
+    actions.append(view_btn)
+    root.append(actions)
+
+    def render_preview() -> None:
+        st = store.state_for(repo)
+        cs = st.pr_changeset
+        n = len(st.pr_commits)
+        added = cs.lines_added if cs else 0
+        deleted = cs.lines_deleted if cs else 0
+        files_n = len(st.pr_files)
+        if n == 0:
+            stats.set_text("No commits to merge into the base branch")
+        else:
+            stats.set_text(f"{n} commit{'s' if n != 1 else ''} · {files_n} files · +{added} −{deleted}")
+        while True:
+            row = file_list.get_first_child()
+            if row is None:
+                break
+            file_list.remove(row)
+        for file in st.pr_files:
+            row = Adw.ActionRow(title=file.path, subtitle=file.status.kind.value)
+            row.set_activatable(True)
+            row._file = file  # type: ignore[attr-defined]
+            file_list.append(row)
+        if st.pr_files:
+            diff = store.load_pr_preview_diff(repo, st.pr_files[0])
+            viewer.render(diff, path=st.pr_files[0].path, show_checks=False)
+        else:
+            viewer.render(None)
+
+    def on_file(_l, row) -> None:
+        file = getattr(row, "_file", None)
+        if file:
+            diff = store.load_pr_preview_diff(repo, file)
+            viewer.render(diff, path=file.path, show_checks=False)
+
+    file_list.connect("row-activated", on_file)
+
+    def on_base(*_a: Any) -> None:
+        model = base_drop.get_model()
+        idx = base_drop.get_selected()
+        if model is None or idx < 0:
+            return
+        name = model.get_string(idx)
+        store.load_pr_preview(repo, name)
+        header.set_title_widget(Adw.WindowTitle(title="Preview pull request", subtitle=f"{current} → {name}"))
+        render_preview()
+
+    base_drop.connect("notify::selected", on_base)
+
+    def create(*_a: Any) -> None:
+        model = base_drop.get_model()
+        idx = base_drop.get_selected()
+        base = model.get_string(idx) if model is not None and idx >= 0 else default
+        dialog.close()
+        store.create_pull_request(repo, title_row.get_text().strip() or current, base, body_row.get_text().strip())
+
+    def view(*_a: Any) -> None:
+        st = store.state_for(repo)
+        if st.current_pull_request:
+            dialog.close()
+            open_external(st.current_pull_request.html_url)
+
+    create_btn.connect("clicked", create)
+    view_btn.connect("clicked", view)
+    render_preview()
+    toolbar.set_content(root)
+    dialog.set_child(toolbar)
+    dialog.present(parent)
 
 
 def show_lfs(parent: Gtk.Window, store: AppStore) -> None:
     repo = store.selected_repository
     if not repo:
         return
+    from ..git.ops import lfs_ls_files, lfs_patterns_from_gitattributes, lfs_track
 
-    def confirm() -> None:
-        from ..git.ops import lfs_track
+    existing = lfs_patterns_from_gitattributes(repo.path)
+    tracked = lfs_ls_files(repo.path)
+    dialog = Adw.Dialog()
+    dialog.set_content_width(480)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(Adw.WindowTitle(title="Git LFS", subtitle="Track large files with Git LFS"))
+    toolbar.add_top_bar(header)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+    box.set_margin_top(16)
+    box.set_margin_start(16)
+    box.set_margin_end(16)
+    box.set_margin_bottom(16)
+    if tracked:
+        box.append(Gtk.Label(label=f"{len(tracked)} LFS object(s) in this repository", xalign=0))
+    if existing:
+        box.append(Gtk.Label(label="Already tracking: " + ", ".join(existing[:12]), xalign=0))
+    patterns = Adw.EntryRow(title="Patterns to track")
+    patterns.set_text("*.psd *.zip *.mp4" if not existing else " ".join(existing))
+    box.append(patterns)
+    init_btn = Gtk.Button(label="Initialize Git LFS and track")
+    init_btn.add_css_class("suggested-action")
 
-        lfs_track(repo.path, ["*"])
+    def confirm(*_a: Any) -> None:
+        items = [p for p in patterns.get_text().split() if p]
+        lfs_track(repo.path, items or ["*"])
+        dialog.close()
         store.refresh_repository(repo)
 
-    _alert(parent, "Initialize Git LFS?", "This repository uses Git LFS. Initialize it locally?", confirm="Initialize", on_confirm=confirm)
+    init_btn.connect("clicked", confirm)
+    box.append(init_btn)
+    toolbar.set_content(box)
+    dialog.set_child(toolbar)
+    dialog.present(parent)
 
 
 def show_push_protection(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:

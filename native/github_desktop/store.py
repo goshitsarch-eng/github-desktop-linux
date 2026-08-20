@@ -43,9 +43,11 @@ from .git import (
     get_all_tags,
     get_author_identity,
     get_branches,
-    get_changed_files,
+    get_changeset_data,
     get_commit,
     get_commit_diff,
+    get_commit_range_changed_files,
+    get_commit_range_diff,
     get_commits,
     get_config_value,
     get_default_branch,
@@ -88,6 +90,7 @@ from .github.oauth import (
 )
 from .logging import get_logger
 from .models import (
+    COMMIT_BATCH_SIZE,
     OVERSIZED_FILE_BYTES,
     Account,
     AheadBehind,
@@ -99,6 +102,7 @@ from .models import (
     Branch,
     BranchType,
     ChangesListFilter,
+    ChangesetData,
     CherryPickResult,
     CloningRepository,
     Commit,
@@ -186,6 +190,16 @@ class RepositoryViewState:
     filter_new: bool = False
     filter_modified: bool = False
     filter_deleted: bool = False
+    has_more_commits: bool = True
+    history_filter: str = ""
+    changeset: ChangesetData | None = None
+    stashed_files: list[CommittedFileChange] = field(default_factory=list)
+    selected_stashed_file: CommittedFileChange | None = None
+    pr_base_branch: str | None = None
+    pr_commits: list[Commit] = field(default_factory=list)
+    pr_files: list[CommittedFileChange] = field(default_factory=list)
+    pr_changeset: ChangesetData | None = None
+    commit_summary_expanded: bool = False
 
 
 class AppStore:
@@ -564,7 +578,11 @@ class AppStore:
 
         def work() -> dict:
             status = get_status(repo.path)
-            commits = get_commits(repo.path, limit=100)
+            limit = max(COMMIT_BATCH_SIZE, len(state.commits) or COMMIT_BATCH_SIZE)
+            grep = []
+            if state.history_filter.strip():
+                grep = ["--grep", state.history_filter.strip(), "--regexp-ignore-case"]
+            commits = get_commits(repo.path, limit=limit, extra=grep)
             branches = get_branches(repo.path)
             remotes = get_remotes(repo.path)
             tags = get_all_tags(repo.path)
@@ -572,6 +590,7 @@ class AppStore:
             payload: dict = {
                 "status": status,
                 "commits": commits,
+                "has_more_commits": len(commits) == limit,
                 "branches": branches,
                 "remotes": remotes,
                 "tags": tags,
@@ -638,6 +657,7 @@ class AppStore:
                 status.working_directory = WorkingDirectoryStatus.from_files(merged)
             state.status = status
             state.commits = data.get("commits") or []
+            state.has_more_commits = bool(data.get("has_more_commits"))
             state.branches = data.get("branches") or []
             state.remotes = data.get("remotes") or []
             state.tags = data.get("tags") or {}
@@ -656,6 +676,10 @@ class AppStore:
                 state.selected_file = status.working_directory.files[0]
             if previous_commit:
                 state.selected_commit = next((c for c in state.commits if c.sha == previous_commit), None)
+            if state.stashed_visible and state.stashes:
+                self._advance_tutorial(repo, state)
+                self.load_stash_files(repo)
+                return
             if state.selected_file and self.section == RepositorySectionTab.CHANGES:
                 self._load_working_diff(repo, state)
             self._advance_tutorial(repo, state)
@@ -1084,18 +1108,210 @@ class AppStore:
         branch = next((b for b in state.branches if b.name == branch_name), None)
         state.compare_branch = branch
         state.history_mode = HistoryTabMode.COMPARE
-        state.compare_ahead = get_commits(repo.path, f"{branch_name}..HEAD", limit=100)
-        state.compare_behind = get_commits(repo.path, f"HEAD..{branch_name}", limit=100)
+        state.compare_ahead = get_commits(repo.path, f"{branch_name}..HEAD", limit=max(COMMIT_BATCH_SIZE, 100))
+        state.compare_behind = get_commits(repo.path, f"HEAD..{branch_name}", limit=max(COMMIT_BATCH_SIZE, 100))
         state.commits = state.compare_ahead
         self.emit()
+
+    def load_next_commit_batch(self, repo: Repository) -> None:
+        state = self.state_for(repo)
+        if not state.has_more_commits:
+            return
+        skip = len(state.commits)
+        extra: list[str] = []
+        if state.history_filter.strip():
+            extra = ["--grep", state.history_filter.strip(), "--regexp-ignore-case"]
+        revision = None
+        if state.history_mode == HistoryTabMode.COMPARE and state.compare_branch:
+            revision = f"{state.compare_branch.name}..HEAD"
+        batch = get_commits(repo.path, revision, limit=COMMIT_BATCH_SIZE, skip=skip, extra=extra)
+        state.commits.extend(batch)
+        if state.history_mode == HistoryTabMode.COMPARE:
+            state.compare_ahead = state.commits
+        state.has_more_commits = len(batch) == COMMIT_BATCH_SIZE
+        self.emit()
+
+    def set_history_filter(self, repo: Repository, text: str) -> None:
+        state = self.state_for(repo)
+        if state.history_filter == text:
+            return
+        state.history_filter = text
+        extra = ["--grep", text.strip(), "--regexp-ignore-case"] if text.strip() else []
+        revision = None
+        if state.history_mode == HistoryTabMode.COMPARE and state.compare_branch:
+            revision = f"{state.compare_branch.name}..HEAD"
+        state.commits = get_commits(repo.path, revision, limit=COMMIT_BATCH_SIZE, extra=extra)
+        state.has_more_commits = len(state.commits) == COMMIT_BATCH_SIZE
+        self.emit()
+
+    def toggle_stash(self, repo: Repository) -> None:
+        state = self.state_for(repo)
+        state.stashed_visible = not state.stashed_visible
+        if state.stashed_visible:
+            self.load_stash_files(repo)
+        else:
+            if state.selected_file:
+                self._load_working_diff(repo, state)
+            self.emit()
+
+    def load_stash_files(self, repo: Repository) -> None:
+        state = self.state_for(repo)
+        if not state.stashes:
+            state.stashed_files = []
+            state.selected_stashed_file = None
+            state.stashed_visible = False
+            self.emit()
+            return
+        stash = state.stashes[0]
+        try:
+            data = get_changeset_data(repo.path, stash.stash_sha)
+        except GitError:
+            data = ChangesetData()
+        state.stashed_files = data.files
+        stash.files = data.files
+        if state.selected_stashed_file:
+            state.selected_stashed_file = next(
+                (f for f in data.files if f.path == state.selected_stashed_file.path),
+                data.files[0] if data.files else None,
+            )
+        else:
+            state.selected_stashed_file = data.files[0] if data.files else None
+        if state.selected_stashed_file:
+            self.select_stashed_file(repo, state.selected_stashed_file)
+        else:
+            state.current_diff = None
+            self.emit()
+
+    def select_stashed_file(self, repo: Repository, file: CommittedFileChange | None) -> None:
+        state = self.state_for(repo)
+        state.selected_stashed_file = file
+        if file and state.stashes:
+            try:
+                state.current_diff = self._prepare_text_diff(
+                    repo,
+                    file.path,
+                    get_commit_diff(
+                        repo.path, file.path, file.commitish, file.status, state.hide_whitespace, state.diff_context
+                    ),
+                    commitish=file.commitish,
+                )
+            except GitError:
+                state.current_diff = None
+        else:
+            state.current_diff = None
+        self.emit()
+
+    def restore_stash(self, repo: Repository) -> None:
+        state = self.state_for(repo)
+        if not state.stashes:
+            return
+        stash_pop(repo.path, state.stashes[0].name)
+        state.stashed_visible = False
+        self.refresh_repository(repo)
+
+    def discard_stash(self, repo: Repository, confirmed: bool = False) -> None:
+        state = self.state_for(repo)
+        if not state.stashes:
+            return
+        if self.settings.confirm_discard_stash and not confirmed:
+            self.show_popup(PopupType.CONFIRM_DISCARD_STASH, stash=state.stashes[0].name)
+            return
+        stash_drop(repo.path, state.stashes[0].name)
+        state.stashed_visible = False
+        self.refresh_repository(repo)
+
+    def load_pr_preview(self, repo: Repository, base: str | None = None) -> None:
+        state = self.state_for(repo)
+        base_name = base or state.pr_base_branch or self.default_branch_name(repo) or "main"
+        state.pr_base_branch = base_name
+        current = state.status.current_branch if state.status else None
+        if not current or current == base_name:
+            state.pr_commits = []
+            state.pr_files = []
+            state.pr_changeset = ChangesetData()
+            self.emit()
+            return
+        state.pr_commits = get_commits(repo.path, f"{base_name}..HEAD", limit=200)
+        if state.pr_commits:
+            oldest = state.pr_commits[-1].sha
+            newest = state.pr_commits[0].sha
+            try:
+                state.pr_changeset = get_commit_range_changed_files(repo.path, oldest, newest)
+            except GitError:
+                state.pr_changeset = ChangesetData()
+            state.pr_files = list(state.pr_changeset.files)
+        else:
+            state.pr_changeset = ChangesetData()
+            state.pr_files = []
+        self.emit()
+
+    def load_pr_preview_diff(self, repo: Repository, file: CommittedFileChange) -> FileDiff | None:
+        state = self.state_for(repo)
+        if not state.pr_commits:
+            return None
+        oldest = state.pr_commits[-1].sha
+        newest = state.pr_commits[0].sha
+        try:
+            diff = get_commit_range_diff(
+                repo.path, file.path, oldest, newest, file.status, state.hide_whitespace, state.diff_context
+            )
+        except GitError:
+            return None
+        return self._prepare_text_diff(repo, file.path, diff, commitish=newest)
+
+    def add_dropped_paths(self, paths: Sequence[str]) -> None:
+        dirs = []
+        for raw in paths:
+            path = os.path.abspath(os.path.expanduser(raw))
+            if os.path.isfile(path):
+                path = os.path.dirname(path)
+            if os.path.isdir(path):
+                dirs.append(path)
+        if not dirs:
+            return
+        try:
+            self.add_repositories(dirs)
+        except (NotARepositoryError, OSError) as exc:
+            self.show_popup(PopupType.ERROR, error=str(exc))
 
     def select_commits(self, repo: Repository, commits: Sequence[Commit]) -> None:
         state = self.state_for(repo)
         state.selected_commits = list(commits)
-        if commits:
-            self.select_commit(repo, commits[0])
-        else:
+        if not commits:
+            state.selected_commit = None
+            state.selected_commit_files = []
+            state.changeset = None
             self.emit()
+            return
+        if len(commits) == 1:
+            self.select_commit(repo, commits[0])
+            return
+        history = state.compare_ahead if state.history_mode == HistoryTabMode.COMPARE and state.compare_ahead else state.commits
+        sha_set = {c.sha for c in commits}
+        ordered_newest_first = [c for c in history if c.sha in sha_set]
+        contiguous = _commits_are_contiguous(ordered_newest_first, history)
+        state.selected_commit = ordered_newest_first[0] if ordered_newest_first else commits[0]
+        if contiguous and len(ordered_newest_first) >= 2:
+            newest = ordered_newest_first[0]
+            oldest = ordered_newest_first[-1]
+            try:
+                state.changeset = get_commit_range_changed_files(repo.path, oldest.sha, newest.sha)
+            except GitError:
+                state.changeset = ChangesetData()
+            state.selected_commit_files = list(state.changeset.files)
+            if state.selected_commit_files:
+                f = state.selected_commit_files[0]
+                try:
+                    diff = get_commit_range_diff(
+                        repo.path, f.path, oldest.sha, newest.sha, f.status, state.hide_whitespace, state.diff_context
+                    )
+                    state.current_diff = self._prepare_text_diff(repo, f.path, diff, commitish=newest.sha)
+                except GitError:
+                    state.current_diff = None
+        else:
+            self.select_commit(repo, state.selected_commit)
+            return
+        self.emit()
 
     def squash_onto(self, repo: Repository, to_squash: Sequence[Commit], onto: Commit, message: str) -> None:
         last_retained = onto.parent_shas[0] if onto.parent_shas else None
@@ -1182,7 +1398,11 @@ class AppStore:
         if commit and commit not in state.selected_commits:
             state.selected_commits = [commit]
         if commit:
-            state.selected_commit_files = get_changed_files(repo.path, commit.sha)
+            try:
+                state.changeset = get_changeset_data(repo.path, commit.sha)
+            except GitError:
+                state.changeset = ChangesetData()
+            state.selected_commit_files = list(state.changeset.files)
             if state.selected_commit_files:
                 f = state.selected_commit_files[0]
                 state.current_diff = self._prepare_text_diff(
@@ -1193,12 +1413,29 @@ class AppStore:
                     ),
                     commitish=commit.sha,
                 )
+            else:
+                state.current_diff = None
+        else:
+            state.changeset = None
+            state.selected_commit_files = []
+            state.current_diff = None
         self.emit()
 
     def load_history_diff(self, repo: Repository, path: str, sha: str, status) -> FileDiff:
         state = self.state_for(repo)
-        diff = get_commit_diff(repo.path, path, sha, status, state.hide_whitespace, state.diff_context)
-        prepared = self._prepare_text_diff(repo, path, diff, commitish=sha)
+        selected = list(state.selected_commits)
+        history = state.compare_ahead if state.history_mode == HistoryTabMode.COMPARE and state.compare_ahead else state.commits
+        sha_set = {c.sha for c in selected}
+        ordered = [c for c in history if c.sha in sha_set]
+        if len(ordered) >= 2 and _commits_are_contiguous(ordered, history):
+            newest, oldest = ordered[0], ordered[-1]
+            diff = get_commit_range_diff(
+                repo.path, path, oldest.sha, newest.sha, status, state.hide_whitespace, state.diff_context
+            )
+            prepared = self._prepare_text_diff(repo, path, diff, commitish=newest.sha)
+        else:
+            diff = get_commit_diff(repo.path, path, sha, status, state.hide_whitespace, state.diff_context)
+            prepared = self._prepare_text_diff(repo, path, diff, commitish=sha)
         state.current_diff = prepared
         return prepared
 
@@ -1691,3 +1928,13 @@ class AppStore:
                 self.handle_url_action(arg)
         if clone_url:
             self.show_popup(PopupType.CLONE_REPOSITORY, initial_url=clone_url, branch=clone_branch)
+
+
+def _commits_are_contiguous(selected_newest_first: Sequence[Commit], history_newest_first: Sequence[Commit]) -> bool:
+    if len(selected_newest_first) <= 1:
+        return True
+    sha_set = {c.sha for c in selected_newest_first}
+    indexes = [i for i, commit in enumerate(history_newest_first) if commit.sha in sha_set]
+    if len(indexes) != len(selected_newest_first):
+        return False
+    return indexes[-1] - indexes[0] + 1 == len(indexes)

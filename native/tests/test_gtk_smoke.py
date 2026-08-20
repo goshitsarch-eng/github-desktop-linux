@@ -78,6 +78,13 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             )
             viewer.render(sample, path="README.md", selection=selection, side_by_side=True)
             viewer.render(sample, path="README.md", selection=selection, side_by_side=False)
+            viewer.start_search()
+            viewer.close_search()
+            assert hasattr(win, "_stash_viewer")
+            assert hasattr(win, "_commit_summary")
+            assert hasattr(win, "_history_filter")
+            win._commit_summary.bind([], None)
+            win._find()
             win._branches_foldout.refresh([], [], current="main", default_name="main", recent=[], has_github=False)
             win.close()
         except Exception as exc:

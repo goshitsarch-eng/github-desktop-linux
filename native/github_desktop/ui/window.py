@@ -11,9 +11,6 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 from ..git.ops import (
-    get_changed_files,
-    get_commit_diff,
-    stash_pop,
     undo_commit,
 )
 from ..models import (
@@ -38,7 +35,9 @@ from .branches import BranchesFoldout
 from .dialogs import present_popup, show_preferences, show_reorder_commits
 from .diff_view import DiffViewer
 from .emoji import matching_shortcodes
+from .history import ExpandableCommitSummary
 from .menus import attach_right_click, clear_box, copy_text, show_context_menu
+from .stash import StashDiffViewer
 
 
 STATUS_CLASS = {
@@ -78,6 +77,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._stack.add_named(self._repo_page, "repo")
         self._install_actions()
         self._install_shortcuts()
+        self._install_file_drop()
         self.store.subscribe(self._on_store)
         self.connect("close-request", self._on_close)
         self._on_store()
@@ -170,8 +170,8 @@ class MainWindow(Adw.ApplicationWindow):
         add("preview-pull-request", lambda: self.store.show_popup(PopupType.START_PULL_REQUEST))
         add("about", lambda: self.store.show_popup(PopupType.ABOUT))
         add("show-logs", self._show_logs)
-        add("find", lambda: self._filter.grab_focus() if hasattr(self, "_filter") else None)
-        add("toggle-stash", self._toggle_stash)
+        add("find", self._find)
+        add("toggle-stash", lambda: self._repo_op(self.store.toggle_stash))
         add("undo-commit", self._undo)
         add("create-tag", lambda: self.store.show_popup(PopupType.CREATE_TAG))
         add("generate-commit-message", lambda: self.store.show_popup(PopupType.GENERATE_COMMIT_MESSAGE_DISCLAIMER))
@@ -263,12 +263,53 @@ class MainWindow(Adw.ApplicationWindow):
         self.store.refresh_repository(repo)
 
     def _toggle_stash(self) -> None:
-        repo = self.store.selected_repository
-        if not repo:
+        self._repo_op(self.store.toggle_stash)
+
+    def _find(self) -> None:
+        if hasattr(self, "_changes_stack") and self._changes_stack.get_visible_child_name() == "stash":
+            self._stash_viewer.diff_view.start_search()
             return
-        state = self.store.state_for(repo)
-        state.stashed_visible = not state.stashed_visible
-        self.store.emit()
+        name = self._view_stack.get_visible_child_name() if hasattr(self, "_view_stack") else "changes"
+        if name == "history" and hasattr(self, "_hist_diff_view"):
+            self._hist_diff_view.start_search()
+            return
+        if hasattr(self, "_diff_view"):
+            self._diff_view.start_search()
+
+    def _open_submodule(self, full_path: str) -> None:
+        try:
+            self.store.add_repositories([full_path])
+        except Exception as exc:
+            self.store.show_popup(PopupType.ERROR, error=str(exc))
+
+    def _install_file_drop(self) -> None:
+        try:
+            target = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
+
+            def on_drop(_t, value, _x, _y) -> bool:
+                files = value.get_files() if hasattr(value, "get_files") else []
+                paths = [f.get_path() for f in files if f.get_path()]
+                if paths:
+                    self.store.add_dropped_paths(paths)
+                    return True
+                return False
+
+            target.connect("drop", on_drop)
+            self.add_controller(target)
+        except Exception:
+            pass
+
+    def _on_history_filter(self, entry: Gtk.SearchEntry) -> None:
+        repo = self.store.selected_repository
+        if repo:
+            self.store.set_history_filter(repo, entry.get_text())
+
+    def _on_history_edge(self, _scroller, pos) -> None:
+        if pos != Gtk.PositionType.BOTTOM:
+            return
+        repo = self.store.selected_repository
+        if repo:
+            self.store.load_next_commit_batch(repo)
 
     def _undo(self) -> None:
         repo = self.store.selected_repository
@@ -381,6 +422,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_merge=lambda b: self._repo_op(lambda r: self.store.merge_branch(r, b.name)),
             on_pr=lambda pr: self._repo_op(lambda r: self.store.checkout_pull_request(r, pr)),
             on_view_github=lambda b: self._repo_op(lambda r: self.store.view_branch_on_github(r, b.name)),
+            on_cherry_pick=lambda b, sha: self._repo_op(lambda r: self.store.cherry_pick_commits(r, [sha], target_branch=b.name)),
         )
         self._branch_btn.set_popover(self._branches_foldout)
         header.pack_start(self._branch_btn)
@@ -630,9 +672,24 @@ class MainWindow(Adw.ApplicationWindow):
             on_expand_whole=self._on_expand_diff,
             on_collapse=self._on_collapse_diff,
             on_image_mode=self._on_image_mode,
+            on_open_submodule=self._open_submodule,
         )
         paned.set_end_child(self._diff_view)
-        return paned
+        self._changes_stack = Gtk.Stack()
+        self._stash_viewer = StashDiffViewer(
+            on_restore=lambda: self._repo_op(self.store.restore_stash),
+            on_discard=lambda: self._repo_op(lambda r: self.store.discard_stash(r)),
+            on_close=lambda: self._repo_op(self.store.toggle_stash),
+            on_select_file=lambda f: self._repo_op(lambda r: self.store.select_stashed_file(r, f)),
+            on_expand_hunk=self._on_expand_hunk,
+            on_expand_whole=self._on_expand_diff,
+            on_collapse=self._on_collapse_diff,
+            on_open_submodule=self._open_submodule,
+            on_image_mode=self._on_image_mode,
+        )
+        self._changes_stack.add_named(paned, "working")
+        self._changes_stack.add_named(self._stash_viewer, "stash")
+        return self._changes_stack
 
     def _build_history(self) -> Gtk.Widget:
         paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
@@ -645,10 +702,15 @@ class MainWindow(Adw.ApplicationWindow):
         self._compare_dropdown.connect("notify::selected", self._on_compare_changed)
         compare_row.append(self._compare_dropdown)
         left.append(compare_row)
+        self._history_filter = Gtk.SearchEntry()
+        self._history_filter.set_placeholder_text("Search commits…")
+        self._history_filter.connect("search-changed", self._on_history_filter)
+        left.append(self._history_filter)
         self._compare_cta = Gtk.Box(spacing=6)
         self._compare_cta.add_css_class("compare-cta")
         left.append(self._compare_cta)
         scroller = Gtk.ScrolledWindow(vexpand=True)
+        scroller.connect("edge-reached", self._on_history_edge)
         self._commit_list = Gtk.ListBox()
         self._commit_list.set_selection_mode(Gtk.SelectionMode.MULTIPLE)
         self._commit_list.connect("row-selected", self._on_commit_selected)
@@ -656,10 +718,9 @@ class MainWindow(Adw.ApplicationWindow):
         left.append(scroller)
         paned.set_start_child(left)
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self._commit_header = Gtk.Label()
-        self._commit_header.set_wrap(True)
-        self._commit_header.add_css_class("commit-summary")
-        right.append(self._commit_header)
+        self._commit_summary = ExpandableCommitSummary()
+        right.append(self._commit_summary)
+        self._commit_header = self._commit_summary
         self._hist_files = Gtk.ListBox()
         self._hist_files.connect("row-activated", self._on_hist_file)
         files_scroll = Gtk.ScrolledWindow()
@@ -671,6 +732,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_expand_hunk=self._on_expand_hunk,
             on_expand_whole=self._on_expand_diff,
             on_collapse=self._on_collapse_diff,
+            on_open_submodule=self._open_submodule,
         )
         right.append(self._hist_diff_view)
         paned.set_end_child(right)
@@ -714,6 +776,11 @@ class MainWindow(Adw.ApplicationWindow):
         self._refresh_history()
         self._refresh_conflict_bar(state)
         self._refresh_stash_bar(state)
+        self._refresh_stash_viewer(state)
+        if hasattr(self, "_changes_stack"):
+            self._changes_stack.set_visible_child_name(
+                "stash" if state.stashed_visible and state.stashes else "working"
+            )
         if hasattr(self, "_side_toggle"):
             self._building = True
             self._side_toggle.set_active(state.side_by_side or self.store.settings.show_side_by_side_diff)
@@ -848,22 +915,6 @@ class MainWindow(Adw.ApplicationWindow):
         if not repo or not hasattr(self, "_file_list"):
             return
         state = self.store.state_for(repo)
-        if state.stashed_visible and state.stashes:
-            stash = state.stashes[0]
-            try:
-                files = get_changed_files(repo.path, stash.stash_sha)
-            except Exception:
-                files = []
-            clear_box(self._file_list)
-            for file in files:
-                row = Adw.ActionRow(title=file.path, subtitle="Stashed")
-                row.set_activatable(True)
-                row._stash_file = file  # type: ignore[attr-defined]
-                row.connect("activated", lambda _r, f=file, sha=stash.stash_sha: self._show_stash_diff(f, sha))
-                self._file_list.append(row)
-            if files:
-                self._show_stash_diff(files[0], stash.stash_sha)
-            return
         files = list(state.status.working_directory.files) if state.status else []
         needle = self._filter.get_text().lower()
         if needle:
@@ -1002,31 +1053,43 @@ class MainWindow(Adw.ApplicationWindow):
         if not repo or not hasattr(self, "_commit_list"):
             return
         state = self.store.state_for(repo)
-        self._building = True
-        clear_box(self._commit_list)
         commits = state.compare_ahead if state.history_mode == HistoryTabMode.COMPARE else state.commits
         if state.history_mode == HistoryTabMode.COMPARE and not commits:
             commits = state.commits
+        new_shas = [c.sha for c in commits]
+        shown = getattr(self, "_history_shas", [])
+        if shown and shown == new_shas[: len(shown)] and len(new_shas) > len(shown):
+            for commit in commits[len(shown) :]:
+                self._commit_list.append(self._commit_row(commit))
+            self._history_shas = new_shas
+            self._refresh_compare_cta(state)
+            return
+        self._building = True
+        clear_box(self._commit_list)
         for commit in commits:
-            row = Gtk.ListBoxRow()
-            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-            summary = Gtk.Label(label=commit.summary, xalign=0)
-            summary.add_css_class("commit-summary")
-            tags = (" · " + ", ".join(commit.tags)) if commit.tags else ""
-            meta = Gtk.Label(
-                label=f"{commit.short_sha} · {commit.author.name} · {commit.author.date.strftime('%Y-%m-%d %H:%M')}{tags}",
-                xalign=0,
-            )
-            meta.add_css_class("commit-sha")
-            box.append(summary)
-            box.append(meta)
-            row.set_child(box)
-            row._commit = commit  # type: ignore[attr-defined]
-            attach_right_click(row, lambda *_ , r=row: self._commit_item_menu(r))
-            self._install_commit_dnd(row, commit)
-            self._commit_list.append(row)
+            self._commit_list.append(self._commit_row(commit))
+        self._history_shas = new_shas
         self._refresh_compare_cta(state)
         self._building = False
+
+    def _commit_row(self, commit) -> Gtk.ListBoxRow:
+        row = Gtk.ListBoxRow()
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        summary = Gtk.Label(label=commit.summary, xalign=0)
+        summary.add_css_class("commit-summary")
+        tags = (" · " + ", ".join(commit.tags)) if commit.tags else ""
+        meta = Gtk.Label(
+            label=f"{commit.short_sha} · {commit.author.name} · {commit.author.date.strftime('%Y-%m-%d %H:%M')}{tags}",
+            xalign=0,
+        )
+        meta.add_css_class("commit-sha")
+        box.append(summary)
+        box.append(meta)
+        row.set_child(box)
+        row._commit = commit  # type: ignore[attr-defined]
+        attach_right_click(row, lambda *_ , r=row: self._commit_item_menu(r))
+        self._install_commit_dnd(row, commit)
+        return row
 
     def _on_commit_selected(self, _l, row) -> None:
         if self._building:
@@ -1048,9 +1111,13 @@ class MainWindow(Adw.ApplicationWindow):
         elif commit:
             self.store.select_commit(repo, commit)
         commit = self.store.state_for(repo).selected_commit or commit
-        if commit:
-            self._commit_header.set_text(f"{commit.summary}\n{commit.body}".strip())
         state = self.store.state_for(repo)
+        if hasattr(self, "_commit_summary"):
+            self._commit_summary.bind(
+                list(state.selected_commits) or ([commit] if commit else []),
+                state.changeset,
+                expanded=state.commit_summary_expanded,
+            )
         clear_box(self._hist_files)
         for f in state.selected_commit_files:
             r = Adw.ActionRow(title=f.path, subtitle=f.status.kind.value)
@@ -1120,14 +1187,34 @@ class MainWindow(Adw.ApplicationWindow):
         repo = self.store.selected_repository
         if not repo or not state.stashes:
             return
-        label = Gtk.Label(label=f"{len(state.stashes)} Desktop stash(es)")
+        label = Gtk.Label(label=f"{len(state.stashes)} stashed change{'s' if len(state.stashes) != 1 else ''}")
+        view = Gtk.Button(label="View")
+        view.connect("clicked", lambda *_: self.store.toggle_stash(repo) if not state.stashed_visible else None)
         restore = Gtk.Button(label="Restore")
-        restore.connect("clicked", lambda *_: (stash_pop(repo.path, state.stashes[0].name), self.store.refresh_repository(repo)))
+        restore.connect("clicked", lambda *_: self.store.restore_stash(repo))
         discard = Gtk.Button(label="Discard")
-        discard.connect("clicked", lambda *_: self.store.show_popup(PopupType.CONFIRM_DISCARD_STASH, stash=state.stashes[0].name))
+        discard.connect("clicked", lambda *_: self.store.discard_stash(repo))
         self._stash_bar.append(label)
+        self._stash_bar.append(view)
         self._stash_bar.append(restore)
         self._stash_bar.append(discard)
+
+    def _refresh_stash_viewer(self, state) -> None:
+        if not hasattr(self, "_stash_viewer"):
+            return
+        repo = self.store.selected_repository
+        stash = state.stashes[0] if state.stashes else None
+        self._stash_viewer.refresh(
+            stash,
+            list(state.stashed_files),
+            state.selected_stashed_file,
+            state.current_diff if state.stashed_visible else None,
+            side_by_side=state.side_by_side or self.store.settings.show_side_by_side_diff,
+            image_mode=state.image_diff_type or self.store.settings.image_diff_type,
+            hide_whitespace=state.hide_whitespace or self.store.settings.hide_whitespace_in_diffs,
+            can_collapse=state.original_diff is not None,
+            tab_size=self.store.settings.tab_size,
+        )
 
     def _render_working_diff(self, state) -> None:
         if not hasattr(self, "_diff_view"):
@@ -1585,13 +1672,8 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _show_stash_diff(self, file, sha: str) -> None:
         repo = self.store.selected_repository
-        if not repo or not hasattr(self, "_diff_view"):
-            return
-        try:
-            diff = self.store.load_history_diff(repo, file.path, sha, file.status)
-        except Exception:
-            diff = None
-        self._diff_view.render(diff, path=file.path, show_checks=False)
+        if repo:
+            self.store.select_stashed_file(repo, file)
 
     def _edit_action(self, action: str) -> None:
         widget = self.get_focus()

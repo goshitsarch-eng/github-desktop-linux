@@ -496,6 +496,19 @@ class CommittedFileChange:
     parent_commitish: str | None = None
 
 
+COMMIT_BATCH_SIZE = 100
+NULL_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
+@dataclass
+class ChangesetData:
+    """Files and line stats for a commit or commit range (Desktop IChangesetData)."""
+
+    files: list[CommittedFileChange] = field(default_factory=list)
+    lines_added: int = 0
+    lines_deleted: int = 0
+
+
 @dataclass
 class WorkingDirectoryStatus:
     files: list[WorkingDirectoryFileChange] = field(default_factory=list)
