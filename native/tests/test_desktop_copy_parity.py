@@ -161,3 +161,51 @@ def test_remove_repository_trash_success(isolated_config, git_repo, monkeypatch)
     store.remove_repository(repo, True)
     assert all(item.id != repo.id for item in store.repositories)
     assert git_repo.exists()
+
+
+def test_commit_autocompletion_matches_desktop() -> None:
+    from types import SimpleNamespace
+
+    from github_desktop.ui.autocompletion import (
+        SUMMARY_LENGTH_HINT,
+        UNREACHABLE_COMMITS_LEARN_MORE,
+        completion_insert_text,
+        completion_matches,
+        summary_length_hint,
+        token_before_cursor,
+        unreachable_commits_message,
+    )
+    from github_desktop.ui.emoji import matching_shortcodes
+
+    assert token_before_cursor("Fix #12", 7) == "#12"
+    assert token_before_cursor("hey @octo", 9) == "@octo"
+    assert completion_insert_text("#42 Fix login") == "#42"
+    assert completion_insert_text("@hubot") == "@hubot"
+    assert completion_insert_text(":rocket:") == "🚀"
+    state = SimpleNamespace(
+        issues=[(1, "First"), (42, "Fix login"), (12, "Docs")],
+        mentions=["octocat", "hubot"],
+        mentionables=[{"login": "octocat", "name": "The Octocat"}],
+        current_branch_protected=True,
+        status=SimpleNamespace(current_branch="main"),
+    )
+    issues = completion_matches(state, "#1")
+    assert "#12 Docs" in issues
+    assert "#1 First" in issues
+    assert "#42 Fix login" not in issues
+    users = completion_matches(state, "@oc")
+    assert any(item.startswith("@octocat") for item in users)
+    assert ":tada:" in matching_shortcodes("tad")
+    assert matching_shortcodes(":")
+    assert summary_length_hint("x" * 51, True) == SUMMARY_LENGTH_HINT
+    assert summary_length_hint("short", True) is None
+    assert "not in the ancestry path" in unreachable_commits_message(unreachable_tab=True, count=2)
+    assert "Learn more" not in unreachable_commits_message(unreachable_tab=False, count=1)
+    assert "unreachable-commits.md" in UNREACHABLE_COMMITS_LEARN_MORE
+
+
+def test_refresh_issues_is_noop_without_github(isolated_config, git_repo) -> None:
+    store = AppStore()
+    repos = store.add_repositories([str(git_repo)])
+    store.refresh_issues(repos[0])
+    assert store.state_for(repos[0]).issues == []

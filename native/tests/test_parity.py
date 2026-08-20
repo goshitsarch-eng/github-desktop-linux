@@ -249,9 +249,11 @@ def test_window_actions_cover_menus() -> None:
     src += open(clone_groups_mod.__file__, encoding="utf-8").read()
     src += open(branches_mod.__file__, encoding="utf-8").read()
     from github_desktop.ui import author_input as author_input_mod
+    from github_desktop.ui import autocompletion as autocompletion_mod
     from github_desktop.github import ci_checks as ci_checks_mod
 
     src += open(author_input_mod.__file__, encoding="utf-8").read()
+    src += open(autocompletion_mod.__file__, encoding="utf-8").read()
     src += open(ci_checks_mod.__file__, encoding="utf-8").read()
     from github_desktop import filter_changes as filter_changes_mod
 
@@ -738,5 +740,15 @@ def test_window_actions_cover_menus() -> None:
         "Resolve conflicts and commit to merge into",
         "https://gh.io/gcm",
         "Ignore {len(paths)} selected files (add to .gitignore)",
+        "Are you sure you want to force push?",
+        "I'm sure",
+        "Commit message override",
+        "will be overridden by the generated commit message",
+        "Learn more about unreachable commits.",
+        "Great commit summaries contain fewer than 50 characters",
+        "Commit reachability",
+        "A force push will rewrite history on",
+        "refresh_issues",
+        "DefaultMaxHits",
     ]:
         assert phrase in src

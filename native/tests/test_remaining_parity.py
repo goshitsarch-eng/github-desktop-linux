@@ -483,6 +483,7 @@ def test_emoji_catalog_covers_gemoji() -> None:
     assert "tada" in EMOJI
     assert ":tada:" in matching_shortcodes("tad")
     assert matching_shortcodes("") == []
+    assert matching_shortcodes(":")
 
 
 def test_pull_honors_desktop_flags(git_repo: Path, monkeypatch) -> None:

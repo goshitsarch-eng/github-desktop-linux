@@ -74,9 +74,18 @@ def expand_shortcodes(text: str) -> str:
     return text
 
 
-def matching_shortcodes(prefix: str, *, limit: int = 20) -> list[str]:
+def matching_shortcodes(prefix: str, *, limit: int = 25) -> list[str]:
+    """Return `:code:` hits. An empty needle after `:` lists the catalog (Desktop)."""
     needle = prefix.lower().lstrip(":")
+    codes = list(emoji_map())
     if not needle:
+        if prefix.startswith(":"):
+            return [f":{code}:" for code in codes[:limit]]
         return []
-    matches = [f":{code}:" for code in emoji_map() if code.startswith(needle)]
-    return matches[:limit]
+    ranked: list[tuple[int, int, str]] = []
+    for code in codes:
+        index = code.find(needle)
+        if index >= 0:
+            ranked.append((index, len(code), code))
+    ranked.sort()
+    return [f":{code}:" for _index, _length, code in ranked[:limit]]

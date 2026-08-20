@@ -58,8 +58,22 @@ from ..models import (
 )
 from ..shells import get_available_shells, open_external
 from ..store import AppStore
+from ..text_tokens import MaxSummaryLength
 from ..version import APP_NAME, __version__
 from .avatar import Avatar
+from .autocompletion import (
+    UNREACHABLE_COMMITS_LEARN_MORE,
+    TextViewCompleter,
+    fill_coauthor_store,
+    install_entry_completion,
+    populate_completion_store,
+    protected_branch_warning,
+    summary_length_hint,
+    token_before_cursor,
+    unreachable_commits_message,
+    write_access_warning,
+)
+from .author_input import AuthorInput
 from .checks import show_checks, show_rerun_checks
 from .diff_view import DiffViewer
 from .menus import (
@@ -428,12 +442,13 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         PopupType.SSH_USER_PASSWORD: lambda: show_ssh_password(parent, payload),
         PopupType.CONFIRM_COMMIT_FILTERED_CHANGES: lambda: show_filtered_commit(parent, store, payload),
         PopupType.GENERATE_COMMIT_MESSAGE_DISCLAIMER: lambda: show_copilot_disclaimer(parent, store),
-        PopupType.GENERATE_COMMIT_MESSAGE_OVERRIDE: lambda: _alert(
+        PopupType.GENERATE_COMMIT_MESSAGE_OVERRIDE: lambda: _alert_with_check(
             parent,
-            "Replace commit message?",
-            "This will overwrite the summary and description you already typed.",
-            confirm="Replace",
-            on_confirm=lambda: _generate(store),
+            "Commit message override",
+            "The commit message you have entered will be overridden by the generated commit message.",
+            confirm="Override",
+            destructive=True,
+            on_confirm=lambda skip: _on_override_commit_message(store, skip),
         ),
         PopupType.UNKNOWN_AUTHORS: lambda: show_unknown_authors(parent, payload),
         PopupType.MULTI_COMMIT_OPERATION: lambda: show_multi_commit(parent, store, payload),
@@ -557,6 +572,13 @@ def _generate(store: AppStore) -> None:
         store.generate_commit_message(repo)
     except Exception as exc:
         store.show_popup(PopupType.ERROR, error=str(exc))
+
+
+def _on_override_commit_message(store: AppStore, skip: bool) -> None:
+    if skip:
+        store.settings.confirm_commit_message_override = False
+        store.persist_settings()
+    _generate(store)
 
 
 def show_copilot_disclaimer(parent: Gtk.Window, store: AppStore) -> None:
@@ -3446,13 +3468,30 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
 
 def show_force_push(parent: Gtk.Window, store: AppStore) -> None:
     repo = store.selected_repository
-    _alert(
+    if not repo:
+        return
+    state = store.state_for(repo)
+    upstream = "the remote branch"
+    if state.status and state.status.current_upstream_branch:
+        upstream = state.status.current_upstream_branch
+
+    def confirm(skip: bool) -> None:
+        if skip:
+            store.settings.confirm_force_push = False
+            store.settings.ask_for_confirmation_on_force_push = False
+            store.persist_settings()
+        store.push_repo(repo, force=True)
+
+    _alert_with_check(
         parent,
-        "Force push?",
-        "A force push can overwrite commits on the remote. GitHub Desktop uses --force-with-lease.",
-        confirm="Force push",
+        "Are you sure you want to force push?",
+        (
+            f"A force push will rewrite history on {upstream}. Any collaborators working on "
+            "this branch will need to reset their own local branch to match the history of the remote."
+        ),
+        confirm="I'm sure",
         destructive=True,
-        on_confirm=lambda: repo and store.push_repo(repo, force=True),
+        on_confirm=confirm,
     )
 
 
@@ -4203,15 +4242,16 @@ def show_unreachable_commits(parent: Gtk.Window, store: AppStore, payload: dict[
     reachable = [c for c in selected if c.sha in in_diff] or selected[:1]
     unreachable = [c for c in selected if c.sha not in in_diff]
     dialog = Adw.Dialog()
-    dialog.set_content_width(520)
-    dialog.set_content_height(420)
+    dialog.set_content_width(560)
+    dialog.set_content_height(480)
     toolbar = Adw.ToolbarView()
     header = Adw.HeaderBar()
+    header.set_title_widget(Adw.WindowTitle(title="Commit reachability"))
+    toolbar.add_top_bar(header)
     stack = Adw.ViewStack()
     switcher = Adw.ViewSwitcher()
     switcher.set_stack(stack)
-    header.set_title_widget(switcher)
-    toolbar.add_top_bar(header)
+    switcher.set_halign(Gtk.Align.CENTER)
 
     def list_commits(commits) -> Gtk.Widget:
         scroller = Gtk.ScrolledWindow(vexpand=True)
@@ -4231,7 +4271,32 @@ def show_unreachable_commits(parent: Gtk.Window, store: AppStore, payload: dict[
 
     stack.add_titled(list_commits(unreachable), "unreachable", f"Unreachable ({len(unreachable)})")
     stack.add_titled(list_commits(reachable), "reachable", f"Reachable ({len(reachable)})")
-    toolbar.set_content(stack)
+    stack.set_vexpand(True)
+    explainer = Gtk.Label(wrap=True, xalign=0)
+    explainer.add_css_class("body")
+    learn = Gtk.LinkButton(
+        uri=UNREACHABLE_COMMITS_LEARN_MORE,
+        label="Learn more about unreachable commits.",
+    )
+    learn.set_halign(Gtk.Align.START)
+
+    def update_explainer(*_a: object) -> None:
+        unreachable_tab = stack.get_visible_child_name() != "reachable"
+        count = len(unreachable) if unreachable_tab else len(reachable)
+        explainer.set_text(unreachable_commits_message(unreachable_tab=unreachable_tab, count=count))
+
+    stack.connect("notify::visible-child", update_explainer)
+    update_explainer()
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+    box.set_margin_top(12)
+    box.set_margin_bottom(12)
+    box.set_margin_start(16)
+    box.set_margin_end(16)
+    box.append(switcher)
+    box.append(explainer)
+    box.append(learn)
+    box.append(stack)
+    toolbar.set_content(box)
     dialog.set_child(toolbar)
     dialog.present(parent)
 
@@ -4560,9 +4625,10 @@ def _ssh_secret_dialog(
 
 
 def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
-    from .author_input import AuthorInput
     from .spellcheck import attach_spellcheck
 
+    repo = store.selected_repository
+    state = store.state_for(repo) if repo else None
     dialog = Adw.Dialog()
     dialog.set_content_width(480)
     toolbar = Adw.ToolbarView()
@@ -4579,8 +4645,20 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
     summary = Gtk.Entry()
     summary.set_placeholder_text("Summary (required)")
     summary.set_text(payload.get("summary") or "")
-    summary.set_max_length(72)
+    summary.set_max_length(MaxSummaryLength)
+    issue_store = install_entry_completion(summary)
     box.append(summary)
+    length_warn = Gtk.Label(xalign=0, wrap=True)
+    length_warn.add_css_class("warning")
+    length_warn.set_visible(False)
+    box.append(length_warn)
+    access_warn = Gtk.Label(xalign=0, wrap=True)
+    access_warn.add_css_class("warning")
+    access_lines = [line for line in (write_access_warning(repo), protected_branch_warning(state)) if line]
+    if access_lines:
+        access_warn.set_text("\n".join(access_lines))
+        access_warn.set_visible(True)
+        box.append(access_warn)
     description = Gtk.TextView()
     description.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
     description.set_size_request(-1, 120)
@@ -4590,9 +4668,44 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
     scrolled.set_child(description)
     box.append(scrolled)
     attach_spellcheck(summary, description, enabled=store.settings.spellcheck_enabled)
+
+    def exclude_login() -> str | None:
+        account = store.account_for_repo(repo) if repo else None
+        return account.login if account else None
+
+    def current_state():
+        return store.state_for(repo) if repo else None
+
+    desc_completer = TextViewCompleter(
+        description,
+        current_state,
+        on_hash=lambda: store.refresh_issues(repo),
+        exclude_login=exclude_login,
+    )
+
+    def refresh_completion(*_a: object) -> None:
+        token = token_before_cursor(summary.get_text(), summary.get_position())
+        populate_completion_store(issue_store, current_state(), token, exclude_login=exclude_login())
+        if token.startswith("#"):
+            store.refresh_issues(repo)
+        hint = summary_length_hint(summary.get_text(), store.settings.show_commit_length_warning)
+        if hint:
+            length_warn.set_text(hint)
+            length_warn.set_visible(True)
+        else:
+            length_warn.set_visible(False)
+
+    summary.connect("changed", refresh_completion)
+    description.get_buffer().connect("changed", lambda *_: desc_completer.update())
+    refresh_completion()
+
     author_input = None
-    if payload.get("show_co_authors") or payload.get("co_authors"):
+    github_repo = bool(repo and repo.github)
+    show_co = bool(payload.get("show_co_authors") or payload.get("co_authors") or github_repo)
+    if show_co:
+        co_check = Gtk.CheckButton(label="Co-authors")
         author_input = AuthorInput()
+        fill_coauthor_store(author_input.store, state)
         raw = payload.get("co_authors")
         if isinstance(raw, list):
             author_input.set_authors(list(raw))
@@ -4600,6 +4713,11 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
             from ..models import parse_co_authors
 
             author_input.set_authors(parse_co_authors(str(raw)))
+        has_authors = bool(author_input.get_authors())
+        co_check.set_active(has_authors or bool(payload.get("show_co_authors")))
+        author_input.set_visible(co_check.get_active())
+        co_check.connect("toggled", lambda btn: author_input.set_visible(btn.get_active()))
+        box.append(co_check)
         box.append(author_input)
     save = Gtk.Button(label=payload.get("button") or "Save")
     save.add_css_class("suggested-action")
@@ -4612,6 +4730,8 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
         start, end = description.get_buffer().get_bounds()
         desc = description.get_buffer().get_text(start, end, True)
         cb = payload.get("on_submit")
+        if author_input is not None:
+            author_input.commit_pending()
         authors = author_input.get_authors() if author_input is not None else []
         if cb:
             try:

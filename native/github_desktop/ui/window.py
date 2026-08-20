@@ -43,14 +43,22 @@ from ..models import (
 from ..push_pull import describe_push_pull, format_commit_relative_time, format_last_fetched
 from ..shells import open_external, open_in_default_program
 from ..store import AppStore
+from ..text_tokens import MaxSummaryLength
 from ..version import APP_NAME
 from .avatar import Avatar, AvatarStack, users_from_commit
 from .author_input import AuthorInput
+from .autocompletion import (
+    TextViewCompleter,
+    fill_coauthor_store,
+    install_entry_completion,
+    populate_completion_store,
+    summary_length_hint,
+    token_before_cursor,
+)
 from .branches import BranchesFoldout
 from .checks import present_checks_popover
 from .dialogs import present_popup, show_preferences, show_reorder_commits
 from .diff_view import DiffViewer
-from .emoji import matching_shortcodes
 from .history import ExpandableCommitSummary
 from .menus import (
     CopyFilePathLabel,
@@ -1218,18 +1226,12 @@ class MainWindow(Adw.ApplicationWindow):
         summary_row.append(self._author_btn)
         self._summary = Gtk.Entry()
         self._summary.set_placeholder_text("Summary (required)")
-        self._summary.set_max_length(72)
+        self._summary.set_max_length(MaxSummaryLength)
         self._summary.set_hexpand(True)
         summary_row.append(self._summary)
-        self._issue_store = Gtk.ListStore(str)
-        completion = Gtk.EntryCompletion()
-        completion.set_model(self._issue_store)
-        completion.set_text_column(0)
-        completion.set_popup_completion(True)
-        completion.set_minimum_key_length(1)
-        completion.set_match_func(lambda *_args: True)
+        self._issue_store = install_entry_completion(self._summary)
         self._summary.connect("changed", self._on_summary_changed)
-        self._summary_warn = Gtk.Label(xalign=0)
+        self._summary_warn = Gtk.Label(xalign=0, wrap=True)
         self._summary_warn.add_css_class("warning")
         self._summary_warn.set_visible(False)
         self._author_warn = Gtk.Label(xalign=0, wrap=True)
@@ -1251,20 +1253,22 @@ class MainWindow(Adw.ApplicationWindow):
             self._description.get_buffer().set_enable_undo(True)
         except Exception:
             pass
+        self._desc_completer = TextViewCompleter(
+            self._description,
+            lambda: self.store.state_for(self.store.selected_repository) if self.store.selected_repository else None,
+            on_hash=lambda: self.store.refresh_issues(),
+            exclude_login=self._completion_exclude_login,
+        )
+        self._desc_complete = self._desc_completer.popover
+        self._desc_list = self._desc_completer.listbox
         self._description.get_buffer().connect(
             "changed",
-            lambda *_: (self._flush_commit_form(), self._update_commit_warnings(), self._update_description_completion()),
+            lambda *_: (
+                self._flush_commit_form(),
+                self._update_commit_warnings(),
+                None if getattr(self, "_applying_commit_form", False) else self._update_description_completion(),
+            ),
         )
-        self._desc_complete = Gtk.Popover()
-        self._desc_complete.set_parent(self._description)
-        self._desc_complete.set_autohide(True)
-        self._desc_list = Gtk.ListBox()
-        self._desc_list.connect("row-activated", self._on_description_complete)
-        desc_scroll = Gtk.ScrolledWindow()
-        desc_scroll.set_min_content_height(80)
-        desc_scroll.set_min_content_width(220)
-        desc_scroll.set_child(self._desc_list)
-        self._desc_complete.set_child(desc_scroll)
         co = Gtk.CheckButton(label="Co-authors")
         co.connect("toggled", self._on_coauthors)
         self._coauthor_check = co
@@ -1272,7 +1276,6 @@ class MainWindow(Adw.ApplicationWindow):
         self._author_input.set_visible(False)
         self._coauthor_entry = self._author_input.entry
         self._coauthor_store = self._author_input.store
-        self._summary.set_completion(completion)
         self._spell = attach_spellcheck(
             self._summary,
             self._description,
@@ -3111,37 +3114,20 @@ class MainWindow(Adw.ApplicationWindow):
             self._tutorial_banner.set_revealed(False)
             return
 
+    def _completion_exclude_login(self) -> str | None:
+        repo = self.store.selected_repository
+        account = self.store.account_for_repo(repo) if repo else None
+        return account.login if account else None
+
     def _refresh_issue_completion(self, state) -> None:
         if not hasattr(self, "_issue_store"):
             return
-        self._issue_store.clear()
         if hasattr(self, "_coauthor_store"):
-            self._coauthor_store.clear()
-            seen: set[str] = set()
-            for user in getattr(state, "mentionables", None) or []:
-                login = str(user.get("login") or "")
-                if not login or login in seen:
-                    continue
-                seen.add(login)
-                name = str(user.get("name") or login)
-                email = str(user.get("email") or f"{login}@users.noreply.github.com")
-                self._coauthor_store.append([f"{name} <{email}>"])
-                self._coauthor_store.append([f"@{login}"])
-            for login in state.mentions:
-                if login and login not in seen:
-                    self._coauthor_store.append([f"@{login}"])
+            fill_coauthor_store(self._coauthor_store, state)
         self._update_summary_completion()
 
     def _token_before_cursor(self, entry: Gtk.Entry) -> str:
-        text = entry.get_text()
-        pos = entry.get_position()
-        prefix = text[:pos]
-        if not prefix:
-            return ""
-        for index in range(len(prefix) - 1, -1, -1):
-            if prefix[index] in " \t\n":
-                return prefix[index + 1 :]
-        return prefix
+        return token_before_cursor(entry.get_text(), entry.get_position())
 
     def _update_summary_completion(self) -> None:
         if not hasattr(self, "_issue_store") or not hasattr(self, "_summary"):
@@ -3149,94 +3135,29 @@ class MainWindow(Adw.ApplicationWindow):
         repo = self.store.selected_repository
         state = self.store.state_for(repo) if repo else None
         token = self._token_before_cursor(self._summary)
-        self._issue_store.clear()
-        if state is None or len(token) < 1:
-            return
+        populate_completion_store(
+            self._issue_store,
+            state,
+            token,
+            exclude_login=self._completion_exclude_login(),
+        )
         if token.startswith("#"):
-            needle = token[1:].lower()
-            for number, title in state.issues:
-                hay = f"#{number} {title}"
-                if not needle or needle in str(number) or needle in title.lower():
-                    self._issue_store.append([hay])
-        elif token.startswith("@"):
-            needle = token[1:].lower()
-            for login in state.mentions:
-                if not needle or login.lower().startswith(needle):
-                    self._issue_store.append([f"@{login}"])
-        elif token.startswith(":"):
-            for short in matching_shortcodes(token):
-                self._issue_store.append([short])
+            self.store.refresh_issues(repo)
 
     def _description_token(self) -> str:
-        if not hasattr(self, "_description"):
+        if not hasattr(self, "_desc_completer"):
             return ""
-        buf = self._description.get_buffer()
-        insert = buf.get_iter_at_mark(buf.get_insert())
-        start = insert.copy()
-        start.set_line_offset(0)
-        prefix = buf.get_text(start, insert, True)
-        if not prefix:
-            return ""
-        for index in range(len(prefix) - 1, -1, -1):
-            if prefix[index] in " \t":
-                return prefix[index + 1 :]
-        return prefix
+        return self._desc_completer.token()
 
     def _update_description_completion(self) -> None:
         if getattr(self, "_applying_commit_form", False):
             return
-        if not hasattr(self, "_desc_list") or not hasattr(self, "_desc_complete"):
-            return
-        repo = self.store.selected_repository
-        state = self.store.state_for(repo) if repo else None
-        token = self._description_token()
-        while (child := self._desc_list.get_first_child()) is not None:
-            self._desc_list.remove(child)
-        if state is None or len(token) < 1 or token[0] not in "#@:":
-            self._desc_complete.popdown()
-            return
-        matches: list[str] = []
-        if token.startswith("#"):
-            needle = token[1:].lower()
-            for number, title in state.issues:
-                hay = f"#{number} {title}"
-                if not needle or needle in str(number) or needle in title.lower():
-                    matches.append(hay)
-        elif token.startswith("@"):
-            needle = token[1:].lower()
-            for login in state.mentions:
-                if not needle or login.lower().startswith(needle):
-                    matches.append(f"@{login}")
-        elif token.startswith(":"):
-            matches.extend(matching_shortcodes(token))
-        if not matches:
-            self._desc_complete.popdown()
-            return
-        for item in matches[:12]:
-            self._desc_list.append(Gtk.Label(label=item, xalign=0))
-        self._desc_complete.popup()
+        if hasattr(self, "_desc_completer"):
+            self._desc_completer.update()
 
     def _on_description_complete(self, _list: Gtk.ListBox, row: Gtk.ListBoxRow) -> None:
-        child = row.get_child()
-        text = child.get_text() if isinstance(child, Gtk.Label) else ""
-        if not text:
-            return
-        token = text.split()[0]
-        buf = self._description.get_buffer()
-        insert = buf.get_iter_at_mark(buf.get_insert())
-        start = insert.copy()
-        start.set_line_offset(0)
-        prefix = buf.get_text(start, insert, True)
-        cut = 0
-        for index in range(len(prefix) - 1, -1, -1):
-            if prefix[index] in " \t":
-                cut = index + 1
-                break
-        replace = insert.copy()
-        replace.set_line_offset(cut)
-        buf.delete(replace, insert)
-        buf.insert(replace, token + " ")
-        self._desc_complete.popdown()
+        if hasattr(self, "_desc_completer"):
+            self._desc_completer._on_row(_list, row)
 
     def _refresh_compare_list(self, state=None) -> None:
         if not hasattr(self, "_compare_list"):
@@ -3585,8 +3506,9 @@ class MainWindow(Adw.ApplicationWindow):
         if not hasattr(self, "_summary_warn"):
             return
         text = self._summary.get_text() if hasattr(self, "_summary") else ""
-        if self.store.settings.show_commit_length_warning and len(text) > 50:
-            self._summary_warn.set_text(f"{len(text)} / 72 characters — keep the summary short")
+        hint = summary_length_hint(text, self.store.settings.show_commit_length_warning)
+        if hint:
+            self._summary_warn.set_text(hint)
             self._summary_warn.set_visible(True)
         else:
             self._summary_warn.set_visible(False)

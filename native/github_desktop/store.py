@@ -235,6 +235,8 @@ Listener = Callable[[], None]
 # Desktop BackgroundFetchMinimumInterval (30 minutes) and BackgroundFetcher intervals.
 BACKGROUND_FETCH_MINIMUM_INTERVAL = 30 * 60
 BACKGROUND_FETCH_DEFAULT_INTERVAL = 60 * 60
+# Desktop `UpdateIssuesThrottleInterval` in issues-autocompletion-provider.tsx.
+UPDATE_ISSUES_THROTTLE_INTERVAL = 60
 BACKGROUND_FETCH_SERVER_MINIMUM = 5 * 60
 INDICATOR_REFRESH_INTERVAL = 15 * 60
 
@@ -368,6 +370,7 @@ class AppStore:
         self._background_fetch_in_flight = False
         self._ahead_behind_cache: dict[tuple[str, str, str], AheadBehind | None] = {}
         self._credential_sign_in_finish: list[Callable[[Account | None], None]] = []
+        self._issue_refresh_at: dict[int, float] = {}
         self._load_accounts()
         self._load_repositories()
         self._maybe_show_accessibility_banner()
@@ -4348,6 +4351,34 @@ class AppStore:
         gh = github_for_contribution(repo) or repo.github
         if gh:
             open_external(gh.html_url + "/issues/new")
+
+    def refresh_issues(self, repo: Repository | None = None) -> None:
+        """Throttle-refresh open issues for `#` autocompletion (Desktop `refreshIssues`)."""
+        repo = repo or self.selected_repository
+        if repo is None or not repo.github:
+            return
+        now = time.monotonic()
+        last = self._issue_refresh_at.get(repo.id, 0.0)
+        if now - last < UPDATE_ISSUES_THROTTLE_INTERVAL:
+            return
+        account = self.account_for_repo(repo)
+        gh = github_for_contribution(repo) or repo.github
+        if account is None or gh is None:
+            return
+        self._issue_refresh_at[repo.id] = now
+        owner, name = gh.owner, gh.name
+        state = self.state_for(repo)
+
+        def work() -> list[tuple[int, str]]:
+            api = GitHubAPI.from_account(account)
+            return [(i.number, i.title) for i in api.fetch_issues(owner, name)[:80]]
+
+        def done(exc: BaseException | None, result: list[tuple[int, str]] | None = None) -> None:
+            if exc or result is None:
+                return
+            state.issues = result
+
+        self._run(work, done)
 
     def compare_on_github(self, repo: Repository) -> None:
         state = self.state_for(repo)
