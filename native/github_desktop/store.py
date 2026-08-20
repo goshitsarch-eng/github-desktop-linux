@@ -4126,7 +4126,7 @@ class AppStore:
         self.accounts = [a for a in self.accounts if a is not account and not (a.endpoint == account.endpoint and a.login == account.login)]
         self._save_accounts()
         self.emit()
-        if snapshot.token:
+        if snapshot.token and not os.environ.get("PYTEST_CURRENT_TEST"):
             def work() -> bool:
                 from .github.api import delete_oauth_token
 

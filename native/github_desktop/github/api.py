@@ -741,7 +741,7 @@ def delete_oauth_token(account: Account) -> bool:
             extra_headers={"Authorization": f"Basic {creds}"},
         )
         return True
-    except APIError as exc:
+    except Exception as exc:
         log.error("deleteToken: failed with endpoint %s: %s", account.endpoint, exc)
         return False
 
