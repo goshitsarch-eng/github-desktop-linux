@@ -196,8 +196,8 @@ APP_CSS = """
 .history-commit.commit-drop-before {
   box-shadow: inset 0 3px 0 @accent_color;
 }
-.history-commit.commit-drop-after {
-  box-shadow: inset 0 -3px 0 @accent_color;
+.history-commit.commit-highlight {
+  background-color: alpha(@accent_bg_color, 0.32);
 }
 window.underline-links button.link label,
 window.underline-links link {

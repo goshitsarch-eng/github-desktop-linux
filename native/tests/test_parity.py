@@ -297,5 +297,8 @@ def test_window_actions_cover_menus() -> None:
         "underline-links",
         "Reverting first commit",
         "pan-down-symbolic",
+        "Showing changes from",
+        "unreachable",
+        "commit-highlight",
     ]:
         assert phrase in src

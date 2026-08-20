@@ -15,6 +15,7 @@ from ..models import (
     BannerType,
     BranchType,
     ChangesListFilter,
+    CommitMessage,
     ComparisonMode,
     ComputedAction,
     DiffSelectionType,
@@ -109,6 +110,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.store.settings.window_width = alloc[0]
             self.store.settings.window_height = alloc[1]
             self.store.persist_settings()
+        self._flush_commit_form()
         return False
 
     def _on_store(self) -> None:
@@ -900,7 +902,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._description = Gtk.TextView()
         self._description.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self._description.set_size_request(-1, 70)
-        self._description.get_buffer().connect("changed", lambda *_: self._update_commit_warnings())
+        self._description.get_buffer().connect("changed", lambda *_: (self._flush_commit_form(), self._update_commit_warnings()))
         co = Gtk.CheckButton(label="Co-authors")
         co.connect("toggled", self._on_coauthors)
         self._coauthor_check = co
@@ -1053,6 +1055,7 @@ class MainWindow(Adw.ApplicationWindow):
             return
         self._repo_btn.set_label(repo.display_name)
         self.set_title(f"{repo.display_name} — {APP_NAME}")
+        self._apply_commit_form(repo, self.store.state_for(repo))
         if hasattr(self, "_repo_content"):
             if repo.is_missing:
                 self._show_missing(repo)
@@ -1102,20 +1105,6 @@ class MainWindow(Adw.ApplicationWindow):
             self._view_stack.set_visible_child_name("history")
         else:
             self._view_stack.set_visible_child_name("changes")
-        if state.commit_to_amend is not None:
-            self._summary.set_text(state.commit_message.summary or state.commit_to_amend.summary)
-            self._description.get_buffer().set_text(state.commit_message.description or state.commit_to_amend.body)
-        else:
-            msg = state.commit_message
-            applied = getattr(self, "_applied_commit_message_ts", 0)
-            if msg.timestamp and msg.timestamp > applied:
-                self._summary.set_text(msg.summary)
-                self._description.get_buffer().set_text(msg.description or "")
-                self._applied_commit_message_ts = msg.timestamp
-            elif msg.summary and not self._summary.get_text():
-                self._summary.set_text(msg.summary)
-                if msg.description:
-                    self._description.get_buffer().set_text(msg.description)
         amending = state.commit_to_amend is not None
         if hasattr(self, "_commit_btn"):
             if amending and state.status:
@@ -1715,6 +1704,7 @@ class MainWindow(Adw.ApplicationWindow):
                 expanded=state.commit_summary_expanded,
                 shas_in_diff=list(state.shas_in_diff),
                 on_unreachable=lambda: self.store.show_popup(PopupType.UNREACHABLE_COMMITS),
+                on_highlight=self._highlight_history_shas,
             )
         clear_box(self._hist_files)
         for f in state.selected_commit_files:
@@ -1724,6 +1714,20 @@ class MainWindow(Adw.ApplicationWindow):
             attach_right_click(r, lambda *_ , file=f: self._hist_file_menu(file))
             self._hist_files.append(r)
         self._render_history_diff(state)
+
+    def _highlight_history_shas(self, shas: list[str]) -> None:
+        if not hasattr(self, "_commit_list"):
+            return
+        wanted = set(shas)
+        child = self._commit_list.get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.ListBoxRow):
+                commit = getattr(child, "_commit", None)
+                if commit and commit.sha in wanted:
+                    child.add_css_class("commit-highlight")
+                else:
+                    child.remove_css_class("commit-highlight")
+            child = child.get_next_sibling()
 
     def _on_hist_file(self, _l, row) -> None:
         repo = self.store.selected_repository
@@ -2452,7 +2456,66 @@ class MainWindow(Adw.ApplicationWindow):
         self._author_popover.popdown()
         self._refresh_author_avatar(repo)
 
+    def _flush_commit_form(self) -> None:
+        """Write the in-progress commit box back onto the repository that owns it."""
+        if getattr(self, "_applying_commit_form", False) or not hasattr(self, "_summary"):
+            return
+        prev_id = getattr(self, "_form_repo_id", None)
+        if prev_id is None:
+            return
+        prev = next((r for r in self.store.repositories if r.id == prev_id), None)
+        if prev is None:
+            return
+        start, end = self._description.get_buffer().get_bounds()
+        state = self.store.state_for(prev)
+        state.commit_message = CommitMessage(
+            summary=self._summary.get_text(),
+            description=self._description.get_buffer().get_text(start, end, True),
+            timestamp=state.commit_message.timestamp,
+        )
+
+    def _apply_commit_form(self, repo, state) -> None:
+        if not hasattr(self, "_summary"):
+            return
+        switched = getattr(self, "_form_repo_id", None) != repo.id
+        if switched:
+            self._flush_commit_form()
+        self._applying_commit_form = True
+        try:
+            if state.commit_to_amend is not None:
+                self._summary.set_text(state.commit_message.summary or state.commit_to_amend.summary)
+                self._description.get_buffer().set_text(state.commit_message.description or state.commit_to_amend.body)
+            elif switched:
+                self._summary.set_text(state.commit_message.summary)
+                self._description.get_buffer().set_text(state.commit_message.description or "")
+                self._applied_commit_message_ts = state.commit_message.timestamp
+            else:
+                msg = state.commit_message
+                applied = getattr(self, "_applied_commit_message_ts", 0)
+                if msg.timestamp and msg.timestamp > applied:
+                    self._summary.set_text(msg.summary)
+                    self._description.get_buffer().set_text(msg.description or "")
+                    self._applied_commit_message_ts = msg.timestamp
+            if switched and hasattr(self, "_coauthor_entry"):
+                if state.co_authors:
+                    self._coauthor_check.set_active(True)
+                    self._coauthor_entry.set_visible(True)
+                    self._coauthor_entry.set_text(
+                        ", ".join(
+                            f"{a.name} <{a.email}>" if getattr(a, "email", None) else a.name
+                            for a in state.co_authors
+                        )
+                    )
+                else:
+                    self._coauthor_check.set_active(False)
+                    self._coauthor_entry.set_visible(False)
+                    self._coauthor_entry.set_text("")
+        finally:
+            self._applying_commit_form = False
+            self._form_repo_id = repo.id
+
     def _on_summary_changed(self, entry: Gtk.Entry) -> None:
+        self._flush_commit_form()
         self._update_commit_warnings()
         self._update_summary_completion()
 
