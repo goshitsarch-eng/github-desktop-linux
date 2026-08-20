@@ -78,6 +78,18 @@ def test_create_repository_writes_templates_and_initial_commit(
     assert store.settings.clone_default_directory == str(parent)
 
 
+def test_gitignore_names_include_desktop_github_templates() -> None:
+    from github_desktop.create_repo import gitignore_names
+
+    names = gitignore_names()
+    assert "Python" in names
+    assert "Node" in names
+    assert "VisualStudio" in names
+    assert "Go" in names
+    assert "Rust" in names
+    assert len(names) >= 100
+
+
 def test_create_repository_skips_readme_by_default(isolated_config, tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("GIT_AUTHOR_NAME", "Test User")
     monkeypatch.setenv("GIT_AUTHOR_EMAIL", "test@example.com")

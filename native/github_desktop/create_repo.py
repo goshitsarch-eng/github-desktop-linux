@@ -289,14 +289,31 @@ terraform.rc
 }
 
 
+GITIGNORE_DATA_DIR = Path(__file__).resolve().parent / "data" / "gitignore"
+
+
+def _gitignore_from_disk(name: str) -> str | None:
+    path = GITIGNORE_DATA_DIR / f"{name}.gitignore"
+    if path.is_file():
+        return path.read_text(encoding="utf-8")
+    return None
+
+
 def gitignore_names() -> list[str]:
-    return sorted(GITIGNORE_TEMPLATES)
+    """Desktop `getGitIgnoreNames` from vendored github/gitignore templates."""
+    names = []
+    if GITIGNORE_DATA_DIR.is_dir():
+        names = [path.stem for path in GITIGNORE_DATA_DIR.glob("*.gitignore")]
+    if not names:
+        names = list(GITIGNORE_TEMPLATES)
+    return sorted(names)
 
 
 def write_named_gitignore(path: str, name: str) -> None:
-    text = GITIGNORE_TEMPLATES.get(name)
+    """Desktop `writeGitIgnore`."""
+    text = _gitignore_from_disk(name) or GITIGNORE_TEMPLATES.get(name)
     if not text:
-        raise ValueError(f"Unknown gitignore: {name}")
+        raise ValueError(f"Unknown gitignore: {name}. Only names returned from gitignore_names() can be used.")
     Path(path, ".gitignore").write_text(text, encoding="utf-8")
 
 
