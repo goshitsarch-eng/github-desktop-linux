@@ -146,6 +146,7 @@ from .ops import (
     merge_trailers,
     move_stash_entry,
     parse_trailers,
+    get_trailer_separator_characters,
     prune_forked_remotes,
     prune_merged_branches,
     pull,

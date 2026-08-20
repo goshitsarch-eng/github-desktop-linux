@@ -2006,7 +2006,36 @@ def show_publish(parent: Gtk.Window, store: AppStore) -> None:
     accounts = list(store.accounts)
     account = accounts[0] if accounts else None
     if not account:
-        store.begin_sign_in(False)
+        dialog = Adw.Dialog()
+        dialog.set_content_width(460)
+        toolbar = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        header.set_title_widget(Adw.WindowTitle(title="Publish repository", subtitle="Sign in required"))
+        toolbar.add_top_bar(header)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+        box.set_margin_top(12)
+        box.set_margin_bottom(12)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        box.append(
+            _clone_sign_in_cta(
+                store,
+                dialog,
+                enterprise=False,
+                message="Sign in to your GitHub.com account to access your repositories.",
+            )
+        )
+        box.append(
+            _clone_sign_in_cta(
+                store,
+                dialog,
+                enterprise=True,
+                message="If you are using GitHub Enterprise at work, sign in to it to get access to your repositories.",
+            )
+        )
+        toolbar.set_content(box)
+        dialog.set_child(toolbar)
+        dialog.present(parent)
         return
 
     from ..create_repo import sanitized_repository_name

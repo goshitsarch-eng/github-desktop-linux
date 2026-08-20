@@ -2,8 +2,9 @@
 
 Desktop renders PR bodies in a sandboxed iframe. Native GTK has no WebKit
 requirement, so we convert a safe subset of GitHub Flavored Markdown to Pango
-markup: emphasis, inline/fenced code, https-only links, emoji shortcodes, and
-``#123`` issue refs. Raw HTML, ``javascript:``, and ``data:`` URLs are dropped.
+markup: emphasis, inline/fenced code, https-only links, emoji shortcodes,
+``#123`` issue refs, ``MentionFilter`` (@user), and ``CommitMentionFilter``
+(7–40 hex SHAs). Raw HTML, ``javascript:``, and ``data:`` URLs are dropped.
 """
 
 from __future__ import annotations
@@ -25,6 +26,10 @@ _ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|(?<!_)_(?!_)(.+?)(
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.M)
 _ISSUE_RE = re.compile(r"(?<![/\w])#(\d+)\b")
 _QUOTE_RE = re.compile(r"^&gt;\s?(.*)$", re.M)
+_MENTION_RE = re.compile(
+    r"(^|[^A-Za-z0-9_`])@([A-Za-z0-9][A-Za-z0-9-]{0,38})(?![/\w-])"
+)
+_SHA_RE = re.compile(r"\b([0-9a-f]{7,40})\b")
 
 
 def _safe_url(url: str) -> str | None:
@@ -53,7 +58,12 @@ def issue_base_from_html_url(html_url: str | None) -> str | None:
     return base + "/issues"
 
 
-def markdown_to_pango(text: str, *, issue_base_url: str | None = None) -> str:
+def markdown_to_pango(
+    text: str,
+    *,
+    issue_base_url: str | None = None,
+    repo_html_url: str | None = None,
+) -> str:
     """Convert a GFM subset to Pango markup. Never emits unsafe URIs."""
     source = expand_shortcodes(text or "")
     held: list[str] = []
@@ -108,6 +118,35 @@ def markdown_to_pango(text: str, *, issue_base_url: str | None = None) -> str:
 
         escaped = _ISSUE_RE.sub(stash_issue, escaped)
 
+    host = None
+    if issue_base_url:
+        parsed = urlparse(issue_base_url)
+        if parsed.scheme and parsed.netloc:
+            host = f"{parsed.scheme}://{parsed.netloc}"
+    elif repo_html_url:
+        parsed = urlparse(repo_html_url)
+        if parsed.scheme and parsed.netloc:
+            host = f"{parsed.scheme}://{parsed.netloc}"
+    if host:
+
+        def stash_mention(match: re.Match[str]) -> str:
+            prefix, user = match.group(1), match.group(2)
+            href = html.escape(f"{host}/{user}", quote=True)
+            return hold(f'{prefix}<a href="{href}">@{html.escape(user, quote=True)}</a>')
+
+        escaped = _MENTION_RE.sub(stash_mention, escaped)
+
+    if repo_html_url:
+        base = repo_html_url.rstrip("/")
+
+        def stash_sha(match: re.Match[str]) -> str:
+            sha = match.group(1)
+            href = html.escape(f"{base}/commit/{sha}", quote=True)
+            short = sha[:7]
+            return hold(f'<a href="{href}"><tt>{html.escape(short, quote=True)}</tt></a>')
+
+        escaped = _SHA_RE.sub(stash_sha, escaped)
+
     def autolink(match: re.Match[str]) -> str:
         raw = html.unescape(match.group(0)).rstrip(").,;")
         safe = _safe_url(raw)
@@ -140,7 +179,10 @@ def sandboxed_markdown_label(
     text = (markdown or "").strip() or empty
     if len(text) > max_chars:
         text = text[: max_chars - 1] + "…"
-    markup = markdown_to_pango(text, issue_base_url=issue_base_url)
+    repo_html = None
+    if issue_base_url and issue_base_url.rstrip("/").endswith("/issues"):
+        repo_html = issue_base_url.rstrip("/")[: -len("/issues")]
+    markup = markdown_to_pango(text, issue_base_url=issue_base_url, repo_html_url=repo_html)
     label = Gtk.Label(wrap=True, xalign=0)
     label.set_use_markup(True)
     label.add_css_class("sandboxed-markdown")

@@ -127,6 +127,7 @@ REQUIRED_GIT_FUNCS = [
     "rev_range_inclusive",
     "rev_symmetric_difference",
     "get_stashed_files",
+    "get_trailer_separator_characters",
 ]
 
 
@@ -471,5 +472,8 @@ def test_window_actions_cover_menus() -> None:
         "syncClockwise",
         "No open pull requests in",
         "View repository rulesets",
+        "MentionFilter",
+        "CommitMentionFilter",
+        "getTrailerSeparatorCharacters",
     ]:
         assert phrase in src

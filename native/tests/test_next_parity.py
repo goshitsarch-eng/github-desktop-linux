@@ -260,7 +260,15 @@ def test_sandboxed_markdown_pango_is_https_only() -> None:
     assert "<tt>code</tt>" in markup
     assert 'href="https://example.com/a"' in markup
     assert 'href="javascript:' not in markup
-    assert "href=\"https://github.com/octo/hello/issues/42\"" in markup
+    assert 'href="https://github.com/octo/hello/issues/42"' in markup
+    mentioned = markdown_to_pango(
+        "Thanks @octocat for abcdef1",
+        issue_base_url="https://github.com/octo/hello/issues",
+        repo_html_url="https://github.com/octo/hello",
+    )
+    assert 'href="https://github.com/octocat"' in mentioned
+    assert "@octocat" in mentioned
+    assert "href=\"https://github.com/octo/hello/commit/abcdef1\"" in mentioned
     assert issue_base_from_html_url("https://github.com/octo/hello/pull/9") == "https://github.com/octo/hello/issues"
     escaped = markdown_to_pango("<script>alert(1)</script>")
     assert "<script>" not in escaped
@@ -276,3 +284,11 @@ def test_commit_message_copilot_flag_cleared_on_edit(isolated_config) -> None:
     assert msg.generated_by_copilot is True
     edited = CommitMessage(summary="Add tests!", description="body", timestamp=1, generated_by_copilot=False)
     assert edited.generated_by_copilot is False
+
+
+def test_trailer_separator_characters(git_repo) -> None:
+    from github_desktop.git.ops import get_trailer_separator_characters, set_config_value
+
+    assert get_trailer_separator_characters(str(git_repo)) == ":"
+    set_config_value(str(git_repo), "trailer.separators", ":#")
+    assert get_trailer_separator_characters(str(git_repo)) == ":#"

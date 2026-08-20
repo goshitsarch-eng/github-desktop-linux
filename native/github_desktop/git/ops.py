@@ -775,6 +775,11 @@ def format_commit_message(
     return message if message.endswith("\n") else message + "\n"
 
 
+def get_trailer_separator_characters(repo: str) -> str:
+    """Desktop `getTrailerSeparatorCharacters` (default ``:``)."""
+    return get_config_value(repo, "trailer.separators") or ":"
+
+
 def parse_trailers(repo: str, commit_message: str) -> list[tuple[str, str]]:
     result = git(
         ["interpret-trailers", "--parse"],
@@ -782,7 +787,7 @@ def parse_trailers(repo: str, commit_message: str) -> list[tuple[str, str]]:
         stdin=commit_message,
         name="parseTrailers",
     )
-    separators = get_config_value(repo, "trailer.separators") or ":"
+    separators = get_trailer_separator_characters(repo)
     return parse_raw_unfolded_trailers(result.stdout, separators)
 
 
