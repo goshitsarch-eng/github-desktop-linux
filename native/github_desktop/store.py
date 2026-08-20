@@ -32,6 +32,7 @@ from .git import (
     continue_rebase,
     create_branch,
     create_commit,
+    create_desktop_stash_entry,
     create_merge_commit,
     create_tag,
     delete_local_branch,
@@ -39,13 +40,21 @@ from .git import (
     delete_tag,
     discard_changes_from_selection,
     discard_paths,
+    discard_working_files,
+    drop_desktop_stash_entry,
     env_for_remote,
+    fast_forward_branches,
     fetch,
+    fetch_tags_to_push,
     format_commit_message,
     get_ahead_behind,
     get_all_tags,
     get_author_identity,
+    get_branch_merge_base_changed_files,
+    get_branch_merge_base_diff,
     get_branches,
+    get_branches_differing_from_upstream,
+    get_branches_pointed_at,
     get_changeset_data,
     get_commit,
     get_commit_diff,
@@ -57,7 +66,10 @@ from .git import (
     get_boolean_config_value,
     get_config_value,
     get_default_branch,
+    get_files_diff_text,
     get_global_config_path,
+    get_last_desktop_stash_entry_for_branch,
+    get_rebase_snapshot,
     get_remotes,
     get_repository_kind,
     get_recent_branches,
@@ -70,6 +82,9 @@ from .git import (
     git_path_is_repository,
     init_repository,
     merge,
+    move_stash_entry,
+    prune_forked_remotes,
+    prune_merged_branches,
     pull,
     push,
     read_gitignore,
@@ -89,6 +104,7 @@ from .git import (
     undo_commit,
     write_gitignore,
 )
+from .git.askpass import askpass_env, set_prompt_callback, start_askpass_server
 from .git.runner import find_git, resolve_repository_root
 from .github.api import GitHubAPI
 from .github.ci_checks import attach_workflow_jobs_to_checks, failing_checks, is_failure, split_rerunnable_checks
@@ -147,6 +163,7 @@ from .models import (
     UncommittedChangesStrategy,
     WelcomeStep,
     WorkingDirectoryFileChange,
+    fork_pull_request_remote_name,
     git_author_name_is_valid,
     html_url_from_endpoint,
     sanitize_ref_name,
@@ -154,7 +171,7 @@ from .models import (
 from .notifications import show_notification
 from .paths import accounts_path, repositories_path
 from .protocol import OAuthAction, OpenRepositoryAction, URLAction, parse_app_url
-from .remote_parsing import account_for_remote, github_from_remote, parse_remote
+from .remote_parsing import account_for_remote, github_from_remote, parse_remote, url_matches_remote
 from .settings import Settings, load_settings, save_settings
 from .shells import find_shell, get_available_shells, open_custom_shell, open_external, open_file_manager, open_shell
 from .thank_you import (
@@ -259,6 +276,9 @@ class AppStore:
         self._next_id = 1
         self._load_accounts()
         self._load_repositories()
+        if not os.environ.get("PYTEST_CURRENT_TEST"):
+            start_askpass_server()
+            set_prompt_callback(self.handle_askpass)
 
     # --- persistence ---
     def _load_accounts(self) -> None:
@@ -850,6 +870,22 @@ class AppStore:
                             log.debug("repo rules fetch failed: %s", exc)
                     except APIError as exc:
                         log.debug("GitHub metadata fetch failed: %s", exc)
+            prs = payload.get("pull_requests") or []
+            try:
+                pruned = prune_forked_remotes(repo.path, prs, branches)
+                if pruned:
+                    payload["remotes"] = get_remotes(repo.path)
+                    payload["branches"] = get_branches(repo.path)
+                    remotes = payload["remotes"]
+                    branches = payload["branches"]
+            except GitError as exc:
+                log.debug("fork remote prune failed: %s", exc)
+            if status and status.merge_head_found:
+                pointed = get_branches_pointed_at(repo.path, "MERGE_HEAD")
+                if pointed:
+                    payload["merge_head_branch"] = next(
+                        (name for name in pointed if name != status.current_branch), pointed[0]
+                    )
             return payload
 
         def done(exc: BaseException | None, result: dict | None = None) -> None:
@@ -890,6 +926,8 @@ class AppStore:
             state.check_runs = data.get("check_runs") or []
             state.mentions = data.get("mentions") or []
             state.local_commit_shas = data.get("local_commit_shas") or []
+            if "local_tags_to_push" in data:
+                state.local_tags_to_push = list(data.get("local_tags_to_push") or [])
             if "repo_rules" in data:
                 state.repo_rules = data["repo_rules"]
             if "protected_branches" in data:
@@ -1093,14 +1131,69 @@ class AppStore:
         if not url:
             return None
         account = account_for_remote(self.accounts, url) or self.account_for_repo(repo)
+        extra = askpass_env()
         if account:
-            return env_for_remote(url, token=account.token)
+            return env_for_remote(url, token=account.token, extra=extra or None)
         host = (parse_remote(url).hostname if parse_remote(url) else None)
         if host:
             user, password = secrets.get_generic(host)
             if user and password:
-                return env_for_remote(url, username=user, password=password)
-        return env_for_remote(url)
+                return env_for_remote(url, username=user, password=password, extra=extra or None)
+        return env_for_remote(url, extra=extra or None)
+
+    def handle_askpass(self, prompt: str) -> str:
+        """Show Desktop SSH dialogs on the GTK thread and return the answer."""
+        from .git.askpass import auto_answer, parse_askpass_prompt
+
+        parsed = parse_askpass_prompt(prompt)
+        auto = auto_answer(parsed)
+        if auto is not None:
+            return auto
+        event = threading.Event()
+        box: dict[str, str] = {"value": ""}
+
+        def show() -> bool:
+            def finish(value: str | None, store_secret: bool = False) -> None:
+                box["value"] = value or ""
+                if store_secret and value:
+                    account = parsed.key_path or parsed.username
+                    if account:
+                        secrets.set_password("GitHub Desktop SSH", account, value)
+                event.set()
+
+            if parsed.kind == "host":
+                self.show_popup(
+                    PopupType.ADD_SSH_HOST,
+                    host=parsed.host,
+                    ip=parsed.ip,
+                    key_type=parsed.key_type,
+                    fingerprint=parsed.fingerprint,
+                    on_submit=lambda ok: finish("yes" if ok else "no"),
+                )
+            elif parsed.kind == "key":
+                self.show_popup(
+                    PopupType.SSH_KEY_PASSPHRASE,
+                    key_path=parsed.key_path,
+                    on_submit=lambda secret, remember=True: finish(secret, remember),
+                )
+            else:
+                self.show_popup(
+                    PopupType.SSH_USER_PASSWORD,
+                    username=parsed.username or parsed.prompt,
+                    on_submit=lambda secret, remember=True: finish(secret, remember),
+                )
+            return False
+
+        try:
+            from gi.repository import Gio, GLib
+
+            if Gio.Application.get_default() is None:
+                return ""
+            GLib.idle_add(show)
+        except Exception:
+            return ""
+        event.wait(timeout=300)
+        return box["value"]
 
     def commit(
         self,
@@ -1358,12 +1451,75 @@ class AppStore:
         open_external(f"{repo.github.html_url}/tree/{quote(name)}")
 
     def checkout_pull_request(self, repo: Repository, pr: PullRequest) -> None:
+        def work() -> Branch | None:
+            return self._find_pull_request_branch(repo, pr)
+
+        def done(exc: BaseException | None, branch: Branch | None = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            if branch:
+                self.checkout(repo, branch)
+                return
+            self.show_popup(
+                PopupType.ERROR,
+                error=(
+                    f"Couldn't find branch '{pr.head_ref}' in the pull request remote. "
+                    "A common reason is that the PR author deleted their branch or fork."
+                ),
+            )
+
+        self._run(work, done)
+
+    def _find_pull_request_branch(self, repo: Repository, pr: PullRequest) -> Branch | None:
+        remotes = get_remotes(repo.path)
+        remote = None
+        if pr.head_clone_url:
+            remote = next((r for r in remotes if url_matches_remote(pr.head_clone_url, r)), None)
+        if remote is None and pr.head_clone_url and pr.head_owner:
+            name = fork_pull_request_remote_name(pr.head_owner)
+            try:
+                add_remote(repo.path, name, pr.head_clone_url)
+            except GitError:
+                pass
+            remotes = get_remotes(repo.path)
+            remote = next((r for r in remotes if r.name == name), None)
         state = self.state_for(repo)
-        branch = next((b for b in state.branches if b.name == pr.head_ref or b.name.endswith("/" + pr.head_ref)), None)
-        if branch:
-            self.checkout(repo, branch)
-            return
-        open_external(pr.html_url)
+        branches = get_branches(repo.path) or state.branches
+        if remote is None:
+            return next((b for b in branches if b.name == pr.head_ref or b.name.endswith("/" + pr.head_ref)), None)
+        remote_ref = f"{remote.name}/{pr.head_ref}"
+        existing = next(
+            (b for b in branches if b.type == BranchType.LOCAL and b.upstream == remote_ref),
+            None,
+        )
+        if existing:
+            return existing
+        existing = next((b for b in branches if b.type == BranchType.REMOTE and b.name == remote_ref), None)
+        if existing is None:
+            try:
+                env = self.env_for_repo(repo, remote.url)
+                fetch(repo.path, remote.name, env=env)
+                branches = get_branches(repo.path)
+                existing = next((b for b in branches if b.type == BranchType.REMOTE and b.name == remote_ref), None)
+            except GitError as exc:
+                log.error("Failed fetching remote %s: %s", remote.name, exc)
+        if existing is None:
+            return None
+        default_names = {r.name for r in remotes if r.name in {"origin", "upstream"}}
+        is_fork_remote = remote.name not in default_names
+        if is_fork_remote:
+            local_name = f"pr/{pr.number}"
+            existing_local = next((b for b in branches if b.name == local_name and b.type == BranchType.LOCAL), None)
+            if existing_local:
+                return existing_local
+            try:
+                create_branch(repo.path, local_name, remote_ref)
+            except GitError:
+                branches = get_branches(repo.path)
+                return next((b for b in branches if b.name == local_name), existing)
+            return Branch(local_name, remote_ref, existing.tip_sha, BranchType.LOCAL, remote=remote.name, ref=f"refs/heads/{local_name}")
+        return existing
 
     def switch_to_pull_request(self, payload: dict[str, Any]) -> None:
         full_name = str(payload.get("repository") or payload.get("full_name") or "")
@@ -1535,32 +1691,50 @@ class AppStore:
             self.emit()
             return
         state.pr_commits = get_commits(repo.path, f"{base_name}..HEAD", limit=200)
-        if state.pr_commits:
+        latest = state.pr_commits[0].sha if state.pr_commits else (state.status.current_tip if state.status else "HEAD")
+        try:
+            changeset = get_branch_merge_base_changed_files(repo.path, base_name, current, latest)
+        except GitError:
+            changeset = None
+        if changeset is None and state.pr_commits:
             oldest = state.pr_commits[-1].sha
             newest = state.pr_commits[0].sha
             try:
-                state.pr_changeset = get_commit_range_changed_files(repo.path, oldest, newest)
+                changeset = get_commit_range_changed_files(repo.path, oldest, newest)
             except GitError:
-                state.pr_changeset = ChangesetData()
-            state.pr_files = list(state.pr_changeset.files)
-        else:
-            state.pr_changeset = ChangesetData()
-            state.pr_files = []
+                changeset = ChangesetData()
+        state.pr_changeset = changeset or ChangesetData()
+        state.pr_files = list(state.pr_changeset.files)
         self.emit()
 
     def load_pr_preview_diff(self, repo: Repository, file: CommittedFileChange) -> FileDiff | None:
         state = self.state_for(repo)
-        if not state.pr_commits:
-            return None
-        oldest = state.pr_commits[-1].sha
-        newest = state.pr_commits[0].sha
+        base_name = state.pr_base_branch or self.default_branch_name(repo) or "main"
+        current = state.status.current_branch if state.status else None
+        latest = state.pr_commits[0].sha if state.pr_commits else (state.status.current_tip if state.status else "HEAD")
         try:
-            diff = get_commit_range_diff(
-                repo.path, file.path, oldest, newest, file.status, state.hide_whitespace, state.diff_context
-            )
+            if current:
+                diff = get_branch_merge_base_diff(
+                    repo.path,
+                    file.path,
+                    base_name,
+                    current,
+                    file.status,
+                    state.hide_whitespace,
+                    state.diff_context,
+                    latest,
+                )
+            elif state.pr_commits:
+                oldest = state.pr_commits[-1].sha
+                newest = state.pr_commits[0].sha
+                diff = get_commit_range_diff(
+                    repo.path, file.path, oldest, newest, file.status, state.hide_whitespace, state.diff_context
+                )
+            else:
+                return None
         except GitError:
             return None
-        return self._prepare_text_diff(repo, file.path, diff, commitish=newest)
+        return self._prepare_text_diff(repo, file.path, diff, commitish=latest)
 
     def add_dropped_paths(self, paths: Sequence[str]) -> None:
         dirs = []
@@ -1767,7 +1941,12 @@ class AppStore:
     def resolve_conflict(self, repo: Repository, path: str, resolution: ManualConflictResolution) -> None:
         from .git.ops import stage_manual_resolution
 
-        stage_manual_resolution(repo.path, path, resolution)
+        state = self.state_for(repo)
+        file = next((f for f in (state.status.working_directory.files if state.status else []) if f.path == path), None)
+        if file is not None:
+            stage_manual_resolution(repo.path, file, resolution)
+        else:
+            stage_manual_resolution(repo.path, path, resolution)
         self.refresh_repository(repo)
 
     def set_include_all(self, repo: Repository, included: bool) -> None:
@@ -1836,7 +2015,7 @@ class AppStore:
         return prepared
 
     def discard_files(self, repo: Repository, files: Sequence[WorkingDirectoryFileChange]) -> None:
-        discard_paths(repo.path, [f.path for f in files])
+        discard_working_files(repo.path, files)
         self.refresh_repository(repo)
 
     def push_repo(self, repo: Repository, force: bool = False) -> None:
@@ -1886,14 +2065,22 @@ class AppStore:
             return
         env = self.env_for_repo(repo, remote.url)
 
-        def work() -> None:
+        def work() -> list[str]:
             pull(repo.path, remote.name, env=env, progress=self._network_progress_cb("pull", f"Pulling {remote.name}"))
+            try:
+                eligible = get_branches_differing_from_upstream(repo.path)
+                fast_forward_branches(repo.path, eligible)
+            except GitError as exc:
+                log.debug("Branch fast-forwarding failed: %s", exc)
+            return self._tags_to_push(repo, remote)
 
-        def done(exc: BaseException | None) -> None:
+        def done(exc: BaseException | None, tags: list[str] | None = None) -> None:
             self._clear_network_progress()
             if exc:
                 self._handle_remote_error(repo, exc)
             else:
+                if tags is not None:
+                    self.state_for(repo).local_tags_to_push = list(tags)
                 self.refresh_repository(repo)
             self.emit()
 
@@ -1906,18 +2093,53 @@ class AppStore:
             return
         env = self.env_for_repo(repo, remote.url)
 
-        def work() -> None:
+        def work() -> list[str]:
             fetch(repo.path, remote.name, env=env, progress=self._network_progress_cb("fetch", f"Fetching {remote.name}"))
+            try:
+                eligible = get_branches_differing_from_upstream(repo.path)
+                fast_forward_branches(repo.path, eligible)
+            except GitError as exc:
+                log.debug("Branch fast-forwarding failed: %s", exc)
+            self._prune_merged_branches(repo)
+            return self._tags_to_push(repo, remote)
 
-        def done(exc: BaseException | None) -> None:
+        def done(exc: BaseException | None, tags: list[str] | None = None) -> None:
             self._clear_network_progress()
             if exc:
                 self._handle_remote_error(repo, exc)
             else:
+                if tags is not None:
+                    self.state_for(repo).local_tags_to_push = list(tags)
                 self.refresh_repository(repo)
             self.emit()
 
         self._run(work, done)
+
+    def _tags_to_push(self, repo: Repository, remote: Remote) -> list[str]:
+        status = self.state_for(repo).status or get_status(repo.path)
+        if not status or not status.current_branch:
+            return []
+        try:
+            return fetch_tags_to_push(
+                repo.path, remote.name, status.current_branch, env=self.env_for_repo(repo, remote.url)
+            )
+        except GitError as exc:
+            log.debug("fetch tags to push failed: %s", exc)
+            return list(self.state_for(repo).local_tags_to_push)
+
+    def _prune_merged_branches(self, repo: Repository) -> None:
+        if not repo.github:
+            return
+        last = float(self.settings.last_prune_dates.get(repo.path) or 0)
+        if last and time.time() - last < 24 * 60 * 60:
+            return
+        self.settings.last_prune_dates[repo.path] = time.time()
+        self.persist_settings()
+        default = self.default_branch_name(repo) or "main"
+        try:
+            prune_merged_branches(repo.path, default, get_branches(repo.path))
+        except GitError as exc:
+            log.debug("merged branch prune failed: %s", exc)
 
     def _handle_remote_error(self, repo: Repository, exc: BaseException) -> None:
         if isinstance(exc, GitError):
@@ -1953,12 +2175,53 @@ class AppStore:
         if has_changes and strategy == UncommittedChangesStrategy.ASK_FOR_CONFIRMATION:
             self.show_popup(PopupType.STASH_AND_SWITCH_BRANCH, branch=branch.name)
             return
+        name = branch.name_without_remote if branch.type == BranchType.REMOTE else branch.name
         if has_changes and strategy == UncommittedChangesStrategy.STASH_ON_CURRENT_BRANCH:
             current = status.current_branch if status else "unknown"
-            stash_push(repo.path, current or "unknown")
-        name = branch.name_without_remote if branch.type == BranchType.REMOTE else branch.name
+            self.stash_and_drop_previous(repo, current or "unknown")
+        if has_changes and strategy == UncommittedChangesStrategy.MOVE_TO_NEW_BRANCH:
+            self.checkout_and_bring_changes(repo, branch)
+            return
         checkout_branch(repo.path, name)
         self.remember_branch(repo, name)
+        self.refresh_repository(repo)
+
+    def stash_and_drop_previous(self, repo: Repository, branch_name: str) -> bool:
+        previous = get_last_desktop_stash_entry_for_branch(repo.path, branch_name)
+        status = self.state_for(repo).status
+        untracked = [
+            f for f in (status.working_directory.files if status else []) if f.status.kind == AppFileStatusKind.UNTRACKED
+        ]
+        created = create_desktop_stash_entry(repo.path, branch_name, untracked_files=untracked)
+        if created and previous is not None:
+            drop_desktop_stash_entry(repo.path, previous.stash_sha)
+        return created
+
+    def checkout_and_bring_changes(self, repo: Repository, branch: Branch) -> None:
+        name = branch.name_without_remote if branch.type == BranchType.REMOTE else branch.name
+        try:
+            checkout_branch(repo.path, name)
+        except GitError as exc:
+            if not exc.is_local_changes_overwritten:
+                raise
+            current = self.state_for(repo).status.current_branch if self.state_for(repo).status else name
+            if not self.stash_and_drop_previous(repo, name):
+                self.show_popup(PopupType.LOCAL_CHANGES_OVERWRITTEN, files=[])
+                return
+            checkout_branch(repo.path, name)
+            entry = get_last_desktop_stash_entry_for_branch(repo.path, name)
+            if entry:
+                stash_pop(repo.path, entry.name)
+        self.remember_branch(repo, name)
+        self.refresh_repository(repo)
+
+    def rename_current_branch(self, repo: Repository, old: str, new: str) -> None:
+        new = sanitize_ref_name(new)
+        rename_branch(repo.path, old, new)
+        entry = get_last_desktop_stash_entry_for_branch(repo.path, old)
+        if entry:
+            move_stash_entry(repo.path, entry, new)
+        self.remember_branch(repo, new)
         self.refresh_repository(repo)
 
     def create_branch_and_checkout(self, repo: Repository, name: str, start_point: str | None = None) -> None:
@@ -2042,10 +2305,12 @@ class AppStore:
         def work() -> tuple:
             progress = self._multi_progress(on_progress)
             if kind == MultiCommitOperationKind.REBASE:
-                state = get_rebase_internal_state(repo.path)
-                commits = []
-                if state:
-                    commits = get_commits_between(repo.path, state.base_branch_tip, state.original_branch_tip) or []
+                state = get_rebase_snapshot(repo.path) or {}
+                commits = list(state.get("commits") or [])
+                if not commits:
+                    internal = get_rebase_internal_state(repo.path)
+                    if internal:
+                        commits = get_commits_between(repo.path, internal.base_branch_tip, internal.original_branch_tip) or []
                 return continue_rebase(repo.path, progress=progress, commits=commits), get_status(repo.path)
             if kind == MultiCommitOperationKind.CHERRY_PICK:
                 snapshot = get_cherry_pick_snapshot(repo.path)
@@ -2318,16 +2583,12 @@ class AppStore:
                 raise CopilotError("Sign in to GitHub to generate a commit message")
             state = self.state_for(repo)
             files = [f for f in (state.status.working_directory.files if state.status else []) if f.include]
-            diffs = []
-            for f in files[:20]:
-                try:
-                    diff = get_working_directory_diff(repo.path, f)
-                    if isinstance(diff, TextDiff):
-                        diffs.append(diff.text)
-                except GitError:
-                    pass
+            commitish = None
+            if state.commit_to_amend:
+                commitish = f"{state.commit_to_amend.sha}^"
+            diff_text = get_files_diff_text(repo.path, files, commitish)
             api = GitHubAPI.from_account(account)
-            return api.generate_commit_message("\n".join(diffs), [f.path for f in files])
+            return api.generate_commit_message(diff_text, [f.path for f in files])
 
         def done(exc: BaseException | None, result: tuple[str, str] | None = None) -> None:
             if exc:

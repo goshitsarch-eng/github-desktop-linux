@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .models import Account, GitHubRepository, html_url_from_endpoint
+from .models import Account, GitHubRepository, Remote, html_url_from_endpoint
 
 GITHUB_GIST = re.compile(r"gist\.github\.com", re.I)
 SSH_RE = re.compile(r"^(?:ssh://)?git@([^:]+):(.+?)(?:\.git)?$")
@@ -55,6 +55,21 @@ def account_for_remote(accounts: list[Account], url: str) -> Account | None:
         if parsed.hostname in ("github.com", "www.github.com") and account.is_dotcom:
             return account
     return None
+
+
+def url_matches_remote(url: str | None, remote: Remote) -> bool:
+    """Desktop `urlMatchesRemote`: same host/owner/name, ignoring protocol and `.git`."""
+    if not url:
+        return False
+    clone = parse_remote(url)
+    other = parse_remote(remote.url)
+    if clone is None or other is None:
+        return False
+    return (
+        clone.hostname.lower() == other.hostname.lower()
+        and clone.owner.lower() == other.owner.lower()
+        and clone.name.lower() == other.name.lower()
+    )
 
 
 def github_from_remote(url: str, endpoint: str) -> GitHubRepository | None:

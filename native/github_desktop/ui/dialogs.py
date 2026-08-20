@@ -55,6 +55,7 @@ def _alert(
     cancel: str | None = "Cancel",
     destructive: bool = False,
     on_confirm: Callable[[], None] | None = None,
+    on_cancel: Callable[[], None] | None = None,
 ) -> None:
     dialog = Adw.AlertDialog(heading=heading, body=body)
     if cancel:
@@ -71,9 +72,13 @@ def _alert(
         try:
             response = d.choose_finish(result)
         except Exception:
+            if on_cancel:
+                on_cancel()
             return
         if response == "ok" and on_confirm:
             on_confirm()
+        elif on_cancel:
+            on_cancel()
 
     dialog.choose(parent, None, done)
 
@@ -129,6 +134,7 @@ def _text_dialog(
     fields: list[tuple[str, str, str]],
     on_submit: Callable[[dict[str, str]], None],
     confirm: str = "Continue",
+    on_cancel: Callable[[], None] | None = None,
 ) -> None:
     dialog = Adw.Dialog()
     dialog.set_content_width(480)
@@ -136,7 +142,6 @@ def _text_dialog(
     header = Adw.HeaderBar()
     header.set_title_widget(Adw.WindowTitle(title=heading, subtitle=body))
     cancel = Gtk.Button(label="Cancel")
-    cancel.connect("clicked", lambda *_: dialog.close())
     ok = Gtk.Button(label=confirm)
     ok.add_css_class("suggested-action")
     header.pack_start(cancel)
@@ -148,19 +153,33 @@ def _text_dialog(
     box.set_margin_start(18)
     box.set_margin_end(18)
     entries: dict[str, Gtk.Entry] = {}
+    secrets = {"passphrase", "password"}
     for key, label, initial in fields:
-        row = Adw.EntryRow(title=label)
+        row = Adw.PasswordEntryRow(title=label) if key in secrets else Adw.EntryRow(title=label)
         row.set_text(initial)
         box.append(row)
         entries[key] = row
     toolbar.set_content(box)
     dialog.set_child(toolbar)
+    closed = {"done": False}
 
     def submit(*_args: Any) -> None:
+        if closed["done"]:
+            return
+        closed["done"] = True
         values = {k: e.get_text() for k, e in entries.items()}
         dialog.close()
         on_submit(values)
 
+    def cancel_clicked(*_args: Any) -> None:
+        if closed["done"]:
+            return
+        closed["done"] = True
+        dialog.close()
+        if on_cancel:
+            on_cancel()
+
+    cancel.connect("clicked", cancel_clicked)
     ok.connect("clicked", submit)
     dialog.present(parent)
 
@@ -278,9 +297,11 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         PopupType.ADD_SSH_HOST: lambda: _alert(
             parent,
             f"Unknown SSH host {payload.get('host', '')}",
-            f"Fingerprint: {payload.get('fingerprint', '')}",
+            f"The authenticity of host {payload.get('host', '')} ({payload.get('ip', '')}) can't be established.\n"
+            f"{payload.get('key_type', '')} key fingerprint is {payload.get('fingerprint', '')}.",
             confirm="Trust",
             on_confirm=lambda: payload.get("on_submit") and payload["on_submit"](True),
+            on_cancel=lambda: payload.get("on_submit") and payload["on_submit"](False),
         ),
         PopupType.SSH_KEY_PASSPHRASE: lambda: show_ssh_passphrase(parent, payload),
         PopupType.SSH_USER_PASSWORD: lambda: show_ssh_password(parent, payload),
@@ -305,14 +326,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
             confirm="Publish",
             on_confirm=lambda: repo and store.push_repo(repo),
         ),
-        PopupType.DELETE_PULL_REQUEST: lambda: _alert(
-            parent,
-            "Delete branch?",
-            "This branch has an open pull request.",
-            destructive=True,
-            confirm="Delete",
-            on_confirm=lambda: _delete_current_branch(store),
-        ),
+        PopupType.DELETE_PULL_REQUEST: lambda: show_delete_pull_request(parent, store, payload),
         PopupType.LOCAL_CHANGES_OVERWRITTEN: lambda: _alert(
             parent,
             "Local changes would be overwritten",
@@ -590,17 +604,13 @@ def _overwrite_stash(store: AppStore, payload: dict[str, Any]) -> None:
     repo = store.selected_repository
     if not repo:
         return
-    from ..git.ops import stash_drop, stash_push
+    from ..git.ops import checkout_branch
 
     state = store.state_for(repo)
-    if state.stashes:
-        stash_drop(repo.path, state.stashes[0].name)
     branch = state.status.current_branch if state.status else "unknown"
-    stash_push(repo.path, branch or "unknown")
+    store.stash_and_drop_previous(repo, branch or "unknown")
     target = payload.get("branch")
     if target:
-        from ..git.ops import checkout_branch
-
         checkout_branch(repo.path, target)
     store.refresh_repository(repo)
 
@@ -1204,10 +1214,7 @@ def show_rename_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, A
     def submit(values: dict[str, str]) -> None:
         new = values.get("name", "").strip()
         if new and current:
-            from ..git.ops import rename_branch
-
-            rename_branch(repo.path, current, new)
-            store.refresh_repository(repo)
+            store.rename_current_branch(repo, current, new)
 
     _text_dialog(parent, "Rename branch", f"Rename {current}", [("name", "New name", current or "")], submit, "Rename")
 
@@ -1264,6 +1271,41 @@ def show_delete_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, A
 
     dialog.connect("response", done)
     dialog.present(parent)
+
+
+def show_delete_pull_request(parent: Gtk.Window, store: AppStore, payload: dict[str, Any] | None = None) -> None:
+    repo = store.selected_repository
+    if not repo:
+        return
+    state = store.state_for(repo)
+    pr = (payload or {}).get("pull_request") or state.current_pull_request
+    number = getattr(pr, "number", None) or (pr.get("number") if isinstance(pr, dict) else None)
+    html = getattr(pr, "html_url", None) or (pr.get("html_url") if isinstance(pr, dict) else None)
+    body = "This branch may have an open pull request associated with it."
+    if number:
+        body += (
+            f"\n\nIf #{number} has been merged, you can also go to GitHub to delete the remote branch."
+        )
+    dialog = Adw.AlertDialog(heading="Delete branch?", body=body)
+    dialog.add_response("cancel", "Cancel")
+    if html:
+        dialog.add_response("open", f"Open #{number}" if number else "Open pull request")
+    dialog.add_response("delete", "Delete")
+    dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+    dialog.set_default_response("cancel")
+
+    def done(d, result) -> None:
+        try:
+            response = d.choose_finish(result)
+        except Exception:
+            return
+        if response == "open" and html:
+            open_external(html)
+            return
+        if response == "delete":
+            _delete_current_branch(store)
+
+    dialog.choose(parent, None, done)
 
 
 def show_discard(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
@@ -1766,16 +1808,22 @@ def show_stash_switch(parent: Gtk.Window, store: AppStore, payload: dict[str, An
             response = d.choose_finish(result)
         except Exception:
             return
-        from ..git.ops import checkout_branch, stash_push
+        from ..git.ops import checkout_branch
 
         state = store.state_for(repo)
         current = state.status.current_branch if state.status else "unknown"
         if response == "stash":
-            stash_push(repo.path, current or "unknown")
+            store.stash_and_drop_previous(repo, current or "unknown")
             checkout_branch(repo.path, branch)
+            store.remember_branch(repo, branch)
+            store.refresh_repository(repo)
         elif response == "leave":
-            checkout_branch(repo.path, branch)
-        store.refresh_repository(repo)
+            from ..models import Branch, BranchType
+
+            target = next((b for b in state.branches if b.name == branch), None) or Branch(
+                branch, None, "", BranchType.LOCAL
+            )
+            store.checkout_and_bring_changes(repo, target)
 
     dialog.choose(parent, None, done)
 
@@ -2140,7 +2188,20 @@ def show_ssh_passphrase(parent: Gtk.Window, payload: dict[str, Any]) -> None:
         if cb:
             cb(values.get("passphrase") or None, True)
 
-    _text_dialog(parent, "SSH key passphrase", payload.get("key_path") or "", [("passphrase", "Passphrase", "")], submit, "Continue")
+    def cancel() -> None:
+        cb = payload.get("on_submit")
+        if cb:
+            cb(None, False)
+
+    _text_dialog(
+        parent,
+        "SSH key passphrase",
+        payload.get("key_path") or "",
+        [("passphrase", "Passphrase", "")],
+        submit,
+        "Continue",
+        on_cancel=cancel,
+    )
 
 
 def show_ssh_password(parent: Gtk.Window, payload: dict[str, Any]) -> None:
@@ -2149,7 +2210,20 @@ def show_ssh_password(parent: Gtk.Window, payload: dict[str, Any]) -> None:
         if cb:
             cb(values.get("password") or None, True)
 
-    _text_dialog(parent, "SSH password", payload.get("username") or "", [("password", "Password", "")], submit, "Continue")
+    def cancel() -> None:
+        cb = payload.get("on_submit")
+        if cb:
+            cb(None, False)
+
+    _text_dialog(
+        parent,
+        "SSH password",
+        payload.get("username") or "",
+        [("password", "Password", "")],
+        submit,
+        "Continue",
+        on_cancel=cancel,
+    )
 
 
 def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:

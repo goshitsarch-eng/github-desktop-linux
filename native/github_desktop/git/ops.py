@@ -12,8 +12,10 @@ from ..errors import GitError, NotARepositoryError
 from ..logging import get_logger
 from ..models import (
     DESKTOP_STASH_MARKER,
+    FORKED_REMOTE_PREFIX,
     IMAGE_EXTENSIONS,
     MAX_REASONABLE_DIFF_SIZE,
+    RESERVED_BRANCH_REFS,
     AppFileStatusKind,
     AheadBehind,
     Author,
@@ -35,12 +37,15 @@ from ..models import (
     DiffType,
     FileDiff,
     FileStatus,
+    GitStatusEntry,
     IStatusResult,
     ImageDiff,
+    IndexStatus,
     LargeTextDiff,
     ManualConflictResolution,
     MergeResult,
     MergeTreeResult,
+    PullRequest,
     RebaseInternalState,
     RebaseResult,
     Remote,
@@ -49,9 +54,11 @@ from ..models import (
     SubmoduleDiff,
     SubmoduleStatus,
     TextDiff,
+    TrackingBranch,
     UnrenderableDiff,
     WorkingDirectoryFileChange,
     WorkingDirectoryStatus,
+    format_as_local_ref,
 )
 from .diff import (
     format_discard_patch,
@@ -132,7 +139,10 @@ def get_status(repo_path: str, include_untracked: bool = True) -> IStatusResult 
             files.pop(entry.path, None)
         status = convert_to_app_status(entry)
         if status.kind == AppFileStatusKind.CONFLICTED:
-            status.conflict_marker_count = marker_counts.get(entry.path, 0)
+            if entry.status_code in {"UU", "AA"} or entry.path in marker_counts:
+                status.conflict_marker_count = marker_counts.get(entry.path, 0)
+            else:
+                status.conflict_marker_count = None
         initial = DiffSelectionType.ALL
         if (
             status.kind == AppFileStatusKind.MODIFIED
@@ -186,7 +196,10 @@ def _conflict_marker_count(repo: str, path: str) -> int:
 
 
 def get_rebase_internal_state(repo_path: str) -> RebaseInternalState | None:
-    git_dir = os.path.join(repo_path, ".git")
+    try:
+        git_dir = _git_dir(repo_path)
+    except GitError:
+        git_dir = os.path.join(repo_path, ".git")
     rebase_merge = os.path.join(git_dir, "rebase-merge")
     rebase_apply = os.path.join(git_dir, "rebase-apply")
     directory = rebase_merge if os.path.isdir(rebase_merge) else (
@@ -209,6 +222,54 @@ def get_rebase_internal_state(repo_path: str) -> RebaseInternalState | None:
     if not head_name:
         return None
     return RebaseInternalState(head_name, onto, orig)
+
+
+def get_rebase_snapshot(repo: str) -> dict[str, object] | None:
+    """Desktop `getRebaseSnapshot`: msgnum/end progress plus commits being replayed."""
+    try:
+        git_dir = _git_dir(repo)
+    except GitError:
+        git_dir = os.path.join(repo, ".git")
+    rebase_head = os.path.join(git_dir, "REBASE_HEAD")
+    if not os.path.exists(rebase_head):
+        if get_rebase_internal_state(repo) is None:
+            return None
+    directory = os.path.join(git_dir, "rebase-merge")
+    if not os.path.isdir(directory):
+        directory = os.path.join(git_dir, "rebase-apply")
+    if not os.path.isdir(directory):
+        return None
+
+    def read(name: str) -> str | None:
+        try:
+            return Path(os.path.join(directory, name)).read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+
+    next_text = read("msgnum") or read("next") or ""
+    last_text = read("end") or read("last") or ""
+    try:
+        next_n = int(next_text)
+        last_n = int(last_text)
+    except ValueError:
+        return None
+    original = read("orig-head")
+    onto = read("onto")
+    if next_n <= 0 or last_n <= 0 or not original or not onto:
+        return None
+    commits = get_commits_between(repo, onto, original)
+    if not commits:
+        return None
+    index = next_n - 1
+    summary = commits[index].summary if 0 <= index < len(commits) else ""
+    return {
+        "commits": commits,
+        "position": next_n,
+        "total": last_n,
+        "value": format_rebase_value(next_n / last_n),
+        "current_commit_summary": summary,
+        "progress": MultiCommitProgress(next_n, last_n, summary, format_rebase_value(next_n / last_n)),
+    }
 
 
 def is_binary_path(repo: str, path: str) -> bool:
@@ -519,10 +580,36 @@ def create_merge_commit(repo: str, files: Sequence[WorkingDirectoryFileChange], 
     return _parse_commit_sha(result, repo)
 
 
-def stage_manual_resolution(repo: str, path: str, resolution: ManualConflictResolution) -> None:
-    checkout_arg = "--ours" if resolution == ManualConflictResolution.OURS else "--theirs"
-    git(["checkout", checkout_arg, "--", path], repo, name="checkoutConflict")
-    git(["add", "--", path], repo, name="addResolved")
+def stage_manual_resolution(
+    repo: str,
+    path: str | WorkingDirectoryFileChange,
+    resolution: ManualConflictResolution,
+    status: FileStatus | None = None,
+) -> None:
+    """Desktop `stageManualConflictResolution` including add/delete sides."""
+    file: WorkingDirectoryFileChange | None = path if isinstance(path, WorkingDirectoryFileChange) else None
+    file_path = file.path if file else str(path)
+    file_status = status or (file.status if file else None)
+    chosen: GitStatusEntry | None = None
+    added_in_both = False
+    if file_status is not None:
+        chosen = file_status.them if resolution == ManualConflictResolution.THEIRS else file_status.us
+        added_in_both = file_status.us == GitStatusEntry.ADDED and file_status.them == GitStatusEntry.ADDED
+        if (
+            file_status.has_conflict_markers
+            and file_status.conflict_marker_count == 0
+        ):
+            return
+    if chosen in (GitStatusEntry.UPDATED_BUT_UNMERGED, None) or added_in_both:
+        checkout_arg = "--ours" if resolution == ManualConflictResolution.OURS else "--theirs"
+        git(["checkout", checkout_arg, "--", file_path], repo, name="checkoutConflictedFile")
+        if chosen is None and not added_in_both:
+            git(["add", "--", file_path], repo, name="addResolved")
+            return
+    if chosen == GitStatusEntry.DELETED:
+        git(["rm", "--", file_path], repo, name="removeConflictedFile")
+        return
+    git(["add", "--", file_path], repo, name="addConflictedFile")
 
 
 def _parse_commit_sha(result: GitResult, repo: str | None = None) -> str:
@@ -1022,6 +1109,79 @@ def fetch_refspec(
     )
 
 
+def get_branches_differing_from_upstream(repo: str) -> list[TrackingBranch]:
+    """Local branches whose tip SHA differs from their upstream (excludes HEAD)."""
+    fmt = "%(refname)%00%(objectname)%00%(upstream)%00%(symref)%00%(HEAD)"
+    result = git(
+        ["for-each-ref", f"--format={fmt}", "refs/heads", "refs/remotes"],
+        repo,
+        success_exit_codes={0, 128},
+        name="getBranchesDifferingFromUpstream",
+    )
+    if result.exit_code != 0:
+        return []
+    local: list[tuple[str, str, str]] = []
+    remote_shas: dict[str, str] = {}
+    for record in result.stdout.split("\n"):
+        parts = record.split("\0")
+        if len(parts) < 5:
+            continue
+        full, sha, upstream, symref, head = parts[:5]
+        if not full or symref or head == "*":
+            continue
+        if full.startswith("refs/heads/"):
+            if upstream:
+                local.append((full, sha, upstream))
+        else:
+            remote_shas[full] = sha
+    eligible: list[TrackingBranch] = []
+    for ref, sha, upstream in local:
+        remote_sha = remote_shas.get(upstream)
+        if remote_sha and remote_sha != sha:
+            eligible.append(TrackingBranch(ref=ref, sha=sha, upstream_ref=upstream, upstream_sha=remote_sha))
+    return eligible
+
+
+def fast_forward_branches(repo: str, branches: Sequence[TrackingBranch]) -> None:
+    """Desktop `fastForwardBranches`: `git fetch . --stdin` with upstream:local pairs."""
+    if not branches:
+        return
+    stdin = "\n".join(f"{b.upstream_ref}:{b.ref}" for b in branches)
+    git(
+        ["fetch", ".", "--show-forced-updates", "--no-write-fetch-head", "--stdin"],
+        repo,
+        stdin=stdin,
+        success_exit_codes={0, 1},
+        env={"GIT_REFLOG_ACTION": "pull"},
+        name="fastForwardBranches",
+    )
+
+
+def fetch_tags_to_push(repo: str, remote: str, branch_name: str, *, env: dict[str, str] | None = None) -> list[str]:
+    """Dry-run `git push --follow-tags --porcelain` and collect `[new tag]` lines."""
+    result = git(
+        ["push", remote, branch_name, "--follow-tags", "--dry-run", "--no-verify", "--porcelain"],
+        repo,
+        env=env,
+        success_exit_codes={0, 1, 128},
+        timeout=45,
+        name="fetchTagsToPush",
+    )
+    if result.exit_code not in {0, 1}:
+        return []
+    tags: list[str] = []
+    lines = result.stdout.splitlines()
+    for line in lines[1:]:
+        if line == "Done":
+            break
+        parts = line.split("\t")
+        if len(parts) >= 3 and parts[0] == "*" and parts[2] == "[new tag]":
+            tag = parts[1].split(":", 1)[0].replace("refs/tags/", "", 1)
+            if tag:
+                tags.append(tag)
+    return tags
+
+
 def pull(
     repo: str,
     remote: str = "origin",
@@ -1300,6 +1460,8 @@ def discard_changes_from_selection(
     patch = format_discard_patch(file_path, diff, selection.is_selected)
     if not patch:
         return
+    if not check_patch(repo, patch):
+        raise GitError("Patch does not apply", args=["apply", "--check"], git_error="PatchDoesNotApply")
     git(
         ["apply", "--unidiff-zero", "--whitespace=nowarn", "-"],
         repo,
@@ -1308,24 +1470,71 @@ def discard_changes_from_selection(
     )
 
 
-def discard_paths(repo: str, paths: Sequence[str]) -> None:
+def check_patch(repo: str, patch: str) -> bool:
+    """Desktop `checkPatch`: `git apply --check`."""
+    result = git(
+        ["apply", "--check", "-"],
+        repo,
+        stdin=patch,
+        success_exit_codes={0, 1},
+        name="checkPatch",
+    )
+    return result.exit_code == 0
+
+
+def get_index_changes(repo: str) -> dict[str, IndexStatus]:
+    """Desktop `getIndexChanges`: cached index vs HEAD, no rename detection."""
+    args = ["diff-index", "--cached", "--name-status", "--no-renames", "-z"]
+    result = git([*args, "HEAD", "--"], repo, success_exit_codes={0, 128}, name="getIndexChanges")
+    if result.exit_code == 128:
+        result = git([*args, NULL_TREE_SHA], repo, name="getIndexChanges")
+    mapping = {
+        "A": IndexStatus.ADDED,
+        "D": IndexStatus.DELETED,
+        "M": IndexStatus.MODIFIED,
+        "T": IndexStatus.TYPE_CHANGED,
+        "U": IndexStatus.UNMERGED,
+        "X": IndexStatus.UNKNOWN,
+    }
+    out: dict[str, IndexStatus] = {}
+    pieces = result.stdout.split("\0")
+    for i in range(0, len(pieces) - 1, 2):
+        status, path = pieces[i], pieces[i + 1]
+        if not path:
+            continue
+        out[path] = mapping.get(status[:1], IndexStatus.UNKNOWN)
+    return out
+
+
+def reset_paths(repo: str, ref: str, paths: Sequence[str], mode: str = "mixed") -> None:
     if not paths:
         return
-    tracked = []
-    untracked = []
-    for path in paths:
-        full = os.path.join(repo, path)
-        # If the file is untracked, delete it
-        result = git(["ls-files", "--", path], repo, name="lsFiles")
-        if result.stdout.strip():
-            tracked.append(path)
-        else:
-            untracked.append(path)
-    if tracked:
-        git(["checkout", "--", *tracked], repo, name="discardTracked")
-        git(["clean", "-f", "--", *tracked], repo, success_exit_codes={0, 1}, name="cleanTracked")
-    for path in untracked:
-        full = os.path.join(repo, path)
+    git(["reset", f"--{mode}", ref, "--", *paths], repo, name="resetPaths")
+
+
+def checkout_index(repo: str, paths: Sequence[str]) -> None:
+    if not paths:
+        return
+    git(
+        ["checkout-index", "-f", "-u", "-q", "--stdin", "-z"],
+        repo,
+        stdin="\0".join(paths),
+        success_exit_codes={0, 1},
+        name="checkoutIndex",
+    )
+
+
+def discard_working_files(repo: str, files: Sequence[WorkingDirectoryFileChange]) -> None:
+    """Desktop `discardChanges`: reset index paths, then checkout-index."""
+    if not files:
+        return
+    submodules = set(get_submodules(repo))
+    paths_to_checkout: list[str] = []
+    paths_to_reset: list[str] = []
+    untracked: list[str] = []
+
+    def remove_wt(rel: str) -> None:
+        full = os.path.join(repo, rel)
         try:
             if os.path.isdir(full) and not os.path.islink(full):
                 import shutil
@@ -1334,19 +1543,90 @@ def discard_paths(repo: str, paths: Sequence[str]) -> None:
             elif os.path.exists(full):
                 os.remove(full)
         except OSError as exc:
-            log.warning("Failed to discard %s: %s", path, exc)
+            log.warning("Failed to discard %s: %s", rel, exc)
+
+    for file in files:
+        if file.status.kind == AppFileStatusKind.UNTRACKED:
+            untracked.append(file.path)
+            continue
+        if file.status.kind != AppFileStatusKind.DELETED and file.path not in submodules:
+            remove_wt(file.path)
+        if file.status.kind in (AppFileStatusKind.COPIED, AppFileStatusKind.RENAMED) and file.status.old_path:
+            paths_to_reset.append(file.path)
+            paths_to_checkout.append(file.status.old_path)
+            paths_to_reset.append(file.status.old_path)
+        else:
+            paths_to_checkout.append(file.path)
+            paths_to_reset.append(file.path)
+    for path in untracked:
+        remove_wt(path)
+    changed = get_index_changes(repo)
+    necessary_reset = [p for p in paths_to_reset if p in changed]
+    submodule_paths = [p for p in paths_to_checkout if p in submodules]
+    necessary_checkout = [
+        p
+        for p in paths_to_checkout
+        if p not in submodule_paths or changed.get(p) != IndexStatus.ADDED
+    ]
+    if necessary_reset:
+        reset_paths(repo, "HEAD", necessary_reset)
+    checkout_index(repo, necessary_checkout)
+
+
+def discard_paths(repo: str, paths: Sequence[str]) -> None:
+    if not paths:
+        return
+    tracked = []
+    untracked = []
+    for path in paths:
+        result = git(["ls-files", "--", path], repo, name="lsFiles")
+        if result.stdout.strip():
+            tracked.append(path)
+        else:
+            untracked.append(path)
+    files: list[WorkingDirectoryFileChange] = []
+    for path in tracked:
+        files.append(
+            WorkingDirectoryFileChange(path, FileStatus(kind=AppFileStatusKind.MODIFIED))
+        )
+    for path in untracked:
+        files.append(
+            WorkingDirectoryFileChange(path, FileStatus(kind=AppFileStatusKind.UNTRACKED))
+        )
+    discard_working_files(repo, files)
 
 
 def stash_push(repo: str, branch_name: str, paths: Sequence[str] | None = None) -> None:
+    create_desktop_stash_entry(repo, branch_name, paths=paths)
+
+
+def create_desktop_stash_entry(
+    repo: str,
+    branch_name: str,
+    untracked_files: Sequence[WorkingDirectoryFileChange] = (),
+    paths: Sequence[str] | None = None,
+) -> bool:
+    """Desktop `createDesktopStashEntry`: stage untracked files, then stash push."""
+    if untracked_files:
+        fully = [f.with_include(True) if hasattr(f, "with_include") else f for f in untracked_files]
+        update_index(repo, [f.path for f in fully])
     message = f"{DESKTOP_STASH_MARKER}<{branch_name}>"
     args = ["stash", "push", "-m", message]
     if paths:
         args += ["--"] + list(paths)
-    git(args, repo, name="stashPush")
+    try:
+        result = git(args, repo, success_exit_codes={0, 1}, name="createStashEntry")
+    except GitError:
+        raise
+    if result.exit_code == 1 and re.search(r"^error: ", result.stderr, re.M):
+        raise GitError(result.stderr or "stash failed", args=args, exit_code=1, stderr=result.stderr, stdout=result.stdout)
+    if result.stdout.strip() == "No local changes to save":
+        return False
+    return True
 
 
 def stash_pop(repo: str, stash_ref: str = "stash@{0}") -> None:
-    git(["stash", "pop", "--", stash_ref] if False else ["stash", "pop", stash_ref], repo, name="stashPop")
+    git(["stash", "pop", stash_ref], repo, name="stashPop")
 
 
 def stash_drop(repo: str, stash_ref: str) -> None:
@@ -1387,6 +1667,34 @@ def get_stashes(repo: str) -> tuple[list[StashEntry], int]:
                 )
             )
     return entries, total
+
+
+def get_last_desktop_stash_entry_for_branch(repo: str, branch: str) -> StashEntry | None:
+    entries, _total = get_stashes(repo)
+    return next((entry for entry in entries if entry.branch_name == branch), None)
+
+
+def drop_desktop_stash_entry(repo: str, stash_sha: str) -> None:
+    entries, _total = get_stashes(repo)
+    match = next((entry for entry in entries if entry.stash_sha == stash_sha), None)
+    if match:
+        stash_drop(repo, match.name)
+
+
+def move_stash_entry(repo: str, entry: StashEntry, branch_name: str) -> None:
+    """Desktop `moveStashEntry`: commit-tree + stash store, then drop the old entry."""
+    message = f"On {branch_name}: {DESKTOP_STASH_MARKER}<{branch_name}>"
+    parent_args: list[str] = []
+    for parent in entry.parents:
+        parent_args += ["-p", parent]
+    result = git(
+        ["commit-tree", *parent_args, "-m", message, "--no-gpg-sign", entry.tree],
+        repo,
+        name="moveStashEntryToBranch",
+    )
+    commit_id = result.stdout.strip()
+    git(["stash", "store", "-m", message, commit_id], repo, name="moveStashEntryToBranch")
+    drop_desktop_stash_entry(repo, entry.stash_sha)
 
 
 def create_tag(repo: str, name: str, sha: str) -> None:
@@ -1899,6 +2207,204 @@ def get_merge_base(repo: str, a: str, b: str) -> str | None:
     result = git(["merge-base", a, b], repo, success_exit_codes={0, 1, 128}, name="mergeBase")
     sha = result.stdout.strip()
     return sha or None
+
+
+def get_branch_merge_base_changed_files(
+    repo: str,
+    base_branch: str,
+    comparison_branch: str,
+    latest_sha: str,
+) -> ChangesetData | None:
+    """Desktop `getBranchMergeBaseChangedFiles`."""
+    merge_base = get_merge_base(repo, base_branch, comparison_branch)
+    if not merge_base:
+        return None
+    result = git(
+        ["diff", "--merge-base", base_branch, comparison_branch, "-C", "-M", "-z", "--name-status", "--"],
+        repo,
+        success_exit_codes={0, 1, 128},
+        name="getBranchMergeBaseChangedFiles",
+    )
+    if result.exit_code == 128:
+        return None
+    files = _parse_name_status_z(result.stdout, latest_sha, merge_base)
+    added, deleted = _numstat_totals(repo, ["--merge-base", base_branch, comparison_branch])
+    return ChangesetData(files=files, lines_added=added, lines_deleted=deleted)
+
+
+def get_branch_merge_base_diff(
+    repo: str,
+    path: str,
+    base_branch: str,
+    comparison_branch: str,
+    status: FileStatus | None = None,
+    hide_whitespace: bool = False,
+    context_lines: int | None = None,
+    latest_sha: str | None = None,
+) -> FileDiff:
+    """Desktop `getBranchMergeBaseDiff`."""
+    args = ["diff", "--merge-base", base_branch, comparison_branch]
+    if hide_whitespace:
+        args.append("-w")
+    args += ["--patch", "--no-color", "--no-ext-diff"]
+    if context_lines is not None:
+        args.append(f"-U{int(context_lines)}")
+    args += ["--", path]
+    if status and status.old_path:
+        args.append(status.old_path)
+    result = git(args, repo, success_exit_codes={0, 1, 128}, name="getBranchMergeBaseDiff")
+    commitish = latest_sha or comparison_branch
+    return _diff_from_result(repo, path, status or FileStatus(AppFileStatusKind.MODIFIED), result, commitish)
+
+
+def get_files_diff_text(
+    repo: str,
+    files: Sequence[WorkingDirectoryFileChange],
+    commitish: str | None = None,
+) -> str:
+    """Desktop `getFilesDiffText`: stage selected files, then `git diff --staged`."""
+    unstage_all(repo)
+    stage_files(repo, files)
+    args = ["diff", "--no-ext-diff", "--patch-with-raw", "--no-color", "--staged"]
+    if commitish:
+        args.append(commitish)
+    try:
+        result = git(args, repo, name="getFilesDiffText", binary=True)
+    finally:
+        unstage_all(repo)
+    data = result.stdout_bytes or result.stdout.encode("utf-8", errors="replace")
+    if len(data) > 10 * 1024 * 1024:
+        raise GitError("Diff is too large to render", args=args)
+    return data.decode("utf-8", errors="replace")
+
+
+def get_authors(repo: str, shas: Sequence[str]) -> list[CommitIdentity]:
+    if not shas:
+        return []
+    result = git(
+        ["log", "--format=format:%an <%ae> %ad", "--no-walk=unsorted", "--date=raw", "-z", "--stdin"],
+        repo,
+        stdin="\n".join(shas),
+        name="getAuthors",
+    )
+    authors = [CommitIdentity.parse_raw(chunk) for chunk in result.stdout.split("\0") if chunk.strip()]
+    return authors
+
+
+def get_branches_pointed_at(repo: str, commitish: str) -> list[str] | None:
+    result = git(
+        ["branch", f"--points-at={commitish}", "--format=%(refname:short)"],
+        repo,
+        success_exit_codes={0, 1, 129},
+        name="branchPointedAt",
+    )
+    if result.exit_code in {1, 129}:
+        return None
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def get_merged_branches(repo: str, branch_name: str) -> dict[str, str]:
+    canonical = format_as_local_ref(branch_name)
+    fmt = "%(objectname)%00%(refname)"
+    result = git(
+        ["branch", f"--format={fmt}", "--merged", branch_name],
+        repo,
+        name="mergedBranches",
+    )
+    merged: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        sha, _, ref = line.partition("\0")
+        if ref and ref != canonical:
+            merged[ref] = sha
+    return merged
+
+
+def get_symbolic_ref(repo: str, ref: str) -> str | None:
+    result = git(
+        ["symbolic-ref", "-q", ref],
+        repo,
+        success_exit_codes={0, 1, 128},
+        name="getSymbolicRef",
+    )
+    if result.exit_code in {1, 128}:
+        return None
+    return result.stdout.strip() or None
+
+
+def find_forked_remotes_to_prune(
+    remotes: Sequence[Remote],
+    open_prs: Sequence[PullRequest],
+    branches: Sequence[Branch],
+) -> list[Remote]:
+    pr_urls = {pr.head_clone_url for pr in open_prs if pr.head_clone_url}
+    branch_remotes = {b.upstream_remote_name for b in branches if b.upstream_remote_name}
+    return [
+        remote
+        for remote in remotes
+        if remote.name.startswith(FORKED_REMOTE_PREFIX)
+        and remote.url not in pr_urls
+        and remote.name not in branch_remotes
+    ]
+
+
+def prune_forked_remotes(
+    repo: str,
+    open_prs: Sequence[PullRequest],
+    branches: Sequence[Branch] | None = None,
+) -> list[str]:
+    remotes = get_remotes(repo)
+    all_branches = list(branches) if branches is not None else get_branches(repo)
+    removed: list[str] = []
+    for remote in find_forked_remotes_to_prune(remotes, open_prs, all_branches):
+        try:
+            remove_remote(repo, remote.name)
+            removed.append(remote.name)
+        except GitError as exc:
+            log.debug("Failed to prune fork remote %s: %s", remote.name, exc)
+    return removed
+
+
+def prune_merged_branches(
+    repo: str,
+    default_branch: str,
+    branches: Sequence[Branch],
+    *,
+    delete: bool = True,
+) -> list[str]:
+    """Desktop BranchPruner: delete merged local branches whose upstream is gone."""
+    from datetime import datetime, timedelta, timezone
+
+    merged = get_merged_branches(repo, default_branch)
+    current = get_symbolic_ref(repo, "HEAD")
+    if current:
+        merged.pop(current, None)
+    two_weeks = datetime.now(timezone.utc) - timedelta(days=14)
+    recent = {format_as_local_ref(name) for name in get_branch_checkouts(repo, two_weeks)}
+    remote_local_refs = {format_as_local_ref(b.name) for b in get_branches(repo, "refs/remotes/")}
+    ready: list[str] = []
+    for ref in merged:
+        if ref in RESERVED_BRANCH_REFS or ref in recent:
+            continue
+        branch = next((b for b in branches if format_as_local_ref(b.name) == ref), None)
+        if branch is None or not branch.upstream:
+            continue
+        if format_as_local_ref(branch.upstream) in remote_local_refs:
+            continue
+        ready.append(ref)
+    deleted: list[str] = []
+    for ref in ready:
+        if not ref.startswith("refs/heads/"):
+            continue
+        name = ref[len("refs/heads/") :]
+        if delete:
+            try:
+                delete_local_branch(repo, name)
+                deleted.append(name)
+            except GitError as exc:
+                log.debug("Failed to prune merged branch %s: %s", name, exc)
+        else:
+            deleted.append(name)
+    return deleted
 
 
 def rev_range(from_ref: str, to_ref: str) -> str:

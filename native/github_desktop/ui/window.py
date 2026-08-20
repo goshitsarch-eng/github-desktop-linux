@@ -179,7 +179,7 @@ class MainWindow(Adw.ApplicationWindow):
         add("repository-settings", lambda: self.store.show_popup(PopupType.REPOSITORY_SETTINGS))
         add("create-branch", lambda: self.store.show_popup(PopupType.CREATE_BRANCH))
         add("rename-branch", lambda: self.store.show_popup(PopupType.RENAME_BRANCH))
-        add("delete-branch", lambda: self.store.show_popup(PopupType.DELETE_BRANCH))
+        add("delete-branch", self._delete_branch)
         add("discard-all", lambda: self.store.show_popup(PopupType.CONFIRM_DISCARD_CHANGES))
         add("stash-all", self._stash_all)
         add("merge-branch", lambda: self.store.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind="Merge"))
@@ -269,6 +269,28 @@ class MainWindow(Adw.ApplicationWindow):
         if repo:
             fn(repo)
 
+    def _delete_branch(self) -> None:
+        repo = self.store.selected_repository
+        if not repo:
+            return
+        state = self.store.state_for(repo)
+        if state.current_pull_request:
+            self.store.show_popup(PopupType.DELETE_PULL_REQUEST, pull_request=state.current_pull_request)
+            return
+        self.store.show_popup(PopupType.DELETE_BRANCH)
+
+    def _delete_named_branch(self, branch) -> None:
+        repo = self.store.selected_repository
+        name = branch.name_without_remote if branch.type == BranchType.REMOTE else branch.name
+        if repo:
+            state = self.store.state_for(repo)
+            pr = next((p for p in state.pull_requests if p.head_ref == name), state.current_pull_request if state.status and state.status.current_branch == name else None)
+            if pr and branch.type != BranchType.REMOTE:
+                self.store.show_popup(PopupType.DELETE_PULL_REQUEST, pull_request=pr, branch=name)
+                return
+        popup = PopupType.DELETE_REMOTE_BRANCH if branch.type == BranchType.REMOTE else PopupType.DELETE_BRANCH
+        self.store.show_popup(popup, branch=name)
+
     def _show_logs(self) -> None:
         from ..paths import log_dir
 
@@ -278,10 +300,8 @@ class MainWindow(Adw.ApplicationWindow):
         repo = self.store.selected_repository
         if not repo:
             return
-        from ..git.ops import stash_push
-
         state = self.store.state_for(repo)
-        stash_push(repo.path, state.status.current_branch if state.status else "unknown")
+        self.store.stash_and_drop_previous(repo, state.status.current_branch if state.status else "unknown")
         self.store.refresh_repository(repo)
 
     def _toggle_stash(self) -> None:
@@ -433,10 +453,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_checkout=lambda b: self._repo_op(lambda r: self.store.checkout(r, b)),
             on_create=lambda: self.store.show_popup(PopupType.CREATE_BRANCH),
             on_rename=lambda b: self.store.show_popup(PopupType.RENAME_BRANCH, branch=b.name),
-            on_delete=lambda b: self.store.show_popup(
-                PopupType.DELETE_REMOTE_BRANCH if b.type == BranchType.REMOTE else PopupType.DELETE_BRANCH,
-                branch=b.name_without_remote if b.type == BranchType.REMOTE else b.name,
-            ),
+            on_delete=lambda b: self._delete_named_branch(b),
             on_merge=lambda b: self._repo_op(lambda r: self.store.merge_branch(r, b.name)),
             on_pr=lambda pr: self._repo_op(lambda r: self.store.checkout_pull_request(r, pr)),
             on_view_github=lambda b: self._repo_op(lambda r: self.store.view_branch_on_github(r, b.name)),
@@ -1007,7 +1024,14 @@ class MainWindow(Adw.ApplicationWindow):
         elif ab and ab.ahead and ab.behind:
             self._push_btn.set_label(f"Pull {ab.behind} / Push {ab.ahead}")
         elif ab and ab.ahead:
-            self._push_btn.set_label(f"Push {ab.ahead}")
+            extra = ""
+            tags = getattr(state, "local_tags_to_push", None) or []
+            if tags:
+                extra = f" and {len(tags)} tag" + ("s" if len(tags) != 1 else "")
+            self._push_btn.set_label(f"Push {ab.ahead}{extra}")
+        elif tags := (getattr(state, "local_tags_to_push", None) or []):
+            label = "1 tag" if len(tags) == 1 else f"{len(tags)} tags"
+            self._push_btn.set_label(f"Push {label}")
         elif ab and ab.behind:
             self._push_btn.set_label(f"Pull {ab.behind}")
         else:
@@ -1025,7 +1049,8 @@ class MainWindow(Adw.ApplicationWindow):
             self.store.fetch_repo(repo)
             return
         ab = status.branch_ahead_behind
-        if not status.current_upstream_branch or (ab and ab.ahead and not ab.behind):
+        tags = state.local_tags_to_push
+        if not status.current_upstream_branch or (ab and ab.ahead and not ab.behind) or (tags and not (ab and ab.behind)):
             self.store.push_repo(repo)
         elif ab and ab.behind:
             self.store.pull_repo(repo)

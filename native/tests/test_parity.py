@@ -71,6 +71,25 @@ REQUIRED_GIT_FUNCS = [
     "fetch_refspec",
     "get_binary_paths",
     "get_cherry_pick_snapshot",
+    "get_rebase_snapshot",
+    "get_last_desktop_stash_entry_for_branch",
+    "move_stash_entry",
+    "fetch_tags_to_push",
+    "fast_forward_branches",
+    "get_branches_differing_from_upstream",
+    "get_merged_branches",
+    "get_index_changes",
+    "check_patch",
+    "get_files_diff_text",
+    "get_branch_merge_base_diff",
+    "get_branch_merge_base_changed_files",
+    "get_branches_pointed_at",
+    "get_authors",
+    "get_symbolic_ref",
+    "prune_forked_remotes",
+    "find_forked_remotes_to_prune",
+    "create_desktop_stash_entry",
+    "discard_working_files",
 ]
 
 
@@ -150,6 +169,12 @@ def test_window_actions_cover_menus() -> None:
     src += open(custom_integration.__file__, encoding="utf-8").read()
     src += open(git_progress.__file__, encoding="utf-8").read()
     src += open(git_ops.__file__, encoding="utf-8").read()
+    from github_desktop.git import askpass as git_askpass
+    from github_desktop import store as store_mod, models as models_mod
+
+    src += open(git_askpass.__file__, encoding="utf-8").read()
+    src += open(store_mod.__file__, encoding="utf-8").read()
+    src += open(models_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -228,5 +253,10 @@ def test_window_actions_cover_menus() -> None:
         "Explore GitHub",
         "The branch also exists on the remote",
         "Yes, delete this branch on the remote",
+        "This branch may have an open pull request associated with it.",
+        "1 tag",
+        "github-desktop-",
+        "GIT_ASKPASS",
+        "The authenticity of host",
     ]:
         assert phrase in src

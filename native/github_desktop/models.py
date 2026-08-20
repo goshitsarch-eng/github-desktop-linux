@@ -30,6 +30,19 @@ class GitStatusEntry(StrEnum):
     UPDATED_BUT_UNMERGED = "U"
 
 
+class IndexStatus(IntEnum):
+    """Statuses from `git diff-index --cached --name-status --no-renames`."""
+
+    UNKNOWN = 0
+    ADDED = 1
+    COPIED = 2
+    DELETED = 3
+    MODIFIED = 4
+    RENAMED = 5
+    TYPE_CHANGED = 6
+    UNMERGED = 7
+
+
 class UnmergedEntrySummary(StrEnum):
     BOTH_ADDED = "BothAdded"
     BOTH_MODIFIED = "BothModified"
@@ -794,6 +807,56 @@ class Branch:
     @property
     def is_local(self) -> bool:
         return self.type == BranchType.LOCAL
+
+    @property
+    def upstream_remote_name(self) -> str | None:
+        if self.upstream and "/" in self.upstream:
+            return self.upstream.split("/", 1)[0]
+        return self.remote if self.type == BranchType.REMOTE else None
+
+    @property
+    def is_desktop_fork_remote_branch(self) -> bool:
+        return self.name.startswith(FORKED_REMOTE_PREFIX)
+
+
+@dataclass
+class TrackingBranch:
+    """Local branch whose tip differs from its upstream (Desktop ITrackingBranch)."""
+
+    ref: str
+    sha: str
+    upstream_ref: str
+    upstream_sha: str
+
+
+FORKED_REMOTE_PREFIX = "github-desktop-"
+
+
+def fork_pull_request_remote_name(owner: str) -> str:
+    return f"{FORKED_REMOTE_PREFIX}{owner}"
+
+
+def format_as_local_ref(name: str) -> str:
+    """Desktop `formatAsLocalRef`."""
+    if name.startswith("heads/"):
+        return f"refs/{name}"
+    if not name.startswith("refs/heads/"):
+        return f"refs/heads/{name}"
+    return name
+
+
+RESERVED_BRANCH_REFS = (
+    "HEAD",
+    "refs/heads/main",
+    "refs/heads/master",
+    "refs/heads/gh-pages",
+    "refs/heads/develop",
+    "refs/heads/dev",
+    "refs/heads/development",
+    "refs/heads/trunk",
+    "refs/heads/devel",
+    "refs/heads/release",
+)
 
 
 @dataclass

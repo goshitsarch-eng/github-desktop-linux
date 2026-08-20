@@ -88,6 +88,11 @@ class GitError(DesktopError):
         text = f"{self.stderr}\n{self.stdout}".lower()
         return "non-fast-forward" in text or "failed to push some refs" in text
 
+    @property
+    def is_local_changes_overwritten(self) -> bool:
+        text = f"{self.stderr}\n{self.stdout}".lower()
+        return "your local changes to the following files would be overwritten" in text
+
 
 class GitNotFoundError(DesktopError):
     pass
