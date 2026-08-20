@@ -318,5 +318,7 @@ def test_window_actions_cover_menus() -> None:
         "PullRequestSuggestedNextAction",
         "BackgroundFetcher",
         "get_fetch_poll_interval",
+        "Archived",
+        "Private repository",
     ]:
         assert phrase in src

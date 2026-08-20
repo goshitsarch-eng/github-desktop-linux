@@ -538,6 +538,7 @@ class GitHubAPI:
             endpoint=self.endpoint,
             permissions=(data.get("permissions") or {}).get("push") and "write" or "read",
             has_issues=bool(data.get("has_issues", True)),
+            archived=bool(data.get("archived")),
         )
 
     def _to_pr(self, data: dict[str, Any]) -> PullRequest:

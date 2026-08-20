@@ -905,6 +905,7 @@ class GitHubRepository:
     db_id: int | None = None
     permissions: str | None = None
     has_issues: bool = True
+    archived: bool = False
 
     @property
     def full_name(self) -> str:
@@ -967,6 +968,7 @@ def github_to_dict(gh: GitHubRepository | None) -> dict[str, Any] | None:
         "endpoint": gh.endpoint,
         "permissions": gh.permissions,
         "has_issues": gh.has_issues,
+        "archived": gh.archived,
         "parent": github_to_dict(gh.parent),
     }
 
@@ -987,6 +989,7 @@ def github_from_dict(data: dict[str, Any] | None) -> GitHubRepository | None:
         endpoint=data.get("endpoint") or "https://api.github.com",
         permissions=data.get("permissions"),
         has_issues=bool(data.get("has_issues", True)),
+        archived=bool(data.get("archived")),
     )
 
 

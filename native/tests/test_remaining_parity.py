@@ -65,6 +65,21 @@ def test_github_dict_roundtrip_includes_parent() -> None:
     assert restored.parent.owner == "acme"
 
 
+def test_github_dict_roundtrip_includes_archived() -> None:
+    repo = GitHubRepository(
+        "app",
+        "me",
+        "https://github.com/me/app",
+        "https://github.com/me/app.git",
+        private=True,
+        archived=True,
+    )
+    restored = github_from_dict(github_to_dict(repo))
+    assert restored is not None
+    assert restored.archived is True
+    assert restored.private is True
+
+
 def test_fork_contribution_target_parent_by_default() -> None:
     parent = GitHubRepository("app", "acme", "https://github.com/acme/app", "https://github.com/acme/app.git")
     fork = GitHubRepository("app", "me", "https://github.com/me/app", "https://github.com/me/app.git", fork=True, parent=parent)

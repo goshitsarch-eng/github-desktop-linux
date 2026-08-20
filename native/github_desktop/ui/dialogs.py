@@ -34,6 +34,7 @@ from ..models import (
     ApplicationTheme,
     BypassReason,
     ForkContributionTarget,
+    GitHubRepository,
     PopupType,
     UncommittedChangesStrategy,
     git_author_name_is_valid,
@@ -944,6 +945,18 @@ def show_create_repository(parent: Gtk.Window, store: AppStore, initial: str) ->
     )
 
 
+def _decorate_clone_row(row: Adw.ActionRow, gh: GitHubRepository) -> None:
+    """Desktop clone list: private lock + Archived badge."""
+    if gh.private:
+        lock = Gtk.Image.new_from_icon_name("channel-secure-symbolic")
+        lock.set_tooltip_text("Private repository")
+        row.add_prefix(lock)
+    if gh.archived:
+        badge = Gtk.Label(label="Archived")
+        badge.add_css_class("dim-label")
+        row.add_suffix(badge)
+
+
 def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
     dialog = Adw.Dialog()
     dialog.set_content_width(640)
@@ -1077,6 +1090,7 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
                 continue
             row = Adw.ActionRow(title=gh.full_name, subtitle=gh.clone_url)
             row.set_activatable(True)
+            _decorate_clone_row(row, gh)
 
             def pick(_r, g=gh) -> None:
                 selected_clone_url["url"] = g.clone_url
@@ -1136,6 +1150,7 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
                 continue
             row = Adw.ActionRow(title=gh.full_name, subtitle=gh.clone_url)
             row.set_activatable(True)
+            _decorate_clone_row(row, gh)
 
             def pick_ent(_r, g=gh) -> None:
                 selected_clone_url["url"] = g.clone_url
