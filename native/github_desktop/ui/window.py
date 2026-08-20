@@ -1448,6 +1448,10 @@ class MainWindow(Adw.ApplicationWindow):
             title = f"Cloning… {pct}%" if pct else "Cloning…"
             subtitle = cloning.description or cloning.url
             row = Adw.ActionRow(title=title, subtitle=subtitle)
+            cancel = Gtk.Button(label="Cancel clone")
+            cancel.set_valign(Gtk.Align.CENTER)
+            cancel.connect("clicked", lambda *_a, cid=cloning.id: self.store.abort_clone(cid))
+            row.add_suffix(cancel)
             self._repo_list.append(row)
 
     def _refresh_files(self) -> None:
@@ -2377,8 +2381,19 @@ class MainWindow(Adw.ApplicationWindow):
         self._issue_store.clear()
         if hasattr(self, "_coauthor_store"):
             self._coauthor_store.clear()
-            for login in state.mentions:
+            seen: set[str] = set()
+            for user in getattr(state, "mentionables", None) or []:
+                login = str(user.get("login") or "")
+                if not login or login in seen:
+                    continue
+                seen.add(login)
+                name = str(user.get("name") or login)
+                email = str(user.get("email") or f"{login}@users.noreply.github.com")
+                self._coauthor_store.append([f"{name} <{email}>"])
                 self._coauthor_store.append([f"@{login}"])
+            for login in state.mentions:
+                if login and login not in seen:
+                    self._coauthor_store.append([f"@{login}"])
         self._update_summary_completion()
 
     def _token_before_cursor(self, entry: Gtk.Entry) -> str:

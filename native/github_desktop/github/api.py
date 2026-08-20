@@ -449,7 +449,39 @@ class GitHubAPI:
             log.info("fetch repo ruleset %s failed: %s", ruleset_id, exc)
             return None
 
+    def fetch_mentionables(self, owner: str, name: str) -> list[dict[str, Any]]:
+        """Desktop `fetchMentionables` (`/mentionables/users` jerry-maguire preview)."""
+        extra = {"Accept": "application/vnd.github.jerry-maguire-preview"}
+        try:
+            data = self.get(
+                f"/repos/{owner}/{name}/mentionables/users",
+                extra_headers=extra,
+            )
+        except APIError as exc:
+            if exc.status == 404:
+                return []
+            log.debug("fetch_mentionables failed: %s", exc)
+            return []
+        users: list[dict[str, Any]] = []
+        if isinstance(data, list):
+            for item in data:
+                login = item.get("login")
+                if not login:
+                    continue
+                users.append(
+                    {
+                        "login": login,
+                        "name": item.get("name"),
+                        "email": item.get("email"),
+                        "avatar_url": item.get("avatar_url"),
+                    }
+                )
+        return users
+
     def fetch_mentions(self, owner: str, name: str) -> list[str]:
+        mentionables = self.fetch_mentionables(owner, name)
+        if mentionables:
+            return [item["login"] for item in mentionables if item.get("login")]
         try:
             items = self.get(f"/repos/{owner}/{name}/collaborators")
             if isinstance(items, list):

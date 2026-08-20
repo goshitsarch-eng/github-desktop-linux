@@ -161,6 +161,9 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             show_unknown_authors(win, {"authors": []})
             show_filtered_commit(win, store, {})
             show_lfs_mismatch(win, store)
+            from github_desktop.ui.dialogs import show_create_repository
+
+            show_create_repository(win, store, "")
             repos[0].is_missing = True
             win._show_missing(repos[0])
             win._repo_content.set_visible_child_name("missing")

@@ -916,33 +916,207 @@ def show_add_repository(parent: Gtk.Window, store: AppStore, initial: str) -> No
 
 
 def show_create_repository(parent: Gtk.Window, store: AppStore, initial: str) -> None:
-    def submit(values: dict[str, str]) -> None:
-        path = values.get("path", "").strip()
-        name = values.get("name", "").strip()
-        if name and path:
-            full = os.path.join(path, name)
+    from ..create_repo import (
+        NO_GITIGNORE,
+        NO_LICENSE,
+        classify_create_path,
+        gitignore_names,
+        license_templates,
+        sanitized_repository_name,
+    )
+
+    submodule_docs_url = "https://gh.io/git-submodules"
+    default = store.settings.clone_default_directory or os.path.expanduser("~/Documents/GitHub")
+    initial_path = (initial or "").strip() or None
+    if initial_path:
+        parent_path = os.path.dirname(os.path.abspath(initial_path)) or default
+        initial_name = sanitized_repository_name(os.path.basename(os.path.abspath(initial_path)))
+    else:
+        parent_path = default
+        initial_name = ""
+
+    dialog = Adw.Dialog()
+    dialog.set_content_width(520)
+    dialog.set_content_height(680)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(
+        Adw.WindowTitle(
+            title="Create a new repository",
+            subtitle="This will create a new Git repository on your local machine.",
+        )
+    )
+    create_btn = Gtk.Button(label="Create repository")
+    create_btn.add_css_class("suggested-action")
+    header.pack_end(create_btn)
+    toolbar.add_top_bar(header)
+
+    page = Adw.PreferencesPage()
+    group = Adw.PreferencesGroup()
+    name_row = Adw.EntryRow(title="Name")
+    name_row.set_text(initial_name)
+    sanitized_row = Adw.ActionRow(title="Will be created as")
+    sanitized_row.set_activatable(False)
+    sanitized_row.set_visible(False)
+    desc_row = Adw.EntryRow(title="Description")
+    path_row = Adw.EntryRow(title="Local path")
+    path_row.set_text(parent_path)
+    choose = Gtk.Button(label="Choose…")
+    choose.set_valign(Gtk.Align.CENTER)
+    if initial_path:
+        path_row.set_sensitive(False)
+        choose.set_sensitive(False)
+
+    def choose_folder(*_a: Any) -> None:
+        picker = Gtk.FileDialog(title="Create repository in")
+
+        def done(d, result) -> None:
+            try:
+                folder = d.select_folder_finish(result)
+            except Exception:
+                return
+            if folder:
+                path_row.set_text(folder.get_path() or default)
+
+        picker.select_folder(parent, None, done)
+
+    choose.connect("clicked", choose_folder)
+    path_row.add_suffix(choose)
+
+    exists_row = Adw.ActionRow(title="The directory appears to be a Git repository.")
+    exists_row.set_subtitle("Would you like to add this repository instead?")
+    add_instead = Gtk.Button(label="Add this repository")
+    add_instead.set_valign(Gtk.Align.CENTER)
+    exists_row.add_suffix(add_instead)
+    exists_row.set_activatable(False)
+    exists_row.set_visible(False)
+
+    subfolder_row = Adw.ActionRow(title="This directory appears to be a subfolder of a Git repository.")
+    learn = Gtk.Button(label="Learn about submodules.")
+    learn.set_valign(Gtk.Align.CENTER)
+
+    def open_submodule_docs(*_a: Any) -> None:
+        open_external(submodule_docs_url)
+
+    learn.connect("clicked", open_submodule_docs)
+    subfolder_row.add_suffix(learn)
+    subfolder_row.set_activatable(False)
+    subfolder_row.set_visible(False)
+
+    readme = Adw.SwitchRow(title="Initialize this repository with a README")
+    readme.set_active(False)
+    readme_warn = Adw.ActionRow(title="This directory contains a README.md file already.")
+    readme_warn.set_subtitle("Checking this box will result in the existing file being overwritten.")
+    readme_warn.set_activatable(False)
+    readme_warn.set_visible(False)
+
+    ignore_names = [NO_GITIGNORE, *gitignore_names()]
+    ignore_row = Adw.ComboRow(title="Git ignore")
+    ignore_row.set_model(Gtk.StringList.new(ignore_names))
+    licenses = license_templates()
+    license_names = [NO_LICENSE, *[item.name for item in licenses]]
+    license_row = Adw.ComboRow(title="License")
+    license_row.set_model(Gtk.StringList.new(license_names))
+    invalid_row = Adw.ActionRow(
+        title="Directory could not be created at this path.",
+        subtitle="You may not have permissions to create a directory here.",
+    )
+    invalid_row.set_activatable(False)
+    invalid_row.set_visible(False)
+    path_group = Adw.PreferencesGroup()
+    path_group.set_description("")
+
+    def selected_label(row: Adw.ComboRow, fallback: str) -> str:
+        model = row.get_model()
+        idx = row.get_selected()
+        if model is None or idx < 0:
+            return fallback
+        item = model.get_item(idx)
+        return item.get_string() if item is not None else fallback
+
+    def resolved_path() -> str:
+        name = sanitized_repository_name(name_row.get_text().strip())
+        base = path_row.get_text().strip() or default
+        if initial_path and os.path.abspath(base) == os.path.abspath(initial_path):
+            return os.path.abspath(base)
+        if not name:
+            return os.path.abspath(base)
+        return os.path.join(os.path.abspath(base), name)
+
+    def refresh_hints(*_a: Any) -> None:
+        raw = name_row.get_text().strip()
+        clean = sanitized_repository_name(raw) if raw else ""
+        if raw and clean != raw:
+            sanitized_row.set_title(f"Will be created as {clean}")
+            sanitized_row.set_visible(True)
         else:
-            full = path
-        if not full:
+            sanitized_row.set_visible(False)
+        full = resolved_path()
+        is_repo, is_sub = classify_create_path(full) if raw else (False, False)
+        exists_row.set_visible(is_repo)
+        subfolder_row.set_visible(is_sub and not is_repo)
+        readme_exists = bool(raw) and readme.get_active() and os.path.isfile(os.path.join(full, "README.md"))
+        readme_warn.set_visible(readme_exists)
+        if raw and not is_repo:
+            path_group.set_description(f"The repository will be created at {full}.")
+        else:
+            path_group.set_description("")
+        create_btn.set_sensitive(bool(raw) and bool(path_row.get_text().strip()) and not is_repo)
+
+    def add_existing(*_a: Any) -> None:
+        dialog.close()
+        store.show_popup(PopupType.ADD_REPOSITORY, path=resolved_path())
+
+    add_instead.connect("clicked", add_existing)
+
+    def submit(*_a: Any) -> None:
+        raw_name = name_row.get_text().strip()
+        if not raw_name:
+            return
+        full = resolved_path()
+        try:
+            os.makedirs(full, exist_ok=True)
+            invalid_row.set_visible(False)
+        except OSError:
+            invalid_row.set_visible(True)
             return
         try:
-            store.create_repository(full, values.get("description", ""))
+            store.create_repository(
+                full,
+                desc_row.get_text().strip(),
+                name=raw_name,
+                create_readme=readme.get_active(),
+                gitignore=selected_label(ignore_row, NO_GITIGNORE),
+                license_name=selected_label(license_row, NO_LICENSE),
+                update_default_directory=not bool(initial_path),
+            )
+            dialog.close()
         except Exception as exc:
             store.show_popup(PopupType.ERROR, error=str(exc))
 
-    default = store.settings.clone_default_directory or os.path.expanduser("~/Documents/GitHub")
-    _text_dialog(
-        parent,
-        "Create a new repository",
-        "This will run git init in the chosen folder.",
-        [
-            ("name", "Name", ""),
-            ("path", "Local path", initial or default),
-            ("description", "Description", ""),
-        ],
-        submit,
-        "Create",
-    )
+    name_row.connect("changed", refresh_hints)
+    path_row.connect("changed", refresh_hints)
+    readme.connect("notify::active", refresh_hints)
+    create_btn.connect("clicked", submit)
+
+    group.add(invalid_row)
+    group.add(name_row)
+    group.add(sanitized_row)
+    group.add(desc_row)
+    group.add(path_row)
+    group.add(exists_row)
+    group.add(subfolder_row)
+    group.add(readme)
+    group.add(readme_warn)
+    group.add(ignore_row)
+    group.add(license_row)
+    page.add(group)
+    page.add(path_group)
+    toolbar.set_content(page)
+    dialog.set_child(toolbar)
+    refresh_hints()
+    dialog.present(parent)
+
 
 
 def _decorate_clone_row(row: Adw.ActionRow, gh: GitHubRepository) -> None:

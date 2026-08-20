@@ -75,6 +75,7 @@ from .git import (
     get_last_fetched,
     get_rebase_snapshot,
     get_remotes,
+    get_remote_head,
     get_repository_kind,
     get_recent_branches,
     get_rebase_internal_state,
@@ -107,6 +108,7 @@ from .git import (
     stash_pop,
     stash_push,
     undo_commit,
+    update_remote_head,
     write_gitignore,
 )
 from .git.askpass import askpass_env, set_prompt_callback, start_askpass_server
@@ -244,6 +246,7 @@ class RepositoryViewState:
     compare_mode: ComparisonMode = ComparisonMode.AHEAD
     merge_tree: MergeTreeResult | None = None
     mentions: list[str] = field(default_factory=list)
+    mentionables: list[dict] = field(default_factory=list)
     diff_context: int | None = None
     local_commit_shas: list[str] = field(default_factory=list)
     diff_new_content: list[str] | None = None
@@ -295,6 +298,8 @@ class AppStore:
         self.sign_in_error: str | None = None
         self.oauth_state: str | None = None
         self.cloning: list[CloningRepository] = []
+        self._clone_processes: dict[int, list] = {}
+        self._clone_cancels: dict[int, threading.Event] = {}
         self.repo_state: dict[int, RepositoryViewState] = {}
         self.tutorial_step = TutorialStep.PAUSED if self.settings.tutorial_paused else TutorialStep.NOT_APPLICABLE
         self.progress_kind: str | None = None
@@ -653,6 +658,10 @@ class AppStore:
         self.emit()
         account = account_for_remote(self.accounts, url)
         env = env_for_remote(url, token=account.token) if account else None
+        holder: list = []
+        cancel = threading.Event()
+        self._clone_processes[clone_id] = holder
+        self._clone_cancels[clone_id] = cancel
 
         def work() -> None:
             clone_repository(
@@ -661,11 +670,19 @@ class AppStore:
                 default_branch=get_default_branch(),
                 env=env,
                 progress=self._clone_progress_cb(cloning),
+                process_holder=holder,
+                cancel_event=cancel,
             )
 
         def done(exc: BaseException | None) -> None:
             self._clear_network_progress()
             self.cloning = [c for c in self.cloning if c.id != clone_id]
+            cancelled = cancel.is_set()
+            self._clone_processes.pop(clone_id, None)
+            self._clone_cancels.pop(clone_id, None)
+            if cancelled:
+                self.emit()
+                return
             if exc:
                 self.show_popup(PopupType.ERROR, error=str(exc))
             else:
@@ -677,19 +694,97 @@ class AppStore:
 
         self._run(work, done)
 
-    def create_repository(self, path: str, description: str = "", default_branch: str | None = None) -> Repository:
+    def create_repository(
+        self,
+        path: str,
+        description: str = "",
+        default_branch: str | None = None,
+        *,
+        name: str | None = None,
+        create_readme: bool = False,
+        gitignore: str | None = None,
+        license_name: str | None = None,
+        update_default_directory: bool = True,
+    ) -> Repository:
+        from .create_repo import (
+            NO_GITIGNORE,
+            NO_LICENSE,
+            license_templates,
+            write_default_readme,
+            write_git_attributes,
+            write_license,
+            write_named_gitignore,
+        )
+
         os.makedirs(path, exist_ok=True)
-        if os.listdir(path):
-            # Desktop allows existing files; just init
-            pass
+        folder_name = os.path.basename(os.path.abspath(path))
+        display_name = name or folder_name
         branch = default_branch or get_default_branch()
         init_repository(path, branch)
+        repos = self.add_repositories([path])
+        if create_readme:
+            try:
+                write_default_readme(path, display_name, description)
+            except OSError as exc:
+                log.debug("createRepository: unable to write README at %s: %s", path, exc)
+        if gitignore and gitignore != NO_GITIGNORE:
+            try:
+                write_named_gitignore(path, gitignore)
+            except (OSError, ValueError) as exc:
+                log.debug("createRepository: unable to write .gitignore at %s: %s", path, exc)
         if description:
             from .git.ops import write_description
 
-            write_description(path, description)
-        repos = self.add_repositories([path])
+            try:
+                write_description(path, description)
+            except OSError as exc:
+                log.debug("createRepository: unable to write .git/description at %s: %s", path, exc)
+        if license_name and license_name != NO_LICENSE:
+            template = next((item for item in license_templates() if item.name == license_name), None)
+            if template is not None:
+                try:
+                    author_name, author_email = get_author_identity(path)
+                    write_license(
+                        path,
+                        template,
+                        fullname=author_name or "",
+                        email=author_email or "",
+                        project=display_name,
+                        description=description,
+                    )
+                except OSError as exc:
+                    log.debug("createRepository: unable to write LICENSE at %s: %s", path, exc)
+        try:
+            write_git_attributes(path)
+        except OSError as exc:
+            log.debug("createRepository: unable to write .gitattributes at %s: %s", path, exc)
+        status = get_status(path)
+        files = list(status.working_directory.files) if status else []
+        if files:
+            try:
+                create_commit(path, "Initial commit", files)
+            except GitError as exc:
+                log.debug("createRepository: initial commit failed at %s: %s", path, exc)
+        if update_default_directory:
+            parent = os.path.dirname(os.path.abspath(path))
+            if parent:
+                self.settings.clone_default_directory = parent
+                self.persist_settings()
+        if repos:
+            self.refresh_repository(repos[0])
         return repos[0]
+
+    def abort_clone(self, clone_id: int) -> None:
+        """Cancel an in-flight `git clone` and drop it from the cloning list."""
+        from .git.runner import abort_git_process
+
+        event = self._clone_cancels.get(clone_id)
+        if event is not None:
+            event.set()
+        for proc in list(self._clone_processes.get(clone_id) or []):
+            abort_git_process(proc)
+        self.cloning = [item for item in self.cloning if item.id != clone_id]
+        self.emit()
 
     def clone(
         self,
@@ -707,6 +802,10 @@ class AppStore:
         account = account or account_for_remote(self.accounts, url)
         if account:
             env = env_for_remote(url, token=account.token)
+        holder: list = []
+        cancel = threading.Event()
+        self._clone_processes[clone_id] = holder
+        self._clone_cancels[clone_id] = cancel
 
         def work() -> None:
             clone_repository(
@@ -716,11 +815,19 @@ class AppStore:
                 default_branch=get_default_branch(),
                 env=env,
                 progress=self._clone_progress_cb(cloning),
+                process_holder=holder,
+                cancel_event=cancel,
             )
 
         def done(exc: BaseException | None) -> None:
             self._clear_network_progress()
             self.cloning = [c for c in self.cloning if c.id != clone_id]
+            cancelled = cancel.is_set()
+            self._clone_processes.pop(clone_id, None)
+            self._clone_cancels.pop(clone_id, None)
+            if cancelled:
+                self.emit()
+                return
             if exc:
                 self.show_popup(PopupType.ERROR, error=str(exc))
             else:
@@ -905,7 +1012,9 @@ class AppStore:
                         except APIError:
                             pass
                         try:
-                            payload["mentions"] = api.fetch_mentions(gh.owner, gh.name)
+                            mentionables = api.fetch_mentionables(gh.owner, gh.name)
+                            payload["mentionables"] = mentionables
+                            payload["mentions"] = [item["login"] for item in mentionables if item.get("login")] or api.fetch_mentions(gh.owner, gh.name)
                         except APIError:
                             pass
                         try:
@@ -973,6 +1082,7 @@ class AppStore:
             state.issues = data.get("issues") or []
             state.check_runs = data.get("check_runs") or []
             state.mentions = data.get("mentions") or []
+            state.mentionables = data.get("mentionables") or []
             state.local_commit_shas = data.get("local_commit_shas") or []
             if "local_tags_to_push" in data:
                 state.local_tags_to_push = list(data.get("local_tags_to_push") or [])
@@ -1521,6 +1631,15 @@ class AppStore:
         gh = github_for_contribution(repo) or repo.github
         if gh and gh.default_branch:
             return gh.default_branch
+        try:
+            remotes = get_remotes(repo.path)
+            origin = next((remote for remote in remotes if remote.name == "origin"), remotes[0] if remotes else None)
+            if origin:
+                head = get_remote_head(repo.path, origin.name)
+                if head:
+                    return head
+        except GitError:
+            pass
         try:
             return get_default_branch()
         except GitError:
@@ -2442,6 +2561,10 @@ class AppStore:
 
         def work() -> list[str]:
             fetch(repo.path, remote.name, env=env, progress=progress)
+            try:
+                update_remote_head(repo.path, remote.name, env=env)
+            except GitError as exc:
+                log.debug("update remote HEAD failed: %s", exc)
             for other in extra:
                 try:
                     fetch(repo.path, other.name, env=self.env_for_repo(repo, other.url))

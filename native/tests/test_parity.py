@@ -95,6 +95,16 @@ REQUIRED_GIT_FUNCS = [
     "undo_first_commit",
     "do_merge_commits_exist_after_commit",
     "get_last_fetched",
+    "get_remote_head",
+    "update_remote_head",
+    "get_remote_url",
+    "get_repository_type",
+    "is_merge_head_set",
+    "is_squash_msg_set",
+    "is_cherry_pick_head_found",
+    "list_submodules",
+    "reset_submodule_paths",
+    "get_upstream_ref_for_ref",
 ]
 
 
@@ -191,6 +201,9 @@ def test_window_actions_cover_menus() -> None:
 
     src += open(app_mod.__file__, encoding="utf-8").read()
     src += open(api_mod.__file__, encoding="utf-8").read()
+    from github_desktop import create_repo as create_repo_mod
+
+    src += open(create_repo_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -320,5 +333,15 @@ def test_window_actions_cover_menus() -> None:
         "get_fetch_poll_interval",
         "Archived",
         "Private repository",
+        "Initialize this repository with a README",
+        "Git ignore",
+        "Will be created as",
+        "Learn about submodules.",
+        "mentionables/users",
+        "updateRemoteHEAD",
+        "Cancel clone",
+        "getRepositoryType",
+        "listSubmodules",
+        "abort_clone",
     ]:
         assert phrase in src

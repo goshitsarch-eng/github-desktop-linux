@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import shutil
 import subprocess
 import threading
@@ -93,6 +94,33 @@ def _read_stream(
         on_line(_decode(buf))
 
 
+def abort_git_process(proc: subprocess.Popen | None) -> None:
+    """Terminate a git subprocess and its process group (clone cancel)."""
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.terminate()
+        except Exception:
+            return
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=1)
+        except Exception:
+            pass
+
+
 def git(
     args: Sequence[str],
     cwd: str | os.PathLike[str],
@@ -108,6 +136,8 @@ def git(
     progress_parser: GitProgressParser | None = None,
     on_stdout_line: Callable[[str], None] | None = None,
     on_stderr_line: Callable[[str], None] | None = None,
+    process_holder: list | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> GitResult:
     """Run a git command. Raises GitError unless the exit code is allowed."""
     git_bin = find_git()
@@ -116,10 +146,13 @@ def git(
     merged_env = _prepare_env(env)
     stdin_bytes = _stdin_bytes(stdin)
     stream = progress is not None or on_stdout_line is not None or on_stderr_line is not None
+    use_popen = stream or process_holder is not None or cancel_event is not None
 
     log.debug("git %s: %s (cwd=%s)", name, " ".join(cmd[1:]), cwd)
+    if cancel_event is not None and cancel_event.is_set():
+        raise GitError("Git command aborted", args=list(args), exit_code=-1, stderr="aborted")
     try:
-        if not stream:
+        if not use_popen:
             completed = subprocess.run(
                 cmd,
                 cwd=str(cwd),
@@ -151,7 +184,12 @@ def git(
                 stdin=subprocess.PIPE if stdin_bytes is not None else subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                start_new_session=True,
             )
+            if process_holder is not None:
+                process_holder.append(proc)
+            if cancel_event is not None and cancel_event.is_set():
+                abort_git_process(proc)
             stdout_chunks: list[bytes] = []
             stderr_chunks: list[bytes] = []
             stdout_thread = threading.Thread(
@@ -168,7 +206,7 @@ def git(
             try:
                 exit_code = proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired as exc:
-                proc.kill()
+                abort_git_process(proc)
                 stdout_thread.join(timeout=1)
                 stderr_thread.join(timeout=1)
                 raise GitError(
@@ -181,6 +219,14 @@ def git(
             stderr_thread.join()
             stdout_bytes = b"".join(stdout_chunks)
             stderr_bytes = b"".join(stderr_chunks)
+            if cancel_event is not None and cancel_event.is_set():
+                raise GitError(
+                    "Git command aborted",
+                    args=list(args),
+                    exit_code=exit_code,
+                    stdout=_decode(stdout_bytes),
+                    stderr=_decode(stderr_bytes) or "aborted",
+                )
     except FileNotFoundError as exc:
         raise GitNotFoundError(str(exc)) from exc
     except subprocess.TimeoutExpired as exc:

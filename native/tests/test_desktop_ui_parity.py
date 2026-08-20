@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from github_desktop.avatars import avatar_urls, initials_for, login_from_email
 from github_desktop.changelog import CURRENT_NOTES, load_release_notes
 from github_desktop.git.expansion import copy_text_diff
@@ -91,6 +93,19 @@ def test_copy_text_diff_keeps_syntax_maps() -> None:
 def test_get_repository_kind(git_repo, tmp_path) -> None:
     assert get_repository_kind(str(git_repo)) == "regular"
     assert get_repository_kind(str(tmp_path / "missing")) == "missing"
+
+
+def test_get_repository_type_reports_toplevel(git_repo, tmp_path) -> None:
+    from github_desktop.git.ops import get_repository_type
+
+    nested = git_repo / "nested"
+    nested.mkdir()
+    info = get_repository_type(str(git_repo))
+    assert info["kind"] == "regular"
+    assert os.path.abspath(info["topLevelWorkingDirectory"]) == os.path.abspath(str(git_repo))
+    nested_info = get_repository_type(str(nested))
+    assert nested_info["kind"] == "regular"
+    assert os.path.abspath(nested_info["topLevelWorkingDirectory"]) == os.path.abspath(str(git_repo))
 
 
 def test_parse_co_authors_handles_handles_and_emails() -> None:

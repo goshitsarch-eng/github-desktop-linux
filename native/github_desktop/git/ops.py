@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
+from threading import Event
 from typing import Callable, Iterable, Sequence
 
 from ..errors import GitError, NotARepositoryError
@@ -96,6 +98,13 @@ from .status import (
 log = get_logger()
 
 ProgressCb = Callable[[str, float], None]
+
+
+@dataclass(frozen=True)
+class SubmoduleEntry:
+    sha: str
+    path: str
+    describe: str
 
 
 def _progress_adapter(cb: ProgressCb) -> Callable[[GitProgress], None]:
@@ -1078,6 +1087,8 @@ def clone_repository(
     default_branch: str = "main",
     env: dict[str, str] | None = None,
     progress: ProgressCb | None = None,
+    process_holder: list | None = None,
+    cancel_event: Event | None = None,
 ) -> None:
     args = ["-c", f"init.defaultBranch={default_branch}", "clone", "--recursive"]
     if progress:
@@ -1090,7 +1101,12 @@ def clone_repository(
         merged.update(env)
     parent = os.path.dirname(os.path.abspath(path)) or "."
     os.makedirs(parent, exist_ok=True)
-    kwargs: dict = {"env": merged, "name": "clone"}
+    kwargs: dict = {
+        "env": merged,
+        "name": "clone",
+        "process_holder": process_holder,
+        "cancel_event": cancel_event,
+    }
     if progress:
         kwargs["progress"] = _progress_adapter(progress)
         kwargs["progress_parser"] = GitProgressParser(CLONE_STEPS)
@@ -1952,13 +1968,38 @@ def is_lfs_repo(repo: str) -> bool:
 
 
 def get_submodules(repo: str) -> list[str]:
-    result = git(["submodule", "status"], repo, success_exit_codes={0, 128}, name="submodules")
-    paths = []
-    for line in result.stdout.splitlines():
-        parts = line.strip().split()
-        if len(parts) >= 2:
-            paths.append(parts[1])
-    return paths
+    return [entry.path for entry in list_submodules(repo)]
+
+
+def list_submodules(repo: str) -> list[SubmoduleEntry]:
+    """Desktop `listSubmodules`: top-level submodule status entries."""
+    gitmodules = os.path.join(repo, ".gitmodules")
+    modules_dir = os.path.join(repo, ".git", "modules")
+    if not os.path.exists(gitmodules) and not os.path.isdir(modules_dir):
+        return []
+    result = git(
+        ["submodule", "status", "--"],
+        repo,
+        success_exit_codes={0, 128},
+        name="listSubmodules",
+    )
+    if result.exit_code == 128:
+        return []
+    entries: list[SubmoduleEntry] = []
+    for match in re.finditer(r"^.([^ ]+) (.+) \((.+?)\)$", result.stdout, re.M):
+        entries.append(SubmoduleEntry(sha=match.group(1), path=match.group(2), describe=match.group(3)))
+    return entries
+
+
+def reset_submodule_paths(repo: str, paths: Sequence[str]) -> None:
+    """Desktop `resetSubmodulePaths`: `git submodule update --recursive --force`."""
+    if not paths:
+        return
+    git(
+        ["submodule", "update", "--recursive", "--force", "--", *paths],
+        repo,
+        name="updateSubmodule",
+    )
 
 
 def update_submodules(repo: str) -> None:
@@ -2423,6 +2464,26 @@ def get_symbolic_ref(repo: str, ref: str) -> str | None:
     return result.stdout.strip() or None
 
 
+def update_remote_head(repo: str, remote: str, *, env: dict[str, str] | None = None) -> None:
+    """Desktop `updateRemoteHEAD`: `git remote set-head -a <remote>`."""
+    git(
+        ["remote", "set-head", "-a", remote],
+        repo,
+        env=env,
+        success_exit_codes={0, 1, 128},
+        name="updateRemoteHEAD",
+    )
+
+
+def get_remote_head(repo: str, remote: str) -> str | None:
+    """Desktop `getRemoteHEAD`: local branch name of `refs/remotes/<remote>/HEAD`."""
+    prefix = f"refs/remotes/{remote}/"
+    match = get_symbolic_ref(repo, f"{prefix}HEAD")
+    if match and match.startswith(prefix) and len(match) > len(prefix):
+        return match[len(prefix) :]
+    return None
+
+
 def find_forked_remotes_to_prune(
     remotes: Sequence[Remote],
     open_prs: Sequence[PullRequest],
@@ -2570,27 +2631,91 @@ def ensure_repository(path: str) -> str:
     return root
 
 
-def get_repository_kind(path: str) -> str:
-    """Return 'regular', 'missing', or 'unsafe' (dubious ownership / safe.directory)."""
+def get_repository_type(path: str) -> dict[str, str]:
+    """Desktop `getRepositoryType`: bare / regular (+ toplevel) / unsafe / missing."""
     if not path or not os.path.isdir(path):
-        return "missing"
+        return {"kind": "missing"}
     try:
         result = git(
-            ["rev-parse", "--is-inside-work-tree"],
+            ["rev-parse", "--is-bare-repository", "--show-cdup"],
             path,
             success_exit_codes={0, 128},
-            name="repoKind",
+            name="getRepositoryType",
         )
     except GitError:
-        return "missing"
-    if result.exit_code == 0 and "true" in (result.stdout or "").lower():
-        return "regular"
-    combined = f"{result.stderr}\n{result.stdout}".lower()
-    if "dubious ownership" in combined or "safe.directory" in combined:
-        return "unsafe"
-    if git_path_is_repository(path):
-        return "regular"
-    return "missing"
+        return {"kind": "missing"}
+    if result.exit_code == 0:
+        lines = result.stdout.split("\n", 2)
+        is_bare = (lines[0] if lines else "").strip()
+        cdup = lines[1].strip() if len(lines) > 1 else ""
+        if is_bare == "true":
+            return {"kind": "bare"}
+        top = os.path.abspath(os.path.join(path, cdup if cdup else "."))
+        return {"kind": "regular", "topLevelWorkingDirectory": top}
+    combined = f"{result.stderr}\n{result.stdout}"
+    match = re.search(r"fatal: detected dubious ownership in repository at '(.+)'", combined)
+    if match:
+        return {"kind": "unsafe", "path": match.group(1)}
+    lowered = combined.lower()
+    if "dubious ownership" in lowered or "safe.directory" in lowered:
+        return {"kind": "unsafe", "path": path}
+    return {"kind": "missing"}
+
+
+def get_repository_kind(path: str) -> str:
+    """Return 'regular', 'bare', 'missing', or 'unsafe' (dubious ownership / safe.directory)."""
+    return get_repository_type(path).get("kind") or "missing"
+
+
+def is_merge_head_set(repo: str) -> bool:
+    """Desktop `isMergeHeadSet`."""
+    return _path_exists(repo, ".git/MERGE_HEAD")
+
+
+def is_squash_msg_set(repo: str) -> bool:
+    """Desktop `isSquashMsgSet`."""
+    return _path_exists(repo, ".git/SQUASH_MSG")
+
+
+def is_cherry_pick_head_found(repo: str) -> bool:
+    """Desktop `isCherryPickHeadFound`."""
+    return _path_exists(repo, ".git/CHERRY_PICK_HEAD")
+
+
+def get_remote_url(repo: str, name: str) -> str | None:
+    """Desktop `getRemoteURL`."""
+    result = git(
+        ["remote", "get-url", name],
+        repo,
+        success_exit_codes={0, 2, 128},
+        name="getRemoteURL",
+    )
+    if result.exit_code != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def get_upstream_ref_for_ref(path: str, ref: str | None = None) -> str | None:
+    """Desktop `getUpstreamRefForRef`."""
+    rev = f"{ref or ''}@{{upstream}}"
+    result = git(
+        ["rev-parse", "--symbolic-full-name", rev],
+        path,
+        success_exit_codes={0, 128},
+        name="getUpstreamRefForRef",
+    )
+    if result.exit_code != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def get_upstream_remote_name_for_ref(path: str, ref: str | None = None) -> str | None:
+    """Desktop `getUpstreamRemoteNameForRef`."""
+    remote_ref = get_upstream_ref_for_ref(path, ref)
+    if not remote_ref:
+        return None
+    match = re.match(r"^refs/remotes/([^/]+)/", remote_ref)
+    return match.group(1) if match else None
 
 
 def add_safe_directory(path: str) -> None:

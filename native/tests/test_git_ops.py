@@ -298,3 +298,47 @@ def test_binary_paths_and_fetch_refspec(git_repo: Path) -> None:
     assert get_cherry_pick_snapshot(str(git_repo)) is None
     fetch_refspec(str(git_repo), "origin", "refs/heads/main")
 
+
+def test_get_and_update_remote_head(git_repo: Path, tmp_path: Path) -> None:
+    from github_desktop.git.ops import get_remote_head, get_remote_url, update_remote_head
+
+    dest = tmp_path / "clone"
+    clone_repository(str(git_repo), str(dest))
+    url = get_remote_url(str(dest), "origin")
+    assert url
+    parsed = url.rstrip("/")
+    assert parsed.endswith("repo") or "repo" in parsed
+    update_remote_head(str(dest), "origin")
+    assert get_remote_head(str(dest), "origin") == "main"
+
+
+def test_merge_head_helpers_and_submodules(git_repo: Path) -> None:
+    from github_desktop.git.ops import (
+        is_cherry_pick_head_found,
+        is_merge_head_set,
+        is_squash_msg_set,
+        list_submodules,
+        reset_submodule_paths,
+    )
+
+    assert is_merge_head_set(str(git_repo)) is False
+    assert is_squash_msg_set(str(git_repo)) is False
+    assert is_cherry_pick_head_found(str(git_repo)) is False
+    assert list_submodules(str(git_repo)) == []
+    reset_submodule_paths(str(git_repo), [])
+
+
+def test_abort_git_process_kills_child() -> None:
+    import subprocess
+    import time
+
+    from github_desktop.git.runner import abort_git_process
+
+    proc = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    abort_git_process(proc)
+    for _ in range(20):
+        if proc.poll() is not None:
+            break
+        time.sleep(0.05)
+    assert proc.poll() is not None
+
