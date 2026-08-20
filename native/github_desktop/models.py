@@ -687,6 +687,31 @@ def submodule_include_tooltip(file: WorkingDirectoryFileChange) -> str | None:
     return None
 
 
+def commit_summary_placeholder(
+    files: Sequence[WorkingDirectoryFileChange],
+    *,
+    tutorial: bool = False,
+) -> str:
+    """Desktop `getPlaceholderMessage`: Create/Delete/Update {file} when one path is included."""
+    if tutorial:
+        return "Summary (required)"
+    included = [
+        item
+        for item in files
+        if item.selection.get_selection_type() != DiffSelectionType.NONE
+        and not is_uncommittable_submodule(item)
+    ]
+    if len(included) != 1:
+        return "Summary (required)"
+    name = Path(included[0].path).name
+    kind = included[0].status.kind
+    if kind in (AppFileStatusKind.NEW, AppFileStatusKind.UNTRACKED):
+        return f"Create {name}"
+    if kind == AppFileStatusKind.DELETED:
+        return f"Delete {name}"
+    return f"Update {name}"
+
+
 @dataclass
 class CommittedFileChange:
     path: str

@@ -4121,10 +4121,18 @@ class AppStore:
         self._save_accounts()
 
     def sign_out(self, account: Account) -> None:
+        snapshot = account
         secrets.delete_token(f"{account.endpoint}|{account.login}")
         self.accounts = [a for a in self.accounts if a is not account and not (a.endpoint == account.endpoint and a.login == account.login)]
         self._save_accounts()
         self.emit()
+        if snapshot.token:
+            def work() -> bool:
+                from .github.api import delete_oauth_token
+
+                return delete_oauth_token(snapshot)
+
+            self._run(work, lambda *_a: None)
 
     def _on_token_invalidated(self, endpoint: str, token: str) -> None:
         """Desktop `AppStore.onTokenInvalidated`: sign out the matching account and prompt."""

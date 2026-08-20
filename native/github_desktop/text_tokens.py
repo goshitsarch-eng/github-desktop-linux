@@ -204,6 +204,25 @@ def tokens_as_text(tokens: Iterable[Token]) -> str:
     return "".join(token.text for token in tokens)
 
 
+def tokens_as_markup(tokens: Iterable[Token]) -> str:
+    """Pango markup for history summaries: `#123`, `@user`, and https become links."""
+    from html import escape
+
+    from .ui.emoji import expand_shortcodes
+
+    parts: list[str] = []
+    for token in tokens:
+        if token.kind is TokenType.LINK and token.url:
+            text = escape(expand_shortcodes(token.text))
+            url = escape(token.url, quote=True)
+            parts.append(f'<a href="{url}">{text}</a>')
+        elif token.kind is TokenType.EMOJI:
+            parts.append(escape(token.emoji or token.text))
+        else:
+            parts.append(escape(expand_shortcodes(token.text)))
+    return "".join(parts)
+
+
 def wrap_rich_text_commit_message(
     summary_text: str,
     body_text: str = "",

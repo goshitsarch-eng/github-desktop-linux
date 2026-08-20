@@ -750,5 +750,17 @@ def test_window_actions_cover_menus() -> None:
         "A force push will rewrite history on",
         "refresh_issues",
         "DefaultMaxHits",
+        "Welcome to GitHub Desktop",
+        "Create your free account.",
+        "Learn more about user metrics.",
+        "You have changes on this branch. What would you like to do with them?",
+        "Leave my changes on",
+        "Bring my changes to",
+        "Your current stash will be overwritten by creating a new stash",
+        "Undo is disabled while the repository is being updated",
+        "commit_summary_placeholder",
+        "tokens_as_markup",
+        "delete_oauth_token",
+        "Create {name}",
     ]:
         assert phrase in src

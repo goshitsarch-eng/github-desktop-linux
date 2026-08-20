@@ -33,11 +33,13 @@ from ..models import (
     WorkingDirectoryFileChange,
     format_commit_attribution,
     get_conflicted_files,
+    get_label_for_manual_resolution_option,
     is_dotcom_endpoint,
     is_partially_committable_submodule,
     is_uncommittable_submodule,
     map_status,
     path_label,
+    commit_summary_placeholder,
     submodule_include_tooltip,
 )
 from ..push_pull import describe_push_pull, format_commit_relative_time, format_last_fetched
@@ -78,7 +80,7 @@ from .menus import (
     show_context_menu,
     view_on_github_label,
 )
-from .multi_commit import MERGE_OPTIONS, merge_cta_message, show_confirm_abort, show_conflicts_dialog
+from .multi_commit import MERGE_OPTIONS, _their_branch, merge_cta_message, show_confirm_abort, show_conflicts_dialog
 from .spellcheck import attach_spellcheck
 from .stash import StashDiffViewer
 from .tutorial import TutorialPanel
@@ -637,23 +639,66 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _build_welcome(self) -> Gtk.Widget:
         page = Adw.StatusPage()
-        page.set_title("Let's get started")
-        page.set_description("Sign in to GitHub.com or GitHub Enterprise, or skip and configure Git first.")
+        page.set_title("Welcome to GitHub Desktop")
+        page.set_description(
+            "GitHub Desktop is a seamless way to contribute to projects on "
+            "GitHub and GitHub Enterprise. Sign in below to get started with "
+            "your existing projects."
+        )
         page.set_icon_name("folder-remote-symbolic")
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         box.set_halign(Gtk.Align.CENTER)
+        self._welcome_redirect = Gtk.Label(
+            label=(
+                "Your browser will redirect you back to GitHub Desktop once you've signed in. "
+                "If your browser asks for your permission to launch GitHub Desktop please allow it to."
+            ),
+            wrap=True,
+            xalign=0,
+        )
+        self._welcome_redirect.set_visible(False)
+        self._welcome_redirect.set_max_width_chars(48)
         sign = Gtk.Button(label="Sign in to GitHub.com")
         sign.add_css_class("suggested-action")
         sign.add_css_class("pill")
         sign.connect("clicked", lambda *_: self.store.begin_sign_in(False))
         ent = Gtk.Button(label="Sign in to GitHub Enterprise")
         ent.connect("clicked", lambda *_: self.store.begin_sign_in(True))
+        create_row = Gtk.Box(spacing=4)
+        create_row.set_halign(Gtk.Align.CENTER)
+        create_row.append(Gtk.Label(label="New to GitHub?"))
+        create = Gtk.LinkButton(
+            uri="https://github.com/join?source=github-desktop",
+            label="Create your free account.",
+        )
+        create_row.append(create)
         skip = Gtk.Button(label="Skip this step")
         skip.add_css_class("flat")
         skip.connect("clicked", lambda *_: self.store.skip_welcome_sign_in())
+        terms = Gtk.Label(wrap=True, xalign=0, use_markup=True)
+        terms.set_max_width_chars(52)
+        terms.set_markup(
+            "By creating an account, you agree to the "
+            '<a href="https://github.com/site/terms">Terms of Service</a>. '
+            "For more information about GitHub's privacy practices, see the "
+            '<a href="https://github.com/site/privacy">GitHub Privacy Statement.</a>'
+        )
+        terms.connect("activate-link", lambda _l, uri: (open_external(uri), True)[1])
+        metrics = Gtk.Label(wrap=True, xalign=0, use_markup=True)
+        metrics.set_max_width_chars(52)
+        metrics.set_markup(
+            "GitHub Desktop sends usage metrics to improve the product and inform "
+            "feature decisions. "
+            '<a href="https://desktop.github.com/usage-data/">Learn more about user metrics.</a>'
+        )
+        metrics.connect("activate-link", lambda _l, uri: (open_external(uri), True)[1])
+        box.append(self._welcome_redirect)
         box.append(sign)
         box.append(ent)
+        box.append(create_row)
         box.append(skip)
+        box.append(terms)
+        box.append(metrics)
         self._welcome_extra = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         box.append(self._welcome_extra)
         page.set_child(box)
@@ -665,6 +710,9 @@ class MainWindow(Adw.ApplicationWindow):
             nxt = child.get_next_sibling()
             self._welcome_extra.remove(child)
             child = nxt
+        signing = self.store.welcome_step in {WelcomeStep.SIGN_IN_DOTCOM, WelcomeStep.SIGN_IN_ENTERPRISE}
+        if hasattr(self, "_welcome_redirect"):
+            self._welcome_redirect.set_visible(signing)
         if self.store.welcome_step == WelcomeStep.CONFIGURE_GIT:
             # Desktop `ConfigureGit` / `ConfigureGitUser` with account email choices.
             from ..git.ops import get_author_identity
@@ -1289,8 +1337,6 @@ class MainWindow(Adw.ApplicationWindow):
         gen.set_tooltip_text("Generate commit message with Copilot")
         gen.set_action_name("win.generate-commit-message")
         self._generate_btn = gen
-        undo = Gtk.Button(label="Undo")
-        undo.set_action_name("win.undo-commit")
         self._amend_btn = Gtk.Button(label="Amend")
         self._amend_btn.connect("clicked", self._on_amend)
         self._stop_amend_btn = Gtk.Button(label="Stop amending")
@@ -1298,21 +1344,38 @@ class MainWindow(Adw.ApplicationWindow):
         self._stop_amend_btn.connect("clicked", self._on_stop_amend)
         btn_row.append(self._commit_btn)
         btn_row.append(gen)
-        btn_row.append(undo)
         btn_row.append(self._amend_btn)
         btn_row.append(self._stop_amend_btn)
-        commit_box.append(summary_row)
+        self._commit_btn_row = btn_row
+        self._undo_card = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self._undo_card.add_css_class("undo-commit")
+        self._undo_ago = Gtk.Label(xalign=0)
+        self._undo_ago.add_css_class("dim-label")
+        self._undo_summary = Gtk.Label(xalign=0, hexpand=True)
+        self._undo_summary.set_ellipsize(Pango.EllipsizeMode.END)
+        undo_info = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        undo_info.append(self._undo_ago)
+        undo_info.append(self._undo_summary)
+        self._undo_btn = Gtk.Button(label="Undo")
+        self._undo_btn.set_action_name("win.undo-commit")
+        self._undo_card.append(undo_info)
+        self._undo_card.append(self._undo_btn)
+        self._undo_card.set_visible(False)
+        self._commit_form = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self._commit_form.append(summary_row)
         self._copilot_hint = Gtk.Label(label="Generated by Copilot", xalign=0)
         self._copilot_hint.add_css_class("dim-label")
         self._copilot_hint.set_visible(False)
-        commit_box.append(self._summary_warn)
-        commit_box.append(self._author_warn)
-        commit_box.append(self._rules_box)
-        commit_box.append(self._copilot_hint)
-        commit_box.append(self._description)
-        commit_box.append(co)
-        commit_box.append(self._author_input)
-        commit_box.append(btn_row)
+        self._commit_form.append(self._summary_warn)
+        self._commit_form.append(self._author_warn)
+        self._commit_form.append(self._rules_box)
+        self._commit_form.append(self._copilot_hint)
+        self._commit_form.append(self._description)
+        self._commit_form.append(co)
+        self._commit_form.append(self._author_input)
+        self._commit_form.append(btn_row)
+        commit_box.append(self._undo_card)
+        commit_box.append(self._commit_form)
         self._conflict_bar = Gtk.Box(spacing=6)
         commit_box.append(self._conflict_bar)
         left.append(commit_box)
@@ -1577,6 +1640,9 @@ class MainWindow(Adw.ApplicationWindow):
         self._refresh_author_avatar(repo)
         self._update_commit_warnings()
         self._apply_commit_busy(state)
+        self._refresh_undo_card(repo, state)
+        self._update_commit_placeholder(repo, state)
+        self._update_rebase_commit_form(state)
 
     def _show_missing(self, repo) -> None:
         if repo.unsafe:
@@ -2014,6 +2080,9 @@ class MainWindow(Adw.ApplicationWindow):
         self._include_all.set_active(bool(include_all))
         self._building = False
         self._render_working_diff(state)
+        repo = self.store.selected_repository
+        if repo:
+            self._update_commit_placeholder(repo, state)
 
     def _on_changes_filter_text(self, *_args: object) -> None:
         if self._building:
@@ -2257,8 +2326,10 @@ class MainWindow(Adw.ApplicationWindow):
         box.append(label)
         box.append(badge)
         if file.status.is_conflicted:
-            ours = Gtk.Button(label="Ours")
-            theirs = Gtk.Button(label="Theirs")
+            our = state.status.current_branch if state and state.status else None
+            their = _their_branch(repo, state.status) if repo and state and state.status else None
+            ours = Gtk.Button(label=get_label_for_manual_resolution_option(file.status.us, our))
+            theirs = Gtk.Button(label=get_label_for_manual_resolution_option(file.status.them, their))
             ours.connect("clicked", lambda *_ , p=file.path: self._resolve(p, ManualConflictResolution.OURS))
             theirs.connect("clicked", lambda *_ , p=file.path: self._resolve(p, ManualConflictResolution.THEIRS))
             box.append(ours)
@@ -2346,6 +2417,10 @@ class MainWindow(Adw.ApplicationWindow):
         description = self._description.get_buffer().get_text(start, end, True).strip()
         from .emoji import expand_shortcodes
 
+        if not summary:
+            placeholder = getattr(self, "_commit_placeholder", "") or self._summary.get_placeholder_text()
+            if placeholder and placeholder != "Summary (required)":
+                summary = placeholder
         summary = expand_shortcodes(summary)
         description = expand_shortcodes(description)
         if not summary:
@@ -2604,9 +2679,9 @@ class MainWindow(Adw.ApplicationWindow):
             self._conflict_bar.append(Gtk.Label(label="Rebase in progress"))
             view = Gtk.Button(label="View conflicts")
             view.connect("clicked", lambda *_: show_conflicts_dialog(self, self.store, MultiCommitOperationKind.REBASE))
-            cont = Gtk.Button(label="Continue rebase")
+            cont = Gtk.Button(label="Rebasing" if state.is_committing else "Continue rebase")
             abort = Gtk.Button(label="Abort rebase")
-            cont.set_sensitive(can_continue)
+            cont.set_sensitive(can_continue and not state.is_committing)
             cont.set_tooltip_text(continue_tooltip)
             cont.connect("clicked", lambda *_: self.store.continue_conflict_operation(repo, MultiCommitOperationKind.REBASE))
             abort.connect(
@@ -2650,6 +2725,43 @@ class MainWindow(Adw.ApplicationWindow):
                 warn = Gtk.Label(label="Untracked files will be excluded")
                 warn.add_css_class("warning-untracked-files")
                 self._conflict_bar.append(warn)
+        self._update_rebase_commit_form(state)
+
+    def _update_rebase_commit_form(self, state) -> None:
+        rebasing = bool(state.status and state.status.rebase_internal_state) if state and state.status else False
+        if hasattr(self, "_commit_form"):
+            self._commit_form.set_visible(not rebasing)
+
+    def _update_commit_placeholder(self, repo, state) -> None:
+        if not hasattr(self, "_summary"):
+            return
+        files = list(state.status.working_directory.files) if state and state.status else []
+        placeholder = commit_summary_placeholder(files, tutorial=bool(repo and repo.tutorial))
+        self._commit_placeholder = placeholder
+        self._summary.set_placeholder_text(placeholder)
+
+    def _refresh_undo_card(self, repo, state) -> None:
+        if not hasattr(self, "_undo_card"):
+            return
+        rebasing = bool(state.status and state.status.rebase_internal_state)
+        amending = state.commit_to_amend is not None
+        local = set(state.local_commit_shas or [])
+        commit = next((item for item in state.commits if item.sha in local), None)
+        tagged = bool(commit and commit.tags)
+        show = bool(commit) and not rebasing and not amending and not tagged
+        self._undo_card.set_visible(show)
+        if not show or commit is None:
+            return
+        self._undo_ago.set_text(f"Committed {format_commit_relative_time(commit.author.date)}")
+        self._undo_summary.set_text(commit.summary or "Empty commit message")
+        busy = bool(
+            state.is_committing
+            or self.store.progress_kind in {"push", "pull", "fetch", "checkout"}
+        )
+        self._undo_btn.set_sensitive(not busy)
+        self._undo_btn.set_tooltip_text(
+            "Undo is disabled while the repository is being updated" if busy else ""
+        )
 
     def _refresh_stash_bar(self, state) -> None:
         child = self._stash_bar.get_first_child()

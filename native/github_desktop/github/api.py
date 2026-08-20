@@ -721,6 +721,31 @@ def _parse_generated_message(content: str) -> tuple[str, str]:
         return summary[:72], description
 
 
+def delete_oauth_token(account: Account) -> bool:
+    """Desktop `deleteToken`: `DELETE applications/{ClientID}/token` with Basic client credentials."""
+    import base64
+    import os
+
+    from ..version import OAUTH_CLIENT_ID_DEFAULT, OAUTH_CLIENT_SECRET_DEFAULT
+
+    if not account.token:
+        return False
+    client_id = os.environ.get("DESKTOP_OAUTH_CLIENT_ID") or OAUTH_CLIENT_ID_DEFAULT
+    secret = os.environ.get("DESKTOP_OAUTH_CLIENT_SECRET") or OAUTH_CLIENT_SECRET_DEFAULT
+    creds = base64.b64encode(f"{client_id}:{secret}".encode("ascii")).decode("ascii")
+    api = GitHubAPI(account.endpoint, None)
+    try:
+        api.delete(
+            f"/applications/{client_id}/token",
+            body={"access_token": account.token},
+            extra_headers={"Authorization": f"Basic {creds}"},
+        )
+        return True
+    except APIError as exc:
+        log.error("deleteToken: failed with endpoint %s: %s", account.endpoint, exc)
+        return False
+
+
 def request_oauth_token(html_base: str, client_id: str, client_secret: str, code: str) -> str | None:
     url = html_base.rstrip("/") + "/login/oauth/access_token"
     body = urllib.parse.urlencode(

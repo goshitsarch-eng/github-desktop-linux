@@ -11,6 +11,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Gtk
 
 from ..models import ChangesetData, Commit, GitHubRepository
+from ..shells import open_external
 from .avatar import AvatarStack, users_from_commits
 from .menus import copy_text
 
@@ -23,6 +24,8 @@ class ExpandableCommitSummary(Gtk.Box):
         self._summary = Gtk.Label(xalign=0)
         self._summary.add_css_class("commit-summary")
         self._summary.set_wrap(True)
+        self._summary.set_use_markup(True)
+        self._summary.connect("activate-link", self._on_link)
         self._meta = Gtk.Label(xalign=0)
         self._meta.add_css_class("commit-sha")
         self._meta.set_wrap(True)
@@ -31,6 +34,8 @@ class ExpandableCommitSummary(Gtk.Box):
         self._body = Gtk.Label(xalign=0)
         self._body.set_wrap(True)
         self._body.set_visible(False)
+        self._body.set_use_markup(True)
+        self._body.connect("activate-link", self._on_link)
         self._toggle = Gtk.Button(label="Expand")
         self._toggle.add_css_class("flat")
         self._toggle.set_halign(Gtk.Align.START)
@@ -110,21 +115,25 @@ class ExpandableCommitSummary(Gtk.Box):
             from .emoji import expand_shortcodes
             from ..models import format_commit_attribution
             from ..push_pull import format_commit_relative_time
-            from ..text_tokens import Tokenizer, tokens_as_text, wrap_rich_text_commit_message
+            from ..text_tokens import Tokenizer, tokens_as_markup, tokens_as_text, wrap_rich_text_commit_message
 
             has_empty = not (primary.summary or "").strip()
             if has_empty:
+                from html import escape
+
                 summary = "Empty commit message"
-                self._body_text = primary.body
+                self._body_text = escape(primary.body or "")
+                self._summary.set_text(summary)
             else:
                 wrapped = wrap_rich_text_commit_message(
                     primary.summary,
                     primary.body,
                     Tokenizer(github=github),
                 )
-                summary = expand_shortcodes(tokens_as_text(wrapped.summary))
-                self._body_text = expand_shortcodes(tokens_as_text(wrapped.body))
-            self._summary.set_text(summary)
+                self._summary.set_markup(tokens_as_markup(wrapped.summary))
+                self._body_text = tokens_as_markup(wrapped.body) or expand_shortcodes(
+                    tokens_as_text(wrapped.body)
+                )
             if has_empty:
                 self._summary.add_css_class("empty-summary")
             else:
@@ -145,6 +154,7 @@ class ExpandableCommitSummary(Gtk.Box):
                 + (f" +{len(authors) - 4}" if len(authors) > 4 else "")
                 + f" · {commits[-1].short_sha}…{commits[0].short_sha}"
             )
+            self._body_text = ""
         if changeset:
             files = len(changeset.files)
             self._stats.set_text(
@@ -152,7 +162,7 @@ class ExpandableCommitSummary(Gtk.Box):
             )
         else:
             self._stats.set_text("")
-        self._body.set_text(self._body_text)
+        self._body.set_markup(self._body_text or "")
         self._body.set_visible(self._expanded and bool(self._body_text))
         self._toggle.set_visible(bool(self._body_text) or len(commits) > 1)
         self._toggle.set_label("Collapse" if self._expanded else "Expand")
@@ -201,3 +211,7 @@ class ExpandableCommitSummary(Gtk.Box):
         self._expanded = not self._expanded
         self._body.set_visible(self._expanded and bool(self._body_text))
         self._toggle.set_label("Collapse" if self._expanded else "Expand")
+
+    def _on_link(self, _label: Gtk.Label, uri: str) -> bool:
+        open_external(uri)
+        return True

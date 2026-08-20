@@ -3665,38 +3665,97 @@ def show_stash_switch(parent: Gtk.Window, store: AppStore, payload: dict[str, An
     branch = payload.get("branch")
     if not repo or not branch:
         return
-    dialog = Adw.AlertDialog(heading="Switch branch?", body="You have uncommitted changes.")
-    dialog.add_response("cancel", "Cancel")
-    dialog.add_response("leave", "Leave my changes")
-    dialog.add_response("stash", "Stash changes")
-    dialog.set_default_response("stash")
+    state = store.state_for(repo)
+    current = state.status.current_branch if state.status else "this branch"
+    target_name = branch if isinstance(branch, str) else getattr(branch, "name", str(branch))
+    has_stash = store._has_existing_desktop_stash(repo)
+    dialog = Adw.Dialog()
+    dialog.set_content_width(480)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(Adw.WindowTitle(title="Switch branch"))
+    toolbar.add_top_bar(header)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+    box.set_margin_top(16)
+    box.set_margin_bottom(16)
+    box.set_margin_start(16)
+    box.set_margin_end(16)
+    prompt = Gtk.Label(
+        label="You have changes on this branch. What would you like to do with them?",
+        wrap=True,
+        xalign=0,
+    )
+    box.append(prompt)
+    leave = Gtk.CheckButton()
+    bring = Gtk.CheckButton()
+    bring.set_group(leave)
+    leave.set_active(True)
+    leave_row = Adw.ActionRow(
+        title=f"Leave my changes on {current}",
+        subtitle="Your in-progress work will be stashed on this branch for you to return to later",
+    )
+    leave_row.add_prefix(leave)
+    leave_row.set_activatable_widget(leave)
+    bring_row = Adw.ActionRow(
+        title=f"Bring my changes to {target_name}",
+        subtitle="Your in-progress work will follow you to the new branch",
+    )
+    bring_row.add_prefix(bring)
+    bring_row.set_activatable_widget(bring)
+    group = Gtk.ListBox()
+    group.add_css_class("boxed-list")
+    group.append(leave_row)
+    group.append(bring_row)
+    box.append(group)
+    warn = Gtk.Label(
+        label="Your current stash will be overwritten by creating a new stash",
+        wrap=True,
+        xalign=0,
+    )
+    warn.add_css_class("warning")
 
-    def done(d, result) -> None:
-        try:
-            response = d.choose_finish(result)
-        except Exception:
-            return
+    def sync_warn(*_a: object) -> None:
+        warn.set_visible(bool(has_stash and leave.get_active()))
+
+    leave.connect("toggled", sync_warn)
+    sync_warn()
+    box.append(warn)
+    actions = Gtk.Box(spacing=8)
+    actions.set_halign(Gtk.Align.END)
+    cancel = Gtk.Button(label="Cancel")
+    switch = Gtk.Button(label="Switch branch")
+    switch.add_css_class("suggested-action")
+    actions.append(cancel)
+    actions.append(switch)
+    box.append(actions)
+    toolbar.set_content(box)
+    dialog.set_child(toolbar)
+
+    def close(*_a: object) -> None:
+        dialog.close()
+
+    def confirm(*_a: object) -> None:
         from ..git.ops import checkout_branch
+        from ..models import Branch, BranchType
 
-        state = store.state_for(repo)
-        current = state.status.current_branch if state.status else "unknown"
-        if response == "stash":
-            if store._has_existing_desktop_stash(repo):
+        close()
+        if leave.get_active():
+            if has_stash:
                 store.show_popup(PopupType.CONFIRM_OVERWRITE_STASH, branch=branch)
                 return
             store.stash_and_drop_previous(repo, current or "unknown")
             checkout_branch(repo.path, branch)
             store.remember_branch(repo, branch)
             store.refresh_repository(repo)
-        elif response == "leave":
-            from ..models import Branch, BranchType
+            return
+        target = next((b for b in state.branches if b.name == branch), None) or Branch(
+            str(target_name), None, "", BranchType.LOCAL
+        )
+        store.checkout_and_bring_changes(repo, target)
 
-            target = next((b for b in state.branches if b.name == branch), None) or Branch(
-                branch, None, "", BranchType.LOCAL
-            )
-            store.checkout_and_bring_changes(repo, target)
-
-    dialog.choose(parent, None, done)
+    cancel.connect("clicked", close)
+    switch.connect("clicked", confirm)
+    dialog.present(parent)
 
 
 def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:

@@ -209,3 +209,57 @@ def test_refresh_issues_is_noop_without_github(isolated_config, git_repo) -> Non
     repos = store.add_repositories([str(git_repo)])
     store.refresh_issues(repos[0])
     assert store.state_for(repos[0]).issues == []
+
+
+def test_commit_summary_placeholder_matches_desktop() -> None:
+    from github_desktop.models import (
+        AppFileStatusKind,
+        DiffSelection,
+        DiffSelectionType,
+        FileStatus,
+        WorkingDirectoryFileChange,
+        commit_summary_placeholder,
+    )
+
+    created = WorkingDirectoryFileChange(
+        "src/app.py",
+        FileStatus(kind=AppFileStatusKind.NEW),
+        DiffSelection.from_initial_selection(DiffSelectionType.ALL),
+    )
+    deleted = WorkingDirectoryFileChange(
+        "gone.txt",
+        FileStatus(kind=AppFileStatusKind.DELETED),
+        DiffSelection.from_initial_selection(DiffSelectionType.ALL),
+    )
+    modified = WorkingDirectoryFileChange(
+        "readme.md",
+        FileStatus(kind=AppFileStatusKind.MODIFIED),
+        DiffSelection.from_initial_selection(DiffSelectionType.ALL),
+    )
+    excluded = WorkingDirectoryFileChange(
+        "skip.py",
+        FileStatus(kind=AppFileStatusKind.MODIFIED),
+        DiffSelection.from_initial_selection(DiffSelectionType.NONE),
+    )
+    assert commit_summary_placeholder([created]) == "Create app.py"
+    assert commit_summary_placeholder([deleted]) == "Delete gone.txt"
+    assert commit_summary_placeholder([modified]) == "Update readme.md"
+    assert commit_summary_placeholder([created, modified]) == "Summary (required)"
+    assert commit_summary_placeholder([created], tutorial=True) == "Summary (required)"
+    assert commit_summary_placeholder([created, excluded]) == "Create app.py"
+
+
+def test_history_tokens_markup_links_issues() -> None:
+    from github_desktop.text_tokens import Tokenizer, tokens_as_markup
+
+    markup = tokens_as_markup(Tokenizer().tokenize("See https://example.com"))
+    assert 'href="https://example.com"' in markup
+    assert "See " in markup
+
+
+def test_delete_oauth_token_skips_empty_token() -> None:
+    from github_desktop.github.api import delete_oauth_token
+    from github_desktop.models import Account
+
+    account = Account(login="hubot", endpoint="https://api.github.com", token="")
+    assert delete_oauth_token(account) is False
