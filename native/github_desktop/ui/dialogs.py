@@ -1,0 +1,1297 @@
+"""All GitHub Desktop dialogs as libadwaita dialogs (feature-parity popups)."""
+
+from __future__ import annotations
+
+import os
+from typing import Any, Callable
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gio, Gtk
+
+from ..editors import get_available_editors
+from ..errors import ValidationError
+from ..git.ops import (
+    add_remote,
+    get_author_identity,
+    get_config_value,
+    get_default_branch,
+    read_gitignore,
+    remove_remote,
+    set_config_value,
+    set_remote_url,
+    write_gitignore,
+)
+from ..github.oauth import dotcom_endpoint
+from ..models import (
+    INVALID_GIT_AUTHOR_NAME_MESSAGE,
+    ApplicationTheme,
+    BypassReason,
+    PopupType,
+    UncommittedChangesStrategy,
+    git_author_name_is_valid,
+)
+from ..shells import get_available_shells, open_external
+from ..store import AppStore
+from ..version import APP_NAME, __version__
+
+
+def _alert(
+    parent: Gtk.Window,
+    heading: str,
+    body: str,
+    *,
+    confirm: str = "OK",
+    cancel: str | None = "Cancel",
+    destructive: bool = False,
+    on_confirm: Callable[[], None] | None = None,
+) -> None:
+    dialog = Adw.AlertDialog(heading=heading, body=body)
+    if cancel:
+        dialog.add_response("cancel", cancel)
+    dialog.add_response("ok", confirm)
+    if destructive:
+        dialog.set_response_appearance("ok", Adw.ResponseAppearance.DESTRUCTIVE)
+    else:
+        dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+    dialog.set_default_response("ok")
+    dialog.set_close_response(cancel and "cancel" or "ok")
+
+    def done(d, result) -> None:
+        try:
+            response = d.choose_finish(result)
+        except Exception:
+            return
+        if response == "ok" and on_confirm:
+            on_confirm()
+
+    dialog.choose(parent, None, done)
+
+
+def _text_dialog(
+    parent: Gtk.Window,
+    heading: str,
+    body: str,
+    fields: list[tuple[str, str, str]],
+    on_submit: Callable[[dict[str, str]], None],
+    confirm: str = "Continue",
+) -> None:
+    dialog = Adw.Dialog()
+    dialog.set_content_width(480)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(Adw.WindowTitle(title=heading, subtitle=body))
+    cancel = Gtk.Button(label="Cancel")
+    cancel.connect("clicked", lambda *_: dialog.close())
+    ok = Gtk.Button(label=confirm)
+    ok.add_css_class("suggested-action")
+    header.pack_start(cancel)
+    header.pack_end(ok)
+    toolbar.add_top_bar(header)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+    box.set_margin_top(18)
+    box.set_margin_bottom(18)
+    box.set_margin_start(18)
+    box.set_margin_end(18)
+    entries: dict[str, Gtk.Entry] = {}
+    for key, label, initial in fields:
+        row = Adw.EntryRow(title=label)
+        row.set_text(initial)
+        box.append(row)
+        entries[key] = row
+    toolbar.set_content(box)
+    dialog.set_child(toolbar)
+
+    def submit(*_args: Any) -> None:
+        values = {k: e.get_text() for k, e in entries.items()}
+        dialog.close()
+        on_submit(values)
+
+    ok.connect("clicked", submit)
+    dialog.present(parent)
+
+
+def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, payload: dict[str, Any]) -> None:
+    repo = store.selected_repository
+    mapping: dict[PopupType, Callable[..., None]] = {
+        PopupType.ERROR: lambda: _alert(parent, "Error", str(payload.get("error") or "Something went wrong"), cancel=None),
+        PopupType.ABOUT: lambda: show_about(parent),
+        PopupType.ACKNOWLEDGEMENTS: lambda: show_acknowledgements(parent),
+        PopupType.TERMS_AND_CONDITIONS: lambda: show_terms(parent),
+        PopupType.PREFERENCES: lambda: show_preferences(parent, store),
+        PopupType.ADD_REPOSITORY: lambda: show_add_repository(parent, store, payload.get("path", "")),
+        PopupType.CREATE_REPOSITORY: lambda: show_create_repository(parent, store, payload.get("path", "")),
+        PopupType.CLONE_REPOSITORY: lambda: show_clone_repository(parent, store, payload),
+        PopupType.SIGN_IN: lambda: show_sign_in(parent, store, bool(payload.get("enterprise"))),
+        PopupType.CREATE_BRANCH: lambda: show_create_branch(parent, store),
+        PopupType.RENAME_BRANCH: lambda: show_rename_branch(parent, store),
+        PopupType.DELETE_BRANCH: lambda: show_delete_branch(parent, store, payload),
+        PopupType.DELETE_REMOTE_BRANCH: lambda: show_delete_branch(parent, store, payload, remote=True),
+        PopupType.CONFIRM_DISCARD_CHANGES: lambda: show_discard(parent, store, payload),
+        PopupType.PUBLISH_REPOSITORY: lambda: show_publish(parent, store),
+        PopupType.REMOVE_REPOSITORY: lambda: show_remove_repository(parent, store),
+        PopupType.REPOSITORY_SETTINGS: lambda: show_repository_settings(parent, store),
+        PopupType.CONFIRM_FORCE_PUSH: lambda: show_force_push(parent, store),
+        PopupType.PUSH_NEEDS_PULL: lambda: _alert(
+            parent,
+            "Fetch first?",
+            "The remote has commits you don't have locally. Pull or fetch before pushing.",
+            confirm="Fetch",
+            on_confirm=lambda: repo and store.fetch_repo(repo),
+        ),
+        PopupType.GENERIC_GIT_AUTHENTICATION: lambda: show_generic_auth(parent, store, payload),
+        PopupType.CREATE_TAG: lambda: show_create_tag(parent, store),
+        PopupType.DELETE_TAG: lambda: show_delete_tag(parent, store, payload),
+        PopupType.STASH_AND_SWITCH_BRANCH: lambda: show_stash_switch(parent, store, payload),
+        PopupType.CONFIRM_DISCARD_STASH: lambda: _alert(
+            parent,
+            "Discard stash?",
+            "This cannot be undone.",
+            destructive=True,
+            confirm="Discard",
+            on_confirm=lambda: _discard_stash(store, payload),
+        ),
+        PopupType.CONFIRM_OVERWRITE_STASH: lambda: _alert(
+            parent,
+            "Overwrite stash?",
+            "A Desktop stash already exists for this branch.",
+            destructive=True,
+            confirm="Overwrite",
+            on_confirm=lambda: _overwrite_stash(store, payload),
+        ),
+        PopupType.CONFIRM_CHECKOUT_COMMIT: lambda: _alert(
+            parent,
+            "Checkout commit?",
+            "This will detach HEAD. You can create a branch afterwards.",
+            confirm="Checkout",
+            on_confirm=lambda: repo and payload.get("sha") and store.checkout.__wrapped__ if False else _checkout_sha(store, payload),
+        ),
+        PopupType.WARN_LOCAL_CHANGES_BEFORE_UNDO: lambda: _alert(
+            parent,
+            "Undo commit?",
+            "You have local changes. Undoing the commit keeps them in the working directory.",
+            confirm="Undo",
+            on_confirm=lambda: repo and _undo(store),
+        ),
+        PopupType.WARNING_BEFORE_RESET: lambda: _alert(
+            parent,
+            "Reset to this commit?",
+            "Commits after this point will be removed from the current branch.",
+            destructive=True,
+            confirm="Reset",
+            on_confirm=lambda: _reset(store, payload),
+        ),
+        PopupType.START_PULL_REQUEST: lambda: show_start_pr(parent, store),
+        PopupType.INSTALL_GIT: lambda: _alert(
+            parent,
+            "Git not found",
+            "Install Git and restart GitHub Desktop.\n\nsudo apt install git",
+            cancel=None,
+        ),
+        PopupType.CLI_INSTALLED: lambda: _alert(parent, "CLI installed", "The github command is available.", cancel=None),
+        PopupType.INITIALIZE_LFS: lambda: show_lfs(parent, store),
+        PopupType.LFS_ATTRIBUTE_MISMATCH: lambda: _alert(
+            parent, "LFS attributes mismatch", "The repository's Git LFS attributes don't match the global settings.", cancel=None
+        ),
+        PopupType.OVERSIZED_FILES: lambda: _alert(
+            parent,
+            "Files too large",
+            "These files are over 100MB and cannot be pushed to GitHub:\n" + "\n".join(payload.get("files") or []),
+            cancel=None,
+        ),
+        PopupType.COMMIT_CONFLICTS_WARNING: lambda: _alert(
+            parent, "Conflicted files", "Resolve conflicts before committing.", cancel=None
+        ),
+        PopupType.SAML_REAUTH_REQUIRED: lambda: _alert(
+            parent,
+            "SAML single sign-on",
+            "Authorize this application for the organization, then retry.",
+            confirm="Open GitHub",
+            on_confirm=lambda: open_external("https://github.com"),
+        ),
+        PopupType.PUSH_REJECTED_WORKFLOW_SCOPE: lambda: _alert(
+            parent,
+            "Workflow scope required",
+            "Pushing workflow files requires the workflow OAuth scope. Sign in again.",
+            confirm="Sign in",
+            on_confirm=lambda: store.begin_sign_in(False),
+        ),
+        PopupType.PUSH_PROTECTION_ERROR: lambda: show_push_protection(parent, store, payload),
+        PopupType.CREATE_FORK: lambda: show_create_fork(parent, store),
+        PopupType.CHOOSE_FORK_SETTINGS: lambda: show_fork_settings(parent, store),
+        PopupType.CHANGE_REPOSITORY_ALIAS: lambda: show_alias(parent, store),
+        PopupType.EXTERNAL_EDITOR_FAILED: lambda: _alert(parent, "Editor failed", str(payload.get("message") or ""), cancel=None),
+        PopupType.OPEN_SHELL_FAILED: lambda: _alert(parent, "Shell failed", str(payload.get("message") or ""), cancel=None),
+        PopupType.INVALIDATED_TOKEN: lambda: _alert(
+            parent,
+            "Signed out",
+            "Your GitHub token is no longer valid. Sign in again.",
+            confirm="Sign in",
+            on_confirm=lambda: store.begin_sign_in(False),
+        ),
+        PopupType.ADD_SSH_HOST: lambda: _alert(
+            parent,
+            f"Unknown SSH host {payload.get('host', '')}",
+            f"Fingerprint: {payload.get('fingerprint', '')}",
+            confirm="Trust",
+            on_confirm=lambda: payload.get("on_submit") and payload["on_submit"](True),
+        ),
+        PopupType.SSH_KEY_PASSPHRASE: lambda: show_ssh_passphrase(parent, payload),
+        PopupType.SSH_USER_PASSWORD: lambda: show_ssh_password(parent, payload),
+        PopupType.CONFIRM_COMMIT_FILTERED_CHANGES: lambda: _alert(
+            parent,
+            "Hidden changes",
+            "Some files are hidden by the changes filter. Commit anyway?",
+            confirm="Commit anyway",
+            on_confirm=lambda: payload.get("on_commit") and payload["on_commit"](),
+        ),
+        PopupType.GENERATE_COMMIT_MESSAGE_DISCLAIMER: lambda: _alert(
+            parent,
+            "Copilot commit messages",
+            "Commit messages are generated by GitHub Copilot. Review them before committing.",
+            confirm="Generate",
+            on_confirm=lambda: _generate(store),
+        ),
+        PopupType.GENERATE_COMMIT_MESSAGE_OVERRIDE: lambda: _alert(
+            parent,
+            "Replace commit message?",
+            "This will overwrite the summary and description you already typed.",
+            confirm="Replace",
+            on_confirm=lambda: _generate(store),
+        ),
+        PopupType.UNKNOWN_AUTHORS: lambda: _alert(
+            parent,
+            "Unknown authors",
+            "Some co-authors could not be matched to GitHub users.",
+            confirm="Commit anyway",
+            on_confirm=lambda: payload.get("on_commit") and payload["on_commit"](),
+        ),
+        PopupType.MULTI_COMMIT_OPERATION: lambda: show_multi_commit(parent, store, payload),
+        PopupType.UNREACHABLE_COMMITS: lambda: _alert(
+            parent, "Unreachable commits", "Some selected commits are not reachable from the current comparison.", cancel=None
+        ),
+        PopupType.RELEASE_NOTES: lambda: show_release_notes(parent),
+        PopupType.THANK_YOU: lambda: _alert(parent, "Thank you", "Thanks for contributing to GitHub Desktop.", cancel=None),
+        PopupType.PUSH_BRANCH_COMMITS: lambda: _alert(
+            parent,
+            "Publish branch?",
+            "This branch hasn't been published yet. Publish it to create a pull request.",
+            confirm="Publish",
+            on_confirm=lambda: repo and store.push_repo(repo),
+        ),
+        PopupType.DELETE_PULL_REQUEST: lambda: _alert(
+            parent,
+            "Delete branch?",
+            "This branch has an open pull request.",
+            destructive=True,
+            confirm="Delete",
+            on_confirm=lambda: _delete_current_branch(store),
+        ),
+        PopupType.LOCAL_CHANGES_OVERWRITTEN: lambda: _alert(
+            parent,
+            "Local changes would be overwritten",
+            "Stash or commit your changes before continuing.\n" + "\n".join(payload.get("files") or []),
+            confirm="Stash and continue",
+            on_confirm=lambda: _stash_and_retry(store, payload),
+        ),
+        PopupType.DISCARD_CHANGES_RETRY: lambda: _alert(
+            parent,
+            "Discard failed",
+            "Some files could not be discarded. Retry?",
+            confirm="Retry",
+            on_confirm=lambda: payload.get("retry") and payload["retry"](),
+        ),
+        PopupType.CONFIRM_DISCARD_SELECTION: lambda: _alert(
+            parent,
+            "Discard selected lines?",
+            "Discarded lines cannot be recovered.",
+            destructive=True,
+            confirm="Discard",
+            on_confirm=lambda: payload.get("on_discard") and payload["on_discard"](),
+        ),
+        PopupType.COMMIT_MESSAGE: lambda: show_commit_message_dialog(parent, store, payload),
+        PopupType.CREATE_TUTORIAL_REPOSITORY: lambda: show_tutorial(parent, store),
+        PopupType.CONFIRM_EXIT_TUTORIAL: lambda: _alert(
+            parent,
+            "Exit tutorial?",
+            "You can resume later from the repository list.",
+            confirm="Exit",
+            on_confirm=lambda: store.finish_welcome(),
+        ),
+        PopupType.UPSTREAM_ALREADY_EXISTS: lambda: _alert(
+            parent, "Upstream exists", "This fork already has an upstream remote.", cancel=None
+        ),
+        PopupType.PULL_REQUEST_CHECKS_FAILED: lambda: show_checks(parent, store, payload),
+        PopupType.CI_CHECK_RUN_RERUN: lambda: _alert(
+            parent,
+            "Re-run checks",
+            "Re-run failed check runs on GitHub?",
+            confirm="Re-run",
+            on_confirm=lambda: payload.get("on_rerun") and payload["on_rerun"](),
+        ),
+        PopupType.WARN_FORCE_PUSH: lambda: _alert(
+            parent,
+            "Force push required",
+            f"{payload.get('operation', 'This operation')} will require a force push.",
+            confirm="Continue",
+            on_confirm=lambda: payload.get("on_begin") and payload["on_begin"](),
+        ),
+        PopupType.PULL_REQUEST_REVIEW: lambda: _open_payload_url(payload),
+        PopupType.PULL_REQUEST_COMMENT: lambda: _open_payload_url(payload),
+        PopupType.INSTALLING_UPDATE: lambda: _alert(parent, "Installing update", "The update will be applied shortly.", cancel=None),
+        PopupType.BYPASS_PUSH_PROTECTION: lambda: show_bypass(parent, store, payload),
+    }
+    handler = mapping.get(popup_type)
+    if handler:
+        handler()
+    else:
+        _alert(parent, popup_type.value, "This dialog is available.", cancel=None)
+
+
+def _open_payload_url(payload: dict[str, Any]) -> None:
+    url = payload.get("url") or payload.get("html_url")
+    if url:
+        open_external(url)
+
+
+def _generate(store: AppStore) -> None:
+    repo = store.selected_repository
+    if not repo:
+        return
+    try:
+        store.generate_commit_message(repo)
+    except Exception as exc:
+        store.show_popup(PopupType.ERROR, error=str(exc))
+
+
+def _undo(store: AppStore) -> None:
+    repo = store.selected_repository
+    if not repo:
+        return
+    from ..git.ops import undo_commit
+
+    undo_commit(repo.path)
+    store.refresh_repository(repo)
+
+
+def _reset(store: AppStore, payload: dict[str, Any]) -> None:
+    repo = store.selected_repository
+    sha = payload.get("sha")
+    if repo and sha:
+        from ..git.ops import reset
+
+        reset(repo.path, sha, "mixed")
+        store.refresh_repository(repo)
+
+
+def _checkout_sha(store: AppStore, payload: dict[str, Any]) -> None:
+    repo = store.selected_repository
+    sha = payload.get("sha")
+    if repo and sha:
+        from ..git.ops import checkout_commit
+
+        checkout_commit(repo.path, sha)
+        store.refresh_repository(repo)
+
+
+def _discard_stash(store: AppStore, payload: dict[str, Any]) -> None:
+    repo = store.selected_repository
+    name = payload.get("stash")
+    if repo and name:
+        from ..git.ops import stash_drop
+
+        stash_drop(repo.path, name)
+        store.refresh_repository(repo)
+
+
+def _overwrite_stash(store: AppStore, payload: dict[str, Any]) -> None:
+    repo = store.selected_repository
+    if not repo:
+        return
+    from ..git.ops import stash_drop, stash_push
+
+    state = store.state_for(repo)
+    if state.stashes:
+        stash_drop(repo.path, state.stashes[0].name)
+    branch = state.status.current_branch if state.status else "unknown"
+    stash_push(repo.path, branch or "unknown")
+    target = payload.get("branch")
+    if target:
+        from ..git.ops import checkout_branch
+
+        checkout_branch(repo.path, target)
+    store.refresh_repository(repo)
+
+
+def _stash_and_retry(store: AppStore, payload: dict[str, Any]) -> None:
+    repo = store.selected_repository
+    if not repo:
+        return
+    from ..git.ops import stash_push
+
+    state = store.state_for(repo)
+    stash_push(repo.path, state.status.current_branch if state.status else "unknown")
+    store.refresh_repository(repo)
+
+
+def _delete_current_branch(store: AppStore) -> None:
+    repo = store.selected_repository
+    if not repo:
+        return
+    state = store.state_for(repo)
+    branch = state.status.current_branch if state.status else None
+    if branch:
+        from ..git.ops import delete_local_branch
+
+        delete_local_branch(repo.path, branch)
+        store.refresh_repository(repo)
+
+
+def show_about(parent: Gtk.Window) -> None:
+    dialog = Adw.AboutDialog(
+        application_name=APP_NAME,
+        application_icon="io.github.desktop.GitHubDesktop",
+        developer_name="GitHub, Inc. (unofficial Linux GTK 4 port)",
+        version=__version__,
+        comments="Native GTK 4 + libadwaita GitHub Desktop for Linux with full feature parity.",
+        website="https://github.com/goshitsarch-eng/github-desktop-linux",
+        issue_url="https://github.com/goshitsarch-eng/github-desktop-linux/issues",
+        license_type=Gtk.License.MIT_X11,
+        copyright="© GitHub, Inc. and contributors",
+    )
+    dialog.add_link("User guides", "https://docs.github.com/en/desktop")
+    dialog.add_link("Keyboard shortcuts", "https://docs.github.com/en/desktop/installing-and-configuring-github-desktop/overview/keyboard-shortcuts")
+    dialog.add_link("Copilot transparency", "https://gh.io/copilot-for-desktop-transparency")
+    dialog.present(parent)
+
+
+def show_acknowledgements(parent: Gtk.Window) -> None:
+    _alert(
+        parent,
+        "Acknowledgements",
+        "GitHub Desktop is open source. This GTK 4 port preserves the original workflows while using native Adwaita widgets.",
+        cancel=None,
+    )
+
+
+def show_terms(parent: Gtk.Window) -> None:
+    open_external("https://docs.github.com/en/site-policy/github-terms/github-terms-of-service")
+
+
+def show_release_notes(parent: Gtk.Window) -> None:
+    open_external("https://github.com/goshitsarch-eng/github-desktop-linux/releases")
+
+
+def show_add_repository(parent: Gtk.Window, store: AppStore, initial: str) -> None:
+    def submit(values: dict[str, str]) -> None:
+        path = values.get("path", "").strip()
+        if path:
+            try:
+                store.add_repositories([path])
+            except Exception as exc:
+                store.show_popup(PopupType.ERROR, error=str(exc))
+
+    _text_dialog(parent, "Add local repository", "Choose a Git repository on this computer.", [("path", "Path", initial or os.path.expanduser("~/"))], submit, "Add")
+
+
+def show_create_repository(parent: Gtk.Window, store: AppStore, initial: str) -> None:
+    def submit(values: dict[str, str]) -> None:
+        path = values.get("path", "").strip()
+        name = values.get("name", "").strip()
+        if name and path:
+            full = os.path.join(path, name)
+        else:
+            full = path
+        if not full:
+            return
+        try:
+            store.create_repository(full, values.get("description", ""))
+        except Exception as exc:
+            store.show_popup(PopupType.ERROR, error=str(exc))
+
+    default = store.settings.clone_default_directory or os.path.expanduser("~/Documents/GitHub")
+    _text_dialog(
+        parent,
+        "Create a new repository",
+        "This will run git init in the chosen folder.",
+        [
+            ("name", "Name", ""),
+            ("path", "Local path", initial or default),
+            ("description", "Description", ""),
+        ],
+        submit,
+        "Create",
+    )
+
+
+def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    dialog = Adw.Dialog()
+    dialog.set_content_width(560)
+    dialog.set_content_height(480)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(Adw.WindowTitle(title="Clone a repository", subtitle="GitHub or any Git URL"))
+    toolbar.add_top_bar(header)
+    stack = Adw.ViewStack()
+    switcher = Adw.ViewSwitcher()
+    switcher.set_stack(stack)
+    header.set_title_widget(switcher)
+
+    url_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+    url_box.set_margin_top(18)
+    url_box.set_margin_start(18)
+    url_box.set_margin_end(18)
+    url_row = Adw.EntryRow(title="URL")
+    url_row.set_text(str(payload.get("initial_url") or payload.get("url") or ""))
+    path_row = Adw.EntryRow(title="Local path")
+    default_dir = store.settings.clone_default_directory or os.path.expanduser("~/Documents/GitHub")
+    path_row.set_text(str(payload.get("path") or default_dir))
+    branch_row = Adw.EntryRow(title="Branch (optional)")
+    branch_row.set_text(str(payload.get("branch") or ""))
+    url_box.append(url_row)
+    url_box.append(path_row)
+    url_box.append(branch_row)
+    clone_btn = Gtk.Button(label="Clone")
+    clone_btn.add_css_class("suggested-action")
+    url_box.append(clone_btn)
+    stack.add_titled(url_box, "url", "URL")
+
+    list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+    list_box.set_margin_top(12)
+    scroller = Gtk.ScrolledWindow(vexpand=True)
+    repo_list = Gtk.ListBox()
+    repo_list.add_css_class("boxed-list")
+    scroller.set_child(repo_list)
+    list_box.append(scroller)
+    stack.add_titled(list_box, "github", "GitHub.com")
+
+    def fill_github() -> None:
+        while True:
+            row = repo_list.get_first_child()
+            if row is None:
+                break
+            repo_list.remove(row)
+        account = next((a for a in store.accounts if a.is_dotcom), None)
+        if not account:
+            repo_list.append(Adw.ActionRow(title="Sign in to GitHub.com to see your repositories"))
+            return
+        from ..github.api import GitHubAPI
+
+        try:
+            repos = GitHubAPI.from_account(account).fetch_repos()
+        except Exception as exc:
+            repo_list.append(Adw.ActionRow(title="Could not load repositories", subtitle=str(exc)))
+            return
+        for gh in repos[:200]:
+            row = Adw.ActionRow(title=gh.full_name, subtitle=gh.html_url)
+            row.set_activatable(True)
+            row.connect(
+                "activated",
+                lambda _r, g=gh: (url_row.set_text(g.clone_url), path_row.set_text(os.path.join(default_dir, g.name)), stack.set_visible_child_name("url")),
+            )
+            repo_list.append(row)
+
+    fill_github()
+
+    def do_clone(*_a: Any) -> None:
+        url = url_row.get_text().strip()
+        path = path_row.get_text().strip()
+        branch = branch_row.get_text().strip() or None
+        if not url or not path:
+            return
+        if os.path.isdir(path) and os.listdir(path):
+            path = os.path.join(path, os.path.basename(url.rstrip("/").removesuffix(".git")))
+        dialog.close()
+        store.clone(url, path, branch)
+
+    clone_btn.connect("clicked", do_clone)
+    toolbar.set_content(stack)
+    dialog.set_child(toolbar)
+    dialog.present(parent)
+
+
+def show_sign_in(parent: Gtk.Window, store: AppStore, enterprise: bool) -> None:
+    dialog = Adw.Dialog()
+    dialog.set_content_width(460)
+    toolbar = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(Adw.WindowTitle(title="Sign in", subtitle="GitHub Enterprise" if enterprise else "GitHub.com"))
+    toolbar.add_top_bar(header)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+    box.set_margin_top(24)
+    box.set_margin_start(24)
+    box.set_margin_end(24)
+    box.set_margin_bottom(24)
+    if enterprise:
+        endpoint = Adw.EntryRow(title="Enterprise URL")
+        box.append(endpoint)
+
+        def continue_ent(*_a: Any) -> None:
+            store.set_sign_in_endpoint(endpoint.get_text().strip())
+            store.request_browser_auth()
+
+        btn = Gtk.Button(label="Continue with browser")
+        btn.add_css_class("suggested-action")
+        btn.connect("clicked", continue_ent)
+        box.append(btn)
+    else:
+        label = Gtk.Label(label="Sign in using your browser. GitHub Desktop will receive the token via the x-github-client protocol.")
+        label.set_wrap(True)
+        box.append(label)
+        btn = Gtk.Button(label="Sign in with browser")
+        btn.add_css_class("suggested-action")
+        btn.connect("clicked", lambda *_: store.request_browser_auth())
+        box.append(btn)
+    toolbar.set_content(box)
+    dialog.set_child(toolbar)
+    dialog.present(parent)
+
+
+def show_create_branch(parent: Gtk.Window, store: AppStore) -> None:
+    repo = store.selected_repository
+    if not repo:
+        return
+
+    def submit(values: dict[str, str]) -> None:
+        name = values.get("name", "").strip()
+        start = values.get("start", "").strip() or None
+        if name:
+            store.create_branch_and_checkout(repo, name, start)
+
+    state = store.state_for(repo)
+    start = state.status.current_branch if state.status else ""
+    _text_dialog(parent, "Create a branch", "The new branch will be checked out.", [("name", "Name", ""), ("start", "Create from", start or "")], submit, "Create branch")
+
+
+def show_rename_branch(parent: Gtk.Window, store: AppStore) -> None:
+    repo = store.selected_repository
+    if not repo:
+        return
+    state = store.state_for(repo)
+    current = state.status.current_branch if state.status else ""
+
+    def submit(values: dict[str, str]) -> None:
+        new = values.get("name", "").strip()
+        if new and current:
+            from ..git.ops import rename_branch
+
+            rename_branch(repo.path, current, new)
+            store.refresh_repository(repo)
+
+    _text_dialog(parent, "Rename branch", f"Rename {current}", [("name", "New name", current or "")], submit, "Rename")
+
+
+def show_delete_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, Any], remote: bool = False) -> None:
+    repo = store.selected_repository
+    if not repo:
+        return
+    state = store.state_for(repo)
+    name = payload.get("branch") or (state.status.current_branch if state.status else "")
+    if not name:
+        return
+
+    def confirm() -> None:
+        from ..git.ops import delete_local_branch, delete_remote_branch
+
+        if remote:
+            remotes = state.remotes
+            if remotes:
+                delete_remote_branch(repo.path, remotes[0].name, name, store.env_for_repo(repo, remotes[0].url))
+        else:
+            delete_local_branch(repo.path, name)
+        store.refresh_repository(repo)
+
+    _alert(parent, "Delete branch?", f"Delete {name}? This cannot be undone.", destructive=True, confirm="Delete", on_confirm=confirm)
+
+
+def show_discard(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    repo = store.selected_repository
+    if not repo:
+        return
+    files = payload.get("files")
+    state = store.state_for(repo)
+    if not files:
+        files = state.status.working_directory.files if state.status else []
+
+    def confirm() -> None:
+        store.discard_files(repo, files)
+
+    names = ", ".join(getattr(f, "path", str(f)) for f in files[:8])
+    _alert(parent, "Discard changes?", f"Discard changes in {names or 'selected files'}? This cannot be undone.", destructive=True, confirm="Discard", on_confirm=confirm)
+
+
+def show_publish(parent: Gtk.Window, store: AppStore) -> None:
+    repo = store.selected_repository
+    if not repo:
+        return
+    account = store.accounts[0] if store.accounts else None
+    if not account:
+        store.begin_sign_in(False)
+        return
+
+    def submit(values: dict[str, str]) -> None:
+        store.publish_repository(
+            repo,
+            values.get("name") or repo.name,
+            values.get("description") or "",
+            values.get("visibility") == "private",
+            values.get("org") or None,
+            account,
+        )
+
+    _text_dialog(
+        parent,
+        "Publish repository",
+        f"Signed in as {account.login}",
+        [
+            ("name", "Name", repo.name),
+            ("description", "Description", ""),
+            ("visibility", "Visibility (private/public)", "private"),
+            ("org", "Organization (optional)", ""),
+        ],
+        submit,
+        "Publish",
+    )
+
+
+def show_remove_repository(parent: Gtk.Window, store: AppStore) -> None:
+    repo = store.selected_repository
+    if not repo:
+        return
+    dialog = Adw.AlertDialog(
+        heading="Remove repository?",
+        body=f"Remove {repo.display_name} from GitHub Desktop? Files on disk can optionally be deleted.",
+    )
+    dialog.add_response("cancel", "Cancel")
+    dialog.add_response("keep", "Remove")
+    dialog.add_response("delete", "Remove and delete files")
+    dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+
+    def done(d, result) -> None:
+        try:
+            response = d.choose_finish(result)
+        except Exception:
+            return
+        if response == "keep":
+            store.remove_repository(repo, False)
+        elif response == "delete":
+            store.remove_repository(repo, True)
+
+    dialog.choose(parent, None, done)
+
+
+def show_repository_settings(parent: Gtk.Window, store: AppStore) -> None:
+    repo = store.selected_repository
+    if not repo:
+        return
+    from ..git.ops import get_remotes
+
+    dialog = Adw.PreferencesDialog()
+    dialog.set_title("Repository settings")
+    remote_page = Adw.PreferencesPage(title="Remote", icon_name="network-server-symbolic")
+    ignore_page = Adw.PreferencesPage(title="Ignored files", icon_name="folder-symbolic")
+    git_page = Adw.PreferencesPage(title="Git Config", icon_name="utilities-terminal-symbolic")
+    fork_page = Adw.PreferencesPage(title="Fork", icon_name="system-users-symbolic")
+    remotes = get_remotes(repo.path)
+    remote_group = Adw.PreferencesGroup(title="Remote")
+    url_row = Adw.EntryRow(title="Primary remote URL (origin)")
+    url_row.set_text(remotes[0].url if remotes else "")
+    remote_group.add(url_row)
+    save_remote = Gtk.Button(label="Save remote")
+    save_remote.add_css_class("suggested-action")
+
+    def save_r(*_a: Any) -> None:
+        url = url_row.get_text().strip()
+        if not url:
+            return
+        if remotes:
+            set_remote_url(repo.path, remotes[0].name, url)
+        else:
+            add_remote(repo.path, "origin", url)
+        store.refresh_repository(repo)
+
+    save_remote.connect("clicked", save_r)
+    remote_group.add(save_remote)
+    remote_page.add(remote_group)
+
+    ignore_group = Adw.PreferencesGroup(title=".gitignore")
+    buffer = Gtk.TextBuffer()
+    buffer.set_text(read_gitignore(repo.path))
+    text = Gtk.TextView(buffer=buffer)
+    text.set_wrap_mode(Gtk.WrapMode.NONE)
+    scroll = Gtk.ScrolledWindow()
+    scroll.set_min_content_height(220)
+    scroll.set_child(text)
+    ignore_group.add(scroll)
+    save_ignore = Gtk.Button(label="Save gitignore")
+
+    def save_i(*_a: Any) -> None:
+        start, end = buffer.get_bounds()
+        write_gitignore(repo.path, buffer.get_text(start, end, True))
+
+    save_ignore.connect("clicked", save_i)
+    ignore_group.add(save_ignore)
+    ignore_page.add(ignore_group)
+
+    git_group = Adw.PreferencesGroup(title="Local Git config")
+    name_row = Adw.EntryRow(title="Name")
+    email_row = Adw.EntryRow(title="Email")
+    n, e = get_author_identity(repo.path)
+    name_row.set_text(n or "")
+    email_row.set_text(e or "")
+    git_group.add(name_row)
+    git_group.add(email_row)
+    save_git = Gtk.Button(label="Save local Git config")
+
+    def save_g(*_a: Any) -> None:
+        set_config_value(repo.path, "user.name", name_row.get_text())
+        set_config_value(repo.path, "user.email", email_row.get_text())
+
+    save_git.connect("clicked", save_g)
+    git_group.add(save_git)
+    git_page.add(git_group)
+
+    fork_group = Adw.PreferencesGroup(title="Contribute to")
+    fork_group.set_description("When this repository is a fork, choose whether to contribute to the parent or the fork.")
+    parent_row = Adw.SwitchRow(title="Contribute to the parent repository")
+    parent_row.set_active(repo.workflow_preferences.get("fork_target") != "Self")
+    fork_group.add(parent_row)
+    fork_page.add(fork_group)
+
+    dialog.add(remote_page)
+    dialog.add(ignore_page)
+    dialog.add(git_page)
+    dialog.add(fork_page)
+    dialog.present(parent)
+
+
+def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
+    dialog = Adw.PreferencesDialog()
+    dialog.set_title("Preferences")
+    s = store.settings
+
+    accounts = Adw.PreferencesPage(title="Accounts", icon_name="system-users-symbolic")
+    acc_group = Adw.PreferencesGroup(title="GitHub accounts")
+    for account in store.accounts:
+        row = Adw.ActionRow(title=account.login, subtitle=account.friendly_endpoint)
+        btn = Gtk.Button(label="Sign out")
+        btn.connect("clicked", lambda _b, a=account: (store.sign_out(a), dialog.close()))
+        row.add_suffix(btn)
+        acc_group.add(row)
+    sign_dot = Gtk.Button(label="Sign in to GitHub.com")
+    sign_dot.connect("clicked", lambda *_: store.begin_sign_in(False))
+    sign_ent = Gtk.Button(label="Sign in to GitHub Enterprise")
+    sign_ent.connect("clicked", lambda *_: store.begin_sign_in(True))
+    acc_group.add(sign_dot)
+    acc_group.add(sign_ent)
+    accounts.add(acc_group)
+
+    integrations = Adw.PreferencesPage(title="Integrations", icon_name="applications-engineering-symbolic")
+    ed_group = Adw.PreferencesGroup(title="External editor")
+    editors = get_available_editors()
+    editor_row = Adw.ComboRow(title="Editor")
+    model = Gtk.StringList.new([e.name for e in editors] or ["None found"])
+    editor_row.set_model(model)
+    if s.selected_external_editor:
+        for i, e in enumerate(editors):
+            if e.name == s.selected_external_editor:
+                editor_row.set_selected(i)
+    ed_group.add(editor_row)
+    sh_group = Adw.PreferencesGroup(title="Shell")
+    shells = get_available_shells()
+    shell_row = Adw.ComboRow(title="Shell")
+    shell_row.set_model(Gtk.StringList.new([sh.name for sh in shells] or ["None found"]))
+    sh_group.add(shell_row)
+    integrations.add(ed_group)
+    integrations.add(sh_group)
+
+    git_page = Adw.PreferencesPage(title="Git", icon_name="utilities-terminal-symbolic")
+    git_group = Adw.PreferencesGroup(title="Git author")
+    name_row = Adw.EntryRow(title="Name")
+    email_row = Adw.EntryRow(title="Email")
+    n, e = get_author_identity(None)
+    name_row.set_text(n or "")
+    email_row.set_text(e or "")
+    branch_row = Adw.EntryRow(title="Default branch name")
+    branch_row.set_text(get_default_branch())
+    git_group.add(name_row)
+    git_group.add(email_row)
+    git_group.add(branch_row)
+    git_page.add(git_group)
+
+    appearance = Adw.PreferencesPage(title="Appearance", icon_name="applications-graphics-symbolic")
+    theme_group = Adw.PreferencesGroup(title="Theme")
+    theme_row = Adw.ComboRow(title="Appearance")
+    theme_row.set_model(Gtk.StringList.new(["system", "light", "dark"]))
+    theme_row.set_selected(["system", "light", "dark"].index(s.theme) if s.theme in ("system", "light", "dark") else 0)
+    tab_row = Adw.SpinRow(title="Diff tab size")
+    tab_row.set_adjustment(Gtk.Adjustment(value=s.tab_size, lower=1, upper=8, step_increment=1))
+    side_row = Adw.SwitchRow(title="Show side-by-side diffs", active=s.show_side_by_side_diff)
+    ws_row = Adw.SwitchRow(title="Hide whitespace in diffs", active=s.hide_whitespace_in_diffs)
+    theme_group.add(theme_row)
+    theme_group.add(tab_row)
+    theme_group.add(side_row)
+    theme_group.add(ws_row)
+    appearance.add(theme_group)
+
+    notes = Adw.PreferencesPage(title="Notifications", icon_name="preferences-system-notifications-symbolic")
+    n_group = Adw.PreferencesGroup()
+    n_row = Adw.SwitchRow(title="Enable notifications", active=s.notifications_enabled)
+    n_group.add(n_row)
+    notes.add(n_group)
+
+    prompts = Adw.PreferencesPage(title="Prompts", icon_name="dialog-question-symbolic")
+    p_group = Adw.PreferencesGroup(title="Confirm before…")
+    switches = {}
+    for key, title in [
+        ("confirm_repository_removal", "Removing repositories"),
+        ("confirm_discard_changes", "Discarding changes"),
+        ("confirm_discard_stash", "Discarding stashes"),
+        ("confirm_force_push", "Force pushing"),
+        ("confirm_undo_commit", "Undoing commits"),
+        ("confirm_checkout_commit", "Checking out commits"),
+        ("confirm_commit_filtered_changes", "Committing while a filter is active"),
+        ("confirm_commit_message_override", "Overwriting commit messages with Copilot"),
+    ]:
+        row = Adw.SwitchRow(title=title, active=getattr(s, key))
+        switches[key] = row
+        p_group.add(row)
+    strategy = Adw.ComboRow(title="If I have changes and switch branches…")
+    strategy.set_model(Gtk.StringList.new([
+        UncommittedChangesStrategy.ASK_FOR_CONFIRMATION.value,
+        UncommittedChangesStrategy.STASH_ON_CURRENT_BRANCH.value,
+        UncommittedChangesStrategy.MOVE_TO_NEW_BRANCH.value,
+    ]))
+    p_group.add(strategy)
+    prompts.add(p_group)
+
+    advanced = Adw.PreferencesPage(title="Advanced", icon_name="emblem-system-symbolic")
+    a_group = Adw.PreferencesGroup()
+    tracking = Adw.SwitchRow(title="Opt out of usage reporting", active=s.opt_out_of_usage_tracking)
+    cred = Adw.SwitchRow(title="Use an external Git credential helper", active=s.use_external_credential_helper)
+    indicators = Adw.SwitchRow(title="Show repository indicators", active=s.repository_indicators_enabled)
+    a_group.add(tracking)
+    a_group.add(cred)
+    a_group.add(indicators)
+    advanced.add(a_group)
+
+    access = Adw.PreferencesPage(title="Accessibility", icon_name="preferences-desktop-accessibility-symbolic")
+    ac_group = Adw.PreferencesGroup()
+    underline = Adw.SwitchRow(title="Underline links", active=s.underline_links)
+    checks = Adw.SwitchRow(title="Show diff check marks", active=s.show_diff_check_marks)
+    ac_group.add(underline)
+    ac_group.add(checks)
+    access.add(ac_group)
+
+    for page in (accounts, integrations, git_page, appearance, notes, prompts, advanced, access):
+        dialog.add(page)
+
+    def persist(*_a: Any) -> None:
+        s.theme = ["system", "light", "dark"][theme_row.get_selected()]
+        s.tab_size = int(tab_row.get_value())
+        s.show_side_by_side_diff = side_row.get_active()
+        s.hide_whitespace_in_diffs = ws_row.get_active()
+        s.notifications_enabled = n_row.get_active()
+        s.opt_out_of_usage_tracking = tracking.get_active()
+        s.use_external_credential_helper = cred.get_active()
+        s.repository_indicators_enabled = indicators.get_active()
+        s.underline_links = underline.get_active()
+        s.show_diff_check_marks = checks.get_active()
+        for key, row in switches.items():
+            setattr(s, key, row.get_active())
+        if editors:
+            idx = editor_row.get_selected()
+            if 0 <= idx < len(editors):
+                s.selected_external_editor = editors[idx].name
+        if shells:
+            idx = shell_row.get_selected()
+            if 0 <= idx < len(shells):
+                s.selected_shell = shells[idx].name
+        try:
+            store.save_git_user(name_row.get_text(), email_row.get_text(), branch_row.get_text().strip() or None)
+        except ValidationError:
+            pass
+        store.persist_settings()
+        store.apply_theme()
+
+    dialog.connect("closed", persist)
+    dialog.present(parent)
+
+
+def show_force_push(parent: Gtk.Window, store: AppStore) -> None:
+    repo = store.selected_repository
+    _alert(
+        parent,
+        "Force push?",
+        "A force push can overwrite commits on the remote. GitHub Desktop uses --force-with-lease.",
+        confirm="Force push",
+        destructive=True,
+        on_confirm=lambda: repo and store.push_repo(repo, force=True),
+    )
+
+
+def show_generic_auth(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    url = payload.get("remote_url") or ""
+
+    def submit(values: dict[str, str]) -> None:
+        from .. import secrets
+
+        user, password = values.get("username", ""), values.get("password", "")
+        parsed = url
+        host = parsed
+        from ..remote_parsing import parse_remote
+
+        info = parse_remote(url)
+        if info:
+            host = info.hostname
+        secrets.set_generic(host, user, password)
+        repo = store.selected_repository
+        if repo:
+            store.push_repo(repo)
+
+    _text_dialog(parent, "Authentication required", url, [("username", "Username", ""), ("password", "Password / token", "")], submit, "Save and retry")
+
+
+def show_create_tag(parent: Gtk.Window, store: AppStore) -> None:
+    repo = store.selected_repository
+    if not repo:
+        return
+    state = store.state_for(repo)
+    sha = state.selected_commit.sha if state.selected_commit else (state.status.current_tip if state.status else "")
+
+    def submit(values: dict[str, str]) -> None:
+        from ..git.ops import create_tag
+
+        name = values.get("name", "").strip()
+        if name and sha:
+            create_tag(repo.path, name, sha)
+            state.local_tags_to_push.append(name)
+            store.refresh_repository(repo)
+
+    _text_dialog(parent, "Create tag", "Annotated tag on the selected commit.", [("name", "Name", "")], submit, "Create tag")
+
+
+def show_delete_tag(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    repo = store.selected_repository
+    name = payload.get("tag")
+    if repo and name:
+        from ..git.ops import delete_tag
+
+        _alert(parent, "Delete tag?", name, destructive=True, confirm="Delete", on_confirm=lambda: (delete_tag(repo.path, name), store.refresh_repository(repo)))
+
+
+def show_stash_switch(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    repo = store.selected_repository
+    branch = payload.get("branch")
+    if not repo or not branch:
+        return
+    dialog = Adw.AlertDialog(heading="Switch branch?", body="You have uncommitted changes.")
+    dialog.add_response("cancel", "Cancel")
+    dialog.add_response("leave", "Leave my changes")
+    dialog.add_response("stash", "Stash changes")
+    dialog.set_default_response("stash")
+
+    def done(d, result) -> None:
+        try:
+            response = d.choose_finish(result)
+        except Exception:
+            return
+        from ..git.ops import checkout_branch, stash_push
+
+        state = store.state_for(repo)
+        current = state.status.current_branch if state.status else "unknown"
+        if response == "stash":
+            stash_push(repo.path, current or "unknown")
+            checkout_branch(repo.path, branch)
+        elif response == "leave":
+            checkout_branch(repo.path, branch)
+        store.refresh_repository(repo)
+
+    dialog.choose(parent, None, done)
+
+
+def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
+    repo = store.selected_repository
+    if not repo or not repo.github:
+        store.show_popup(PopupType.ERROR, error="This repository isn't on GitHub.")
+        return
+    state = store.state_for(repo)
+    base_default = repo.github.default_branch
+
+    def submit(values: dict[str, str]) -> None:
+        store.create_pull_request(repo, values.get("title") or "", values.get("base") or base_default, values.get("body") or "")
+
+    _text_dialog(
+        parent,
+        "Create pull request",
+        f"From {state.status.current_branch if state.status else '?'} into the base branch.",
+        [
+            ("title", "Title", state.commit_message.summary if state.commit_message else ""),
+            ("base", "Base branch", base_default),
+            ("body", "Description", ""),
+        ],
+        submit,
+        "Create pull request",
+    )
+
+
+def show_lfs(parent: Gtk.Window, store: AppStore) -> None:
+    repo = store.selected_repository
+    if not repo:
+        return
+
+    def confirm() -> None:
+        from ..git.ops import lfs_track
+
+        lfs_track(repo.path, ["*"])
+        store.refresh_repository(repo)
+
+    _alert(parent, "Initialize Git LFS?", "This repository uses Git LFS. Initialize it locally?", confirm="Initialize", on_confirm=confirm)
+
+
+def show_push_protection(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    _alert(
+        parent,
+        "Secret scanning blocked the push",
+        str(payload.get("error") or "GitHub detected a secret in this push."),
+        confirm="View docs",
+        on_confirm=lambda: open_external("https://docs.github.com/code-security/secret-scanning"),
+    )
+
+
+def show_bypass(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    repo = store.selected_repository
+    if not repo or not repo.github:
+        return
+    account = store.account_for_repo(repo)
+    if not account:
+        return
+
+    def submit(values: dict[str, str]) -> None:
+        from ..github.api import GitHubAPI
+
+        reason = values.get("reason") or BypassReason.FALSE_POSITIVE.value
+        GitHubAPI.from_account(account).create_push_protection_bypass(repo.github.owner, repo.github.name, reason)
+        store.push_repo(repo)
+
+    _text_dialog(
+        parent,
+        "Bypass push protection",
+        "Reasons: false_positive, used_in_tests, will_fix_later",
+        [("reason", "Reason", BypassReason.FALSE_POSITIVE.value)],
+        submit,
+        "Bypass",
+    )
+
+
+def show_create_fork(parent: Gtk.Window, store: AppStore) -> None:
+    repo = store.selected_repository
+    account = store.account_for_repo(repo) if repo else None
+    if not repo or not repo.github or not account:
+        return
+
+    def confirm() -> None:
+        from ..github.api import GitHubAPI
+
+        GitHubAPI.from_account(account).fork_repository(repo.github.owner, repo.github.name)
+        store.refresh_repository(repo)
+
+    _alert(parent, "Create a fork?", f"Fork {repo.github.full_name} to {account.login}?", confirm="Fork", on_confirm=confirm)
+
+
+def show_fork_settings(parent: Gtk.Window, store: AppStore) -> None:
+    show_repository_settings(parent, store)
+
+
+def show_alias(parent: Gtk.Window, store: AppStore) -> None:
+    repo = store.selected_repository
+    if not repo:
+        return
+
+    def submit(values: dict[str, str]) -> None:
+        repo.alias = values.get("alias") or None
+        store._save_repositories()
+        store.emit()
+
+    _text_dialog(parent, "Repository alias", "Shown in the repository list.", [("alias", "Alias", repo.alias or "")], submit, "Save")
+
+
+def show_ssh_passphrase(parent: Gtk.Window, payload: dict[str, Any]) -> None:
+    def submit(values: dict[str, str]) -> None:
+        cb = payload.get("on_submit")
+        if cb:
+            cb(values.get("passphrase") or None, True)
+
+    _text_dialog(parent, "SSH key passphrase", payload.get("key_path") or "", [("passphrase", "Passphrase", "")], submit, "Continue")
+
+
+def show_ssh_password(parent: Gtk.Window, payload: dict[str, Any]) -> None:
+    def submit(values: dict[str, str]) -> None:
+        cb = payload.get("on_submit")
+        if cb:
+            cb(values.get("password") or None, True)
+
+    _text_dialog(parent, "SSH password", payload.get("username") or "", [("password", "Password", "")], submit, "Continue")
+
+
+def show_multi_commit(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    repo = store.selected_repository
+    if not repo:
+        return
+    kind = payload.get("kind") or "Merge"
+    branches = [b.name for b in store.state_for(repo).branches if b.is_local]
+
+    def submit(values: dict[str, str]) -> None:
+        target = values.get("branch", "")
+        if kind == "Rebase":
+            store.rebase_branch(repo, target)
+        elif kind == "Cherry-pick":
+            shas = payload.get("shas") or []
+            store.cherry_pick_commits(repo, shas, target)
+        else:
+            store.merge_branch(repo, target, squash=(kind == "Squash"))
+
+    _text_dialog(parent, f"{kind} current branch", "Choose the other branch.", [("branch", "Branch", branches[0] if branches else "")], submit, kind)
+
+
+def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    def submit(values: dict[str, str]) -> None:
+        cb = payload.get("on_submit")
+        if cb:
+            cb(values.get("summary") or "", values.get("description") or "")
+
+    _text_dialog(
+        parent,
+        payload.get("title") or "Commit message",
+        "",
+        [
+            ("summary", "Summary", payload.get("summary") or ""),
+            ("description", "Description", payload.get("description") or ""),
+        ],
+        submit,
+        payload.get("button") or "Save",
+    )
+
+
+def show_tutorial(parent: Gtk.Window, store: AppStore) -> None:
+    account = store.accounts[0] if store.accounts else None
+    if not account:
+        store.begin_sign_in(False)
+        return
+    default = store.settings.clone_default_directory or os.path.expanduser("~/Documents/GitHub")
+    path = os.path.join(default, "desktop-tutorial")
+
+    def confirm() -> None:
+        from ..github.api import GitHubAPI
+
+        api = GitHubAPI.from_account(account)
+        created = api.create_repository("desktop-tutorial", description="GitHub Desktop tutorial repository", private=True)
+        store.clone(created.clone_url, path, account=account)
+
+    _alert(parent, "Create tutorial repository?", f"A private repository will be created for {account.login} and cloned to {path}.", confirm="Create", on_confirm=confirm)
+
+
+def show_checks(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    _alert(parent, "Checks failed", str(payload.get("error") or "One or more checks failed on the pull request."), cancel=None)

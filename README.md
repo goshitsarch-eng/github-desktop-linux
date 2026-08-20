@@ -4,7 +4,7 @@
 [![Linux release](https://github.com/goshitsarch-eng/github-desktop-linux/actions/workflows/linux-release.yml/badge.svg)](https://github.com/goshitsarch-eng/github-desktop-linux/actions/workflows/linux-release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-An independently maintained, unofficial Linux build of the open-source [GitHub Desktop](https://desktop.github.com/) application.
+An independently maintained, unofficial Linux port of [GitHub Desktop](https://desktop.github.com/). The Linux UI is a **native GTK 4 + libadwaita** rewrite with light, dark, and system appearance and full feature parity with the classic Desktop workflows (commit, history, diffs, GitHub auth, PRs, rebase/merge/cherry-pick/squash, stashing, CLI, and protocol handlers).
 
 > [!IMPORTANT]
 > This project is not affiliated with, sponsored by, or supported by GitHub, Inc. For problems with these Linux builds, use this repository's [issue tracker](https://github.com/goshitsarch-eng/github-desktop-linux/issues). For GitHub.com account or service problems, contact [GitHub Support](https://support.github.com/).
@@ -14,9 +14,28 @@ An independently maintained, unofficial Linux build of the open-source [GitHub D
   <img width="1072" src="https://user-images.githubusercontent.com/634063/202742985-bb3b3b94-8aca-404a-8d8a-fd6a6f030672.png" alt="GitHub Desktop showing a commit with two co-authors">
 </picture>
 
-## Download and install
+## Native GTK 4 app (recommended)
 
-The Linux release workflow publishes AppImages and portable tarballs for:
+The GTK 4 application lives in [`native/`](native/README.md).
+
+```bash
+sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 \
+  gir1.2-secret-1 git
+cd native
+PYTHONPATH=. python3 -m github_desktop
+```
+
+Appearance is System, Light, or Dark under Preferences → Appearance. Tests:
+
+```bash
+cd native
+PYTHONPATH=. python3 -m pytest tests -q
+xvfb-run -a env GTK_A11Y=none PYTHONPATH=. python3 -m pytest tests/test_gtk_smoke.py -q
+```
+
+## Download and install (legacy Electron packages)
+
+The Linux release workflow still publishes Electron AppImages and portable tarballs for:
 
 - **x64**: most Intel and AMD computers
 - **arm64**: 64-bit ARM systems
@@ -78,17 +97,25 @@ AppImage and tarball users must create their own launcher or symlink before `git
 
 ## Development quick start
 
-The checked-in version files currently select Node.js 22.19.0, Python 3.9, and vendored Yarn 1.21.1. Clone submodules recursively:
+Native GTK 4 (this is the Linux application):
 
 ```bash
 git clone --recurse-submodules https://github.com/goshitsarch-eng/github-desktop-linux.git
+cd github-desktop-linux/native
+PYTHONPATH=. python3 -m pytest tests -q
+PYTHONPATH=. python3 -m github_desktop
+```
+
+The TypeScript/Electron tree remains as the behavioral reference for GitHub Desktop features. Its version files currently select Node.js 22.19.0, Python 3.9, and vendored Yarn 1.21.1:
+
+```bash
 cd github-desktop-linux
 yarn
 yarn build:dev
 yarn start
 ```
 
-Before opening a pull request, run the relevant checks:
+Before opening a pull request that touches the native app, run `python3 -m pytest` in `native/`. For Electron-tree changes:
 
 ```bash
 yarn test

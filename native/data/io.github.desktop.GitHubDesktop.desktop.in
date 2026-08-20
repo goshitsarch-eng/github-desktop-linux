@@ -1,0 +1,14 @@
+[Desktop Entry]
+Name=GitHub Desktop
+GenericName=Git client
+Comment=Native GTK 4 GitHub Desktop for Linux
+Exec=@bindir@/github-desktop %U
+Icon=io.github.desktop.GitHubDesktop
+Terminal=false
+Type=Application
+Categories=Development;RevisionControl;
+Keywords=git;github;vcs;
+MimeType=x-scheme-handler/x-github-client;x-scheme-handler/x-github-desktop-auth;x-scheme-handler/x-github-desktop-dev-auth;
+StartupNotify=true
+StartupWMClass=io.github.desktop.GitHubDesktop
+DBusActivatable=false
