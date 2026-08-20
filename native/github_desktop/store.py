@@ -211,6 +211,7 @@ class RepositoryViewState:
     diff_comments: list = field(default_factory=list)
     repo_rules: RepoRulesInfo = field(default_factory=RepoRulesInfo)
     protected_branches: list[str] = field(default_factory=list)
+    commit_to_amend: Commit | None = None
 
 
 class AppStore:
@@ -1017,8 +1018,9 @@ class AppStore:
         state = self.state_for(repo)
         if not state.status:
             return
+        amend = amend or state.commit_to_amend is not None
         files = [f for f in state.status.working_directory.files if f.include]
-        if not files:
+        if not files and not amend:
             raise ValidationError("No files selected for commit")
         filtered = (
             state.file_filter != ChangesListFilter.ALL.value
@@ -1080,8 +1082,9 @@ class AppStore:
         state = self.state_for(repo)
         if not state.status:
             return
+        amend = amend or state.commit_to_amend is not None
         files = [f for f in state.status.working_directory.files if f.include]
-        if not files:
+        if not files and not amend:
             raise ValidationError("No files selected for commit")
         oversized = []
         for file in files:
@@ -1108,6 +1111,7 @@ class AppStore:
                 self.show_popup(PopupType.ERROR, error=str(exc))
             else:
                 state.commit_message = CommitMessage()
+                state.commit_to_amend = None
                 self.refresh_repository(repo)
             self.emit()
 
@@ -1557,6 +1561,33 @@ class AppStore:
 
     def amend_last(self, repo: Repository, summary: str, description: str = "") -> None:
         self.commit(repo, summary, description, amend=True)
+
+    def start_amending(self, repo: Repository, *, continue_with_force_push: bool = False) -> None:
+        state = self.state_for(repo)
+        if not state.commits:
+            return
+        commit = state.commits[0]
+        has_upstream = bool(state.status and state.status.current_upstream_branch)
+        local = (not has_upstream) or commit.sha in (state.local_commit_shas or [])
+        if (
+            not continue_with_force_push
+            and not local
+            and (self.settings.confirm_force_push or self.settings.ask_for_confirmation_on_force_push)
+        ):
+            self.show_popup(
+                PopupType.WARN_FORCE_PUSH,
+                operation="Amend",
+                on_begin=lambda: self.start_amending(repo, continue_with_force_push=True),
+            )
+            return
+        state.commit_to_amend = commit
+        state.commit_message = CommitMessage(summary=commit.summary, description=commit.body)
+        self.set_section(RepositorySectionTab.CHANGES)
+        self.emit()
+
+    def stop_amending(self, repo: Repository) -> None:
+        self.state_for(repo).commit_to_amend = None
+        self.emit()
 
     def view_commit_on_github(self, repo: Repository, sha: str) -> None:
         if repo.github:

@@ -1658,6 +1658,9 @@ def show_lfs(parent: Gtk.Window, store: AppStore) -> None:
 
     def confirm(*_a: Any) -> None:
         items = [p for p in patterns.get_text().split() if p]
+        from ..git.ops import install_global_lfs_filters, lfs_track
+
+        install_global_lfs_filters()
         lfs_track(repo.path, items or ["*"])
         dialog.close()
         store.refresh_repository(repo)

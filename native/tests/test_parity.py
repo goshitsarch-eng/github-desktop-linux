@@ -55,6 +55,8 @@ REQUIRED_GIT_FUNCS = [
     "get_ahead_behind_range",
     "get_boolean_config_value",
     "warn_about_remote_commits",
+    "install_global_lfs_filters",
+    "install_lfs_hooks",
 ]
 
 
@@ -185,5 +187,7 @@ def test_window_actions_cover_menus() -> None:
         "I understand",
         "Copilot is powered by AI",
         "Able to merge automatically",
+        "Stop amending",
+        "most recent commit",
     ]:
         assert phrase in src

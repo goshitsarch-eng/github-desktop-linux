@@ -1211,9 +1211,23 @@ def append_ignore_rule(repo: str, pattern: str) -> None:
 
 
 def lfs_track(repo: str, patterns: Sequence[str]) -> None:
-    git(["lfs", "install"], repo, name="lfsInstall")
+    install_lfs_hooks(repo)
     for pattern in patterns:
         git(["lfs", "track", pattern], repo, name="lfsTrack")
+
+
+def install_global_lfs_filters(force: bool = False) -> None:
+    args = ["lfs", "install", "--skip-repo"]
+    if force:
+        args.append("--force")
+    git(args, os.path.expanduser("~"), success_exit_codes={0, 1, 128}, name="installGlobalLFSFilter")
+
+
+def install_lfs_hooks(repo: str, force: bool = False) -> None:
+    args = ["lfs", "install"]
+    if force:
+        args.append("--force")
+    git(args, repo, success_exit_codes={0, 1, 128}, name="installLFSHooks")
 
 
 def is_lfs_repo(repo: str) -> bool:

@@ -76,6 +76,8 @@ from .ops import (
     init_repository,
     interactive_rebase_todo,
     is_lfs_repo,
+    install_global_lfs_filters,
+    install_lfs_hooks,
     lfs_ls_files,
     lfs_patterns_from_gitattributes,
     lfs_track,

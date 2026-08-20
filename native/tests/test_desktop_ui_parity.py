@@ -113,3 +113,20 @@ def test_relocate_repository(isolated_config, git_repo, tmp_path) -> None:
     store.relocate_repository(repo, str(other))
     assert repo.path == str(other)
     assert not repo.is_missing
+
+
+def test_start_and_stop_amending(isolated_config, git_repo) -> None:
+    store = AppStore()
+    repos = store.add_repositories([str(git_repo)])
+    repo = repos[0]
+    from github_desktop.git.ops import get_commits, get_status
+
+    state = store.state_for(repo)
+    state.status = get_status(str(git_repo))
+    state.commits = get_commits(str(git_repo), limit=5)
+    state.local_commit_shas = [state.commits[0].sha]
+    store.start_amending(repo)
+    assert state.commit_to_amend is not None
+    assert state.commit_to_amend.sha == state.commits[0].sha
+    store.stop_amending(repo)
+    assert state.commit_to_amend is None

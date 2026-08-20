@@ -749,12 +749,16 @@ class MainWindow(Adw.ApplicationWindow):
         gen.set_action_name("win.generate-commit-message")
         undo = Gtk.Button(label="Undo")
         undo.set_action_name("win.undo-commit")
-        amend = Gtk.Button(label="Amend")
-        amend.connect("clicked", self._on_amend)
+        self._amend_btn = Gtk.Button(label="Amend")
+        self._amend_btn.connect("clicked", self._on_amend)
+        self._stop_amend_btn = Gtk.Button(label="Stop amending")
+        self._stop_amend_btn.set_visible(False)
+        self._stop_amend_btn.connect("clicked", self._on_stop_amend)
         btn_row.append(self._commit_btn)
         btn_row.append(gen)
         btn_row.append(undo)
-        btn_row.append(amend)
+        btn_row.append(self._amend_btn)
+        btn_row.append(self._stop_amend_btn)
         commit_box.append(self._summary)
         commit_box.append(self._summary_warn)
         commit_box.append(self._rules_warn)
@@ -908,10 +912,25 @@ class MainWindow(Adw.ApplicationWindow):
             self._view_stack.set_visible_child_name("history")
         else:
             self._view_stack.set_visible_child_name("changes")
-        if state.commit_message.summary and not self._summary.get_text():
+        if state.commit_to_amend is not None:
+            self._summary.set_text(state.commit_message.summary or state.commit_to_amend.summary)
+            self._description.get_buffer().set_text(state.commit_message.description or state.commit_to_amend.body)
+        elif state.commit_message.summary and not self._summary.get_text():
             self._summary.set_text(state.commit_message.summary)
-        if state.commit_message.description:
-            self._description.get_buffer().set_text(state.commit_message.description)
+            if state.commit_message.description:
+                self._description.get_buffer().set_text(state.commit_message.description)
+        amending = state.commit_to_amend is not None
+        if hasattr(self, "_commit_btn"):
+            if amending and state.status:
+                self._commit_btn.set_label(f"Amend {state.status.current_branch or 'last commit'}")
+            elif state.status and state.status.current_branch:
+                self._commit_btn.set_label(f"Commit to {state.status.current_branch}")
+            else:
+                self._commit_btn.set_label("Commit to branch")
+        if hasattr(self, "_amend_btn"):
+            self._amend_btn.set_visible(not amending)
+        if hasattr(self, "_stop_amend_btn"):
+            self._stop_amend_btn.set_visible(amending)
         self._update_commit_warnings()
 
     def _show_missing(self, repo) -> None:
@@ -1650,19 +1669,13 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_amend(self, *_args: object) -> None:
         repo = self.store.selected_repository
-        if not repo:
-            return
-        summary = self._summary.get_text().strip()
-        start, end = self._description.get_buffer().get_bounds()
-        description = self._description.get_buffer().get_text(start, end, True).strip()
-        state = self.store.state_for(repo)
-        if not summary and state.commits:
-            summary = state.commits[0].summary
-            description = state.commits[0].body
-        if not summary:
-            self._toast.add_toast(Adw.Toast(title="A commit summary is required"))
-            return
-        self.store.commit(repo, summary, description, amend=True)
+        if repo:
+            self.store.start_amending(repo)
+
+    def _on_stop_amend(self, *_args: object) -> None:
+        repo = self.store.selected_repository
+        if repo:
+            self.store.stop_amending(repo)
 
     def _resolve(self, path: str, resolution: ManualConflictResolution) -> None:
         repo = self.store.selected_repository
@@ -1834,6 +1847,11 @@ class MainWindow(Adw.ApplicationWindow):
             ahead_behind=state.ahead_behind,
             unpublished=unpublished,
         )
+        if state.commit_to_amend is not None:
+            warnings.insert(
+                0,
+                "Your changes will modify your most recent commit. Stop amending to make these changes as a new commit.",
+            )
         branch = state.status.current_branch if state.status else None
         if repo.github and repo.github.permissions == "read":
             warnings.insert(0, f"You don't have write access to {repo.name}. Want to create a fork?")
