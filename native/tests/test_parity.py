@@ -90,6 +90,7 @@ REQUIRED_GIT_FUNCS = [
     "find_forked_remotes_to_prune",
     "create_desktop_stash_entry",
     "discard_working_files",
+    "ensure_upstream_remote",
 ]
 
 
@@ -258,5 +259,13 @@ def test_window_actions_cover_menus() -> None:
         "github-desktop-",
         "GIT_ASKPASS",
         "The authenticity of host",
+        "Publish your repository to GitHub",
+        "Commit anyway",
+        "View stash",
+        "Re-authorization required",
+        "versioning-large-files",
+        "Contribute to the parent repository",
+        "Stash all changes?",
+        "placeholder_id",
     ]:
         assert phrase in src

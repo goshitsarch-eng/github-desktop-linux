@@ -63,6 +63,14 @@ APP_CSS = """
 .commit-box {
   padding: 8px;
 }
+.suggested-actions {
+  padding: 8px;
+}
+.suggested-action-card {
+  padding: 12px;
+  border-radius: 12px;
+  background-color: alpha(@card_bg_color, 0.6);
+}
 .co-author {
   font-size: 0.85rem;
   opacity: 0.8;

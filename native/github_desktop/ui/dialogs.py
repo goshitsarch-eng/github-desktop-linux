@@ -33,6 +33,7 @@ from ..models import (
     INVALID_GIT_AUTHOR_NAME_MESSAGE,
     ApplicationTheme,
     BypassReason,
+    ForkContributionTarget,
     PopupType,
     UncommittedChangesStrategy,
     git_author_name_is_valid,
@@ -258,22 +259,11 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         PopupType.CLI_INSTALLED: lambda: _alert(parent, "CLI installed", "The github command is available.", cancel=None),
         PopupType.INITIALIZE_LFS: lambda: show_lfs(parent, store),
         PopupType.LFS_ATTRIBUTE_MISMATCH: lambda: show_lfs_mismatch(parent, store),
-        PopupType.OVERSIZED_FILES: lambda: _alert(
-            parent,
-            "Files too large",
-            "These files are over 100MB and cannot be pushed to GitHub:\n" + "\n".join(payload.get("files") or []),
-            cancel=None,
-        ),
+        PopupType.OVERSIZED_FILES: lambda: show_oversized_files(parent, store, payload),
         PopupType.COMMIT_CONFLICTS_WARNING: lambda: _alert(
             parent, "Conflicted files", "Resolve conflicts before committing.", cancel=None
         ),
-        PopupType.SAML_REAUTH_REQUIRED: lambda: _alert(
-            parent,
-            "SAML single sign-on",
-            "Authorize this application for the organization, then retry.",
-            confirm="Open GitHub",
-            on_confirm=lambda: open_external("https://github.com"),
-        ),
+        PopupType.SAML_REAUTH_REQUIRED: lambda: show_saml_reauth(parent, store, payload),
         PopupType.PUSH_REJECTED_WORKFLOW_SCOPE: lambda: _alert(
             parent,
             "Workflow scope required",
@@ -319,13 +309,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
         PopupType.UNREACHABLE_COMMITS: lambda: show_unreachable_commits(parent, store, payload),
         PopupType.RELEASE_NOTES: lambda: show_release_notes(parent),
         PopupType.THANK_YOU: lambda: show_thank_you(parent, payload),
-        PopupType.PUSH_BRANCH_COMMITS: lambda: _alert(
-            parent,
-            "Publish branch?",
-            "This branch hasn't been published yet. Publish it to create a pull request.",
-            confirm="Publish",
-            on_confirm=lambda: repo and store.push_repo(repo),
-        ),
+        PopupType.PUSH_BRANCH_COMMITS: lambda: show_push_branch_commits(parent, store, payload),
         PopupType.DELETE_PULL_REQUEST: lambda: show_delete_pull_request(parent, store, payload),
         PopupType.LOCAL_CHANGES_OVERWRITTEN: lambda: _alert(
             parent,
@@ -358,9 +342,7 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
             confirm="Exit",
             on_confirm=lambda: store.exit_tutorial(),
         ),
-        PopupType.UPSTREAM_ALREADY_EXISTS: lambda: _alert(
-            parent, "Upstream exists", "This fork already has an upstream remote.", cancel=None
-        ),
+        PopupType.UPSTREAM_ALREADY_EXISTS: lambda: show_upstream_exists(parent, store, payload),
         PopupType.PULL_REQUEST_CHECKS_FAILED: lambda: show_checks(parent, store, payload),
         PopupType.CI_CHECK_RUN_RERUN: lambda: show_rerun_checks(parent, store, payload),
         PopupType.WARN_FORCE_PUSH: lambda: show_warn_force_push(parent, store, payload),
@@ -619,11 +601,150 @@ def _stash_and_retry(store: AppStore, payload: dict[str, Any]) -> None:
     repo = store.selected_repository
     if not repo:
         return
-    from ..git.ops import stash_push
+    from ..git.ops import checkout_branch, stash_push
 
     state = store.state_for(repo)
     stash_push(repo.path, state.status.current_branch if state.status else "unknown")
-    store.refresh_repository(repo)
+    retry = payload.get("retry")
+    if callable(retry):
+        retry()
+        return
+    kind = payload.get("retry_kind")
+    branch = payload.get("branch")
+    if kind == "checkout" and branch:
+        checkout_branch(repo.path, branch)
+        store.refresh_repository(repo)
+    elif kind == "pull":
+        store.pull_repo(repo)
+    elif kind == "push":
+        store.push_repo(repo)
+    elif kind == "fetch":
+        store.fetch_repo(repo)
+    else:
+        store.refresh_repository(repo)
+
+
+def show_oversized_files(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    files = payload.get("files") or []
+    listing = "\n".join(f"• {path}" for path in files)
+    dialog = Adw.AlertDialog(
+        heading="Files too large",
+        body=(
+            "The following files are over 100MB. If you commit these files, you will no longer "
+            "be able to push this repository to GitHub.com.\n\n"
+            f"{listing}\n\n"
+            "We recommend you avoid committing these files or use Git LFS to store large files on GitHub."
+        ),
+    )
+    dialog.add_response("cancel", "Cancel")
+    dialog.add_response("lfs", "Git LFS docs")
+    dialog.add_response("ok", "Commit anyway")
+    dialog.set_response_appearance("ok", Adw.ResponseAppearance.DESTRUCTIVE)
+    dialog.set_default_response("cancel")
+
+    def done(d, result) -> None:
+        try:
+            response = d.choose_finish(result)
+        except Exception:
+            return
+        if response == "lfs":
+            open_external("https://help.github.com/articles/versioning-large-files/")
+        elif response == "ok":
+            cb = payload.get("on_commit")
+            if cb:
+                cb()
+
+    dialog.choose(parent, None, done)
+
+
+def show_saml_reauth(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    org = payload.get("organization") or "the"
+    endpoint = payload.get("endpoint") or "https://github.com"
+    html = endpoint.replace("/api/v3", "").rstrip("/")
+    if html.endswith("api.github.com") or html == "https://api.github.com":
+        html = "https://github.com"
+    dialog = Adw.AlertDialog(
+        heading="Re-authorization required",
+        body=(
+            f'The "{org}" organization has enabled or enforced SAML SSO. To access this repository, '
+            "you must sign in again and grant GitHub Desktop permission to access the organization's "
+            "repositories.\n\nWould you like to open a browser to grant GitHub Desktop permission "
+            "to access the repository?"
+        ),
+    )
+    dialog.add_response("cancel", "Cancel")
+    dialog.add_response("ok", "Continue in browser")
+    dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+    dialog.set_default_response("ok")
+
+    def done(d, result) -> None:
+        try:
+            response = d.choose_finish(result)
+        except Exception:
+            return
+        if response == "ok":
+            enterprise = "github.com" not in html
+            store.begin_sign_in(enterprise)
+            if not enterprise:
+                store.request_browser_auth()
+
+    dialog.choose(parent, None, done)
+
+
+def show_push_branch_commits(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    unpublished = bool(payload.get("unpublished"))
+    unpushed = int(payload.get("unpushed") or 0)
+    if unpublished:
+        heading = "Publish branch?"
+        body = "This branch hasn't been published yet. Publish it to create a pull request."
+        confirm = "Publish branch"
+    else:
+        heading = "Push commits?"
+        noun = "commit" if unpushed == 1 else "commits"
+        body = f"You have {unpushed} unpushed {noun}. Push them before creating a pull request?"
+        confirm = "Push commits"
+
+    def confirm_cb() -> None:
+        cb = payload.get("on_confirm")
+        if cb:
+            cb()
+        else:
+            repo = store.selected_repository
+            if repo:
+                store.push_repo(repo)
+
+    _alert(parent, heading, body, confirm=confirm, on_confirm=confirm_cb)
+
+
+def show_upstream_exists(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    existing = payload.get("existing_url") or ""
+    parent_url = payload.get("parent_url") or ""
+    repo = store.selected_repository
+    dialog = Adw.AlertDialog(
+        heading="Upstream already exists",
+        body=(
+            "This fork already has an upstream remote, but it doesn't point at the parent repository.\n\n"
+            f"Current: {existing}\nParent: {parent_url}"
+        ),
+    )
+    dialog.add_response("ignore", "Ignore")
+    dialog.add_response("ok", "Update")
+    dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+    dialog.set_default_response("ok")
+
+    def done(d, result) -> None:
+        try:
+            response = d.choose_finish(result)
+        except Exception:
+            return
+        if not repo:
+            return
+        if response == "ok":
+            store.update_existing_upstream_remote(repo, parent_url)
+        else:
+            store.ignore_existing_upstream_remote(repo)
+
+    dialog.choose(parent, None, done)
 
 
 def _delete_current_branch(store: AppStore) -> None:
@@ -1461,7 +1582,18 @@ def show_repository_settings(parent: Gtk.Window, store: AppStore) -> None:
     fork_group.set_description("When this repository is a fork, choose whether to contribute to the parent or the fork.")
     parent_row = Adw.SwitchRow(title="Contribute to the parent repository")
     parent_row.set_active(repo.workflow_preferences.get("fork_target") != "Self")
+    parent_row.set_subtitle("When off, fetch, issues, and pull requests target the fork itself.")
     fork_group.add(parent_row)
+
+    def persist_fork(*_a: Any) -> None:
+        from ..models import ForkContributionTarget
+
+        store.set_fork_contribution_target(
+            repo,
+            ForkContributionTarget.PARENT if parent_row.get_active() else ForkContributionTarget.SELF,
+        )
+
+    parent_row.connect("notify::active", persist_fork)
     fork_page.add(fork_group)
 
     dialog.add(remote_page)
@@ -1613,6 +1745,11 @@ def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
     git_group.add(name_row)
     git_group.add(email_row)
     git_group.add(branch_row)
+    clone_row = Adw.EntryRow(title="Clone default directory")
+    clone_row.set_text(s.clone_default_directory or os.path.expanduser("~/Documents/GitHub"))
+    git_group.add(clone_row)
+    length_row = Adw.SwitchRow(title="Show commit summary length warning", active=s.show_commit_length_warning)
+    git_group.add(length_row)
     edit_cfg = Gtk.Button(label="Edit global Git config")
     edit_cfg.connect("clicked", lambda *_: (store.edit_global_git_config(), dialog.close()))
     git_group.add(edit_cfg)
@@ -1654,6 +1791,8 @@ def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
         ("confirm_checkout_commit", "Checking out commits"),
         ("confirm_commit_filtered_changes", "Committing while a filter is active"),
         ("confirm_commit_message_override", "Overwriting commit messages with Copilot"),
+        ("confirm_stash_all_changes", "Stashing all changes"),
+        ("confirm_discard_changes_permanently", "Discarding changes permanently"),
     ]:
         row = Adw.SwitchRow(title=title, active=getattr(s, key))
         switches[key] = row
@@ -1664,6 +1803,16 @@ def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
         UncommittedChangesStrategy.STASH_ON_CURRENT_BRANCH.value,
         UncommittedChangesStrategy.MOVE_TO_NEW_BRANCH.value,
     ]))
+    try:
+        strategy.set_selected(
+            [
+                UncommittedChangesStrategy.ASK_FOR_CONFIRMATION.value,
+                UncommittedChangesStrategy.STASH_ON_CURRENT_BRANCH.value,
+                UncommittedChangesStrategy.MOVE_TO_NEW_BRANCH.value,
+            ].index(s.uncommitted_changes_strategy)
+        )
+    except ValueError:
+        strategy.set_selected(0)
     p_group.add(strategy)
     prompts.add(p_group)
 
@@ -1681,8 +1830,10 @@ def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
     ac_group = Adw.PreferencesGroup()
     underline = Adw.SwitchRow(title="Underline links", active=s.underline_links)
     checks = Adw.SwitchRow(title="Show diff check marks", active=s.show_diff_check_marks)
+    spell = Adw.SwitchRow(title="Enable spellcheck in commit messages", active=s.spellcheck_enabled)
     ac_group.add(underline)
     ac_group.add(checks)
+    ac_group.add(spell)
     access.add(ac_group)
 
     for page in (accounts, integrations, git_page, appearance, notes, prompts, advanced, access):
@@ -1700,6 +1851,13 @@ def show_preferences(parent: Gtk.Window, store: AppStore) -> None:
         s.repository_indicators_enabled = indicators.get_active()
         s.underline_links = underline.get_active()
         s.show_diff_check_marks = checks.get_active()
+        s.spellcheck_enabled = spell.get_active()
+        s.clone_default_directory = clone_row.get_text().strip()
+        s.show_commit_length_warning = length_row.get_active()
+        model = strategy.get_model()
+        idx = strategy.get_selected()
+        if model is not None and idx >= 0:
+            s.uncommitted_changes_strategy = model.get_string(idx)
         for key, row in switches.items():
             setattr(s, key, row.get_active())
         idx = editor_row.get_selected()
@@ -1836,8 +1994,11 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     store.load_pr_preview(repo)
     state = store.state_for(repo)
     current = state.status.current_branch if state.status else "?"
+    from ..models import github_for_contribution
+
+    target = github_for_contribution(repo) or repo.github
     base_names = [b.name for b in state.branches if b.name != current]
-    default = state.pr_base_branch or repo.github.default_branch
+    default = state.pr_base_branch or (target.default_branch if target else repo.github.default_branch)
     if default and default not in base_names:
         base_names.insert(0, default)
 
@@ -2137,7 +2298,11 @@ def show_bypass(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) ->
         from ..github.api import GitHubAPI
 
         reason = values.get("reason") or BypassReason.FALSE_POSITIVE.value
-        GitHubAPI.from_account(account).create_push_protection_bypass(repo.github.owner, repo.github.name, reason)
+        secret = payload.get("secret")
+        placeholder_id = payload.get("placeholder_id") or (getattr(secret, "id", None) if secret is not None else None)
+        GitHubAPI.from_account(account).create_push_protection_bypass(
+            repo.github.owner, repo.github.name, reason, placeholder_id=placeholder_id
+        )
         store.push_repo(repo)
 
     _text_dialog(
@@ -2157,10 +2322,7 @@ def show_create_fork(parent: Gtk.Window, store: AppStore) -> None:
         return
 
     def confirm() -> None:
-        from ..github.api import GitHubAPI
-
-        GitHubAPI.from_account(account).fork_repository(repo.github.owner, repo.github.name)
-        store.refresh_repository(repo)
+        store.create_fork(repo)
 
     _alert(parent, "Create a fork?", f"Fork {repo.github.full_name} to {account.login}?", confirm="Fork", on_confirm=confirm)
 

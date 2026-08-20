@@ -110,6 +110,11 @@ class HistoryTabMode(StrEnum):
     COMPARE = "Compare"
 
 
+class ComparisonMode(StrEnum):
+    AHEAD = "Ahead"
+    BEHIND = "Behind"
+
+
 class FoldoutType(StrEnum):
     REPOSITORY = "Repository"
     BRANCH = "Branch"
@@ -350,6 +355,9 @@ class ManualConflictResolution(StrEnum):
 class ForkContributionTarget(StrEnum):
     PARENT = "Parent"
     SELF = "Self"
+
+
+UPSTREAM_REMOTE_NAME = "upstream"
 
 
 class BypassReason(StrEnum):
@@ -911,6 +919,60 @@ class Repository:
         return bool(self.github and self.github.fork and self.github.parent)
 
 
+def fork_contribution_target(repo: Repository) -> ForkContributionTarget:
+    raw = (repo.workflow_preferences or {}).get("fork_target")
+    if raw in (ForkContributionTarget.SELF, ForkContributionTarget.SELF.value):
+        return ForkContributionTarget.SELF
+    return ForkContributionTarget.PARENT
+
+
+def github_for_contribution(repo: Repository) -> GitHubRepository | None:
+    gh = repo.github
+    if gh is None:
+        return None
+    if repo.is_fork and fork_contribution_target(repo) == ForkContributionTarget.PARENT and gh.parent:
+        return gh.parent
+    return gh
+
+
+def github_to_dict(gh: GitHubRepository | None) -> dict[str, Any] | None:
+    if gh is None:
+        return None
+    return {
+        "name": gh.name,
+        "owner": gh.owner,
+        "html_url": gh.html_url,
+        "clone_url": gh.clone_url,
+        "ssh_url": gh.ssh_url,
+        "default_branch": gh.default_branch,
+        "private": gh.private,
+        "fork": gh.fork,
+        "endpoint": gh.endpoint,
+        "permissions": gh.permissions,
+        "has_issues": gh.has_issues,
+        "parent": github_to_dict(gh.parent),
+    }
+
+
+def github_from_dict(data: dict[str, Any] | None) -> GitHubRepository | None:
+    if not data:
+        return None
+    return GitHubRepository(
+        name=data.get("name") or "",
+        owner=data.get("owner") or "",
+        html_url=data.get("html_url") or "",
+        clone_url=data.get("clone_url") or "",
+        ssh_url=data.get("ssh_url") or "",
+        default_branch=data.get("default_branch") or "main",
+        private=bool(data.get("private")),
+        fork=bool(data.get("fork")),
+        parent=github_from_dict(data.get("parent") if isinstance(data.get("parent"), dict) else None),
+        endpoint=data.get("endpoint") or "https://api.github.com",
+        permissions=data.get("permissions"),
+        has_issues=bool(data.get("has_issues", True)),
+    )
+
+
 @dataclass
 class CloningRepository:
     id: int
@@ -1057,6 +1119,8 @@ class Banner:
     friendly_name: str = ""
     contributions: list[str] = field(default_factory=list)
     latest_version: str | None = None
+    undo_sha: str | None = None
+    operation_kind: str | None = None
 
 
 @dataclass

@@ -7,7 +7,7 @@ from .logging import get_logger
 log = get_logger()
 
 
-def show_notification(title: str, body: str, *, enabled: bool = True) -> None:
+def show_notification(title: str, body: str, *, enabled: bool = True, notification_id: str | None = None) -> None:
     if not enabled:
         return
     try:
@@ -20,7 +20,13 @@ def show_notification(title: str, body: str, *, enabled: bool = True) -> None:
         if app is not None:
             notification = Gio.Notification.new(title)
             notification.set_body(body)
-            app.send_notification(None, notification)
+            try:
+                notification.set_default_action_and_target_value(
+                    "app.open-notification", GLib.Variant.new_string(notification_id or "")
+                )
+            except Exception:
+                pass
+            app.send_notification(notification_id, notification)
             return
     except Exception as exc:
         log.debug("Gio notification failed: %s", exc)

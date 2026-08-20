@@ -132,6 +132,47 @@ def remote_message(stderr: str) -> str:
     return "\n".join(line[len(needle) :] for line in stderr.splitlines() if line.startswith(needle))
 
 
+def parse_saml_organization(text: str) -> str | None:
+    """Extract the org name from a GitHub SAML SSO re-authorization error."""
+    import re
+
+    blob = remote_message(text) or text
+    match = re.search(
+        r"`([^']+)' organization has enabled or enforced SAML SSO.*?you must re-authorize",
+        blob,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if match:
+        return match.group(1)
+    match = re.search(r"organization has enabled or enforced SAML SSO", blob, re.IGNORECASE)
+    if match:
+        before = blob[: match.start()]
+        org = re.search(r"`([^']+)'\s*$", before.strip())
+        if org:
+            return org.group(1)
+    return None
+
+
+def overwritten_files_from_error(text: str) -> list[str]:
+    """Parse paths from `Your local changes to the following files would be overwritten`."""
+    files: list[str] = []
+    collecting = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        lower = line.lower()
+        if "would be overwritten" in lower:
+            collecting = True
+            continue
+        if not collecting:
+            continue
+        if not line or lower.startswith("please commit") or lower.startswith("error:") or lower.startswith("aborting"):
+            if files:
+                break
+            continue
+        files.append(line)
+    return files
+
+
 def extract_secret_scanning_results(text: str) -> list:
     """Parse GH013 / secret-scanning push output the way Desktop does."""
     import re

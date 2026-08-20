@@ -50,6 +50,9 @@ class DesktopApplication(Adw.Application):
         open_pr = Gio.SimpleAction.new("open-pr", GLib.VariantType.new("s"))
         open_pr.connect("activate", self._on_open_pr)
         self.add_action(open_pr)
+        open_note = Gio.SimpleAction.new("open-notification", GLib.VariantType.new("s"))
+        open_note.connect("activate", self._on_open_notification)
+        self.add_action(open_note)
         about = Gio.SimpleAction.new("about", None)
         about.connect("activate", lambda *_: self.store.show_popup(PopupType.ABOUT))
         self.add_action(about)
@@ -115,6 +118,12 @@ class DesktopApplication(Adw.Application):
         url = param.get_string() if param else ""
         if url:
             open_external(url)
+
+    def _on_open_notification(self, _action, param) -> None:
+        ident = param.get_string() if param else ""
+        self.activate()
+        if ident:
+            self.store.open_stored_notification(ident)
 
 
 def run(argv: list[str] | None = None) -> int:

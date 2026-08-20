@@ -56,6 +56,7 @@ from ..models import (
     TextDiff,
     TrackingBranch,
     UnrenderableDiff,
+    UPSTREAM_REMOTE_NAME,
     WorkingDirectoryFileChange,
     WorkingDirectoryStatus,
     format_as_local_ref,
@@ -1041,6 +1042,27 @@ def remove_remote(repo: str, name: str) -> None:
 
 def set_remote_url(repo: str, name: str, url: str) -> None:
     git(["remote", "set-url", name, url], repo, name="setRemoteUrl")
+
+
+def ensure_upstream_remote(repo: str, parent_url: str) -> tuple[str, Remote | None]:
+    """Add `upstream` for a fork parent. Returns ('ok'|'added'|'mismatch', remote)."""
+    from ..remote_parsing import url_matches_remote
+
+    if not parent_url:
+        return "ok", None
+    remotes = get_remotes(repo)
+    existing = next((r for r in remotes if r.name == UPSTREAM_REMOTE_NAME), None)
+    matching = next((r for r in remotes if url_matches_remote(parent_url, r)), None)
+    if matching is not None and matching.name == UPSTREAM_REMOTE_NAME:
+        return "ok", matching
+    if existing is not None:
+        if url_matches_remote(parent_url, existing):
+            return "ok", existing
+        return "mismatch", existing
+    add_remote(repo, UPSTREAM_REMOTE_NAME, parent_url)
+    remotes = get_remotes(repo)
+    added = next((r for r in remotes if r.name == UPSTREAM_REMOTE_NAME), None)
+    return "added", added
 
 
 def init_repository(path: str, default_branch: str = "main") -> None:

@@ -49,6 +49,7 @@ from .ops import (
     discard_working_files,
     drop_desktop_stash_entry,
     ensure_repository,
+    ensure_upstream_remote,
     fast_forward_branches,
     fetch,
     fetch_refspec,

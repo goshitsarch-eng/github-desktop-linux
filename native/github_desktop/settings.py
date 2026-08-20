@@ -48,6 +48,8 @@ class Settings:
     clone_default_directory: str = ""
     default_branch: str = "main"
     show_changes_filter: bool = True
+    spellcheck_enabled: bool = True
+    ignored_upstream_remotes: dict[str, bool] = field(default_factory=dict)
     welcome_shown: bool = False
     window_width: int = 1280
     window_height: int = 800

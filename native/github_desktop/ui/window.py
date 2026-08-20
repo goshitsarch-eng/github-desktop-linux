@@ -15,6 +15,8 @@ from ..models import (
     BannerType,
     BranchType,
     ChangesListFilter,
+    ComparisonMode,
+    ComputedAction,
     DiffSelectionType,
     HistoryTabMode,
     ManualConflictResolution,
@@ -49,6 +51,21 @@ STATUS_CLASS = {
     AppFileStatusKind.RENAMED: "file-status-renamed",
     AppFileStatusKind.COPIED: "file-status-renamed",
     AppFileStatusKind.CONFLICTED: "file-status-conflicted",
+}
+
+CONFLICT_BANNER_KINDS = {
+    BannerType.MERGE_CONFLICTS_FOUND,
+    BannerType.REBASE_CONFLICTS_FOUND,
+    BannerType.CHERRY_PICK_CONFLICTS_FOUND,
+    BannerType.CONFLICTS_FOUND,
+}
+
+SUCCESS_BANNER_KINDS = {
+    BannerType.SUCCESSFUL_MERGE,
+    BannerType.SUCCESSFUL_REBASE,
+    BannerType.SUCCESSFUL_CHERRY_PICK,
+    BannerType.SUCCESSFUL_SQUASH,
+    BannerType.SUCCESSFUL_REORDER,
 }
 
 
@@ -114,6 +131,10 @@ class MainWindow(Adw.ApplicationWindow):
             self._banner.set_title(self._banner_text(kind, self.store.banner))
             if kind == BannerType.OPEN_THANK_YOU_CARD:
                 self._banner.set_button_label("Open Your Card")
+            elif kind in CONFLICT_BANNER_KINDS:
+                self._banner.set_button_label("View conflicts")
+            elif kind in SUCCESS_BANNER_KINDS and self.store.banner.undo_sha:
+                self._banner.set_button_label("Undo")
             else:
                 self._banner.set_button_label("Dismiss")
             self._banner.set_revealed(True)
@@ -148,6 +169,19 @@ class MainWindow(Adw.ApplicationWindow):
         banner = self.store.banner
         if banner and banner.type == BannerType.OPEN_THANK_YOU_CARD:
             self.store.open_thank_you_card()
+            return
+        if banner and banner.type in CONFLICT_BANNER_KINDS:
+            kind = banner.operation_kind or {
+                BannerType.MERGE_CONFLICTS_FOUND: MultiCommitOperationKind.MERGE.value,
+                BannerType.REBASE_CONFLICTS_FOUND: MultiCommitOperationKind.REBASE.value,
+                BannerType.CHERRY_PICK_CONFLICTS_FOUND: MultiCommitOperationKind.CHERRY_PICK.value,
+            }.get(banner.type, MultiCommitOperationKind.MERGE.value)
+            self.store.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind=kind, step="conflicts")
+            return
+        if banner and banner.type in SUCCESS_BANNER_KINDS and banner.undo_sha:
+            repo = self.store.selected_repository
+            if repo:
+                self.store.undo_multi_commit(repo)
             return
         self.store.clear_banner()
 
@@ -187,7 +221,7 @@ class MainWindow(Adw.ApplicationWindow):
         add("rebase-branch", lambda: self.store.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind="Rebase"))
         add("compare-on-github", lambda: self._repo_op(self.store.compare_on_github))
         add("open-pull-request", lambda: self._repo_op(self.store.open_pull_request))
-        add("preview-pull-request", lambda: self.store.show_popup(PopupType.START_PULL_REQUEST))
+        add("preview-pull-request", lambda: self._repo_op(self.store.preview_pull_request))
         add("about", lambda: self.store.show_popup(PopupType.ABOUT))
         add("release-notes", lambda: self.store.show_popup(PopupType.RELEASE_NOTES))
         add("show-logs", self._show_logs)
@@ -301,8 +335,32 @@ class MainWindow(Adw.ApplicationWindow):
         if not repo:
             return
         state = self.store.state_for(repo)
-        self.store.stash_and_drop_previous(repo, state.status.current_branch if state.status else "unknown")
-        self.store.refresh_repository(repo)
+
+        def run() -> None:
+            self.store.stash_and_drop_previous(repo, state.status.current_branch if state.status else "unknown")
+            self.store.refresh_repository(repo)
+
+        if not self.store.settings.confirm_stash_all_changes:
+            run()
+            return
+        dialog = Adw.AlertDialog(
+            heading="Stash all changes?",
+            body="This will stash all changes on the current branch. You can restore them later from the Changes tab.",
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("ok", "Stash all changes")
+        dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("ok")
+
+        def done(d, result) -> None:
+            try:
+                response = d.choose_finish(result)
+            except Exception:
+                return
+            if response == "ok":
+                run()
+
+        dialog.choose(self, None, done)
 
     def _toggle_stash(self) -> None:
         self._repo_op(self.store.toggle_stash)
@@ -730,6 +788,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._side_toggle.connect("toggled", self._on_side_by_side)
         tools.append(self._side_toggle)
         left.append(tools)
+        self._changes_pages = Gtk.Stack()
         scroller = Gtk.ScrolledWindow(vexpand=True)
         self._file_list = Gtk.ListBox()
         self._file_list.add_css_class("boxed-list")
@@ -737,7 +796,17 @@ class MainWindow(Adw.ApplicationWindow):
         self._file_list.connect("row-selected", self._on_file_selected)
         attach_right_click(self._file_list, lambda *_: self._file_list_menu())
         scroller.set_child(self._file_list)
-        left.append(scroller)
+        self._suggested = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self._suggested.add_css_class("suggested-actions")
+        self._suggested.set_margin_top(12)
+        self._suggested.set_margin_start(12)
+        self._suggested.set_margin_end(12)
+        self._suggested.set_margin_bottom(12)
+        suggested_scroll = Gtk.ScrolledWindow(vexpand=True)
+        suggested_scroll.set_child(self._suggested)
+        self._changes_pages.add_named(scroller, "files")
+        self._changes_pages.add_named(suggested_scroll, "suggested")
+        left.append(self._changes_pages)
         self._stash_bar = Gtk.Box()
         left.append(self._stash_bar)
         commit_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -849,7 +918,20 @@ class MainWindow(Adw.ApplicationWindow):
         self._history_filter.set_placeholder_text("Search commits…")
         self._history_filter.connect("search-changed", self._on_history_filter)
         left.append(self._history_filter)
-        self._compare_cta = Gtk.Box(spacing=6)
+        tabs = Gtk.Box(spacing=0)
+        tabs.add_css_class("linked")
+        self._ahead_tab = Gtk.ToggleButton(label="Ahead")
+        self._behind_tab = Gtk.ToggleButton(label="Behind")
+        self._behind_tab.set_group(self._ahead_tab)
+        self._ahead_tab.set_active(True)
+        self._ahead_tab.connect("toggled", lambda b: b.get_active() and self._set_compare_mode(ComparisonMode.AHEAD))
+        self._behind_tab.connect("toggled", lambda b: b.get_active() and self._set_compare_mode(ComparisonMode.BEHIND))
+        tabs.append(self._ahead_tab)
+        tabs.append(self._behind_tab)
+        self._compare_tabs = tabs
+        self._compare_tabs.set_visible(False)
+        left.append(self._compare_tabs)
+        self._compare_cta = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self._compare_cta.add_css_class("compare-cta")
         left.append(self._compare_cta)
         scroller = Gtk.ScrolledWindow(vexpand=True)
@@ -1166,13 +1248,137 @@ class MainWindow(Adw.ApplicationWindow):
             files = [f for f in files if f.status.kind in allowed]
         self._building = True
         clear_box(self._file_list)
-        for file in files:
-            self._file_list.append(self._file_row(file))
+        all_files = list(state.status.working_directory.files) if state.status else []
+        if not all_files and hasattr(self, "_changes_pages"):
+            self._changes_pages.set_visible_child_name("suggested")
+            self._populate_suggested_actions(state)
+        else:
+            if hasattr(self, "_changes_pages"):
+                self._changes_pages.set_visible_child_name("files")
+            for file in files:
+                self._file_list.append(self._file_row(file))
         include_all = state.status.working_directory.include_all if state.status else True
         self._include_all.set_inconsistent(include_all is None)
         self._include_all.set_active(bool(include_all))
         self._building = False
         self._render_working_diff(state)
+
+    def _populate_suggested_actions(self, state) -> None:
+        if not hasattr(self, "_suggested"):
+            return
+        clear_box(self._suggested)
+        repo = self.store.selected_repository
+        if not repo:
+            return
+        stashes = list(state.stashes or [])
+        if stashes:
+            self._suggested.append(
+                self._suggested_card(
+                    "View your stashed changes",
+                    f"You have {len(stashes[0].files) if stashes[0].files is not None else state.stash_count} change(s) in progress that you have not yet committed.",
+                    "View stash",
+                    lambda: self.store.toggle_stash(repo),
+                    primary=True,
+                )
+            )
+        remotes = list(state.remotes or [])
+        ahead_behind = state.ahead_behind
+        tags = list(state.local_tags_to_push or [])
+        if not remotes:
+            self._suggested.append(
+                self._suggested_card(
+                    "Publish your repository to GitHub",
+                    "This repository is currently only available on your local machine. By publishing it on GitHub you can share it, and collaborate with others.",
+                    "Publish repository",
+                    lambda: self.store.show_popup(PopupType.PUBLISH_REPOSITORY),
+                    primary=True,
+                )
+            )
+        elif ahead_behind is None:
+            self._suggested.append(
+                self._suggested_card(
+                    "Publish your branch to GitHub",
+                    "The current branch is only on this computer. Publish it to back it up and open a pull request.",
+                    "Publish branch",
+                    lambda: self.store.push_repo(repo),
+                    primary=True,
+                )
+            )
+        elif ahead_behind.behind > 0:
+            self._suggested.append(
+                self._suggested_card(
+                    "Pull from the remote",
+                    f"Your branch is behind by {ahead_behind.behind} commit(s). Pull to integrate the latest work.",
+                    "Pull",
+                    lambda: self.store.pull_repo(repo),
+                    primary=True,
+                )
+            )
+        elif ahead_behind.ahead > 0 or tags:
+            extra = f" and {len(tags)} tag(s)" if tags else ""
+            self._suggested.append(
+                self._suggested_card(
+                    "Push your commits to GitHub",
+                    f"You have {ahead_behind.ahead} local commit(s){extra} ready to push.",
+                    "Push",
+                    lambda: self.store.push_repo(repo),
+                    primary=True,
+                )
+            )
+        elif repo.github and not state.current_pull_request:
+            current = state.status.current_branch if state.status else None
+            default = repo.github.default_branch
+            if current and current != default:
+                self._suggested.append(
+                    self._suggested_card(
+                        "Create a pull request",
+                        "The current branch has been published. Open a pull request to propose your changes.",
+                        "Create pull request",
+                        lambda: self.store.open_pull_request(repo),
+                        primary=True,
+                    )
+                )
+        self._suggested.append(
+            self._suggested_card(
+                "Open the repository in your external editor",
+                "Select your editor in Preferences → Integrations.",
+                "Open in editor",
+                lambda: self.store.open_in_editor(repo),
+            )
+        )
+        self._suggested.append(
+            self._suggested_card(
+                "View the files of your repository in your File Manager",
+                "Always available from the Repository menu.",
+                "Show in file manager",
+                lambda: self.store.open_working_directory(repo),
+            )
+        )
+        if repo.github:
+            self._suggested.append(
+                self._suggested_card(
+                    "Open the repository page on GitHub in your browser",
+                    "Always available from the Repository menu.",
+                    "View on GitHub",
+                    lambda: self.store.view_on_github(repo),
+                )
+            )
+
+    def _suggested_card(self, title: str, description: str, button: str, callback, *, primary: bool = False) -> Gtk.Widget:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.add_css_class("suggested-action-card")
+        heading = Gtk.Label(label=title, xalign=0, wrap=True)
+        heading.add_css_class("heading")
+        body = Gtk.Label(label=description, xalign=0, wrap=True)
+        body.add_css_class("dim-label")
+        btn = Gtk.Button(label=button, halign=Gtk.Align.START)
+        if primary:
+            btn.add_css_class("suggested-action")
+        btn.connect("clicked", lambda *_: callback())
+        box.append(heading)
+        box.append(body)
+        box.append(btn)
+        return box
 
     def _file_row(self, file: WorkingDirectoryFileChange) -> Gtk.Widget:
         row = Gtk.ListBoxRow()
@@ -1279,6 +1485,21 @@ class MainWindow(Adw.ApplicationWindow):
             return
         state = self.store.state_for(repo)
         commits = state.compare_ahead if state.history_mode == HistoryTabMode.COMPARE else state.commits
+        if state.history_mode == HistoryTabMode.COMPARE:
+            if hasattr(self, "_compare_tabs"):
+                self._compare_tabs.set_visible(True)
+                self._building = True
+                self._ahead_tab.set_label(f"Ahead ({len(state.compare_ahead)})")
+                self._behind_tab.set_label(f"Behind ({len(state.compare_behind)})")
+                if state.compare_mode == ComparisonMode.BEHIND:
+                    self._behind_tab.set_active(True)
+                    commits = state.compare_behind
+                else:
+                    self._ahead_tab.set_active(True)
+                    commits = state.compare_ahead
+                self._building = False
+        elif hasattr(self, "_compare_tabs"):
+            self._compare_tabs.set_visible(False)
         if state.history_mode == HistoryTabMode.COMPARE and not commits:
             commits = state.commits
         new_shas = [c.sha for c in commits]
@@ -1853,6 +2074,13 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self.store.compare_to_branch(repo, name)
 
+    def _set_compare_mode(self, mode: ComparisonMode) -> None:
+        if self._building:
+            return
+        repo = self.store.selected_repository
+        if repo:
+            self.store.set_compare_mode(repo, mode)
+
     def _refresh_compare_cta(self, state) -> None:
         if not hasattr(self, "_compare_cta"):
             return
@@ -1864,6 +2092,20 @@ class MainWindow(Adw.ApplicationWindow):
         behind = len(state.compare_behind)
         self._compare_cta.append(Gtk.Label(label=f"{ahead} ahead · {behind} behind {state.compare_branch.name}"))
         current = state.status.current_branch if state.status else "current branch"
+        merge_tree = state.merge_tree
+        if merge_tree and merge_tree.kind == ComputedAction.CONFLICTS:
+            noun = "file" if merge_tree.conflicted_files == 1 else "files"
+            warn = Gtk.Label(
+                label=f"Can't automatically merge. {merge_tree.conflicted_files} conflicted {noun}.",
+                wrap=True,
+                xalign=0,
+            )
+            warn.add_css_class("warning")
+            self._compare_cta.append(warn)
+        elif merge_tree and merge_tree.kind == ComputedAction.INVALID:
+            self._compare_cta.append(Gtk.Label(label="Unable to merge unrelated histories into this branch.", wrap=True, xalign=0))
+        elif merge_tree and merge_tree.kind == ComputedAction.CLEAN and behind:
+            self._compare_cta.append(Gtk.Label(label="Able to merge automatically.", xalign=0))
         if behind and repo:
             msg = Gtk.Label(
                 label=f"This will merge {behind} commit{'s' if behind != 1 else ''} from {state.compare_branch.name} into {current}",
@@ -1871,8 +2113,10 @@ class MainWindow(Adw.ApplicationWindow):
                 xalign=0,
             )
             self._compare_cta.append(msg)
+            ops = Gtk.Box(spacing=6)
             merge = Gtk.Button(label=f"Merge into {current}")
             merge.add_css_class("suggested-action")
+            merge.set_sensitive(not (merge_tree and merge_tree.kind == ComputedAction.INVALID))
             merge.connect(
                 "clicked",
                 lambda *_: self.store.show_popup(
@@ -1881,7 +2125,28 @@ class MainWindow(Adw.ApplicationWindow):
                     initial_branch=state.compare_branch.name,
                 ),
             )
-            self._compare_cta.append(merge)
+            rebase = Gtk.Button(label="Rebase")
+            rebase.connect(
+                "clicked",
+                lambda *_: self.store.show_popup(
+                    PopupType.MULTI_COMMIT_OPERATION,
+                    kind="Rebase",
+                    initial_branch=state.compare_branch.name,
+                ),
+            )
+            squash = Gtk.Button(label="Squash")
+            squash.connect(
+                "clicked",
+                lambda *_: self.store.show_popup(
+                    PopupType.MULTI_COMMIT_OPERATION,
+                    kind="Squash",
+                    initial_branch=state.compare_branch.name,
+                ),
+            )
+            ops.append(merge)
+            ops.append(rebase)
+            ops.append(squash)
+            self._compare_cta.append(ops)
 
     def _on_summary_changed(self, entry: Gtk.Entry) -> None:
         self._update_commit_warnings()
