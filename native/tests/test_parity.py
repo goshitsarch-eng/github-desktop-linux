@@ -362,6 +362,7 @@ def test_window_actions_cover_menus() -> None:
         local_storage as local_storage_mod,
         welcome as welcome_mod,
         tip as tip_mod,
+        menu_update as menu_update_mod,
         find_upstream_remote as find_upstream_remote_mod,
         tutorial_assessor as tutorial_assessor_mod,
         regex as regex_mod,
@@ -416,6 +417,7 @@ def test_window_actions_cover_menus() -> None:
     src += open(local_storage_mod.__file__, encoding="utf-8").read()
     src += open(welcome_mod.__file__, encoding="utf-8").read()
     src += open(tip_mod.__file__, encoding="utf-8").read()
+    src += open(menu_update_mod.__file__, encoding="utf-8").read()
     src += open(find_upstream_remote_mod.__file__, encoding="utf-8").read()
     src += open(tutorial_assessor_mod.__file__, encoding="utf-8").read()
     src += open(regex_mod.__file__, encoding="utf-8").read()
@@ -1343,5 +1345,23 @@ def test_window_actions_cover_menus() -> None:
         "onSelectAll",
         "selectAllWindowContents",
         "selectAllChildren",
+        "getMenuState",
+        "getRepositoryMenuBuilder",
+        "getAppMenuBuilder",
+        "getInWelcomeFlowBuilder",
+        "getNoRepositoriesBuilder",
+        "getAllMenusDisabledBuilder",
+        "getAllMenusEnabledBuilder",
+        "getRepoIssuesEnabled",
+        "allMenuIds",
+        "updateMenuState",
+        "isRepositoryHostedOnGitHub",
+        "repositoryScopedIDs",
+        "welcomeScopedIds",
+        "isPushPullFetchInProgress",
+        "create-issue-in-repository-on-github",
+        "update-branch-with-contribution-target-branch",
+        "issuesEnabled",
+        "isArchived",
     ]:
         assert phrase in src

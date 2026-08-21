@@ -128,6 +128,57 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             win.store.close_current_foldout()
             win._select_all_list_box(win._commit_list)
             win._select_all_list_box(win._file_list)
+            assert win.lookup_action("new-repository").get_enabled() is False
+            store.welcome_step = None
+            from github_desktop.models import Branch, BranchType
+
+            repo_state = store.state_for(repos[0])
+            tip_name = repo_state.status.current_branch if repo_state.status else "main"
+            tip_sha = (repo_state.status.current_tip if repo_state.status else None) or "HEAD"
+            repo_state.branches = [Branch(tip_name or "main", None, tip_sha, BranchType.LOCAL)]
+            win._sync_menu_state()
+            assert win.lookup_action("new-repository").get_enabled() is True
+            assert win.lookup_action("push").get_enabled() is True
+            assert win.lookup_action("create-branch").get_enabled() is True
+            assert win.lookup_action("delete-branch").get_enabled() is False
+            assert win.lookup_action("pull").get_enabled() is False
+            assert win.lookup_action("stash-all").get_enabled() is True
+            assert win.lookup_action("discard-all").get_enabled() is True
+            status = store.state_for(repos[0]).status
+            saved_branch = status.current_branch if status else "main"
+            saved_tip = status.current_tip if status else None
+            if status is not None:
+                status.current_branch = None
+            win._sync_menu_state()
+            assert win.lookup_action("push").get_enabled() is False
+            assert win.lookup_action("compare-to-branch").get_enabled() is False
+            if status is not None:
+                status.current_branch = saved_branch
+                status.current_tip = saved_tip
+            repos[0].is_missing = True
+            win._sync_menu_state()
+            assert win.lookup_action("open-external-editor").get_enabled() is False
+            assert win.lookup_action("remove-repository").get_enabled() is True
+            from github_desktop.models import GitHubRepository
+
+            repos[0].github = GitHubRepository(
+                "app", "me", "https://github.com/me/app", "https://github.com/me/app.git"
+            )
+            win._sync_menu_state()
+            assert win.lookup_action("view-on-github").get_enabled() is True
+            repos[0].is_missing = False
+            repos[0].github = None
+            win._sync_menu_state()
+            assert win.lookup_action("push").get_enabled() is True
+            from github_desktop.models import Popup, PopupType as MenuPopupType
+
+            store._popups.add_popup(Popup(MenuPopupType.ABOUT))
+            win._sync_menu_state()
+            assert win.lookup_action("push").get_enabled() is False
+            assert win.lookup_action("new-repository").get_enabled() is False
+            store._popups.clear()
+            win._sync_menu_state()
+            assert win.lookup_action("push").get_enabled() is True
             child = win._stack.get_visible_child_name()
             assert child in {"welcome", "empty", "repo"}
             win._refresh_files()

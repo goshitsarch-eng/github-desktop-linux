@@ -1199,3 +1199,344 @@ def test_load_git_description_matches_desktop(isolated_config, git_repo: Path) -
     store.load_git_description(repo, lambda text, *_exc: captured.append(text))
     assert captured == ["A published app"]
 
+
+def _menu_file(path: str = "README.md"):
+    from github_desktop.models import AppFileStatusKind, FileStatus, WorkingDirectoryFileChange
+
+    return WorkingDirectoryFileChange(path, FileStatus(AppFileStatusKind.MODIFIED))
+
+
+def _valid_status(*, branch: str = "main", tip: str = "abc123", upstream: str | None = None, files=None, rebase=False):
+    from github_desktop.models import IStatusResult, RebaseInternalState, WorkingDirectoryStatus
+
+    wd = WorkingDirectoryStatus.from_files(files or [])
+    rebase_state = RebaseInternalState("topic", "base", "orig") if rebase else None
+    return IStatusResult(
+        current_branch=branch,
+        current_upstream_branch=upstream,
+        current_tip=tip,
+        working_directory=wd,
+        rebase_internal_state=rebase_state,
+    )
+
+
+def test_menu_update_popup_disables_all_menu_ids() -> None:
+    from github_desktop.menu_update import MENU_ID_TO_ACTION, MenuSnapshot, allMenuIds, get_menu_state_from_snapshot
+
+    enabled = get_menu_state_from_snapshot(MenuSnapshot(current_popup=True, repository_count=1))
+    for menu_id in allMenuIds:
+        action = MENU_ID_TO_ACTION.get(menu_id)
+        if action is None:
+            continue
+        assert enabled[action] is False
+    assert "increase-resizable" not in enabled
+    assert "create-issue" not in enabled
+
+
+def test_menu_update_welcome_and_no_repositories() -> None:
+    from github_desktop.menu_update import MenuSnapshot, get_menu_state_from_snapshot
+
+    welcome = get_menu_state_from_snapshot(MenuSnapshot(show_welcome_flow=True, repository_count=0))
+    assert welcome["new-repository"] is False
+    assert welcome["add-local-repository"] is False
+    assert welcome["clone-repository"] is False
+    assert welcome["preferences"] is False
+    assert welcome["about"] is False
+    assert welcome["choose-repository"] is False
+    assert welcome["push"] is False
+
+    empty = get_menu_state_from_snapshot(MenuSnapshot(repository_count=0))
+    assert empty["new-repository"] is True
+    assert empty["choose-repository"] is False
+    assert empty["show-changes"] is False
+
+    listed = get_menu_state_from_snapshot(MenuSnapshot(repository_count=1))
+    assert listed["choose-repository"] is True
+
+
+def test_menu_update_missing_repository_keeps_remove_and_github() -> None:
+    from github_desktop.menu_update import MenuSnapshot, get_menu_state_from_snapshot
+    from github_desktop.models import GitHubRepository, Repository, SelectionType
+
+    repo = Repository(1, "/tmp/missing", "app", is_missing=True)
+    missing = get_menu_state_from_snapshot(
+        MenuSnapshot(selection_type=SelectionType.MISSING, repository=repo, repository_count=1)
+    )
+    assert missing["remove-repository"] is True
+    assert missing["open-external-editor"] is False
+    assert missing["view-on-github"] is False
+    assert missing["push"] is False
+    repo.github = GitHubRepository("app", "me", "https://github.com/me/app", "https://github.com/me/app.git")
+    hosted = get_menu_state_from_snapshot(
+        MenuSnapshot(selection_type=SelectionType.MISSING, repository=repo, repository_count=1)
+    )
+    assert hosted["view-on-github"] is True
+    assert hosted["remove-repository"] is True
+
+
+def test_menu_update_valid_branch_unpublished_on_default() -> None:
+    from github_desktop.menu_update import MenuSnapshot, get_menu_state_from_snapshot
+    from github_desktop.models import Branch, BranchType, Repository, SelectionType
+
+    repo = Repository(1, "/tmp/app", "app")
+    default = Branch("main", None, "abc123", BranchType.LOCAL)
+    enabled = get_menu_state_from_snapshot(
+        MenuSnapshot(
+            selection_type=SelectionType.REPOSITORY,
+            repository=repo,
+            repository_count=1,
+            status=_valid_status(files=[_menu_file()]),
+            default_branch=default,
+            tip_branch=default,
+        )
+    )
+    assert enabled["show-changes"] is True
+    assert enabled["push"] is True
+    assert enabled["pull"] is False
+    assert enabled["rename-branch"] is True
+    assert enabled["delete-branch"] is False
+    assert enabled["create-branch"] is True
+    assert enabled["discard-all"] is True
+    assert enabled["stash-all"] is True
+    assert enabled["merge-branch"] is True
+    assert enabled["open-pull-request"] is False
+    assert enabled["view-on-github"] is False
+    assert enabled["toggle-stash"] is False
+    assert enabled["update-from-default"] is False
+
+
+def test_menu_update_feature_branch_published_and_github() -> None:
+    from github_desktop.menu_update import MenuSnapshot, get_menu_state_from_snapshot
+    from github_desktop.models import Branch, BranchType, GitHubRepository, Repository, SelectionType, StashEntry
+
+    repo = Repository(
+        1,
+        "/tmp/app",
+        "app",
+        github=GitHubRepository("app", "me", "https://github.com/me/app", "https://github.com/me/app.git"),
+    )
+    default = Branch("main", "origin/main", "aaa", BranchType.LOCAL)
+    topic = Branch("topic", "origin/topic", "bbb", BranchType.LOCAL)
+    stash = StashEntry("stash@{0}", "def", "topic", "tree", [])
+    enabled = get_menu_state_from_snapshot(
+        MenuSnapshot(
+            selection_type=SelectionType.REPOSITORY,
+            repository=repo,
+            repository_count=1,
+            status=_valid_status(branch="topic", tip="bbb", upstream="origin/topic"),
+            default_branch=default,
+            contribution_target=default,
+            tip_branch=topic,
+            stash_entry=stash,
+        )
+    )
+    assert enabled["delete-branch"] is True
+    assert enabled["pull"] is True
+    assert enabled["update-from-default"] is True
+    assert enabled["view-on-github"] is True
+    assert enabled["compare-on-github"] is True
+    assert enabled["branch-on-github"] is True
+    assert enabled["open-pull-request"] is True
+    assert enabled["preview-pull-request"] is True
+    assert enabled["create-issue"] is True
+    assert enabled["toggle-stash"] is True
+    on_default = get_menu_state_from_snapshot(
+        MenuSnapshot(
+            selection_type=SelectionType.REPOSITORY,
+            repository=repo,
+            repository_count=1,
+            status=_valid_status(upstream="origin/main"),
+            default_branch=default,
+            contribution_target=default,
+            tip_branch=default,
+        )
+    )
+    assert on_default["update-from-default"] is False
+    assert on_default["delete-branch"] is False
+
+
+def test_menu_update_detached_unborn_unknown_rebase_conflicts() -> None:
+    from github_desktop.menu_update import MenuSnapshot, get_menu_state_from_snapshot
+    from github_desktop.models import (
+        AppFileStatusKind,
+        Branch,
+        BranchType,
+        FileStatus,
+        IStatusResult,
+        Repository,
+        SelectionType,
+        WorkingDirectoryFileChange,
+        WorkingDirectoryStatus,
+    )
+
+    repo = Repository(1, "/tmp/app", "app")
+    topic = Branch("topic", None, "abc", BranchType.LOCAL)
+    detached = get_menu_state_from_snapshot(
+        MenuSnapshot(
+            selection_type=SelectionType.REPOSITORY,
+            repository=repo,
+            repository_count=1,
+            status=IStatusResult(current_tip="abc123"),
+        )
+    )
+    assert detached["push"] is False
+    assert detached["delete-branch"] is False
+    assert detached["rename-branch"] is False
+    assert detached["compare-to-branch"] is False
+    assert detached["create-branch"] is True
+    assert detached["open-pull-request"] is False
+
+    unborn = get_menu_state_from_snapshot(
+        MenuSnapshot(
+            selection_type=SelectionType.REPOSITORY,
+            repository=repo,
+            repository_count=1,
+            status=IStatusResult(current_branch="main"),
+        )
+    )
+    assert unborn["create-branch"] is False
+    assert unborn["push"] is False
+    assert unborn["rename-branch"] is False
+
+    unknown = get_menu_state_from_snapshot(
+        MenuSnapshot(selection_type=SelectionType.REPOSITORY, repository=repo, repository_count=1)
+    )
+    assert unknown["create-branch"] is False
+
+    conflicted = WorkingDirectoryFileChange("a.txt", FileStatus(AppFileStatusKind.CONFLICTED))
+    rebase = get_menu_state_from_snapshot(
+        MenuSnapshot(
+            selection_type=SelectionType.REPOSITORY,
+            repository=repo,
+            repository_count=1,
+            status=_valid_status(files=[conflicted], rebase=True),
+            rebase_in_progress=True,
+            tip_branch=topic,
+        )
+    )
+    assert rebase["create-branch"] is False
+    assert rebase["discard-all"] is False
+    assert rebase["stash-all"] is False
+
+    merge_conflicts = get_menu_state_from_snapshot(
+        MenuSnapshot(
+            selection_type=SelectionType.REPOSITORY,
+            repository=repo,
+            repository_count=1,
+            status=IStatusResult(
+                current_branch="topic",
+                current_tip="abc",
+                working_directory=WorkingDirectoryStatus.from_files([conflicted]),
+                merge_head_found=True,
+            ),
+            tip_branch=topic,
+        )
+    )
+    assert merge_conflicts["stash-all"] is False
+    assert merge_conflicts["discard-all"] is True
+
+
+def test_menu_update_archived_parent_disables_issues() -> None:
+    from github_desktop.menu_update import MenuSnapshot, get_menu_state_from_snapshot, get_repo_issues_enabled
+    from github_desktop.models import GitHubRepository, Repository, SelectionType
+
+    parent = GitHubRepository(
+        "app", "acme", "https://github.com/acme/app", "https://github.com/acme/app.git", archived=True
+    )
+    fork = GitHubRepository(
+        "app",
+        "me",
+        "https://github.com/me/app",
+        "https://github.com/me/app.git",
+        fork=True,
+        parent=parent,
+    )
+    repo = Repository(1, "/tmp/app", "app", github=fork)
+    assert get_repo_issues_enabled(repo) is False
+    enabled = get_menu_state_from_snapshot(
+        MenuSnapshot(
+            selection_type=SelectionType.REPOSITORY,
+            repository=repo,
+            repository_count=1,
+            status=_valid_status(),
+        )
+    )
+    assert enabled["create-issue"] is False
+    parent.archived = False
+    parent.has_issues = False
+    assert get_repo_issues_enabled(repo) is False
+    parent.has_issues = True
+    assert get_repo_issues_enabled(repo) is True
+
+
+def test_menu_update_network_resizable_hidden_window_cloning(isolated_config, git_repo: Path) -> None:
+    from github_desktop.menu_update import MenuSnapshot, get_menu_state, get_menu_state_from_snapshot
+    from github_desktop.models import (
+        CloningRepository,
+        IStatusResult,
+        PopupType,
+        Repository,
+        SelectionType,
+        WelcomeStep,
+        WorkingDirectoryStatus,
+    )
+
+    repo = Repository(1, str(git_repo), "repo")
+    busy = get_menu_state_from_snapshot(
+        MenuSnapshot(
+            selection_type=SelectionType.REPOSITORY,
+            repository=repo,
+            repository_count=1,
+            status=_valid_status(upstream="origin/main"),
+            is_push_pull_fetch_in_progress=True,
+            resizable_pane_active=True,
+        )
+    )
+    assert busy["push"] is False
+    assert busy["pull"] is False
+    assert busy["increase-resizable"] is True
+    assert busy["decrease-resizable"] is True
+
+    hidden = get_menu_state_from_snapshot(
+        MenuSnapshot(
+            window_open=False,
+            selection_type=SelectionType.REPOSITORY,
+            repository=repo,
+            repository_count=1,
+            status=_valid_status(),
+        )
+    )
+    assert hidden["push"] is False
+    assert hidden["show-changes"] is False
+
+    cloning = get_menu_state_from_snapshot(
+        MenuSnapshot(
+            selection_type=SelectionType.CLONING,
+            repository=CloningRepository(id=1, path="/tmp/c", url="https://github.com/me/app.git"),
+            repository_count=1,
+        )
+    )
+    assert cloning["push"] is False
+    assert cloning["choose-repository"] is True
+
+    store = AppStore()
+    store.welcome_step = None
+    store.add_repositories([str(git_repo)])
+    selected = store.selected_repository
+    assert selected is not None
+    store.state_for(selected).status = IStatusResult(
+        current_branch="main",
+        current_tip="abc",
+        working_directory=WorkingDirectoryStatus.from_files([_menu_file()]),
+    )
+    store.progress_kind = "push"
+    enabled = get_menu_state(store)
+    assert enabled["push"] is False
+    store.progress_kind = None
+    store.show_popup(PopupType.ABOUT)
+    assert get_menu_state(store)["new-repository"] is False
+    store.welcome_step = WelcomeStep.START
+    store._popups.clear()
+    assert get_menu_state(store)["preferences"] is False
+
+

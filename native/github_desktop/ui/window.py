@@ -61,6 +61,7 @@ from ..settings import (
 )
 from ..feature_flag import enable_resizing_toolbar_buttons
 from ..shells import open_external, open_in_default_program
+from ..menu_update import apply_menu_state, updateMenuState
 from ..store import AppStore
 from ..text_tokens import MaxSummaryLength
 from ..truncate import truncate_with_ellipsis
@@ -442,6 +443,7 @@ class MainWindow(Adw.ApplicationWindow):
         if self.store._progress_only_emit and not popup:
             self.store._progress_only_emit = False
             self._update_network_progress()
+            self._sync_menu_state()
             return
         if self._light_update:
             return
@@ -488,7 +490,7 @@ class MainWindow(Adw.ApplicationWindow):
             for current in self.store.take_popups():
                 present_popup(self, self.store, current.type, current.payload)
         self._apply_underline_links()
-        self._sync_resizable_menu()
+        self._sync_menu_state()
         if self.store.focus_commit_message:
             self._apply_commit_message_focus()
 
@@ -885,14 +887,25 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_focus_widget(self, *_args: object) -> None:
         self.store.app_focused_element_changed(self.is_resize_pane_active())
-        self._sync_resizable_menu()
+        self._sync_menu_state()
+
+    def _sync_menu_state(self) -> None:
+        """Desktop `updateMenuState` / `getMenuState`."""
+        popup_open = bool(self.store.popup or self.store.all_popups)
+        dialog = self.get_visible_dialog() if hasattr(self, "get_visible_dialog") else None
+        if dialog is not None:
+            popup_open = True
+            if not getattr(dialog, "_menu_state_hooked", False):
+                dialog._menu_state_hooked = True
+                dialog.connect("closed", lambda *_: self._sync_menu_state())
+        apply_menu_state(
+            self.lookup_action,
+            updateMenuState(self.store, window_open=True, current_popup=popup_open),
+        )
 
     def _sync_resizable_menu(self) -> None:
-        enabled = bool(self.store.resizable_pane_active)
-        for name in ("increase-resizable", "decrease-resizable"):
-            action = self.lookup_action(name)
-            if action is not None:
-                action.set_enabled(enabled)
+        """Desktop `getAppMenuBuilder` (`resizablePaneActive`) via `updateMenuState`."""
+        self._sync_menu_state()
 
     def _refresh_empty(self) -> None:
         if not hasattr(self, "_empty_tutorial_btn"):
@@ -2839,10 +2852,6 @@ class MainWindow(Adw.ApplicationWindow):
         self._include_all.set_sensitive(not busy and bool(files))
         self._include_all.set_inconsistent(include_all is None)
         self._include_all.set_active(bool(include_all))
-        if hasattr(self, "_stash_all_action"):
-            wd = state.status.working_directory if state.status else None
-            has_files = bool(wd and wd.files)
-            self._stash_all_action.set_enabled(has_files and not (wd is not None and has_conflicted_files(wd)))
         self._building = False
         self._render_working_diff(state)
         repo = self.store.selected_repository
