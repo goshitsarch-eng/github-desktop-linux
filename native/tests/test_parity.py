@@ -1361,6 +1361,7 @@ def test_window_actions_cover_menus() -> None:
         "isPushPullFetchInProgress",
         "create-issue-in-repository-on-github",
         "update-branch-with-contribution-target-branch",
+        "pushEventType",
         "issuesEnabled",
         "isArchived",
     ]:

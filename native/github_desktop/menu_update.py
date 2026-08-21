@@ -232,6 +232,9 @@ def _native_enabled(builder: MenuStateBuilder) -> dict[str, bool]:
         if action is None:
             continue
         out[action] = bool(item.enabled)
+    # Desktop `push` menu id swaps click to `force-push` via `pushEventType`.
+    if "push" in out:
+        out["force-push"] = out["push"]
     return out
 
 

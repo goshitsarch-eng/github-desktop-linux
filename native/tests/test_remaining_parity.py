@@ -1229,6 +1229,7 @@ def test_menu_update_popup_disables_all_menu_ids() -> None:
         if action is None:
             continue
         assert enabled[action] is False
+    assert enabled["force-push"] is False
     assert "increase-resizable" not in enabled
     assert "create-issue" not in enabled
 
@@ -1292,6 +1293,7 @@ def test_menu_update_valid_branch_unpublished_on_default() -> None:
     )
     assert enabled["show-changes"] is True
     assert enabled["push"] is True
+    assert enabled["force-push"] is True
     assert enabled["pull"] is False
     assert enabled["rename-branch"] is True
     assert enabled["delete-branch"] is False
@@ -1380,6 +1382,7 @@ def test_menu_update_detached_unborn_unknown_rebase_conflicts() -> None:
         )
     )
     assert detached["push"] is False
+    assert detached["force-push"] is False
     assert detached["delete-branch"] is False
     assert detached["rename-branch"] is False
     assert detached["compare-to-branch"] is False
