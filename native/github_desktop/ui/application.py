@@ -46,6 +46,7 @@ class DesktopApplication(Adw.Application):
         quit_action = Gio.SimpleAction.new("quit", None)
         quit_action.connect("activate", lambda *_: self.quit())
         self.add_action(quit_action)
+        # Desktop Linux File Exit (`exitAccelerator`) is CmdOrCtrl+Q.
         self.set_accels_for_action("app.quit", ["<Ctrl>q"])
         checkout = Gio.SimpleAction.new("checkout", GLib.VariantType.new("s"))
         checkout.connect("activate", self._on_checkout)

@@ -572,10 +572,27 @@ def get_stashed_changes_label(visible: bool) -> str:
     return "Hide stashed changes" if visible else "Show stashed changes"
 
 
+# Desktop `build-default-menu.ts` non-Darwin mnemonics (`E&xit`, `Go to &Summary`).
+LINUX_FILE_QUIT_MNEMONIC = "E&xit"
+LINUX_GO_TO_SUMMARY_MNEMONIC = "Go to &Summary"
+
+
+def file_quit_label() -> str:
+    """Desktop Linux File quit label (`E&xit` without the mnemonic ampersand)."""
+    return "Exit"
+
+
+def go_to_summary_label() -> str:
+    """Desktop Linux View `Go to &Summary`."""
+    return "Go to Summary"
+
+
 # Desktop camelCase aliases for concatenated-source parity checks.
 getMenuState = get_menu_state
 getPushLabel = get_push_label
 getStashedChangesLabel = get_stashed_changes_label
+fileQuitLabel = file_quit_label
+goToSummaryLabel = go_to_summary_label
 confirmStashAllChangesLabel = "Stash all changes…"
 stashAllChangesLabel = "Stash all changes"
 getRepositoryMenuBuilder = get_repository_menu_builder

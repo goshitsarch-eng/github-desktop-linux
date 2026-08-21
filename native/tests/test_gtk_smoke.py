@@ -147,6 +147,25 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             from github_desktop.models import AheadBehind
 
             assert win._push_menu_label() == "Push"
+            from github_desktop.menu_update import file_quit_label, go_to_summary_label
+
+            def _gio_menu_labels(model) -> list[str]:
+                labels: list[str] = []
+                for index in range(model.get_n_items()):
+                    value = model.get_item_attribute_value(index, "label", None)
+                    if value is not None:
+                        labels.append(value.get_string())
+                    for link_name in ("submenu", "section"):
+                        linked = model.get_item_link(index, link_name)
+                        if linked is not None:
+                            labels.extend(_gio_menu_labels(linked))
+                return labels
+
+            menu_labels = _gio_menu_labels(win._app_menu())
+            assert file_quit_label() in menu_labels
+            assert go_to_summary_label() in menu_labels
+            assert "Quit" not in menu_labels
+            assert "Go to summary" not in menu_labels
             if repo_state.status is not None:
                 repo_state.status.current_upstream_branch = "origin/main"
             repo_state.ahead_behind = AheadBehind(ahead=1, behind=1)

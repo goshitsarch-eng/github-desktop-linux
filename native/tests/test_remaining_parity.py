@@ -1592,7 +1592,15 @@ def test_menu_update_network_resizable_hidden_window_cloning(isolated_config, gi
 
 
 def test_get_push_and_stash_menu_labels() -> None:
-    from github_desktop.menu_update import get_push_label, get_stashed_changes_label, stash_all_changes_label
+    from github_desktop.menu_update import (
+        LINUX_FILE_QUIT_MNEMONIC,
+        LINUX_GO_TO_SUMMARY_MNEMONIC,
+        file_quit_label,
+        get_push_label,
+        get_stashed_changes_label,
+        go_to_summary_label,
+        stash_all_changes_label,
+    )
 
     assert get_push_label(force_push=False, ask_for_confirmation=True) == "Push"
     assert get_push_label(force_push=True, ask_for_confirmation=True) == "Force push…"
@@ -1601,6 +1609,10 @@ def test_get_push_and_stash_menu_labels() -> None:
     assert stash_all_changes_label(False) == "Stash all changes"
     assert get_stashed_changes_label(True) == "Hide stashed changes"
     assert get_stashed_changes_label(False) == "Show stashed changes"
+    assert LINUX_FILE_QUIT_MNEMONIC == "E&xit"
+    assert file_quit_label() == "Exit"
+    assert LINUX_GO_TO_SUMMARY_MNEMONIC == "Go to &Summary"
+    assert go_to_summary_label() == "Go to Summary"
 
 
 def test_confirm_or_force_push_gates_and_skips_dialog(isolated_config, git_repo: Path, monkeypatch) -> None:

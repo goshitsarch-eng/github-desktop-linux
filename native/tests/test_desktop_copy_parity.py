@@ -82,6 +82,20 @@ def test_success_banner_copy() -> None:
     assert format_banner_text(BannerType.SUCCESSFUL_REORDER, reorder) == "Successfully reordered 3 commits."
 
 
+def test_linux_file_and_view_menu_labels_match_desktop() -> None:
+    from github_desktop.menu_update import (
+        LINUX_FILE_QUIT_MNEMONIC,
+        LINUX_GO_TO_SUMMARY_MNEMONIC,
+        file_quit_label,
+        go_to_summary_label,
+    )
+
+    assert LINUX_FILE_QUIT_MNEMONIC == "E&xit"
+    assert file_quit_label() == "Exit"
+    assert LINUX_GO_TO_SUMMARY_MNEMONIC == "Go to &Summary"
+    assert go_to_summary_label() == "Go to Summary"
+
+
 def test_clone_list_empty_copy() -> None:
     class Account:
         login = "hubot"

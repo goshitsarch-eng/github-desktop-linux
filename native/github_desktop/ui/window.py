@@ -63,8 +63,10 @@ from ..feature_flag import enable_resizing_toolbar_buttons
 from ..shells import open_external, open_in_default_program
 from ..menu_update import (
     apply_menu_state,
+    file_quit_label,
     get_push_label,
     get_stashed_changes_label,
+    go_to_summary_label,
     stash_all_changes_label,
     updateMenuState,
 )
@@ -1727,7 +1729,7 @@ class MainWindow(Adw.ApplicationWindow):
         file_m.append("Clone repository…", "win.clone-repository")
         file_m.append("Options…", "win.preferences")
         file_m.append("Install command line tool…", "win.install-cli")
-        file_m.append("Quit", "app.quit")
+        file_m.append(file_quit_label(), "app.quit")
         menu.append_submenu("File", file_m)
         edit = Gio.Menu()
         edit.append("Undo", "win.edit-undo")
@@ -1743,7 +1745,7 @@ class MainWindow(Adw.ApplicationWindow):
         view.append("History", "win.show-history")
         view.append("Repository list", "win.choose-repository")
         view.append("Branches list", "win.show-branches")
-        view.append("Go to summary", "win.go-to-commit-message")
+        view.append(go_to_summary_label(), "win.go-to-commit-message")
         view.append(self._stash_menu_label(), "win.toggle-stash")
         view.append(self._changes_filter_menu_label(), "win.toggle-changes-filter")
         view.append("Toggle full screen", "win.toggle-fullscreen")

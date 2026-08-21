@@ -1446,5 +1446,10 @@ def test_window_actions_cover_menus() -> None:
         "onContextMenuExpandHunk",
         "Expand whole file",
         "Collapse expanded lines",
+        "E&xit",
+        "Go to &Summary",
+        "fileQuitLabel",
+        "goToSummaryLabel",
+        "exitAccelerator",
     ]:
         assert phrase in src
