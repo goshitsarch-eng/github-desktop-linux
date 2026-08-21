@@ -376,7 +376,8 @@ def get_binary_paths(repo: str, ref: str, conflicted_paths: Sequence[str] = ()) 
 
 
 def _diff_flags(hide_whitespace: bool = False, context_lines: int | None = None) -> list[str]:
-    args = ["diff", "--no-ext-diff", "--patch", "--no-color"]
+    """Desktop working-directory / range diffs: `--patch-with-raw -z`."""
+    args = ["diff", "--no-ext-diff", "--patch-with-raw", "-z", "--no-color"]
     if hide_whitespace:
         args.append("-w")
     if context_lines is not None:
@@ -401,29 +402,18 @@ def get_working_directory_diff(
     hide_whitespace: bool = False,
     context_lines: int | None = None,
 ) -> FileDiff:
-    if file.status.kind in (AppFileStatusKind.NEW, AppFileStatusKind.UNTRACKED):
-        args = ["diff", "--no-ext-diff", "--no-index", "--patch", "--no-color"]
-        if hide_whitespace:
-            args.append("-w")
-        if context_lines is not None:
-            args.append(f"-U{int(context_lines)}")
-        args += ["--", "/dev/null", file.path]
-        result = git(args, repo, success_exit_codes={0, 1, 2}, name="diffNew")
-    elif file.status.kind == AppFileStatusKind.RENAMED and file.status.old_path:
-        args = _diff_flags(hide_whitespace, context_lines) + [
-            "HEAD",
-            "--",
-            ensure_relative_path(file.status.old_path),
-            ensure_relative_path(file.path),
-        ]
-        result = git(args, repo, success_exit_codes={0, 1}, name="diffRename")
+    """Desktop `getWorkingDirectoryDiff`."""
+    args = _diff_flags(hide_whitespace, context_lines)
+    success = {0, 1}
+    if file.status.kind in (AppFileStatusKind.NEW, AppFileStatusKind.UNTRACKED) and file.status.submodule_status is None:
+        # `git diff --no-index` uses diff(1) exit codes: 0 none, 1 changes.
+        success.add(1)
+        args += ["--no-index", "--", "/dev/null", file.path]
+    elif file.status.kind == AppFileStatusKind.RENAMED:
+        args += ["--", ensure_relative_path(file.path)]
     else:
-        args = _diff_flags(hide_whitespace, context_lines) + [
-            "HEAD",
-            "--",
-            ensure_relative_path(file.path),
-        ]
-        result = git(args, repo, success_exit_codes={0, 1}, name="diffWd")
+        args += ["HEAD", "--", ensure_relative_path(file.path)]
+    result = git(args, repo, success_exit_codes=success, name="getWorkingDirectoryDiff")
     return _diff_from_result(repo, file.path, file.status, result, commitish=None)
 
 
@@ -596,6 +586,20 @@ def get_commit_diff(
     return _diff_from_result(repo, path, status or FileStatus(AppFileStatusKind.MODIFIED), result, commitish)
 
 
+def diff_from_raw_diff_output(output: str) -> str:
+    """Desktop `diffFromRawDiffOutput`: last NUL-delimited piece is the unified patch."""
+    if not output:
+        return output
+    pieces = output.split("\0")
+    last = pieces[-1]
+    if last:
+        return last
+    for piece in reversed(pieces[:-1]):
+        if piece:
+            return piece
+    return output
+
+
 def _diff_from_result(
     repo: str,
     path: str,
@@ -611,10 +615,10 @@ def _diff_from_result(
         return _image_diff(repo, path, status, commitish)
     if status.submodule_status is not None:
         return _submodule_diff(repo, path, status.submodule_status)
-    parsed = parse_unified_diff(result.stdout)
-    if parsed.is_binary or (
-        "Binary files" in result.stdout or "GIT binary patch" in result.stdout
-    ):
+    text = result.stdout or data.decode("utf-8", errors="replace")
+    patch = diff_from_raw_diff_output(text)
+    parsed = parse_unified_diff(patch)
+    if parsed.is_binary or ("Binary files" in patch or "GIT binary patch" in patch):
         if ext in IMAGE_EXTENSIONS:
             return _image_diff(repo, path, status, commitish)
         return BinaryDiff()
@@ -739,10 +743,18 @@ def apply_patch_to_index(repo: str, file: WorkingDirectoryFileChange) -> None:
                     name="cacheinfo",
                 )
     diff = get_working_directory_diff(repo, file)
-    if not isinstance(diff, TextDiff):
-        # Full-file stage for binary/image/submodule
-        update_index(repo, [file.path])
-        return
+    if isinstance(diff, UnrenderableDiff):
+        raise GitError(f"File diff is too large to generate a partial commit: {file.path}")
+    if not isinstance(diff, (TextDiff, LargeTextDiff)):
+        raise GitError(f"Can't create partial commit in binary file: {file.path}")
+    if isinstance(diff, LargeTextDiff):
+        diff = TextDiff(
+            text=diff.text,
+            hunks=diff.hunks,
+            line_endings_change=diff.line_endings_change,
+            max_line_number=diff.max_line_number,
+            has_hidden_bidi_chars=diff.has_hidden_bidi_chars,
+        )
     from_path = None if file.status.kind in (AppFileStatusKind.NEW, AppFileStatusKind.UNTRACKED) else file.path
     to_path = None if file.status.kind == AppFileStatusKind.DELETED else file.path
     selectable = set(selectable_line_indices(diff))
@@ -2375,27 +2387,23 @@ def create_desktop_stash_entry(
 
 
 def stash_pop(repo: str, stash_ref: str = "stash@{0}") -> None:
-    """Pop a stash. Desktop `popStashEntry`: exit 1 with empty stderr still drops."""
+    """Desktop `popStashEntry`: `MergeConflicts` is expected; empty-stderr exit 1 still drops."""
     entries, _total = get_stashes(repo)
     match = next((entry for entry in entries if entry.name == stash_ref or entry.stash_sha == stash_ref), None)
-    result = git(
-        ["stash", "pop", "--quiet", stash_ref],
-        repo,
-        success_exit_codes={0, 1},
-        name="popStashEntry",
-    )
-    if result.exit_code != 1:
+    if match is None:
         return
-    if (result.stderr or "").strip():
-        raise GitError(
-            result.stderr.strip() or "stash pop failed",
-            args=["stash", "pop", stash_ref],
-            exit_code=1,
-            stdout=result.stdout,
-            stderr=result.stderr,
+    try:
+        git(
+            ["stash", "pop", "--quiet", match.name],
+            repo,
+            expected_errors={"MergeConflicts"},
+            name="popStashEntry",
         )
-    if match is not None:
-        drop_desktop_stash_entry(repo, match.stash_sha)
+    except GitError as exc:
+        if exc.exit_code == 1 and not (exc.stderr or "").strip():
+            drop_desktop_stash_entry(repo, match.stash_sha)
+            return
+        raise
 
 
 def stash_drop(repo: str, stash_ref: str) -> None:
@@ -3273,7 +3281,7 @@ def get_branch_merge_base_diff(
     args = ["diff", "--merge-base", base_branch, comparison_branch]
     if hide_whitespace:
         args.append("-w")
-    args += ["--patch", "--no-color", "--no-ext-diff"]
+    args += ["--patch-with-raw", "-z", "--no-color"]
     if context_lines is not None:
         args.append(f"-U{int(context_lines)}")
     args += ["--", ensure_relative_path(path)]

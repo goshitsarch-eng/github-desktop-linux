@@ -423,7 +423,7 @@ def test_add_safe_directory_is_idempotent(tmp_path: Path, monkeypatch: pytest.Mo
     assert values == [path]
 
 
-def test_stash_pop_with_conflicts_drops_desktop_stash(git_repo: Path) -> None:
+def test_stash_pop_with_conflicts_keeps_stash(git_repo: Path) -> None:
     from github_desktop.git.ops import (
         create_desktop_stash_entry,
         get_last_desktop_stash_entry_for_branch,
@@ -438,5 +438,6 @@ def test_stash_pop_with_conflicts_drops_desktop_stash(git_repo: Path) -> None:
     run_git(git_repo, "add", "README.md")
     run_git(git_repo, "commit", "-m", "working")
     stash_pop(str(git_repo), entry.name)
-    assert get_last_desktop_stash_entry_for_branch(str(git_repo), "main") is None
+    # Desktop `expectedErrors: MergeConflicts` — git keeps the stash on conflict.
+    assert get_last_desktop_stash_entry_for_branch(str(git_repo), "main") is not None
 

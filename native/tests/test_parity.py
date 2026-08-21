@@ -16,6 +16,7 @@ REQUIRED_GIT_FUNCS = [
     "get_blob_lines",
     "get_commit_diff",
     "ensure_relative_path",
+    "diff_from_raw_diff_output",
     "get_commits",
     "get_changeset_data",
     "parse_raw_log_with_numstat",
@@ -1134,5 +1135,9 @@ def test_window_actions_cover_menus() -> None:
         "ensureRelativePath",
         ":(top,literal)",
         "getCommitDiff",
+        "diffFromRawDiffOutput",
+        "--patch-with-raw",
+        "Can't create partial commit",
+        "VideoTagFilter",
     ]:
         assert phrase in src

@@ -25,7 +25,8 @@ _FENCE_RE = re.compile(r"```[a-zA-Z0-9_+-]*\n([\s\S]*?)```")
 _INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _AUTOLINK_RE = re.compile(r"(?<!href=\")(?<!href=')https?://[^\s<]+")
-_VIDEO_TAG_RE = re.compile(r"</?video\b[^>]*>", re.I)
+# Desktop VideoTagFilter: keep GitHub user-asset videos, drop others.
+_VIDEO_TAG_RE = re.compile(r"<video\b[^>]*/>|<video\b[^>]*>.*?</video\s*>", re.I | re.S)
 # Desktop `githubAssetVideoRegex` / `video-url-regex.ts` / VideoLinkFilter
 _GITHUB_ASSET_VIDEO_RE = re.compile(
     r"^https://user-images\.githubusercontent\.com/.+\.(?:mp4|webm|ogg|mov|qt|avi|wmv|3gp|mpg|mpeg)(?:\?.*)?$",
@@ -85,6 +86,8 @@ _ISSUE_LINK_RE = re.compile(
     r"https?://[^/\s]+/(?P<owner>[\w.-]+)/(?P<name>[\w.-]+)/(?:issues|pull|discussions)/(?P<num>\d+)(?P<anchor>#[\w-]+)?",
     re.I,
 )
+_ISSUE_PR_TAB_RE = re.compile(r"\d+/(files|commits|conflicts|checks)")
+_ISSUE_CUSTOM_FORMAT_RE = re.compile(r"\.[a-z]+$")
 _COMMIT_LINK_RE = re.compile(
     r"https?://[^/\s]+/(?P<owner>[\w.-]+)/(?P<name>[\w.-]+)/commit/(?P<sha>[0-9a-f]{7,40})(?P<path>/[^?\s]*)?",
     re.I,
@@ -152,6 +155,16 @@ def shorten_github_autolink(url: str, repo_html_url: str | None = None) -> str |
     raw = (url or "").strip()
     issue = _ISSUE_LINK_RE.match(raw)
     if issue:
+        if _ISSUE_PR_TAB_RE.search(raw) or _ISSUE_CUSTOM_FORMAT_RE.search(raw.split("#", 1)[0]):
+            return None
+        current = _repo_owner_name(repo_html_url)
+        if current is not None:
+            parsed = urlparse(raw)
+            repo_parsed = urlparse(repo_html_url or "")
+            if repo_parsed.netloc and parsed.netloc.lower() != repo_parsed.netloc.lower():
+                return None
+            if (issue.group("owner"), issue.group("name")) != current:
+                return None
         label = f"#{issue.group('num')}"
         extra = _issue_anchor_description(issue.group("anchor"))
         return f"{label} {extra}".strip()
@@ -259,7 +272,18 @@ def markdown_to_pango(
         return hold(f'<a href="{href}">{text}</a>')
 
     source = _MD_LINK_RE.sub(stash_link, source)
-    source = _VIDEO_TAG_RE.sub("", source)
+
+    def replace_video_tag(match: re.Match[str]) -> str:
+        tag = match.group(0)
+        src_match = re.search(r"""\bsrc\s*=\s*["']([^"']+)["']""", tag, re.I)
+        src = src_match.group(1) if src_match else ""
+        safe = _safe_url(src)
+        if safe is None or not is_github_asset_video_url(safe):
+            return ""
+        href = html.escape(safe, quote=True)
+        return hold(f'<a href="{href}">Video</a>')
+
+    source = _VIDEO_TAG_RE.sub(replace_video_tag, source)
 
     def stash_autolink(match: re.Match[str]) -> str:
         raw = match.group(0).rstrip(").,;")

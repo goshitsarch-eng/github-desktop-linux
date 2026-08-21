@@ -210,3 +210,7 @@ def test_github_asset_video_filter() -> None:
     stripped = markdown_to_pango('<video src="https://example.com/x.mp4"></video>Hello')
     assert "<video" not in stripped
     assert "Hello" in stripped
+    kept = markdown_to_pango(f'<video src="{url}"></video>Watch')
+    assert ">Video</a>" in kept
+    assert url in kept
+    assert "Watch" in kept

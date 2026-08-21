@@ -144,6 +144,14 @@ def test_parse_config_lock_file_path_normalizes_absolute() -> None:
     assert parse_config_lock_file_path_from_error(result) == "/Users/markus/.gitconfig.lock"
 
 
+def test_diff_from_raw_diff_output_takes_last_nul_piece() -> None:
+    from github_desktop.git.ops import diff_from_raw_diff_output
+
+    raw = ":100644 100644 abc def M\0README.md\0\0diff --git a/README.md b/README.md\n@@ -1 +1,2 @@\n hello\n+world\n"
+    assert diff_from_raw_diff_output(raw).startswith("diff --git")
+    assert diff_from_raw_diff_output("plain unified") == "plain unified"
+
+
 def test_ensure_relative_path_matches_desktop() -> None:
     from github_desktop.git.ops import ensure_relative_path
 

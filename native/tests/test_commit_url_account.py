@@ -201,6 +201,8 @@ def test_shorten_github_autolinks() -> None:
     repo = "https://github.com/octo/hello"
     assert shorten_github_autolink("https://github.com/octo/hello/issues/42", repo) == "#42"
     assert shorten_github_autolink("https://github.com/octo/hello/pull/9#discussioncomment-1", repo) == "#9 (comment)"
+    assert shorten_github_autolink("https://github.com/octo/hello/pull/9/files", repo) is None
+    assert shorten_github_autolink("https://github.com/other/repo/issues/1", repo) is None
     long_sha = "6fd794543af171c35cc9c325f570f9553128ffc9"
     assert "<tt>6fd7945</tt>" in (shorten_github_autolink(f"https://github.com/octo/hello/commit/{long_sha}", repo) or "")
     other = shorten_github_autolink(f"https://github.com/desktop/desktop/commit/{long_sha}", repo)
