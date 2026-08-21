@@ -42,6 +42,11 @@ def test_classify_bad_revision() -> None:
         classify_git_error("CONFLICT (modify/delete): README.md deleted in HEAD and modified in abc")
         == "ConflictModifyDeletedInBranch"
     )
+    assert (
+        classify_git_error("The stash entry is kept in case you need it again.\n")
+        == "MergeConflicts"
+    )
+    assert classify_git_error("CONFLICT (content): Merge conflict in README.md") == "MergeConflicts"
 
 
 def test_is_git_error_matches_desktop() -> None:

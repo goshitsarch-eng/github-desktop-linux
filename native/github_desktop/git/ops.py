@@ -2400,6 +2400,10 @@ def stash_pop(repo: str, stash_ref: str = "stash@{0}") -> None:
             name="popStashEntry",
         )
     except GitError as exc:
+        blob = f"{exc.stdout}\n{exc.stderr}".lower()
+        # Git already kept the stash (newer `--quiet` omits "merge conflict").
+        if "stash entry is kept" in blob:
+            return
         if exc.exit_code == 1 and not (exc.stderr or "").strip():
             drop_desktop_stash_entry(repo, match.stash_sha)
             return

@@ -348,7 +348,13 @@ def classify_git_error(stderr: str, stdout: str = "") -> str | None:
         return "ForcePushRejected"
     if "non-fast-forward" in lower or "failed to push some refs" in lower:
         return "PushNotFastForward"
-    if "fix conflicts and then commit" in lower or "merge conflict" in lower:
+    if (
+        "fix conflicts and then commit" in lower
+        or "merge conflict" in lower
+        or "conflict (content)" in lower
+        or "automatic merge failed" in lower
+        or "the stash entry is kept in case you need it again" in lower
+    ):
         return "MergeConflicts"
     if "could not apply" in lower and "rebase" in lower:
         return "RebaseConflicts"

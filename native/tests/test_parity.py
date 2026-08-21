@@ -1139,5 +1139,6 @@ def test_window_actions_cover_menus() -> None:
         "--patch-with-raw",
         "Can't create partial commit",
         "VideoTagFilter",
+        "the stash entry is kept in case you need it again",
     ]:
         assert phrase in src
