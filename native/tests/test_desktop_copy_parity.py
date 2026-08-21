@@ -96,6 +96,27 @@ def test_linux_file_and_view_menu_labels_match_desktop() -> None:
     assert go_to_summary_label() == "Go to Summary"
 
 
+def test_linux_branch_group_labels_and_compare_placeholder() -> None:
+    from github_desktop.models import Branch, BranchType
+    from github_desktop.ui.branches import (
+        branch_group_label,
+        compare_placeholder_text,
+        group_branches,
+    )
+
+    assert branch_group_label("default") == "Default branch"
+    assert branch_group_label("recent") == "Recent branches"
+    assert branch_group_label("other") == "Other branches"
+    assert compare_placeholder_text(has_non_fork_branch=False, comparing=False) == "No branches to compare"
+    assert compare_placeholder_text(has_non_fork_branch=True, comparing=False) == "Select branch to compare…"
+    assert compare_placeholder_text(has_non_fork_branch=True, comparing=True) == "Filter branches"
+    fork = Branch("github-desktop-octocat/topic", None, "abc", BranchType.REMOTE)
+    extra = Branch("topic", None, "def", BranchType.LOCAL)
+    titles = [title for title, items in group_branches([fork, extra], current=None, default_name=None, recent_names=[])]
+    assert titles == ["Other branches"]
+    assert [b.name for _title, items in group_branches([fork, extra], current=None, default_name=None, recent_names=[]) for b in items] == ["topic"]
+
+
 def test_clone_list_empty_copy() -> None:
     class Account:
         login = "hubot"

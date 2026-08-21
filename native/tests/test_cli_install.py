@@ -44,6 +44,22 @@ def test_group_branches_default_recent_other() -> None:
         recent_names=["topic"],
     )
     titles = [title for title, _ in groups]
-    assert titles[0] == "Default"
-    assert "Recent" in titles
+    assert titles[0] == "Default branch"
+    assert "Recent branches" in titles
+    assert "Other branches" in titles
     assert groups[0][1][0].name == "main"
+    origin = Branch("origin/extra", None, "ddd", BranchType.REMOTE)
+    fork = Branch("github-desktop-octocat/topic", None, "eee", BranchType.REMOTE)
+    grouped = group_branches(
+        [default, topic, extra, origin, fork],
+        current="topic",
+        default_name="main",
+        recent_names=["topic"],
+    )
+    titles = [title for title, _ in grouped]
+    assert "Remote" not in titles
+    others = next(items for title, items in grouped if title == "Other branches")
+    assert {b.name for b in others} == {"extra", "origin/extra"}
+    local_fork_name = Branch("github-desktop-octocat/topic", None, "fff", BranchType.LOCAL)
+    assert local_fork_name.is_desktop_fork_remote_branch is False
+    assert fork.is_desktop_fork_remote_branch is True

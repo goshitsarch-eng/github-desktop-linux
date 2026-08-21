@@ -49,6 +49,15 @@ def generate_pull_request_context_menu_items(
     return items
 
 
+def branch_group_label(identifier: str) -> str:
+    """Desktop Linux `getGroupLabel`."""
+    if identifier == "default":
+        return "Default branch"
+    if identifier == "recent":
+        return "Recent branches"
+    return "Other branches"
+
+
 def group_branches(
     branches: list[Branch],
     *,
@@ -56,11 +65,12 @@ def group_branches(
     default_name: str | None,
     recent_names: list[str],
 ) -> list[tuple[str, list[Branch]]]:
+    """Desktop `groupBranches` with Linux `getGroupLabel` (fork remotes stay hidden)."""
     by_name = {b.name: b for b in branches}
     used: set[str] = set()
     groups: list[tuple[str, list[Branch]]] = []
     if default_name and default_name in by_name:
-        groups.append(("Default", [by_name[default_name]]))
+        groups.append((branch_group_label("default"), [by_name[default_name]]))
         used.add(default_name)
     recent: list[Branch] = []
     for name in recent_names:
@@ -69,18 +79,32 @@ def group_branches(
             recent.append(branch)
             used.add(name)
     if recent:
-        groups.append(("Recent", recent))
-    others = [b for b in branches if b.name not in used]
-    locals_ = [b for b in others if b.type == BranchType.LOCAL]
-    remotes = [b for b in others if b.type == BranchType.REMOTE]
-    if locals_:
-        groups.append(("Other", locals_))
-    if remotes:
-        groups.append(("Remote", remotes))
+        groups.append((branch_group_label("recent"), recent))
+    others = [
+        branch
+        for branch in branches
+        if branch.name not in used and not branch.is_desktop_fork_remote_branch
+    ]
+    if others:
+        groups.append((branch_group_label("other"), others))
     if current:
         for _title, items in groups:
             items.sort(key=lambda b: (0 if b.name == current else 1, b.name.lower()))
     return groups
+
+
+def compare_placeholder_text(*, has_non_fork_branch: bool, comparing: bool) -> str:
+    """Desktop `getPlaceholderText` (Linux). Compare mode uses Filter branches."""
+    if not has_non_fork_branch:
+        return "No branches to compare"
+    if not comparing:
+        return "Select branch to compare…"
+    return "Filter branches"
+
+
+groupBranches = group_branches
+getGroupLabel = branch_group_label
+getPlaceholderText = compare_placeholder_text
 
 
 class BranchesFoldout(Gtk.Popover):
@@ -147,7 +171,7 @@ class BranchesFoldout(Gtk.Popover):
         self._branch_list.connect("row-activated", self._on_branch_row)
         branch_scroll.set_child(self._branch_list)
         branches_page.append(branch_scroll)
-        new_btn = Gtk.Button(label="New branch…")
+        new_btn = Gtk.Button(label="New branch")
         new_btn.add_css_class("new-branch-drop")
         new_btn.connect("clicked", lambda *_: self._on_create())
         if on_cherry_pick_new_branch:
@@ -179,7 +203,7 @@ class BranchesFoldout(Gtk.Popover):
         self._pr_list.connect("row-activated", self._on_pr_row)
         pr_scroll.set_child(self._pr_list)
         pr_page.append(pr_scroll)
-        self._stack.add_titled(pr_page, "prs", "Pull Requests")
+        self._stack.add_titled(pr_page, "prs", "Pull requests")
 
         self._stack.connect("notify::visible-child", self._on_visible_tab)
 

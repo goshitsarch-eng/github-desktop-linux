@@ -4121,7 +4121,7 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
             base_list.append(row)
 
         if recent_bases:
-            add_header("Recent")
+            add_header("Recent branches")
             for name in recent_bases:
                 add_name(name)
         if other_bases:

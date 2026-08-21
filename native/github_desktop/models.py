@@ -1302,7 +1302,10 @@ class Branch:
 
     @property
     def is_desktop_fork_remote_branch(self) -> bool:
-        return self.name.startswith(FORKED_REMOTE_PREFIX)
+        """Desktop `isDesktopForkRemoteBranch` (hidden `github-desktop-` fork remotes)."""
+        return self.type == BranchType.REMOTE and self.name.startswith(FORKED_REMOTE_PREFIX)
+
+    isDesktopForkRemoteBranch = is_desktop_fork_remote_branch
 
 
 def pr_base_branches(

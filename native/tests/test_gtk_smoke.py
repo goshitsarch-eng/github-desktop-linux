@@ -283,6 +283,30 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
                     recent=[],
                     has_github=False,
                 )
+                from github_desktop.models import Branch, BranchType as _BranchType
+
+                win._branches_foldout.refresh(
+                    [
+                        Branch("main", None, "aaa", _BranchType.LOCAL),
+                        Branch("topic", None, "bbb", _BranchType.LOCAL),
+                    ],
+                    [],
+                    current="topic",
+                    default_name="main",
+                    recent=["topic"],
+                    has_github=True,
+                )
+                foldout_labels: list[str] = []
+                row = win._branches_foldout._branch_list.get_first_child()
+                while row is not None:
+                    child = row.get_child()
+                    if hasattr(child, "get_text"):
+                        foldout_labels.append(child.get_text())
+                    row = row.get_next_sibling()
+                assert "Default branch" in foldout_labels
+                assert "Recent branches" in foldout_labels
+                prs_page = win._branches_foldout._stack.get_child_by_name("prs")
+                assert win._branches_foldout._stack.get_page(prs_page).get_title() == "Pull requests"
             show_release_notes(win)
             show_checks(win, store, {"error": "CI failed", "title": "Demo PR"})
             from github_desktop.ui.checks import show_rerun_checks

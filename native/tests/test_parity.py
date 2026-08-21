@@ -668,7 +668,7 @@ def test_window_actions_cover_menus() -> None:
         "Unable to merge unrelated histories in this repository",
         "Sign into GitHub.com",
         "high-signal events",
-        "Select Branch to Compare",
+        "Select branch to compare",
         "No branches to compare",
         "ConfigLockFileExists",
         "isConfigFileLockError",
@@ -1451,5 +1451,12 @@ def test_window_actions_cover_menus() -> None:
         "fileQuitLabel",
         "goToSummaryLabel",
         "exitAccelerator",
+        "groupBranches",
+        "getGroupLabel",
+        "isDesktopForkRemoteBranch",
+        "Default branch",
+        "Recent branches",
+        "Other branches",
+        "getPlaceholderText",
     ]:
         assert phrase in src

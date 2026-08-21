@@ -41,6 +41,7 @@ from ..models import (
 from ..shells import open_in_default_program
 from ..store import AppStore
 from ..truncate import truncate_with_ellipsis
+from .branches import group_branches
 from .menus import OpenWithDefaultProgramLabel, RevealInFileManagerLabel, clear_box
 
 
@@ -290,18 +291,12 @@ def _show_choose_branch(parent: Gtk.Window, store: AppStore, kind: str, initial_
 
     def grouped() -> list:
         remaining = filter_items(search.get_text(), branches, lambda b: [b.name, b.upstream or ""])
-        groups: list[tuple[str, list]] = []
-        recent = [b for b in remaining if b.name in recent_names]
-        if recent:
-            groups.append(("Recent", recent))
-            remaining = [b for b in remaining if b not in recent]
-        default_b = next((b for b in remaining if b.name == default_name or b.name.endswith("/" + (default_name or ""))), None)
-        if default_b:
-            groups.append(("Default", [default_b]))
-            remaining = [b for b in remaining if b is not default_b]
-        if remaining:
-            groups.append(("Other", remaining))
-        return groups
+        return group_branches(
+            remaining,
+            current=None,
+            default_name=default_name,
+            recent_names=recent_names,
+        )
 
     def render_list() -> None:
         while True:

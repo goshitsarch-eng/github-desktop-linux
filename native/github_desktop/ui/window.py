@@ -85,7 +85,11 @@ from .autocompletion import (
     summary_length_hint,
     token_before_cursor,
 )
-from .branches import BranchesFoldout, generate_branch_context_menu_items
+from .branches import (
+    BranchesFoldout,
+    compare_placeholder_text,
+    generate_branch_context_menu_items,
+)
 from .checks import present_checks_popover
 from .dialogs import (
     present_popup,
@@ -2168,7 +2172,7 @@ class MainWindow(Adw.ApplicationWindow):
         compare_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         compare_col.set_hexpand(True)
         self._compare_search = Gtk.SearchEntry()
-        self._compare_search.set_placeholder_text("Select Branch to Compare…")
+        self._compare_search.set_placeholder_text("Select branch to compare…")
         self._compare_search.set_hexpand(True)
         self._compare_search.connect("search-changed", lambda *_: self._refresh_compare_list())
         compare_col.append(self._compare_search)
@@ -4550,14 +4554,19 @@ class MainWindow(Adw.ApplicationWindow):
         history.set_child(Gtk.Label(label="History", xalign=0))
         history.branch_name = ""
         self._compare_list.append(history)
-        comparable = [b for b in state.branches if b.name != current_name]
+        comparable = [
+            b
+            for b in state.branches
+            if b.name != current_name and not b.is_desktop_fork_remote_branch
+        ]
         if hasattr(self, "_compare_search"):
-            if not comparable:
-                self._compare_search.set_placeholder_text("No branches to compare")
-            elif state.history_mode != HistoryTabMode.COMPARE:
-                self._compare_search.set_placeholder_text("Select Branch to Compare…")
-            else:
-                self._compare_search.set_placeholder_text("Filter branches")
+            has_non_fork = any(not b.is_desktop_fork_remote_branch for b in state.branches)
+            self._compare_search.set_placeholder_text(
+                compare_placeholder_text(
+                    has_non_fork_branch=has_non_fork,
+                    comparing=state.history_mode == HistoryTabMode.COMPARE,
+                )
+            )
         ranked = filter_items(query, comparable, lambda b: [b.name, b.upstream or ""])
         shown = 0
         for branch in ranked:
