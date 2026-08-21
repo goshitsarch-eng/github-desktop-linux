@@ -61,7 +61,13 @@ from ..settings import (
 )
 from ..feature_flag import enable_resizing_toolbar_buttons
 from ..shells import open_external, open_in_default_program
-from ..menu_update import apply_menu_state, updateMenuState
+from ..menu_update import (
+    apply_menu_state,
+    get_push_label,
+    get_stashed_changes_label,
+    stash_all_changes_label,
+    updateMenuState,
+)
 from ..store import AppStore
 from ..text_tokens import MaxSummaryLength
 from ..truncate import truncate_with_ellipsis
@@ -551,8 +557,8 @@ class MainWindow(Adw.ApplicationWindow):
         add("choose-repository", self._toggle_repo_sidebar)
         add("show-branches", self._show_branches_foldout)
         add("go-to-commit-message", self._go_to_commit_message)
-        add("push", lambda: self._repo_op(lambda r: self.store.push_repo(r)))
-        add("force-push", lambda: self.store.show_popup(PopupType.CONFIRM_FORCE_PUSH))
+        add("push", self._push_from_menu)
+        add("force-push", lambda: self._repo_op(self.store.confirm_or_force_push))
         add("pull", lambda: self._repo_op(self.store.pull_repo))
         add("fetch", lambda: self._repo_op(self.store.fetch_repo))
         add("remove-repository", lambda: self.store.show_popup(PopupType.REMOVE_REPOSITORY))
@@ -710,6 +716,16 @@ class MainWindow(Adw.ApplicationWindow):
         repo = self.store.selected_repository
         if repo:
             fn(repo)
+
+    def _push_from_menu(self) -> None:
+        """Desktop Push menu / Ctrl+P (`pushEventType`)."""
+        repo = self.store.selected_repository
+        if not repo:
+            return
+        if self.store.current_branch_force_push_state(repo) == ForcePushBranchState.RECOMMENDED:
+            self.store.confirm_or_force_push(repo)
+            return
+        self.store.push_repo(repo)
 
     def _delete_branch(self) -> None:
         repo = self.store.selected_repository
@@ -1697,7 +1713,7 @@ class MainWindow(Adw.ApplicationWindow):
         view.append("Zoom out", "win.zoom-out")
         menu.append_submenu("View", view)
         repo = Gio.Menu()
-        repo.append(self._push_menu_label(), self._push_menu_action())
+        repo.append(self._push_menu_label(), "win.push")
         repo.append("Pull", "win.pull")
         repo.append("Fetch", "win.fetch")
         repo.append(self._remove_repository_label(), "win.remove-repository")
@@ -1713,7 +1729,7 @@ class MainWindow(Adw.ApplicationWindow):
         branch.append("Rename…", "win.rename-branch")
         branch.append("Delete…", "win.delete-branch")
         branch.append("Discard all changes…", "win.discard-all")
-        branch.append("Stash all changes…", "win.stash-all")
+        branch.append(stash_all_changes_label(self.store.settings.confirm_stash_all_changes), "win.stash-all")
         branch.append(self._update_from_default_label(), "win.update-from-default")
         branch.append("Compare to branch", "win.compare-to-branch")
         branch.append("Merge into current branch…", "win.merge-branch")
@@ -1741,15 +1757,9 @@ class MainWindow(Adw.ApplicationWindow):
         return self.store.state_for(repo) if repo else None
 
     def _push_menu_label(self) -> str:
-        if self.store.current_branch_force_push_state() == ForcePushBranchState.RECOMMENDED:
-            confirm = self.store.settings.confirm_force_push or self.store.settings.ask_for_confirmation_on_force_push
-            return "Force push…" if confirm else "Force push"
-        return "Push"
-
-    def _push_menu_action(self) -> str:
-        if self.store.current_branch_force_push_state() == ForcePushBranchState.RECOMMENDED:
-            return "win.force-push"
-        return "win.push"
+        force = self.store.current_branch_force_push_state() == ForcePushBranchState.RECOMMENDED
+        confirm = self.store.settings.confirm_force_push or self.store.settings.ask_for_confirmation_on_force_push
+        return get_push_label(force_push=force, ask_for_confirmation=confirm)
 
     def _pull_request_menu_label(self) -> str:
         state = self._selected_state()
@@ -1759,9 +1769,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _stash_menu_label(self) -> str:
         state = self._selected_state()
-        if state and state.stashed_visible:
-            return "Hide stashed changes"
-        return "Show stashed changes"
+        return get_stashed_changes_label(bool(state and state.stashed_visible))
 
     def _changes_filter_menu_label(self) -> str:
         return "Hide changes filter" if self.store.settings.show_changes_filter else "Show changes filter"
@@ -1797,6 +1805,7 @@ class MainWindow(Adw.ApplicationWindow):
             self._push_menu_label(),
             self._pull_request_menu_label(),
             self._stash_menu_label(),
+            stash_all_changes_label(self.store.settings.confirm_stash_all_changes),
             self._changes_filter_menu_label(),
             self._update_from_default_label(),
             self._open_in_editor_label(),
@@ -2592,7 +2601,7 @@ class MainWindow(Adw.ApplicationWindow):
             pull_with_rebase=bool(getattr(state, "pull_with_rebase", False)),
         )
         if presentation.action == "force-push":
-            self.store.show_popup(PopupType.CONFIRM_FORCE_PUSH)
+            self.store.confirm_or_force_push(repo)
         elif presentation.action == "push":
             self.store.push_repo(repo)
         elif presentation.action == "pull":
@@ -3771,7 +3780,7 @@ class MainWindow(Adw.ApplicationWindow):
             self._file_list,
             [
                 ("Discard all changes…", lambda: self.store.show_popup(PopupType.CONFIRM_DISCARD_CHANGES, discarding_all=True), has),
-                ("Stash all changes…", self._stash_all, has and not has_conflicts),
+                (stash_all_changes_label(self.store.settings.confirm_stash_all_changes), self._stash_all, has and not has_conflicts),
             ],
         )
 

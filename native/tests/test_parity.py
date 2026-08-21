@@ -1362,6 +1362,10 @@ def test_window_actions_cover_menus() -> None:
         "create-issue-in-repository-on-github",
         "update-branch-with-contribution-target-branch",
         "pushEventType",
+        "getPushLabel",
+        "getStashedChangesLabel",
+        "confirmStashAllChangesLabel",
+        "confirmOrForcePush",
         "issuesEnabled",
         "isArchived",
     ]:

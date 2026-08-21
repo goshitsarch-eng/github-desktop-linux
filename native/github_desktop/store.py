@@ -4610,6 +4610,20 @@ class AppStore:
             return ForcePushBranchState.RECOMMENDED
         return ForcePushBranchState.AVAILABLE
 
+    def confirm_or_force_push(self, repo: Repository) -> None:
+        """Desktop `confirmOrForcePush`."""
+        status = self.state_for(repo).status
+        if status is None or not status.current_branch or not status.current_tip:
+            log.warn("Could not find a branch to perform force push")
+            return
+        if not status.current_upstream_branch:
+            log.warn("Could not find an upstream branch which will be pushed")
+            return
+        if self.settings.confirm_force_push or self.settings.ask_for_confirmation_on_force_push:
+            self.show_popup(PopupType.CONFIRM_FORCE_PUSH)
+            return
+        self.push_repo(repo, force=True)
+
     def amend_last(self, repo: Repository, summary: str, description: str = "") -> None:
         self.commit(repo, summary, description, amend=True)
 

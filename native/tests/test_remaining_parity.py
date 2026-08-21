@@ -762,13 +762,14 @@ def test_pull_honors_desktop_flags(git_repo: Path, monkeypatch) -> None:
 
 
 def test_ctrl_z_is_text_undo_not_git_undo() -> None:
+    from github_desktop.menu_update import get_stashed_changes_label
     from github_desktop.ui.window import MainWindow
 
     src = open(MainWindow.__init__.__code__.co_filename, encoding="utf-8").read()
     assert '"<Ctrl>z": "edit-undo"' in src
     assert '"<Ctrl>z": "undo-commit"' not in src
     assert "win.edit-undo" in src
-    assert "Hide stashed changes" in src
+    assert get_stashed_changes_label(True) == "Hide stashed changes"
     assert "View pull request on GitHub" in src
 
 
@@ -1541,5 +1542,57 @@ def test_menu_update_network_resizable_hidden_window_cloning(isolated_config, gi
     store.welcome_step = WelcomeStep.START
     store._popups.clear()
     assert get_menu_state(store)["preferences"] is False
+
+
+def test_get_push_and_stash_menu_labels() -> None:
+    from github_desktop.menu_update import get_push_label, get_stashed_changes_label, stash_all_changes_label
+
+    assert get_push_label(force_push=False, ask_for_confirmation=True) == "Push"
+    assert get_push_label(force_push=True, ask_for_confirmation=True) == "Force push…"
+    assert get_push_label(force_push=True, ask_for_confirmation=False) == "Force push"
+    assert stash_all_changes_label(True) == "Stash all changes…"
+    assert stash_all_changes_label(False) == "Stash all changes"
+    assert get_stashed_changes_label(True) == "Hide stashed changes"
+    assert get_stashed_changes_label(False) == "Show stashed changes"
+
+
+def test_confirm_or_force_push_gates_and_skips_dialog(isolated_config, git_repo: Path, monkeypatch) -> None:
+    from github_desktop.models import IStatusResult, PopupType
+
+    store = AppStore()
+    store.welcome_step = None
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    pushed: list[bool] = []
+    monkeypatch.setattr(store, "push_repo", lambda _repo, force=False: pushed.append(force))
+
+    store.state_for(repo).status = IStatusResult(current_tip="abc")
+    store.confirm_or_force_push(repo)
+    assert store.popup is None
+    assert pushed == []
+
+    store.state_for(repo).status = IStatusResult(current_branch="topic", current_tip="abc")
+    store.confirm_or_force_push(repo)
+    assert store.popup is None
+    assert pushed == []
+
+    store.state_for(repo).status = IStatusResult(
+        current_branch="topic",
+        current_tip="abc",
+        current_upstream_branch="origin/topic",
+    )
+    store.settings.confirm_force_push = True
+    store.settings.ask_for_confirmation_on_force_push = True
+    store.confirm_or_force_push(repo)
+    assert store.popup is not None
+    assert store.popup.type == PopupType.CONFIRM_FORCE_PUSH
+    store._popups.clear()
+
+    store.settings.confirm_force_push = False
+    store.settings.ask_for_confirmation_on_force_push = False
+    store.confirm_or_force_push(repo)
+    assert store.popup is None
+    assert pushed == [True]
 
 

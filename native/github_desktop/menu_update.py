@@ -555,8 +555,29 @@ def apply_menu_state(
             action.set_enabled(enabled)
 
 
+def get_push_label(*, force_push: bool, ask_for_confirmation: bool) -> str:
+    """Desktop `getPushLabel` (Linux)."""
+    if not force_push:
+        return "Push"
+    return "Force push…" if ask_for_confirmation else "Force push"
+
+
+def stash_all_changes_label(confirm: bool) -> str:
+    """Desktop `confirmStashAllChangesLabel` / `stashAllChangesLabel`."""
+    return "Stash all changes…" if confirm else "Stash all changes"
+
+
+def get_stashed_changes_label(visible: bool) -> str:
+    """Desktop `getStashedChangesLabel` (Linux)."""
+    return "Hide stashed changes" if visible else "Show stashed changes"
+
+
 # Desktop camelCase aliases for concatenated-source parity checks.
 getMenuState = get_menu_state
+getPushLabel = get_push_label
+getStashedChangesLabel = get_stashed_changes_label
+confirmStashAllChangesLabel = "Stash all changes…"
+stashAllChangesLabel = "Stash all changes"
 getRepositoryMenuBuilder = get_repository_menu_builder
 getAppMenuBuilder = get_app_menu_builder
 getInWelcomeFlowBuilder = get_in_welcome_flow_builder
