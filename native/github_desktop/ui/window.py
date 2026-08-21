@@ -1689,6 +1689,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_open_binary=self._open_binary_file,
             files_width=int(self.store.settings.stashed_files_width or defaultStashedFilesWidth),
             on_reset_width=self._reset_stashed_files_width,
+            on_width_changed=lambda width: self.store.set_stashed_files_width(width),
         )
         self._changes_stack.add_named(paned, "working")
         self._changes_stack.add_named(self._stash_viewer, "stash")
@@ -1813,6 +1814,7 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception:
             pass
         attach_paned_reset(files_paned, self._reset_commit_summary_width)
+        files_paned.connect("notify::position", self._on_commit_summary_paned_position)
         self._hist_files_paned = files_paned
         self._hist_detail.append(files_paned)
         self._hist_blank = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -4587,6 +4589,14 @@ class MainWindow(Adw.ApplicationWindow):
             self._sync_repository_foldout_width()
         finally:
             self._applying_sidebar_width = False
+
+    def _on_commit_summary_paned_position(self, paned, *_args: object) -> None:
+        """Desktop `setCommitSummaryWidth` while dragging the selected-commit file list."""
+        if getattr(self, "_building", False):
+            return
+        pos = paned.get_position()
+        if pos > 0:
+            self.store.set_commit_summary_width(pos)
 
     def _reset_commit_summary_width(self) -> None:
         """Desktop `onReset` for the selected-commit file list (`commitSummaryWidth`)."""

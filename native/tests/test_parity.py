@@ -1298,5 +1298,10 @@ def test_window_actions_cover_menus() -> None:
         "_setRepositoryFilterText",
         "repositoryFilterText",
         "foldoutWidth",
+        "_setCommitSummaryWidth",
+        "_setStashedFilesWidth",
+        "_setPullRequestFileListWidth",
+        "GitDescriptionPath",
+        "Couldn't get the repository's description",
     ]:
         assert phrase in src

@@ -2592,7 +2592,9 @@ def show_publish(parent: Gtk.Window, store: AppStore) -> None:
     if not repo:
         return
     from ..create_repo import sanitized_repository_name
-    from ..git.ops import read_description
+    from ..logging import get_logger
+
+    log = get_logger()
 
     accounts = list(store.accounts)
     dialog = Adw.Dialog()
@@ -2635,7 +2637,7 @@ def show_publish(parent: Gtk.Window, store: AppStore) -> None:
         sanitized_row.set_subtitle("")
         sanitized_row.set_visible(False)
         desc_row = Adw.EntryRow(title="Description")
-        desc_row.set_text(read_description(repo.path) or "")
+        desc_row.set_text("")
         private_row = Adw.SwitchRow(title="Keep this code private")
         private_row.set_active(True)
         org_row = Adw.ComboRow(title="Organization")
@@ -2734,6 +2736,17 @@ def show_publish(parent: Gtk.Window, store: AppStore) -> None:
     stack.add_titled(tab_content(PublishTab.DOTCOM), PublishTab.DOTCOM.value, "GitHub.com")
     stack.add_titled(tab_content(PublishTab.ENTERPRISE), PublishTab.ENTERPRISE.value, "GitHub Enterprise")
     stack.set_visible_child_name(default_publish_tab(accounts).value)
+
+    def apply_description(text: str, exc: BaseException | None = None) -> None:
+        if exc:
+            log.warn("Couldn't get the repository's description", exc_info=exc)
+            return
+        value = text or ""
+        for form in forms.values():
+            form["desc_row"].set_text(value)
+
+    if forms:
+        store.load_git_description(repo, apply_description)
 
     def current_form() -> dict[str, Any] | None:
         return forms.get(stack.get_visible_child_name() or "")
@@ -4020,6 +4033,11 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     viewer = DiffViewer(interactive=False)
     paned.set_end_child(viewer)
     paned.set_position(max(180, int(store.settings.pull_request_file_list_width or defaultPullRequestFileListWidth)))
+    paned.connect(
+        "notify::position",
+        lambda moved, *_a: moved.get_position() > 0
+        and store.set_pull_request_file_list_width(moved.get_position()),
+    )
     root.append(paned)
 
     # GitHub's /pull/new form includes "Create as draft"; Desktop preview only opens that page.
@@ -4243,8 +4261,7 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     def persist_pr_files(*_a: Any) -> None:
         pos = paned.get_position()
         if pos > 0:
-            store.settings.pull_request_file_list_width = pos
-            store.persist_settings()
+            store.set_pull_request_file_list_width(pos)
 
     try:
         dialog.connect("closed", persist_pr_files)

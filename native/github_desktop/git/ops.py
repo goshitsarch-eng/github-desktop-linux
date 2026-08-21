@@ -3742,19 +3742,19 @@ def get_global_config_path() -> str:
 
 
 # Desktop DefaultGitDescription
+GitDescriptionPath = ".git/description"
 DEFAULT_GIT_DESCRIPTION = "Unnamed repository; edit this file 'description' to name the repository.\n"
 
 
 def write_description(repo: str, description: str) -> None:
-    git_dir = _git_dir(repo)
-    Path(os.path.join(git_dir, "description")).write_text(description, encoding="utf-8")
+    """Desktop `writeGitDescription`."""
+    Path(os.path.join(repo, GitDescriptionPath)).write_text(description, encoding="utf-8")
 
 
 def read_description(repo: str) -> str:
     """Desktop `getGitDescription`: empty only when the file is the default text."""
-    git_dir = _git_dir(repo)
     try:
-        text = Path(os.path.join(git_dir, "description")).read_text(encoding="utf-8")
+        text = Path(os.path.join(repo, GitDescriptionPath)).read_text(encoding="utf-8")
         if text == DEFAULT_GIT_DESCRIPTION:
             return ""
         return text

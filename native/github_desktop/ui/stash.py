@@ -32,6 +32,7 @@ class StashDiffViewer(Gtk.Box):
         on_open_binary: Callable[[str], None] | None = None,
         files_width: int = defaultStashedFilesWidth,
         on_reset_width: Callable[[], None] | None = None,
+        on_width_changed: Callable[[int], None] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.add_css_class("stash-diff-viewer")
@@ -84,6 +85,13 @@ class StashDiffViewer(Gtk.Box):
         paned.set_position(max(180, int(files_width or defaultStashedFilesWidth)))
         if on_reset_width is not None:
             attach_paned_reset(paned, on_reset_width)
+        if on_width_changed is not None:
+            def _on_stash_width(moved, *_args: object) -> None:
+                pos = moved.get_position()
+                if pos > 0:
+                    on_width_changed(pos)
+
+            paned.connect("notify::position", _on_stash_width)
         self._files_paned = paned
         self.append(paned)
 

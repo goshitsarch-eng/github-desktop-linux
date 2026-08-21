@@ -77,6 +77,7 @@ from .git import (
     get_files_diff_text,
     get_global_config_path,
     get_global_config_value,
+    get_git_description,
     get_last_desktop_stash_entry_for_branch,
     get_last_fetched,
     get_rebase_snapshot,
@@ -850,6 +851,44 @@ class AppStore:
     def set_repository_filter_text(self, text: str) -> None:
         """Desktop `_setRepositoryFilterText`."""
         self.repository_filter_text = text
+
+    def set_commit_summary_width(self, width: int) -> None:
+        """Desktop `_setCommitSummaryWidth`."""
+        width = max(100, int(width))
+        if self.settings.commit_summary_width == width:
+            return
+        self.settings.commit_summary_width = width
+        self.persist_settings()
+
+    def set_stashed_files_width(self, width: int) -> None:
+        """Desktop `_setStashedFilesWidth`."""
+        width = max(100, int(width))
+        if self.settings.stashed_files_width == width:
+            return
+        self.settings.stashed_files_width = width
+        self.persist_settings()
+
+    def set_pull_request_file_list_width(self, width: int) -> None:
+        """Desktop `_setPullRequestFileListWidth`."""
+        width = max(100, int(width))
+        if self.settings.pull_request_file_list_width == width:
+            return
+        self.settings.pull_request_file_list_width = width
+        self.persist_settings()
+
+    def load_git_description(self, repo: Repository, on_done: Callable[..., None]) -> None:
+        """Desktop Publish `componentDidMount` / `getGitDescription`."""
+
+        def work() -> str:
+            return get_git_description(repo.path)
+
+        def done(exc: BaseException | None, text: str | None = None) -> None:
+            try:
+                on_done(text or "", exc)
+            except TypeError:
+                on_done(text or "")
+
+        self._run_ui(work, done)
 
     def reset_commit_summary_width(self) -> None:
         """Desktop `_resetCommitSummaryWidth`."""
@@ -2602,11 +2641,6 @@ class AppStore:
     ) -> dict[str, str] | None:
         if not url:
             remotes = list(self.state_for(repo).remotes)
-            if not remotes:
-                try:
-                    remotes = get_remotes(repo.path)
-                except GitError:
-                    remotes = []
             url = remotes[0].url if remotes else None
         if not url:
             return None

@@ -364,6 +364,18 @@ def test_reset_sidebar_width_matches_desktop(isolated_config) -> None:
     assert store.settings.sidebar_width == 400
     store.set_sidebar_width(100)
     assert store.settings.sidebar_width == 220
+    store.set_commit_summary_width(400)
+    assert store.settings.commit_summary_width == 400
+    store.set_commit_summary_width(50)
+    assert store.settings.commit_summary_width == 100
+    store.set_stashed_files_width(400)
+    assert store.settings.stashed_files_width == 400
+    store.set_stashed_files_width(50)
+    assert store.settings.stashed_files_width == 100
+    store.set_pull_request_file_list_width(400)
+    assert store.settings.pull_request_file_list_width == 400
+    store.set_pull_request_file_list_width(50)
+    assert store.settings.pull_request_file_list_width == 100
     store.settings.commit_summary_width = 500
     store.reset_commit_summary_width()
     assert store.settings.commit_summary_width == 250
@@ -990,4 +1002,32 @@ def test_network_remote_uses_cached_remotes(isolated_config, git_repo: Path, mon
     assert store._network_remote(repo) is None
     origin = Remote(name="origin", url="https://github.com/me/app.git")
     assert store._network_remote(repo, [origin]) is origin
+    store.state_for(repo).remotes = [origin]
+    assert store.env_for_repo(repo) is not None
+
+
+def test_get_git_description_is_file_only(git_repo: Path, monkeypatch) -> None:
+    from github_desktop.git import ops as git_ops
+
+    def boom(*_a, **_k):
+        raise AssertionError("live git for getGitDescription")
+
+    monkeypatch.setattr(git_ops, "git", boom)
+    git_ops.write_git_description(str(git_repo), "Publish me")
+    assert git_ops.get_git_description(str(git_repo)) == "Publish me"
+    git_ops.write_git_description(str(git_repo), git_ops.DEFAULT_GIT_DESCRIPTION)
+    assert git_ops.get_git_description(str(git_repo)) == ""
+
+
+def test_load_git_description_matches_desktop(isolated_config, git_repo: Path) -> None:
+    from github_desktop.git.ops import write_git_description
+
+    write_git_description(str(git_repo), "A published app")
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    captured: list[str] = []
+    store.load_git_description(repo, lambda text, *_exc: captured.append(text))
+    assert captured == ["A published app"]
 
