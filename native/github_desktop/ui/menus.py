@@ -128,6 +128,142 @@ def attach_right_click(widget: Gtk.Widget, handler: Callable[[Gtk.Widget], None]
     widget.add_controller(gesture)
 
 
+# Desktop `ui/resizable/resizable.tsx`
+resizableComponentClass = "resizable-component"
+DefaultMinWidth = 200
+DefaultMaxWidth = 350
+KEYBOARD_RESIZE_DELTA = 5
+IncreaseActiveResizableWidth = "increase-active-resizable-width"
+DecreaseActiveResizableWidth = "decrease-active-resizable-width"
+
+
+def resizable_limit(value: float, fallback: int) -> int:
+    """Coerce a live `IConstrainedValue` min/max into a finite pixel bound."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if number != number or abs(number) == float("inf") or abs(number) > 1e8:
+        return fallback
+    return int(number)
+
+
+def nudge_resizable_width(width: int, increase: bool, min_width: int, max_width: int) -> int:
+    """Desktop `handleMenuResizeEvent` width math (`±5px`, then clamp)."""
+    if max_width < min_width:
+        max_width = min_width
+    delta = KEYBOARD_RESIZE_DELTA if increase else -KEYBOARD_RESIZE_DELTA
+    changed = int(width) + delta
+    return min(max_width, max(min_width, changed))
+
+
+def resize_percentage(width: int, min_width: int, max_width: int) -> int:
+    """Desktop `getResizePercentage` for the aria-live resize announcement."""
+    span = max_width - min_width
+    if span <= 0:
+        return 100 if width >= max_width else 0
+    return round(((width - min_width) / span) * 100)
+
+
+def find_active_resizable(widget: Gtk.Widget | None) -> Gtk.Widget | None:
+    """Walk from `document.activeElement` to the focused `.resizable-component`."""
+    current = widget
+    while current is not None:
+        try:
+            if current.has_css_class(resizableComponentClass):
+                return current
+        except Exception:
+            pass
+        current = current.get_parent() if hasattr(current, "get_parent") else None
+    return None
+
+
+def handle_menu_resize_event(widget: Gtk.Widget, increase: bool) -> None:
+    """Desktop `handleMenuResizeEvent` on the focused Resizable."""
+    handler = getattr(widget, "_handle_menu_resize", None)
+    if callable(handler):
+        handler(increase)
+
+
+def resize_active_resizable(focus: Gtk.Widget | None, increase: bool) -> bool:
+    """Desktop `resizeActiveResizable`: custom event from `document.activeElement`."""
+    target = find_active_resizable(focus)
+    if target is None:
+        return False
+    handle_menu_resize_event(target, increase)
+    return True
+
+
+def attach_keyboard_resize(
+    widget: Gtk.Widget,
+    *,
+    get_width: Callable[[], int],
+    on_resize: Callable[[int], None],
+    description: str,
+    get_min: Callable[[], int] | None = None,
+    get_max: Callable[[], int] | None = None,
+    min_width: int = DefaultMinWidth,
+    max_width: int = DefaultMaxWidth,
+    constraints: dict[str, float] | None = None,
+) -> None:
+    """Listen for Expand/Contract active resizable on this `.resizable-component`."""
+    widget.add_css_class(resizableComponentClass)
+
+    def _min() -> int:
+        if constraints is not None:
+            return resizable_limit(constraints.get("min", min_width), min_width)
+        if get_min is not None:
+            return int(get_min())
+        return int(min_width)
+
+    def _max() -> int:
+        fallback = int(max_width)
+        if constraints is not None:
+            bound = resizable_limit(constraints.get("max", fallback), fallback)
+        elif get_max is not None:
+            bound = int(get_max())
+        else:
+            bound = fallback
+        minimum = _min()
+        return minimum if bound < minimum else bound
+
+    def handle_menu_resize(increase: bool) -> None:
+        # Desktop `handleMenuResizeEvent` / `updateResizeMessage`
+        new_width = nudge_resizable_width(int(get_width()), increase, _min(), _max())
+        on_resize(new_width)
+        direction = "increased" if increase else "decreased"
+        # Desktop AriaLiveContainer: "{description} width increased. Set to N%"
+        message = f"{description} width {direction}. Set to {resize_percentage(new_width, _min(), _max())}%"
+        widget._resize_message = message
+        try:
+            widget.announce(message, Gtk.AccessibleAnnouncementPriority.MEDIUM)
+        except Exception:
+            pass
+
+    widget._handle_menu_resize = handle_menu_resize
+
+
+def attach_paned_keyboard_resize(
+    paned: Gtk.Paned,
+    *,
+    description: str,
+    get_min: Callable[[], int],
+    get_max: Callable[[], int],
+) -> None:
+    """Mark the paned's start child as the Desktop Resizable (not the diff pane)."""
+    start = paned.get_start_child()
+    if start is None:
+        return
+    attach_keyboard_resize(
+        start,
+        get_width=lambda: int(paned.get_position()),
+        on_resize=lambda width: paned.set_position(int(width)),
+        get_min=get_min,
+        get_max=get_max,
+        description=description,
+    )
+
+
 def attach_paned_reset(paned: Gtk.Paned, on_reset: Callable[[], None], *, handle_slop: float = 12.0) -> None:
     """Desktop Resizable `onDoubleClick` / `onReset` for a Gtk.Paned handle."""
     click = Gtk.GestureClick()
@@ -204,4 +340,22 @@ def wrap_toolbar_resizable(
 
     click.connect("pressed", pressed)
     handle.add_controller(click)
+
+    def toolbar_width() -> int:
+        min_w = int(limits["min"])
+        return max(min_w, widget.get_allocated_width() or widget.get_width() or start["width"])
+
+    def toolbar_resize(new_width: int) -> None:
+        widget.set_size_request(new_width, -1)
+        on_resize(new_width)
+
+    attach_keyboard_resize(
+        box,
+        get_width=toolbar_width,
+        on_resize=toolbar_resize,
+        constraints=limits,
+        description=description or "Toolbar button",
+        min_width=int(limits["min"]),
+        max_width=int(limits["max"]) if limits["max"] < 1e8 else DefaultMaxWidth,
+    )
     return box

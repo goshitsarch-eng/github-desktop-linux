@@ -73,12 +73,15 @@ from .checks import show_checks, show_rerun_checks
 from .diff_view import DiffViewer
 from .menus import (
     TrashNameLabel,
+    attach_paned_keyboard_resize,
     attach_paned_reset,
     attach_right_click,
     committed_file_context_items,
     open_in_editor_label,
+    resizable_limit,
     show_context_menu,
     view_on_github_label,
+    DefaultMaxWidth,
 )
 from .multi_commit import show_multi_commit, show_warn_force_push
 
@@ -4274,6 +4277,12 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
         paned.set_position(max(180, defaultPullRequestFileListWidth))
 
     attach_paned_reset(paned, reset_pr_files)
+    attach_paned_keyboard_resize(
+        paned,
+        description="Pull request file list",
+        get_min=lambda: max(100, resizable_limit(store.pull_request_file_list_constraints.min, 100)),
+        get_max=lambda: resizable_limit(store.pull_request_file_list_constraints.max, DefaultMaxWidth),
+    )
     dialog.present(parent)
 
 

@@ -1318,5 +1318,15 @@ def test_window_actions_cover_menus() -> None:
         "updateResizableConstraints",
         "updatePullRequestResizableConstraints",
         "IConstrainedValue",
+        "increase-active-resizable-width",
+        "decrease-active-resizable-width",
+        "resizeActiveResizable",
+        "resizable-component",
+        "handleMenuResizeEvent",
+        "Repository sidebar",
+        "Stash file list",
+        "Pull request file list",
+        "width increased",
+        "getResizePercentage",
     ]:
         assert phrase in src

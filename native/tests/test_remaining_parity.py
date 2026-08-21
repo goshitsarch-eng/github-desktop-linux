@@ -433,6 +433,32 @@ def test_update_resizable_constraints_matches_desktop(isolated_config) -> None:
     assert store.pull_request_file_list_constraints.max == 850 - 20 - 150
 
 
+def test_keyboard_resize_nudge_matches_desktop() -> None:
+    from github_desktop.ui.menus import (
+        DefaultMaxWidth,
+        DefaultMinWidth,
+        KEYBOARD_RESIZE_DELTA,
+        nudge_resizable_width,
+        resizable_limit,
+        resize_percentage,
+    )
+
+    assert KEYBOARD_RESIZE_DELTA == 5
+    assert DefaultMinWidth == 200
+    assert DefaultMaxWidth == 350
+    assert nudge_resizable_width(250, True, 220, 720) == 255
+    assert nudge_resizable_width(250, False, 220, 720) == 245
+    assert nudge_resizable_width(220, False, 220, 720) == 220
+    assert nudge_resizable_width(720, True, 220, 720) == 720
+    assert nudge_resizable_width(250, True, 220, 200) == 220
+    assert resize_percentage(220, 220, 720) == 0
+    assert resize_percentage(720, 220, 720) == 100
+    assert resize_percentage(470, 220, 720) == 50
+    assert resizable_limit(float("inf"), 350) == 350
+    assert resizable_limit(float("-inf"), 220) == 220
+    assert resizable_limit(680.0, 350) == 680
+
+
 def test_change_clone_repositories_tab_persists(isolated_config) -> None:
     from github_desktop.models import CloneRepositoryTab
     from github_desktop.settings import defaultPullRequestFileListWidth, pullRequestFileListConfigKey

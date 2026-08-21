@@ -97,9 +97,13 @@ from .menus import (
     OpenWithDefaultProgramLabel,
     RevealInFileManagerLabel,
     alias_verb,
+    attach_paned_keyboard_resize,
     attach_paned_reset,
     attach_right_click,
+    resizable_limit,
+    resize_active_resizable,
     wrap_toolbar_resizable,
+    DefaultMaxWidth,
     clear_box,
     committed_file_context_items,
     copy_text,
@@ -591,8 +595,8 @@ class MainWindow(Adw.ApplicationWindow):
         add("select-all", lambda: self._edit_action("select-all"))
         add("edit-undo", lambda: self._edit_action("undo"))
         add("edit-redo", lambda: self._edit_action("redo"))
-        add("increase-resizable", lambda: self._nudge_paned(20))
-        add("decrease-resizable", lambda: self._nudge_paned(-20))
+        add("increase-resizable", lambda: self._resize_active_resizable(True))
+        add("decrease-resizable", lambda: self._resize_active_resizable(False))
         add("pr-suggested-preview", self._pr_suggested_preview)
         add("pr-suggested-create", self._pr_suggested_create)
         add("show-shortcuts", self._show_shortcuts)
@@ -1884,6 +1888,12 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception:
             pass
         attach_paned_reset(paned, self._reset_sidebar_width)
+        attach_paned_keyboard_resize(
+            paned,
+            description="Repository sidebar",
+            get_min=lambda: max(220, resizable_limit(self.store.sidebar_constraints.min, 220)),
+            get_max=lambda: resizable_limit(self.store.sidebar_constraints.max, DefaultMaxWidth),
+        )
         paned.connect("notify::position", self._on_sidebar_paned_position)
         self._diff_view = DiffViewer(
             interactive=True,
@@ -1921,6 +1931,8 @@ class MainWindow(Adw.ApplicationWindow):
                 if getattr(self, "_applying_constraints", False)
                 else self.store.set_stashed_files_width(width)
             ),
+            get_min_width=lambda: max(100, resizable_limit(self.store.stashed_files_constraints.min, 100)),
+            get_max_width=lambda: resizable_limit(self.store.stashed_files_constraints.max, DefaultMaxWidth),
         )
         self._changes_stack.add_named(paned, "working")
         self._changes_stack.add_named(self._stash_viewer, "stash")
@@ -2045,6 +2057,12 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception:
             pass
         attach_paned_reset(files_paned, self._reset_commit_summary_width)
+        attach_paned_keyboard_resize(
+            files_paned,
+            description="Selected commit file list",
+            get_min=lambda: max(100, resizable_limit(self.store.commit_summary_constraints.min, 100)),
+            get_max=lambda: resizable_limit(self.store.commit_summary_constraints.max, DefaultMaxWidth),
+        )
         files_paned.connect("notify::position", self._on_commit_summary_paned_position)
         self._hist_files_paned = files_paned
         self._hist_detail.append(files_paned)
@@ -2082,6 +2100,12 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception:
             pass
         attach_paned_reset(paned, self._reset_sidebar_width)
+        attach_paned_keyboard_resize(
+            paned,
+            description="Repository sidebar",
+            get_min=lambda: max(220, resizable_limit(self.store.sidebar_constraints.min, 220)),
+            get_max=lambda: resizable_limit(self.store.sidebar_constraints.max, DefaultMaxWidth),
+        )
         paned.connect("notify::position", self._on_sidebar_paned_position)
         return paned
 
@@ -4808,19 +4832,9 @@ class MainWindow(Adw.ApplicationWindow):
                 return
             current = current.get_parent() if hasattr(current, "get_parent") else None
 
-    def _nudge_paned(self, delta: int) -> None:
-        paned = None
-        if hasattr(self, "_view_stack") and self._view_stack.get_visible_child_name() == "history":
-            paned = getattr(self, "_history_paned", None)
-        else:
-            paned = getattr(self, "_changes_paned", None)
-        if paned is None:
-            return
-        pos = paned.get_position()
-        max_w = int(self.store.sidebar_constraints.max)
-        if max_w > 10**8:
-            max_w = 720
-        paned.set_position(max(220, min(max_w, pos + delta)))
+    def _resize_active_resizable(self, increase: bool) -> None:
+        """Desktop `resizeActiveResizable` (`increase-active-resizable-width` / `decrease-active-resizable-width`)."""
+        resize_active_resizable(self.get_focus(), increase)
 
     def _reset_sidebar_width(self) -> None:
         self._applying_sidebar_width = True

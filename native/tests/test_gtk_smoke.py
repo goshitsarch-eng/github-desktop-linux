@@ -54,10 +54,50 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             assert win.lookup_action("edit-undo")
             assert win.lookup_action("edit-redo")
             assert win.lookup_action("increase-resizable")
+            assert win.lookup_action("decrease-resizable")
             assert win.lookup_action("pr-suggested-preview")
             assert hasattr(win, "_menu_btn")
             assert hasattr(win, "_changes_paned")
             assert hasattr(win, "_branches_foldout")
+            from github_desktop.ui.menus import (
+                DefaultMaxWidth,
+                nudge_resizable_width,
+                resizableComponentClass,
+                resizable_limit,
+                resize_active_resizable,
+            )
+
+            sidebar = win._changes_paned.get_start_child()
+            assert sidebar.has_css_class(resizableComponentClass)
+            min_w = max(220, resizable_limit(win.store.sidebar_constraints.min, 220))
+            max_w = resizable_limit(win.store.sidebar_constraints.max, DefaultMaxWidth)
+            win._changes_paned.set_position(250)
+            before = win._changes_paned.get_position()
+            assert resize_active_resizable(win._file_list, True)
+            assert win._changes_paned.get_position() == nudge_resizable_width(before, True, min_w, max_w)
+            assert "Repository sidebar width increased" in getattr(sidebar, "_resize_message", "")
+            after = win._changes_paned.get_position()
+            assert resize_active_resizable(win._file_list, False)
+            assert win._changes_paned.get_position() == nudge_resizable_width(after, False, min_w, max_w)
+            sidebar_pos = win._changes_paned.get_position()
+            assert not resize_active_resizable(win._diff_view, True)
+            assert win._changes_paned.get_position() == sidebar_pos
+            files_start = win._hist_files_paned.get_start_child()
+            assert files_start.has_css_class(resizableComponentClass)
+            files_min = max(100, resizable_limit(win.store.commit_summary_constraints.min, 100))
+            files_max = resizable_limit(win.store.commit_summary_constraints.max, DefaultMaxWidth)
+            win._hist_files_paned.set_position(250)
+            files_before = win._hist_files_paned.get_position()
+            assert resize_active_resizable(win._hist_files, True)
+            assert win._hist_files_paned.get_position() == nudge_resizable_width(
+                files_before, True, files_min, files_max
+            )
+            stash_files = win._stash_viewer._files_paned.get_start_child()
+            assert stash_files.has_css_class(resizableComponentClass)
+            branch_wrap = win._branch_btn.get_parent()
+            assert branch_wrap.has_css_class("toolbar-resizable")
+            assert branch_wrap.has_css_class(resizableComponentClass)
+            win._resize_active_resizable(True)
             child = win._stack.get_visible_child_name()
             assert child in {"welcome", "empty", "repo"}
             win._refresh_files()
