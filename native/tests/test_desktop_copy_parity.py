@@ -184,6 +184,23 @@ def test_author_input_and_diff_options_linux_copy() -> None:
     assert "press backspace or delete to remove" in author_handle_aria_label(searching)
 
 
+def test_no_changes_editor_linux_copy_and_availability() -> None:
+    from github_desktop.ui.menus import (
+        OPEN_THE_REPOSITORY_IN_YOUR_EXTERNAL_EDITOR,
+        SELECT_YOUR_EDITOR_IN_OPTIONS,
+        is_external_editor_available,
+        open_in_editor_label,
+    )
+
+    assert OPEN_THE_REPOSITORY_IN_YOUR_EXTERNAL_EDITOR == "Open the repository in your external editor"
+    assert SELECT_YOUR_EDITOR_IN_OPTIONS == "Select your editor in Options"
+    assert is_external_editor_available(use_custom_editor=False, selected_external_editor=None) is False
+    assert is_external_editor_available(use_custom_editor=True, selected_external_editor=None) is True
+    assert is_external_editor_available(use_custom_editor=False, selected_external_editor="Visual Studio Code") is True
+    assert open_in_editor_label("Visual Studio Code") == "Open in Visual Studio Code"
+    assert open_in_editor_label(None) == "Open in external editor"
+
+
 def test_clone_list_empty_copy() -> None:
     class Account:
         login = "hubot"

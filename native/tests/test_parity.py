@@ -1477,5 +1477,17 @@ def test_window_actions_cover_menus() -> None:
         "Your Account Emails",
         "git options",
         "DiffOptions",
+        "Select your editor in Options",
+        "isExternalEditorAvailable",
+        "renderOpenInExternalEditor",
+        "openIntegrationPreferences",
+        "incrementMetric",
+        "suggestedStepOpenInExternalEditor",
+        "suggestedStepOpenWorkingDirectory",
+        "suggestedStepViewOnGitHub",
+        "suggestedStepPublishRepository",
+        "suggestedStepPublishBranch",
+        "suggestedStepCreatePullRequest",
+        "suggestedStepViewStash",
     ]:
         assert phrase in src

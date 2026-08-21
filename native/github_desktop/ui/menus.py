@@ -219,6 +219,17 @@ def open_in_editor_label(editor_name: str | None) -> str:
     return f"Open in {editor_name}" if editor_name else DefaultEditorLabel
 
 
+def is_external_editor_available(*, use_custom_editor: bool, selected_external_editor: str | None) -> bool:
+    """Desktop `isExternalEditorAvailable`: `useCustomEditor || selectedExternalEditor !== null`."""
+    return bool(use_custom_editor or selected_external_editor)
+
+
+isExternalEditorAvailable = is_external_editor_available
+
+OPEN_THE_REPOSITORY_IN_YOUR_EXTERNAL_EDITOR = "Open the repository in your external editor"
+SELECT_YOUR_EDITOR_IN_OPTIONS = "Select your editor in Options"
+
+
 def open_in_shell_label(shell_name: str | None) -> str:
     return f"Open in {shell_name}" if shell_name else DefaultShellLabel
 

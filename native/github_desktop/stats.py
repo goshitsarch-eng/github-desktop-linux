@@ -482,6 +482,8 @@ class StatsStore:
             return
         self.update_daily_measures(lambda m: {key: int(m.get(key) or 0) + n})
 
+    incrementMetric = increment
+
     def get_average_launch_stats(self) -> dict[str, float]:
         with self._lock:
             launches = list(self.db.launches)

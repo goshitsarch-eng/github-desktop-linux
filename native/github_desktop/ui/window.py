@@ -142,6 +142,9 @@ from .menus import (
     repository_toolbar_title,
     open_in_editor_label,
     open_in_shell_label,
+    is_external_editor_available,
+    OPEN_THE_REPOSITORY_IN_YOUR_EXTERNAL_EDITOR,
+    SELECT_YOUR_EDITOR_IN_OPTIONS,
     remove_repository_label,
     show_context_menu,
     unpushed_tags_for_commit,
@@ -3024,7 +3027,7 @@ class MainWindow(Adw.ApplicationWindow):
                     "View your stashed changes",
                     f"You have {count} {noun} in progress that you have not yet committed.",
                     "View stash",
-                    lambda: self.store.toggle_stash(repo),
+                    self._suggested_step("suggestedStepViewStash", lambda: self.store.toggle_stash(repo)),
                     primary=True,
                     discoverability="When a stash exists, access it at the bottom of the Changes tab to the left.",
                 )
@@ -3035,7 +3038,10 @@ class MainWindow(Adw.ApplicationWindow):
                     "Publish your repository to GitHub",
                     "This repository is currently only available on your local machine. By publishing it on GitHub you can share it, and collaborate with others.",
                     "Publish repository",
-                    lambda: self.store.show_popup(PopupType.PUBLISH_REPOSITORY),
+                    self._suggested_step(
+                        "suggestedStepPublishRepository",
+                        lambda: self.store.show_popup(PopupType.PUBLISH_REPOSITORY),
+                    ),
                     primary=True,
                     discoverability="Always available in the toolbar for local repositories or Ctrl+P",
                 )
@@ -3052,7 +3058,7 @@ class MainWindow(Adw.ApplicationWindow):
                         f"{pr}and collaborate with others."
                     ),
                     "Publish branch",
-                    lambda: self.store.push_repo(repo),
+                    self._suggested_step("suggestedStepPublishBranch", lambda: self.store.push_repo(repo)),
                     primary=True,
                     discoverability="Always available in the toolbar or Ctrl+P",
                 )
@@ -3120,24 +3126,37 @@ class MainWindow(Adw.ApplicationWindow):
                             "Create a Pull Request from your current branch",
                             f"The current branch ({current}) is already published to GitHub. Create a pull request to propose and collaborate on your changes.",
                             "Create Pull Request",
-                            lambda: self.store.open_pull_request(repo),
+                            self._suggested_step(
+                                "suggestedStepCreatePullRequest",
+                                lambda: self.store.open_pull_request(repo),
+                            ),
                         )
                     )
-        self._suggested.append(
-            self._suggested_card(
-                "Open the repository in your external editor",
-                "Select your editor in Preferences → Integrations.",
-                "Open in editor",
-                lambda: self.store.open_in_editor(repo),
-                discoverability="Always available from the Repository menu or Ctrl+Shift+A",
+        if is_external_editor_available(
+            use_custom_editor=self.store.settings.use_custom_editor,
+            selected_external_editor=self.store.settings.selected_external_editor,
+        ):
+            self._suggested.append(
+                self._suggested_card(
+                    OPEN_THE_REPOSITORY_IN_YOUR_EXTERNAL_EDITOR,
+                    self._no_changes_editor_description(),
+                    self._open_in_editor_label(),
+                    self._suggested_step(
+                        "suggestedStepOpenInExternalEditor",
+                        lambda: self.store.open_in_editor(repo),
+                    ),
+                    discoverability="Always available from the Repository menu or Ctrl+Shift+A",
+                )
             )
-        )
         self._suggested.append(
             self._suggested_card(
                 "View the files of your repository in your File Manager",
                 "",
                 RevealInFileManagerLabel,
-                lambda: self.store.open_working_directory(repo),
+                self._suggested_step(
+                    "suggestedStepOpenWorkingDirectory",
+                    lambda: self.store.open_working_directory(repo),
+                ),
                 discoverability="Always available from the Repository menu or Ctrl+Shift+F",
             )
         )
@@ -3147,15 +3166,43 @@ class MainWindow(Adw.ApplicationWindow):
                     "Open the repository page on GitHub in your browser",
                     "",
                     view_on_github_label(enterprise=not is_dotcom_endpoint(repo.github.endpoint)),
-                    lambda: self.store.view_on_github(repo),
+                    self._suggested_step(
+                        "suggestedStepViewOnGitHub",
+                        lambda: self.store.view_on_github(repo),
+                    ),
                     discoverability="Always available from the Repository menu or Ctrl+Shift+G",
                 )
             )
 
+    def _suggested_step(self, metric: str, action):
+        """Desktop `dispatcher.incrementMetric` then the NoChanges suggested action."""
+        def run() -> None:
+            self.store.stats.increment(metric)
+            action()
+
+        return run
+
+    def _no_changes_editor_description(self) -> Gtk.Widget:
+        """Desktop Linux `renderOpenInExternalEditor` / `openIntegrationPreferences` Options link."""
+        row = Gtk.Box(spacing=0)
+        prefix = Gtk.Label(label="Select your editor in ", xalign=0)
+        prefix.add_css_class("dim-label")
+        link = Gtk.Button(label="Options")
+        link.add_css_class("flat")
+        link.add_css_class("link")
+        link.set_tooltip_text(SELECT_YOUR_EDITOR_IN_OPTIONS)
+        link.connect(
+            "clicked",
+            lambda *_: show_preferences(self, self.store, PreferencesTab.INTEGRATIONS),
+        )
+        row.append(prefix)
+        row.append(link)
+        return row
+
     def _suggested_card(
         self,
         title: str,
-        description: str,
+        description: str | Gtk.Widget,
         button: str,
         callback,
         *,
@@ -3168,9 +3215,12 @@ class MainWindow(Adw.ApplicationWindow):
         heading.add_css_class("heading")
         box.append(heading)
         if description:
-            body = Gtk.Label(label=description, xalign=0, wrap=True)
-            body.add_css_class("dim-label")
-            box.append(body)
+            if isinstance(description, Gtk.Widget):
+                box.append(description)
+            else:
+                body = Gtk.Label(label=description, xalign=0, wrap=True)
+                body.add_css_class("dim-label")
+                box.append(body)
         btn = Gtk.Button(label=button, halign=Gtk.Align.START)
         if primary:
             btn.add_css_class("suggested-action")
