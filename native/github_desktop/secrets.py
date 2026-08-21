@@ -12,6 +12,8 @@ from .paths import config_dir
 log = get_logger()
 SERVICE = "GitHub Desktop"
 GENERIC_SERVICE = "GitHub Desktop Generic"
+# Desktop `genericGitAuth/username/` localStorage prefix (persisted as username@{host}).
+GENERIC_GIT_AUTH_USERNAME_KEY_PREFIX = "genericGitAuth/username/"
 
 
 def _file_store() -> Path:

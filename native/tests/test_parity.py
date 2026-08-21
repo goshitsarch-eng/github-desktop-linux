@@ -325,6 +325,12 @@ def test_window_actions_cover_menus() -> None:
         git_error_context as git_error_context_mod,
         get_account as get_account_mod,
         features as features_mod,
+        format_date as format_date_mod,
+        directory_exists as directory_exists_mod,
+        clamp as clamp_mod,
+        http_status as http_status_mod,
+        feature_flag as feature_flag_mod,
+        secrets as secrets_mod,
     )
     from github_desktop.git import delimiter as git_delimiter_mod
 
@@ -352,6 +358,12 @@ def test_window_actions_cover_menus() -> None:
     src += open(git_error_context_mod.__file__, encoding="utf-8").read()
     src += open(get_account_mod.__file__, encoding="utf-8").read()
     src += open(features_mod.__file__, encoding="utf-8").read()
+    src += open(format_date_mod.__file__, encoding="utf-8").read()
+    src += open(directory_exists_mod.__file__, encoding="utf-8").read()
+    src += open(clamp_mod.__file__, encoding="utf-8").read()
+    src += open(http_status_mod.__file__, encoding="utf-8").read()
+    src += open(feature_flag_mod.__file__, encoding="utf-8").read()
+    src += open(secrets_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -932,5 +944,20 @@ def test_window_actions_cover_menus() -> None:
         "last-clone-location",
         "shouldRenderApplicationMenu",
         "features/should-render-application-menu",
+        "createTailStream",
+        "createTerminalStream",
+        "isRawMessage",
+        "formatDate",
+        "Invalid date",
+        "dateStyle",
+        "directoryExists",
+        "clamp",
+        "HttpStatusCode",
+        "NotModified",
+        "genericGitAuth/username/",
+        "enableRecurseSubmodulesFlag",
+        "enableResetToCommit",
+        "enableCheckoutCommit",
+        "TERM",
     ]:
         assert phrase in src

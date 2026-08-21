@@ -237,6 +237,9 @@ class BranchesFoldout(Gtk.Popover):
             when = _relative_iso(pr.created_at)
             subtitle = " · ".join(part for part in (pr.author, pr.head_ref, when) if part)
             row = Adw.ActionRow(title=f"#{pr.number} {pr.title}", subtitle=subtitle)
+            absolute = _absolute_iso(pr.created_at)
+            if absolute:
+                row.set_tooltip_text(absolute)
             status = self._pr_checks.get(pr.number)
             if status:
                 icons = {
@@ -488,3 +491,20 @@ def _relative_iso(value: str) -> str:
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
     return format_commit_relative_time(when)
+
+
+def _absolute_iso(value: str) -> str:
+    """Desktop RelativeTime tooltip: `formatDate` with dateStyle full / timeStyle short."""
+    if not value:
+        return ""
+    from datetime import datetime, timezone
+
+    from ..format_date import format_date
+
+    try:
+        when = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return format_date(when)

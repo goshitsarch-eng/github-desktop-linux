@@ -2567,6 +2567,11 @@ class MainWindow(Adw.ApplicationWindow):
         relative = format_commit_relative_time(commit.author.date)
         byline = Gtk.Label(label=f"{attribution} • {relative}", xalign=0)
         byline.add_css_class("commit-sha")
+        from ..format_date import format_date
+
+        absolute = format_date(commit.author.date)
+        byline.set_tooltip_text(absolute)
+        summary.set_tooltip_text(commit.sha)
         texts.append(summary)
         texts.append(byline)
         box.append(texts)
@@ -2603,7 +2608,7 @@ class MainWindow(Adw.ApplicationWindow):
             box.append(indicators)
         row.set_child(box)
         row._commit = commit  # type: ignore[attr-defined]
-        row.set_tooltip_text(commit.sha)
+        row.set_tooltip_text(absolute)
         attach_right_click(row, lambda *_ , r=row: self._commit_item_menu(r))
         self._install_commit_dnd(row, commit)
         return row

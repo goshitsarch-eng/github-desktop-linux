@@ -84,6 +84,28 @@ def parse_carriage_return(text: str) -> str:
     return "\n".join(rewritten)
 
 
+# Desktop `createTailStream` capacity for git combined stdout+stderr (256kb).
+TERMINAL_OUTPUT_CAPACITY = 256 * 1024
+
+
+def create_tail_stream(text: str, capacity: int = TERMINAL_OUTPUT_CAPACITY) -> str:
+    """Desktop `createTailStream`: keep at most `capacity` bytes from the end."""
+    data = (text or "").encode("utf-8", errors="replace")
+    if len(data) <= capacity:
+        return text or ""
+    return data[-capacity:].decode("utf-8", errors="replace")
+
+
+def create_terminal_output(stdout: str = "", stderr: str = "") -> str:
+    """Desktop git `terminalOutput`: CR-collapsed, 256kb-tailed stdout+stderr.
+
+    `createTerminalStream` removes redundant Git progress lines caused by ``\\r``
+    the way a terminal would, then `createTailStream` caps the result at 256kb.
+    """
+    combined = f"{stderr or ''}{stdout or ''}"
+    return create_tail_stream(parse_carriage_return(combined))
+
+
 def format_bytes(byte_count: int, decimals: int = 1, fixed: bool = True) -> str:
     """Desktop `formatBytes` (IEC units so LFS progress matches Git)."""
     if byte_count == 0:

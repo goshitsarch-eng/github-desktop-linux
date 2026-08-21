@@ -11,6 +11,7 @@ import re
 from typing import Any, Callable, Iterable
 
 from ..errors import APIError, CopilotError, MaxResultsError
+from ..http_status import HttpStatusCode
 from ..logging import get_logger
 from ..models import (
     Account,
@@ -261,7 +262,7 @@ class GitHubAPI:
                 header_map = {}
             # Desktop ghRequest: 401 + X-GitHub-Request-Id and no OTP => emitTokenInvalidated.
             if (
-                exc.code == 401
+                exc.code == HttpStatusCode.Unauthorized
                 and self.token
                 and header_map.get("x-github-request-id")
                 and not header_map.get("x-github-otp")
@@ -915,9 +916,9 @@ class GitHubAPI:
                 return_headers=True,
             )
         except APIError as exc:
-            if exc.status == 304:
+            if exc.status == HttpStatusCode.NotModified:
                 return None, etag
-            if exc.status == 404:
+            if exc.status == HttpStatusCode.NotFound:
                 log.warn("fetchMentionables: '%s/%s' returned a 404", owner, name)
                 return [], None
             log.warn("fetchMentionables: failed for %s/%s", owner, name)
@@ -1145,16 +1146,16 @@ class GitHubAPI:
 
     def _copilot_error_message(self, exc: APIError) -> str:
         body = exc.body or ""
-        if exc.status == 429:
+        if exc.status == HttpStatusCode.TooManyRequests:
             retry = (exc.headers or {}).get("retry-after")
             if retry:
                 return f"Rate limited, retry after {retry} seconds."
             return "Rate limited, try again in a few minutes."
-        if exc.status == 402:
+        if exc.status == HttpStatusCode.PaymentRequired:
             return body.strip() or "You have reached your quota limit."
-        if exc.status == 401:
+        if exc.status == HttpStatusCode.Unauthorized:
             return "Unauthorized: error with authentication."
-        if exc.status == 403:
+        if exc.status == HttpStatusCode.Forbidden:
             if "not licensed to use Copilot" in body:
                 return "Unauthorized: not licensed to use Copilot."
             if "not authorized to use this Copilot feature" in body:

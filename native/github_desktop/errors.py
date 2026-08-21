@@ -20,6 +20,8 @@ class GitError(DesktopError):
         stderr: str = "",
         git_error: str | None = None,
         path: str | None = None,
+        is_raw_message: bool = False,
+        terminal_output: str = "",
     ) -> None:
         super().__init__(message)
         self.git_args = args or []
@@ -28,6 +30,9 @@ class GitError(DesktopError):
         self.stderr = stderr
         self.git_error = git_error
         self.path = path
+        # Desktop `GitError.isRawMessage`: true when the message is raw git output.
+        self.is_raw_message = is_raw_message
+        self.terminal_output = terminal_output
 
     @property
     def is_auth_failure(self) -> bool:

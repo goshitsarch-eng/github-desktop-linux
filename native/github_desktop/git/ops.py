@@ -3376,7 +3376,9 @@ def ensure_repository(path: str) -> str:
 
 def get_repository_type(path: str) -> dict[str, str]:
     """Desktop `getRepositoryType`: bare / regular (+ toplevel) / unsafe / missing."""
-    if not path or not os.path.isdir(path):
+    from ..directory_exists import directory_exists
+
+    if not path or not directory_exists(path):
         return {"kind": "missing"}
     try:
         result = git(

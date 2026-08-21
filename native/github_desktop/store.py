@@ -2311,7 +2311,9 @@ class AppStore:
         self.emit()
 
     def set_zoom(self, factor: float) -> None:
-        self.settings.zoom_factor = min(3.0, max(0.7, factor))
+        from .clamp import clamp
+
+        self.settings.zoom_factor = clamp(factor, 0.7, 3.0)
         self.persist_settings()
         from .ui.css import apply_zoom
 

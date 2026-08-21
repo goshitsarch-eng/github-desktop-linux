@@ -99,6 +99,7 @@ class ExpandableCommitSummary(Gtk.Box):
         if not commits:
             self._summary.set_text("No commit selected")
             self._meta.set_text("")
+            self._meta.set_tooltip_text("")
             self._stats.set_text("")
             self._body.set_text("")
             self._body.set_visible(False)
@@ -141,9 +142,12 @@ class ExpandableCommitSummary(Gtk.Box):
             tags = (" · " + ", ".join(primary.tags)) if primary.tags else ""
             attribution = format_commit_attribution(primary, github)
             relative = format_commit_relative_time(primary.author.date)
+            from ..format_date import format_date
+
             self._meta.set_text(
                 f"{attribution} • {relative} · {primary.author.email} · {primary.short_sha}{tags}"
             )
+            self._meta.set_tooltip_text(format_date(primary.author.date))
         else:
             in_diff = set(shas_in_diff or [])
             shown = len(in_diff) or len(commits)
@@ -154,6 +158,7 @@ class ExpandableCommitSummary(Gtk.Box):
                 + (f" +{len(authors) - 4}" if len(authors) > 4 else "")
                 + f" · {commits[-1].short_sha}…{commits[0].short_sha}"
             )
+            self._meta.set_tooltip_text("")
             self._body_text = ""
         if changeset:
             files = len(changeset.files)

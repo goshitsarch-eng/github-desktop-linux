@@ -18,7 +18,14 @@ from urllib.parse import urlsplit
 from ..errors import GitError, GitNotFoundError
 from ..linux_proxy import host_matches_no_proxy, proxy_url_for_remote, read_linux_system_proxy
 from ..logging import get_logger
-from .progress import GitLFSProgressParser, GitProgress, GitProgressParser, ProgressStep, create_lfs_progress_file
+from .progress import (
+    GitLFSProgressParser,
+    GitProgress,
+    GitProgressParser,
+    ProgressStep,
+    create_lfs_progress_file,
+    create_terminal_output,
+)
 
 log = get_logger()
 
@@ -150,6 +157,8 @@ def _prepare_env(env: Mapping[str, str] | None) -> dict[str, str]:
     merged_env.setdefault("LANGUAGE", "C")
     if env:
         merged_env.update({k: v for k, v in env.items() if v is not None})
+    # Desktop git(): `TERM: 'dumb'` so a launching terminal's TERM is not treated as smart.
+    merged_env["TERM"] = "dumb"
     return merged_env
 
 
@@ -369,18 +378,34 @@ def git(
         stdout_bytes=stdout_bytes,
     )
     if result.exit_code not in success:
-        message = result.stderr.strip() or result.stdout.strip() or f"git {name} failed"
         from ..errors import classify_git_error, get_description_for_error
         from .askpass import delete_most_recent_ssh_credential, remove_most_recent_ssh_credential
 
+        terminal_output = create_terminal_output(result.stdout, result.stderr)
         git_error = classify_git_error(result.stderr, result.stdout)
         if git_error in {"SSHAuthenticationFailed", "SSHPermissionDenied"}:
             delete_most_recent_ssh_credential()
         else:
             remove_most_recent_ssh_credential()
         friendly = get_description_for_error(git_error, result.stderr)
+        is_raw_message = True
         if friendly:
             message = friendly
+            is_raw_message = False
+        elif terminal_output.strip():
+            message = terminal_output
+        elif result.stderr.strip():
+            message = result.stderr.strip()
+        elif result.stdout.strip():
+            message = result.stdout.strip()
+        else:
+            message = f"Unknown error (exit code {result.exit_code})"
+            is_raw_message = False
+        log.error("`git %s` exited with an unexpected code: %s.", " ".join(args), result.exit_code)
+        if terminal_output:
+            log.error("%s", terminal_output[-1024:])
+        if git_error:
+            log.error("(The error was parsed as %s: %s)", git_error, friendly)
         raise GitError(
             message,
             args=list(args),
@@ -389,6 +414,8 @@ def git(
             stderr=result.stderr,
             git_error=git_error,
             path=str(cwd),
+            is_raw_message=is_raw_message,
+            terminal_output=terminal_output,
         )
     from .askpass import remove_most_recent_ssh_credential
 
