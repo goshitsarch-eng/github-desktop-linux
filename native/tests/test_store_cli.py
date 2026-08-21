@@ -80,6 +80,17 @@ def test_set_commit_spellcheck_enabled(isolated_config) -> None:
     assert get_boolean(commitSpellcheckEnabledKey) is True
 
 
+def test_update_manual_conflict_resolution(isolated_config, git_repo) -> None:
+    from github_desktop.models import ManualConflictResolution
+
+    store = AppStore()
+    repo = store.add_repositories([str(git_repo)])[0]
+    store.update_manual_conflict_resolution(repo, "a.txt", ManualConflictResolution.OURS)
+    assert store.state_for(repo).manual_resolutions["a.txt"] is ManualConflictResolution.OURS
+    store.update_manual_conflict_resolution(repo, "a.txt", None)
+    assert "a.txt" not in store.state_for(repo).manual_resolutions
+
+
 def test_commit_spellcheck_loads_from_local_storage(isolated_config) -> None:
     from github_desktop.local_storage import set_boolean
     from github_desktop.settings import commitSpellcheckEnabledKey

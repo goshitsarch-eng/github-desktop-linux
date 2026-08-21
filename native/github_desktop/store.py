@@ -4779,11 +4779,25 @@ class AppStore:
             if exc:
                 self.show_popup(PopupType.ERROR, error=str(exc))
                 return
-            self.state_for(repo).manual_resolutions[path] = resolution
-            self.state_for(repo).user_has_resolved_conflicts = True
+            self.update_manual_conflict_resolution(repo, path, resolution)
             self.refresh_repository(repo)
 
         self._run_ui(work, done)
+
+    def update_manual_conflict_resolution(
+        self,
+        repo: Repository,
+        path: str,
+        resolution: ManualConflictResolution | None,
+    ) -> None:
+        """Desktop `_updateManualConflictResolution` / `updateManualConflictResolution`."""
+        state = self.state_for(repo)
+        if resolution is None:
+            state.manual_resolutions.pop(path, None)
+        else:
+            state.manual_resolutions[path] = resolution
+            state.user_has_resolved_conflicts = True
+        self.emit()
 
     def set_conflicts_resolved(self, repo: Repository) -> None:
         """Desktop `_setConflictsResolved`: remember that the user resolved at least one conflict."""

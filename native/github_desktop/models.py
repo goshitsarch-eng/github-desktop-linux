@@ -713,6 +713,19 @@ def get_resolved_file_status_summary(
     return DEFAULT_CONFLICTS_RESOLVED_MESSAGE
 
 
+def get_branch_for_resolution(
+    manual_resolution: ManualConflictResolution | None,
+    our_branch: str | None = None,
+    their_branch: str | None = None,
+) -> str | None:
+    """Desktop `getBranchForResolution`."""
+    if manual_resolution == ManualConflictResolution.OURS:
+        return our_branch
+    if manual_resolution == ManualConflictResolution.THEIRS:
+        return their_branch
+    return None
+
+
 def get_label_for_manual_resolution_option(entry: GitStatusEntry | None, branch: str | None = None) -> str:
     """Desktop `getLabelForManualResolutionOption`."""
     suffix = f" from {branch}" if branch else ""

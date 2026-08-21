@@ -1416,5 +1416,17 @@ def test_window_actions_cover_menus() -> None:
         "onRepositoryToolbarButtonContextMenu",
         "buildAliasMenuItems",
         "Create alias",
+        "renderUnmergedFile",
+        "renderResolvedFile",
+        "makeUndoManualResolutionClickHandler",
+        "_updateManualConflictResolution",
+        "updateManualConflictResolution",
+        "editorButtonString",
+        "editorButtonTooltip",
+        "getManualResolutionMenuItems",
+        "getBranchForResolution",
+        "File does not exist on",
+        "No editor configured in Options > Advanced",
+        "manualConflictString",
     ]:
         assert phrase in src

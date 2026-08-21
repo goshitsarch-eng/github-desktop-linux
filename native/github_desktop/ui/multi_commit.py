@@ -23,10 +23,13 @@ from ..git.ops import (
 from ..git.progress import MultiCommitProgress
 from ..models import (
     ComputedAction,
+    DEFAULT_CONFLICTS_RESOLVED_MESSAGE,
+    GitStatusEntry,
     ManualConflictResolution,
     MergeTreeResult,
     MultiCommitOperationKind,
     WorkingDirectoryFileChange,
+    get_branch_for_resolution,
     get_label_for_manual_resolution_option,
     get_conflicted_files,
     get_resolved_file_status_summary,
@@ -38,6 +41,7 @@ from ..models import (
 from ..shells import open_in_default_program
 from ..store import AppStore
 from ..truncate import truncate_with_ellipsis
+from .menus import OpenWithDefaultProgramLabel, RevealInFileManagerLabel, clear_box
 
 
 MERGE_OPTIONS = (
@@ -62,6 +66,36 @@ MERGE_OPTIONS = (
 def get_merge_options() -> tuple:
     """Desktop `getMergeOptions()` labels for the compare Merge CTA dropdown."""
     return MERGE_OPTIONS
+
+
+def editor_button_string(editor_name: str | None) -> str:
+    """Desktop `editorButtonString`."""
+    return f"Open in {editor_name or 'editor'}"
+
+
+def editor_button_tooltip(editor_name: str | None) -> str | None:
+    """Desktop `editorButtonTooltip` (Linux)."""
+    if editor_name:
+        return None
+    return "No editor configured in Options > Advanced"
+
+
+def manual_conflict_status_copy(
+    status,
+    *,
+    our_branch: str | None,
+    their_branch: str | None,
+) -> str:
+    """Desktop unmerged-file `manualConflictString` / deleted-file copy."""
+    us, them = getattr(status, "us", None), getattr(status, "them", None)
+    if us != GitStatusEntry.DELETED and them != GitStatusEntry.DELETED:
+        return "Manual conflict"
+    target_branch = "target branch"
+    if us == GitStatusEntry.DELETED and our_branch:
+        target_branch = our_branch
+    if them == GitStatusEntry.DELETED and their_branch:
+        target_branch = their_branch
+    return f"File does not exist on {target_branch}."
 
 
 def merge_cta_message(
@@ -863,77 +897,114 @@ def show_conflicts_dialog(parent: Gtk.Window, store: AppStore, kind: str | None 
             kind = MultiCommitOperationKind.SQUASH
         else:
             kind = MultiCommitOperationKind.MERGE
-    files = get_conflicted_files(status.working_directory, state.manual_resolutions)
-    resolved = get_resolved_files(status.working_directory, state.manual_resolutions)
-    leftover_count = sum(
-        (file.status.conflict_marker_count or 0)
-        for file in status.working_directory.files
-        if is_conflict_with_markers(file.status)
-        and file.path not in {item.path for item in files}
-    )
     dialog = Adw.Dialog()
     dialog.set_content_width(520)
     dialog.set_content_height(480)
     toolbar = Adw.ToolbarView()
     header = Adw.HeaderBar()
-    our = status.current_branch or "this branch"
-    their = _their_branch(repo, status)
-    header.set_title_widget(Adw.WindowTitle(title=f"Resolve {kind.lower()} conflicts", subtitle=our))
+    header.set_title_widget(Adw.WindowTitle(title=f"Resolve {kind.lower()} conflicts", subtitle=status.current_branch or "this branch"))
     toolbar.add_top_bar(header)
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     box.set_margin_top(12)
     box.set_margin_bottom(12)
     box.set_margin_start(12)
     box.set_margin_end(12)
-    count = len(files)
-    if count:
-        noun = "file" if count == 1 else "files"
-        box.append(Gtk.Label(label=f"{count} conflicted {noun}", xalign=0))
-    elif leftover_count:
-        leftover_label = Gtk.Label(
-            label="Leftover conflict markers remain. Resolve them before continuing.",
-            wrap=True,
-            xalign=0,
-        )
-        leftover_label.add_css_class("warning")
-        box.append(leftover_label)
-    else:
-        success = Gtk.Label(label="All conflicts have been resolved. You can continue.", xalign=0)
-        success.add_css_class("success")
-        box.append(success)
+    count_label = Gtk.Label(wrap=True, xalign=0)
+    box.append(count_label)
     scroller = Gtk.ScrolledWindow(vexpand=True)
     listbox = Gtk.ListBox()
     listbox.add_css_class("boxed-list")
-    for file in files:
-        row = _conflict_row(
-            parent,
-            store,
-            repo,
-            file,
-            binary=is_manual_conflict(file.status),
-            ours_label=get_label_for_manual_resolution_option(file.status.us, our),
-            theirs_label=get_label_for_manual_resolution_option(file.status.them, their),
-        )
-        listbox.append(row)
-    for file in resolved:
-        row = Adw.ActionRow(title=file.path, subtitle=get_resolved_file_status_summary(file.status))
-        ok = Gtk.Image.new_from_icon_name("emblem-ok-symbolic")
-        row.add_prefix(ok)
-        listbox.append(row)
     scroller.set_child(listbox)
     box.append(scroller)
     actions = Gtk.Box(spacing=8)
     cont = Gtk.Button(label=_continue_label(kind))
     cont.add_css_class("suggested-action")
-    can_continue = count == 0 and leftover_count == 0
-    cont.set_sensitive(can_continue)
-    if leftover_count and count == 0:
-        cont.set_tooltip_text("Resolve leftover conflict markers before continuing")
-    elif count:
-        cont.set_tooltip_text("Resolve all changes before continuing")
     abort = Gtk.Button(label=_abort_label(kind))
     editor = Gtk.Button(label="Open in editor")
     shell = Gtk.Button(label="Open in command line")
+    current = {"files": []}
+
+    def _editor_name() -> str | None:
+        if store.settings.use_custom_editor:
+            path = (store.settings.custom_editor_path or "").strip()
+            return Path(path).name if path else None
+        return store.settings.selected_external_editor
+
+    def refresh(_emit: object = None) -> bool:
+        """Rebuild `renderUnmergedFile` rows from the current conflict map."""
+        view = store.state_for(repo)
+        current_status = view.status
+        if current_status is None:
+            return False
+        files = get_conflicted_files(current_status.working_directory, view.manual_resolutions)
+        resolved = get_resolved_files(current_status.working_directory, view.manual_resolutions)
+        leftover_count = sum(
+            (item.status.conflict_marker_count or 0)
+            for item in current_status.working_directory.files
+            if is_conflict_with_markers(item.status)
+            and item.path not in {file.path for file in files}
+        )
+        current["files"] = files
+        count = len(files)
+        count_label.remove_css_class("warning")
+        count_label.remove_css_class("success")
+        if count:
+            noun = "file" if count == 1 else "files"
+            count_label.set_text(f"{count} conflicted {noun}")
+        elif leftover_count:
+            count_label.set_text("Leftover conflict markers remain. Resolve them before continuing.")
+            count_label.add_css_class("warning")
+        else:
+            count_label.set_text("All conflicts have been resolved. You can continue.")
+            count_label.add_css_class("success")
+        our = current_status.current_branch or "this branch"
+        their = _their_branch(repo, current_status)
+        editor_name = _editor_name()
+        clear_box(listbox)
+        for file in files:
+            listbox.append(
+                _conflict_row(
+                    parent,
+                    store,
+                    repo,
+                    file,
+                    binary=is_manual_conflict(file.status),
+                    ours_label=get_label_for_manual_resolution_option(file.status.us, our),
+                    theirs_label=get_label_for_manual_resolution_option(file.status.them, their),
+                    our_branch=our,
+                    their_branch=their,
+                    editor_name=editor_name,
+                )
+            )
+        for file in resolved:
+            resolution = view.manual_resolutions.get(file.path)
+            branch = get_branch_for_resolution(resolution, our, their)
+            summary = get_resolved_file_status_summary(file.status, resolution, branch)
+            row = Adw.ActionRow(title=file.path, subtitle=summary)
+            ok = Gtk.Image.new_from_icon_name("emblem-ok-symbolic")
+            row.add_prefix(ok)
+            if summary != DEFAULT_CONFLICTS_RESOLVED_MESSAGE:
+                # Desktop `renderResolvedFile` / `makeUndoManualResolutionClickHandler`
+                undo = Gtk.Button(label="Undo")
+                undo.add_css_class("flat")
+                undo.connect(
+                    "clicked",
+                    lambda _b, path=file.path: store.update_manual_conflict_resolution(repo, path, None),
+                )
+                row.add_suffix(undo)
+            listbox.append(row)
+        can_continue = count == 0 and leftover_count == 0
+        cont.set_sensitive(can_continue)
+        if leftover_count and count == 0:
+            cont.set_tooltip_text("Resolve leftover conflict markers before continuing")
+        elif count:
+            cont.set_tooltip_text("Resolve all changes before continuing")
+        else:
+            cont.set_tooltip_text("")
+        return False
+
+    def on_store() -> None:
+        GLib.idle_add(refresh)
 
     def do_continue(*_a: object) -> None:
         dialog.close()
@@ -965,17 +1036,18 @@ def show_conflicts_dialog(parent: Gtk.Window, store: AppStore, kind: str | None 
             dialog.close()
             store.abort_conflict_operation(repo, MultiCommitOperationKind(kind))
 
-        current = store.state_for(repo)
+        current_state = store.state_for(repo)
         resolved_now = get_resolved_files(
-            current.status.working_directory if current.status else [],
-            current.manual_resolutions,
+            current_state.status.working_directory if current_state.status else [],
+            current_state.manual_resolutions,
         )
-        if current.user_has_resolved_conflicts or resolved_now:
+        if current_state.user_has_resolved_conflicts or resolved_now:
             show_confirm_abort(parent, kind, confirm)
         else:
             confirm()
 
     def open_editor(*_a: object) -> None:
+        files = current["files"]
         path = files[0].path if files else None
         store.open_in_editor(repo, path)
 
@@ -990,16 +1062,19 @@ def show_conflicts_dialog(parent: Gtk.Window, store: AppStore, kind: str | None 
     box.append(actions)
     toolbar.set_content(box)
     dialog.set_child(toolbar)
+    unsubscribe = store.subscribe(on_store)
 
     def on_closed(*_a: object) -> None:
-        current = store.state_for(repo)
-        if not current.status:
+        unsubscribe()
+        current_state = store.state_for(repo)
+        if not current_state.status:
             return
-        resolved_now = get_resolved_files(current.status.working_directory, current.manual_resolutions)
+        resolved_now = get_resolved_files(current_state.status.working_directory, current_state.manual_resolutions)
         if resolved_now:
             store.set_conflicts_resolved(repo)
 
     dialog.connect("closed", on_closed)
+    refresh()
     dialog.present(parent)
 
 
@@ -1025,11 +1100,15 @@ def _conflict_row(
     binary: bool = False,
     ours_label: str = "Use ours",
     theirs_label: str = "Use theirs",
+    our_branch: str | None = None,
+    their_branch: str | None = None,
+    editor_name: str | None = None,
 ) -> Adw.ActionRow:
-    if binary:
-        subtitle = "Binary file"
-    elif is_manual_conflict(file.status):
-        subtitle = file.status.unmerged_action.value if file.status.unmerged_action else "Manual conflict"
+    """Desktop `renderUnmergedFile` / `getManualResolutionMenuItems` actions."""
+    if is_manual_conflict(file.status) or binary:
+        subtitle = manual_conflict_status_copy(
+            file.status, our_branch=our_branch, their_branch=their_branch
+        )
     elif is_conflict_with_markers(file.status):
         human = calculate_conflicts(file.status.conflict_marker_count or 0)
         subtitle = "1 conflict" if human == 1 else f"{human} conflicts"
@@ -1040,19 +1119,27 @@ def _conflict_row(
     theirs = Gtk.Button(label=theirs_label)
     ours.add_css_class("flat")
     theirs.add_css_class("flat")
-    ours.connect("clicked", lambda *_: store.resolve_conflict(repo, file.path, ManualConflictResolution.OURS))
-    theirs.connect("clicked", lambda *_: store.resolve_conflict(repo, file.path, ManualConflictResolution.THEIRS))
-    open_btn = Gtk.Button(label="Open in editor")
+    ours.connect(
+        "clicked",
+        lambda *_: store.update_manual_conflict_resolution(repo, file.path, ManualConflictResolution.OURS),
+    )
+    theirs.connect(
+        "clicked",
+        lambda *_: store.update_manual_conflict_resolution(repo, file.path, ManualConflictResolution.THEIRS),
+    )
+    open_label = editor_button_string(editor_name)
+    open_btn = Gtk.Button(label=open_label)
     open_btn.add_css_class("flat")
-    open_btn.set_tooltip_text("Open in editor")
+    open_btn.set_tooltip_text(editor_button_tooltip(editor_name) or open_label)
+    open_btn.set_sensitive(editor_name is not None)
     open_btn.connect("clicked", lambda *_: store.open_in_editor(repo, file.path))
     reveal = Gtk.Button(icon_name="folder-symbolic")
     reveal.add_css_class("flat")
-    reveal.set_tooltip_text("Show in your File Manager")
+    reveal.set_tooltip_text(RevealInFileManagerLabel)
     reveal.connect("clicked", lambda *_: store.reveal_in_file_manager(repo, file.path))
     default_app = Gtk.Button(icon_name="application-x-executable-symbolic")
     default_app.add_css_class("flat")
-    default_app.set_tooltip_text("Open with default program")
+    default_app.set_tooltip_text(OpenWithDefaultProgramLabel)
     default_app.connect(
         "clicked",
         lambda *_: open_in_default_program(os.path.join(repo.path, file.path)),

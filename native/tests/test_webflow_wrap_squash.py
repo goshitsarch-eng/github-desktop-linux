@@ -424,3 +424,28 @@ def test_generate_repository_list_context_menu_specs() -> None:
     )
     assert cloning[0] == ("Copy repo name", True)
     assert "Create alias" not in [label for label, _enabled in cloning]
+
+
+def test_unmerged_file_copy_helpers() -> None:
+    from github_desktop.models import FileStatus, GitStatusEntry, AppFileStatusKind
+    from github_desktop.ui.multi_commit import (
+        editor_button_string,
+        editor_button_tooltip,
+        manual_conflict_status_copy,
+    )
+
+    assert editor_button_string("Visual Studio Code") == "Open in Visual Studio Code"
+    assert editor_button_string(None) == "Open in editor"
+    assert editor_button_tooltip("Visual Studio Code") is None
+    assert editor_button_tooltip(None) == "No editor configured in Options > Advanced"
+    added = FileStatus(AppFileStatusKind.CONFLICTED, us=GitStatusEntry.ADDED, them=GitStatusEntry.ADDED)
+    deleted = FileStatus(AppFileStatusKind.CONFLICTED, us=GitStatusEntry.DELETED, them=GitStatusEntry.UPDATED_BUT_UNMERGED)
+    them_deleted = FileStatus(
+        AppFileStatusKind.CONFLICTED, us=GitStatusEntry.UPDATED_BUT_UNMERGED, them=GitStatusEntry.DELETED
+    )
+    assert manual_conflict_status_copy(added, our_branch="main", their_branch="topic") == "Manual conflict"
+    assert manual_conflict_status_copy(deleted, our_branch="main", their_branch="topic") == "File does not exist on main."
+    assert (
+        manual_conflict_status_copy(them_deleted, our_branch="main", their_branch="topic")
+        == "File does not exist on topic."
+    )

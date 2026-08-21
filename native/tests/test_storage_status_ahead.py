@@ -36,6 +36,7 @@ from github_desktop.models import (
     ManualConflictResolution,
     WorkingDirectoryFileChange,
     WorkingDirectoryStatus,
+    get_branch_for_resolution,
     get_resolved_file_status_summary,
     get_resolved_files,
     get_unmerged_files,
@@ -124,6 +125,9 @@ def test_status_helpers_match_desktop() -> None:
         ManualConflictResolution.OURS,
         "main",
     ) == "Using the added file from main"
+    assert get_branch_for_resolution(ManualConflictResolution.OURS, "main", "topic") == "main"
+    assert get_branch_for_resolution(ManualConflictResolution.THEIRS, "main", "topic") == "topic"
+    assert get_branch_for_resolution(None, "main", "topic") is None
 
 
 def test_check_run_duration_formatters() -> None:
