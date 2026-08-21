@@ -2496,10 +2496,15 @@ def remove_config_value(repo: str | None, key: str, global_only: bool = False) -
 
 
 def read_gitignore_at_root(repo: str) -> str | None:
-    """Desktop `readGitIgnoreAtRoot`: ``None`` when `.gitignore` is missing."""
+    """Desktop `readGitIgnoreAtRoot`: ``None`` when `.gitignore` is missing.
+
+    Reads with ``newline=""`` so CRLF from ``formatGitIgnoreContents`` is not
+    normalized the way ``Path.read_text`` (universal newlines) would.
+    """
     path = os.path.join(repo, ".gitignore")
     try:
-        return Path(path).read_text(encoding="utf-8")
+        with open(path, encoding="utf-8", newline="") as handle:
+            return handle.read()
     except FileNotFoundError:
         return None
     except OSError:
@@ -2540,7 +2545,8 @@ def save_gitignore(repo: str, text: str) -> None:
         except FileNotFoundError:
             pass
         return
-    Path(ignore_path).write_text(format_gitignore_contents(text, repo), encoding="utf-8")
+    with open(ignore_path, "w", encoding="utf-8", newline="") as handle:
+        handle.write(format_gitignore_contents(text, repo))
 
 
 def append_ignore_rule(repo: str, pattern: str | Sequence[str]) -> None:

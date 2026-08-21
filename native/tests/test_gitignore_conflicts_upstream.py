@@ -100,9 +100,8 @@ def test_append_ignore_rule_with_autocrlf_true(git_repo: Path) -> None:
     run_git(git_repo, "config", "core.safecrlf", "false")
     (git_repo / ".gitignore").write_text("node_modules\n", encoding="utf-8")
     append_ignore_rule(str(git_repo), ["yarn-error.log", ".eslintcache", "dist/"])
-    assert (git_repo / ".gitignore").read_text(encoding="utf-8") == (
-        "node_modules\nyarn-error.log\n.eslintcache\ndist/\n"
-    )
+    with open(git_repo / ".gitignore", encoding="utf-8", newline="") as handle:
+        assert handle.read() == "node_modules\nyarn-error.log\n.eslintcache\ndist/\n"
 
 
 def test_calculate_conflicts_rounds_markers_up() -> None:
