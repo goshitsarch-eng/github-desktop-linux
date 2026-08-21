@@ -1274,5 +1274,14 @@ def test_window_actions_cover_menus() -> None:
         "selectedCloneRepositoryTab",
         "pull-request-files-width",
         "Generic",
+        "sidebar-width",
+        "commit-summary-width",
+        "_resetSidebarWidth",
+        "_resetCommitSummaryWidth",
+        "_resetStashedFilesWidth",
+        "_resetPullRequestFileListWidth",
+        "_resetBranchDropdownWidth",
+        "_resetPushPullButtonWidth",
+        "onDoubleClick",
     ]:
         assert phrase in src

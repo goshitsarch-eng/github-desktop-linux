@@ -342,6 +342,41 @@ def test_change_branches_tab_persists(isolated_config) -> None:
     assert store.settings.stashed_files_width == 250
 
 
+def test_reset_sidebar_width_matches_desktop(isolated_config) -> None:
+    from github_desktop.settings import (
+        commitSummaryWidthConfigKey,
+        defaultCommitSummaryWidth,
+        defaultSidebarWidth,
+        sidebarWidthConfigKey,
+    )
+
+    store = AppStore()
+    assert sidebarWidthConfigKey == "sidebar-width"
+    assert commitSummaryWidthConfigKey == "commit-summary-width"
+    assert defaultSidebarWidth == 250
+    assert defaultCommitSummaryWidth == 250
+    assert store.settings.sidebar_width == 250
+    assert store.settings.commit_summary_width == 250
+    store.settings.sidebar_width = 400
+    store.reset_sidebar_width()
+    assert store.settings.sidebar_width == 250
+    store.settings.commit_summary_width = 500
+    store.reset_commit_summary_width()
+    assert store.settings.commit_summary_width == 250
+    store.settings.stashed_files_width = 400
+    store.reset_stashed_files_width()
+    assert store.settings.stashed_files_width == 250
+    store.settings.pull_request_file_list_width = 400
+    store.reset_pull_request_file_list_width()
+    assert store.settings.pull_request_file_list_width == 250
+    store.settings.branch_dropdown_width = 400
+    store.reset_branch_dropdown_width()
+    assert store.settings.branch_dropdown_width == 230
+    store.settings.push_pull_button_width = 400
+    store.reset_push_pull_button_width()
+    assert store.settings.push_pull_button_width == 230
+
+
 def test_change_clone_repositories_tab_persists(isolated_config) -> None:
     from github_desktop.models import CloneRepositoryTab
     from github_desktop.settings import defaultPullRequestFileListWidth, pullRequestFileListConfigKey
@@ -645,6 +680,24 @@ def test_should_background_fetch_respects_minimum_interval(isolated_config, git_
     assert store.should_background_fetch(repo) is True
     store.progress_kind = "push"
     assert store.should_background_fetch(repo) is False
+
+
+def test_should_background_fetch_uses_refresh_cache(isolated_config, git_repo: Path, monkeypatch) -> None:
+    from github_desktop.models import GitHubRepository
+    import github_desktop.store as store_module
+
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    repo.github = GitHubRepository("app", "me", "https://github.com/me/app", "https://github.com/me/app.git")
+    store.state_for(repo).last_fetched = None
+
+    def boom(*_a, **_k):
+        raise AssertionError("live FETCH_HEAD on GTK thread")
+
+    monkeypatch.setattr(store_module, "get_last_fetched", boom)
+    assert store.should_background_fetch(repo) is True
 
 
 def test_refresh_repo_indicators_counts_changes(isolated_config, git_repo: Path) -> None:

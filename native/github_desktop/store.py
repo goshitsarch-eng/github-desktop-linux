@@ -273,7 +273,19 @@ from .remote_parsing import (
     sanitize_remote_url,
     url_matches_remote,
 )
-from .settings import Settings, get_default_dir, load_settings, save_settings, set_default_dir
+from .settings import (
+    Settings,
+    defaultBranchDropdownWidth,
+    defaultCommitSummaryWidth,
+    defaultPullRequestFileListWidth,
+    defaultPushPullButtonWidth,
+    defaultSidebarWidth,
+    defaultStashedFilesWidth,
+    get_default_dir,
+    load_settings,
+    save_settings,
+    set_default_dir,
+)
 from .stats import StatsStore, SamplesURL, get_has_opted_out_of_stats
 from .welcome import has_shown_welcome_flow, mark_welcome_flow_complete
 from .tutorial_assessor import OnboardingTutorialAssessor
@@ -749,6 +761,42 @@ class AppStore:
             return
         self.selected_clone_repository_tab = tab
         self.settings.selected_clone_repository_tab = tab
+        self.persist_settings()
+        self.emit()
+
+    def reset_sidebar_width(self) -> None:
+        """Desktop `_resetSidebarWidth`."""
+        self.settings.sidebar_width = defaultSidebarWidth
+        self.persist_settings()
+        self.emit()
+
+    def reset_commit_summary_width(self) -> None:
+        """Desktop `_resetCommitSummaryWidth`."""
+        self.settings.commit_summary_width = defaultCommitSummaryWidth
+        self.persist_settings()
+        self.emit()
+
+    def reset_stashed_files_width(self) -> None:
+        """Desktop `_resetStashedFilesWidth`."""
+        self.settings.stashed_files_width = defaultStashedFilesWidth
+        self.persist_settings()
+        self.emit()
+
+    def reset_pull_request_file_list_width(self) -> None:
+        """Desktop `_resetPullRequestFileListWidth`."""
+        self.settings.pull_request_file_list_width = defaultPullRequestFileListWidth
+        self.persist_settings()
+        self.emit()
+
+    def reset_branch_dropdown_width(self) -> None:
+        """Desktop `_resetBranchDropdownWidth`."""
+        self.settings.branch_dropdown_width = defaultBranchDropdownWidth
+        self.persist_settings()
+        self.emit()
+
+    def reset_push_pull_button_width(self) -> None:
+        """Desktop `_resetPushPullButtonWidth`."""
+        self.settings.push_pull_button_width = defaultPushPullButtonWidth
         self.persist_settings()
         self.emit()
 
@@ -4570,11 +4618,6 @@ class AppStore:
         if self.progress_kind:
             return False
         last = self.state_for(repo).last_fetched
-        if last is None:
-            try:
-                last = get_last_fetched(repo.path)
-            except Exception:
-                last = None
         if last is None:
             return True
         if (time.time() - last) < BACKGROUND_FETCH_MINIMUM_INTERVAL:

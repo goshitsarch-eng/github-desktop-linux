@@ -11,9 +11,9 @@ gi.require_version("Adw", "1")
 from gi.repository import Gtk
 
 from ..models import CommittedFileChange, StashEntry, map_status, path_label
-from ..settings import tabSizeDefault
+from ..settings import defaultStashedFilesWidth, tabSizeDefault
 from .diff_view import DiffViewer
-from .menus import clear_box
+from .menus import attach_paned_reset, clear_box
 
 
 class StashDiffViewer(Gtk.Box):
@@ -30,7 +30,8 @@ class StashDiffViewer(Gtk.Box):
         on_open_submodule: Callable[[str], None] | None = None,
         on_image_mode: Callable[[str], None] | None = None,
         on_open_binary: Callable[[str], None] | None = None,
-        files_width: int = 250,
+        files_width: int = defaultStashedFilesWidth,
+        on_reset_width: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.add_css_class("stash-diff-viewer")
@@ -80,7 +81,9 @@ class StashDiffViewer(Gtk.Box):
             on_open_binary=on_open_binary,
         )
         paned.set_end_child(self.diff_view)
-        paned.set_position(max(180, int(files_width or 250)))
+        paned.set_position(max(180, int(files_width or defaultStashedFilesWidth)))
+        if on_reset_width is not None:
+            attach_paned_reset(paned, on_reset_width)
         self._files_paned = paned
         self.append(paned)
 

@@ -53,7 +53,7 @@ from ..models import (
     default_publish_tab,
     uncommitted_changes_strategy_choices,
 )
-from ..settings import get_default_dir, set_default_dir
+from ..settings import defaultPullRequestFileListWidth, get_default_dir, set_default_dir
 from ..shells import get_available_shells, open_external
 from ..store import AppStore
 from ..text_tokens import MaxSummaryLength
@@ -76,6 +76,7 @@ from .checks import show_checks, show_rerun_checks
 from .diff_view import DiffViewer
 from .menus import (
     TrashNameLabel,
+    attach_paned_reset,
     attach_right_click,
     committed_file_context_items,
     open_in_editor_label,
@@ -3969,7 +3970,7 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
 
     viewer = DiffViewer(interactive=False)
     paned.set_end_child(viewer)
-    paned.set_position(max(180, int(store.settings.pull_request_file_list_width or 250)))
+    paned.set_position(max(180, int(store.settings.pull_request_file_list_width or defaultPullRequestFileListWidth)))
     root.append(paned)
 
     # GitHub's /pull/new form includes "Create as draft"; Desktop preview only opens that page.
@@ -4200,6 +4201,12 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
         dialog.connect("closed", persist_pr_files)
     except TypeError:
         dialog.connect("destroy", persist_pr_files)
+
+    def reset_pr_files() -> None:
+        store.reset_pull_request_file_list_width()
+        paned.set_position(max(180, defaultPullRequestFileListWidth))
+
+    attach_paned_reset(paned, reset_pr_files)
     dialog.present(parent)
 
 

@@ -50,6 +50,7 @@ from ..models import (
     is_valid_tutorial_step,
 )
 from ..push_pull import describe_push_pull, format_commit_relative_time, format_last_fetched
+from ..settings import defaultCommitSummaryWidth, defaultSidebarWidth, defaultStashedFilesWidth
 from ..shells import open_external, open_in_default_program
 from ..store import AppStore
 from ..text_tokens import MaxSummaryLength
@@ -87,6 +88,7 @@ from .menus import (
     OpenWithDefaultProgramLabel,
     RevealInFileManagerLabel,
     alias_verb,
+    attach_paned_reset,
     attach_right_click,
     clear_box,
     committed_file_context_items,
@@ -1596,9 +1598,10 @@ class MainWindow(Adw.ApplicationWindow):
         paned.set_start_child(left)
         self._changes_paned = paned
         try:
-            paned.set_position(max(220, int(self.store.settings.sidebar_width or 320)))
+            paned.set_position(max(220, int(self.store.settings.sidebar_width or defaultSidebarWidth)))
         except Exception:
             pass
+        attach_paned_reset(paned, self._reset_sidebar_width)
         self._diff_view = DiffViewer(
             interactive=True,
             on_line_toggle=self._on_line_toggle,
@@ -1628,7 +1631,8 @@ class MainWindow(Adw.ApplicationWindow):
             on_open_submodule=self._open_submodule,
             on_image_mode=self._on_image_mode,
             on_open_binary=self._open_binary_file,
-            files_width=int(self.store.settings.stashed_files_width or 250),
+            files_width=int(self.store.settings.stashed_files_width or defaultStashedFilesWidth),
+            on_reset_width=self._reset_stashed_files_width,
         )
         self._changes_stack.add_named(paned, "working")
         self._changes_stack.add_named(self._stash_viewer, "stash")
@@ -1638,7 +1642,7 @@ class MainWindow(Adw.ApplicationWindow):
         paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         paned.set_resize_start_child(False)
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        left.set_size_request(300, -1)
+        left.set_size_request(220, -1)
         compare_row = Gtk.Box(spacing=6)
         compare_row.append(Gtk.Label(label="Compare to"))
         compare_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -1765,9 +1769,10 @@ class MainWindow(Adw.ApplicationWindow):
         paned.set_end_child(right)
         self._history_paned = paned
         try:
-            paned.set_position(max(220, int(self.store.settings.commit_summary_width or 360)))
+            paned.set_position(max(220, int(self.store.settings.commit_summary_width or defaultCommitSummaryWidth)))
         except Exception:
             pass
+        attach_paned_reset(paned, self._reset_commit_summary_width)
         return paned
 
     def _on_view_changed(self, *_args: object) -> None:
@@ -4474,6 +4479,22 @@ class MainWindow(Adw.ApplicationWindow):
             return
         pos = paned.get_position()
         paned.set_position(max(180, min(720, pos + delta)))
+
+    def _reset_sidebar_width(self) -> None:
+        self.store.reset_sidebar_width()
+        if hasattr(self, "_changes_paned"):
+            self._changes_paned.set_position(max(220, defaultSidebarWidth))
+
+    def _reset_commit_summary_width(self) -> None:
+        self.store.reset_commit_summary_width()
+        if hasattr(self, "_history_paned"):
+            self._history_paned.set_position(max(220, defaultCommitSummaryWidth))
+
+    def _reset_stashed_files_width(self) -> None:
+        self.store.reset_stashed_files_width()
+        paned = getattr(getattr(self, "_stash_viewer", None), "_files_paned", None)
+        if paned is not None:
+            paned.set_position(max(180, defaultStashedFilesWidth))
 
     def _pr_suggested_preview(self, *_args: object) -> None:
         self.store.set_pull_request_suggested_next_action(PullRequestSuggestedNextAction.PREVIEW_PULL_REQUEST.value)

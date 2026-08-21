@@ -126,3 +126,19 @@ def attach_right_click(widget: Gtk.Widget, handler: Callable[[Gtk.Widget], None]
     gesture.set_button(3)
     gesture.connect("pressed", lambda *_a: handler(widget))
     widget.add_controller(gesture)
+
+
+def attach_paned_reset(paned: Gtk.Paned, on_reset: Callable[[], None], *, handle_slop: float = 12.0) -> None:
+    """Desktop Resizable `onDoubleClick` / `onReset` for a Gtk.Paned handle."""
+    click = Gtk.GestureClick()
+    click.set_button(1)
+
+    def pressed(_gesture, n_press: int, x: float, _y: float) -> None:
+        if n_press != 2:
+            return
+        if abs(x - paned.get_position()) > handle_slop:
+            return
+        on_reset()
+
+    click.connect("pressed", pressed)
+    paned.add_controller(click)
