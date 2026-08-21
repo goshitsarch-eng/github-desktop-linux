@@ -15,6 +15,7 @@ APP_CSS = """
 .diff-line {
   padding: 0 8px;
 }
+/* Desktop `_side-by-side-diff.scss` `.content`: white-space: pre-wrap; word-break: break-all */
 .diff-add {
   background-color: alpha(@success_color, 0.18);
 }

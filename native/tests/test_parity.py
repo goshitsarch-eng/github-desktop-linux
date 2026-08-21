@@ -1240,5 +1240,7 @@ def test_window_actions_cover_menus() -> None:
         "readRebaseHead",
         "parseRebaseResult",
         "couldn't find file",
+        "pre-wrap",
+        "break-all",
     ]:
         assert phrase in src

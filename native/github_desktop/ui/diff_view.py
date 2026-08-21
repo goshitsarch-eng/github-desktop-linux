@@ -1185,6 +1185,13 @@ class DiffViewer(Gtk.Box):
         check.connect("toggled", on_toggled)
         return check
 
+    def _configure_diff_text(self, label: Gtk.Label) -> None:
+        """Desktop `_side-by-side-diff.scss` `.content`: `pre-wrap` + `break-all`."""
+        label.set_use_markup(True)
+        label.set_selectable(True)
+        label.set_wrap(True)
+        label.set_wrap_mode(Pango.WrapMode.CHAR)
+
     def _unified_line(
         self,
         line: DiffLine,
@@ -1217,9 +1224,7 @@ class DiffViewer(Gtk.Box):
         old.add_css_class("diff-num")
         new.add_css_class("diff-num")
         text = Gtk.Label(xalign=0, hexpand=True)
-        text.set_use_markup(True)
-        text.set_selectable(True)
-        text.set_ellipsize(Pango.EllipsizeMode.END)
+        self._configure_diff_text(text)
         prefix = line.text[:1] if line.text[:1] in "+- " else " "
         text.set_markup(f"{prefix}{self._markup(line, paired)}")
         if paired is not None:
@@ -1290,9 +1295,7 @@ class DiffViewer(Gtk.Box):
         nlab = Gtk.Label(label=str(num or ""))
         nlab.add_css_class("diff-num")
         text = Gtk.Label(xalign=0, hexpand=True)
-        text.set_use_markup(True)
-        text.set_selectable(True)
-        text.set_ellipsize(Pango.EllipsizeMode.END)
+        self._configure_diff_text(text)
         text.set_markup(self._markup(line, paired))
         if paired is not None and line.kind in {DiffLineType.ADD, DiffLineType.DELETE}:
             text.add_css_class("diff-add-inner" if line.kind == DiffLineType.ADD else "diff-delete-inner")
