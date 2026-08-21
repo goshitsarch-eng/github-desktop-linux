@@ -692,6 +692,18 @@ class AppStore:
         if added is popup:
             self.emit()
 
+    def _popup_error(self, exc: BaseException, **payload: Any) -> None:
+        """Desktop `AppError` popup with dugite/Copilot metadata for titles and LFS lists."""
+        merged = dict(payload)
+        merged.setdefault("error", str(exc))
+        if isinstance(exc, GitError):
+            merged.setdefault("git_error", exc.git_error)
+            merged.setdefault("stderr", exc.stderr)
+            merged.setdefault("is_raw_message", exc.is_raw_message)
+        if isinstance(exc, CopilotError) and exc.is_quota_exceeded_error:
+            merged.setdefault("copilot_quota", True)
+        self.show_popup(PopupType.ERROR, **merged)
+
     def close_popup(self) -> None:
         closed = self.popup
         if closed is not None:
@@ -1123,15 +1135,13 @@ class AppStore:
             enterprise = host not in ("", "github.com", "www.github.com", "gist.github.com", "api.github.com")
             self.begin_sign_in(enterprise, credential_helper_url=url)
             return
-        self.show_popup(
-            PopupType.ERROR,
-            error=str(exc),
-            title="Clone failed",
+        self._popup_error(
+            exc,
             retry_clone=True,
+            retry_action=self._retry_action,
             name=os.path.basename(path.rstrip("/")) or path,
             retry=self.retry_last_remote_action,
             open_preferences=auth,
-            git_error=getattr(exc, "git_error", None),
         )
 
     def publish_repository(
@@ -3853,10 +3863,10 @@ class AppStore:
             if exc.is_force_needed:
                 self.show_popup(PopupType.CONFIRM_FORCE_PUSH)
                 return
-        retry = self._retry_action
-        retry_type = retry.type if isinstance(retry, RetryAction) else (retry or {}).get("kind")
-        title = "Failed to push" if retry_type in {RetryActionType.PUSH, "push", "Push"} else "Error"
-        self.show_popup(PopupType.ERROR, error=str(exc), title=title)
+        extra: dict[str, Any] = {}
+        if self._retry_action is not None:
+            extra["retry_action"] = self._retry_action
+        self._popup_error(exc, **extra)
 
     def checkout(self, repo: Repository, branch: Branch) -> None:
         state = self.state_for(repo)
@@ -4965,7 +4975,7 @@ class AppStore:
         def done(exc: BaseException | None, result: tuple[str, str] | None = None) -> None:
             state.is_generating_commit_message = False
             if exc:
-                self.show_popup(PopupType.ERROR, error=str(exc))
+                self._popup_error(exc)
                 self.emit()
                 return
             if result:

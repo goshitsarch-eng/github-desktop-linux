@@ -181,6 +181,8 @@ def test_get_account_for_endpoint_and_repository() -> None:
     assert error_dialog_title(git_context={"kind": "create-repository"}) == "Failed creating repository"
     assert error_dialog_title(retry_action=RetryAction(type=RetryActionType.PUSH, repo_id=1)) == "Failed to push"
     assert error_dialog_title(retry_clone=True) == "Clone failed"
+    assert error_dialog_title(git_error="PushWithFileSizeExceedingLimit") == "File size limit exceeded"
+    assert error_dialog_title(copilot_quota=True) == "Quota exceeded"
 
 
 def test_get_commits_truncates_like_desktop(git_repo) -> None:

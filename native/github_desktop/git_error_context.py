@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from .models import Branch, RetryAction, RetryActionType
+from .regex import get_file_from_exceeds_error
+
+COPILOT_PLANS_URL = "https://github.com/features/copilot/plans"
+LFS_DOCS_URL = "https://gh.io/lfs"
 
 
 @dataclass
@@ -44,11 +48,23 @@ def error_dialog_title(
     retry_action: RetryAction | RetryActionType | str | None = None,
     title: str | None = None,
     retry_clone: bool = False,
+    git_error: str | None = None,
+    copilot_quota: bool = False,
 ) -> str:
-    """Desktop `AppError.getTitle` for clone, push, and create-repository failures."""
+    """Desktop `AppError.getTitle` for quota, file-size, clone, push, and create-repository."""
+    # Copilot quota and oversized-push titles win over retry-action copy.
+    if copilot_quota:
+        return "Quota exceeded"
+    if git_error == "PushWithFileSizeExceedingLimit":
+        return "File size limit exceeded"
     if title:
         return title
     if retry_clone:
+        return "Clone failed"
+    retry_type = retry_action.type if isinstance(retry_action, RetryAction) else retry_action
+    if retry_type in {RetryActionType.PUSH, "push", "Push"}:
+        return "Failed to push"
+    if retry_type in {RetryActionType.CLONE, "clone", "Clone"}:
         return "Clone failed"
     kind = None
     if isinstance(git_context, GitErrorContext):
@@ -57,9 +73,30 @@ def error_dialog_title(
         kind = git_context.get("kind")
     if kind == "create-repository":
         return "Failed creating repository"
-    retry_type = retry_action.type if isinstance(retry_action, RetryAction) else retry_action
-    if retry_type in {RetryActionType.PUSH, "push", "Push"}:
-        return "Failed to push"
-    if retry_type in {RetryActionType.CLONE, "clone", "Clone"}:
-        return "Clone failed"
     return "Error"
+
+
+def format_app_error_body(
+    message: str,
+    *,
+    git_error: str | None = None,
+    stderr: str = "",
+    copilot_quota: bool = False,
+) -> str:
+    """Desktop `AppError.renderErrorMessage` as AlertDialog body text."""
+    if git_error == "PushWithFileSizeExceedingLimit":
+        files = get_file_from_exceeds_error(stderr)
+        parts = [message]
+        if files:
+            parts.append("Files that exceed the limit\n" + "\n".join(files))
+        parts.append(
+            f"See {LFS_DOCS_URL} for more information on managing large files on GitHub"
+        )
+        return "\n\n".join(parts)
+    if copilot_quota:
+        return (
+            f"{message}\n\n"
+            f"Upgrade to increase your limit.\n"
+            f"{COPILOT_PLANS_URL}"
+        )
+    return message

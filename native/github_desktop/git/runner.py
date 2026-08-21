@@ -16,6 +16,7 @@ from typing import Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 
 from ..errors import GitError, GitNotFoundError
+from ..errno_exception import errno_code, is_errno_exception
 from ..linux_proxy import host_matches_no_proxy, proxy_url_for_remote, read_linux_system_proxy
 from ..logging import get_logger
 from .progress import (
@@ -146,6 +147,25 @@ class GitResult:
 
 def _decode(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
+
+
+def coerce_to_string(value: str | bytes, encoding: str = "utf8") -> str:
+    """Desktop `coerceToString` for git stdout/stderr that may be bytes."""
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value).decode(encoding, errors="replace")
+    return value
+
+
+def coerce_to_buffer(value: str | bytes, encoding: str = "utf8") -> bytes:
+    """Desktop `coerceToBuffer`."""
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value)
+    return value.encode(encoding)
+
+
+def is_max_buffer_exceeded_error(error: object) -> bool:
+    """Desktop `isMaxBufferExceededError` (`ERR_CHILD_PROCESS_STDIO_MAXBUFFER`)."""
+    return isinstance(error, Exception) and getattr(error, "code", None) == "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
 
 
 def _prepare_env(env: Mapping[str, str] | None) -> dict[str, str]:
@@ -359,6 +379,11 @@ def git(
                 )
     except FileNotFoundError as exc:
         raise GitNotFoundError(str(exc)) from exc
+    except OSError as exc:
+        # Desktop git(): `isErrnoException` → `Failed to execute ${name}: ${err.code}`.
+        if is_errno_exception(exc):
+            raise RuntimeError(f"Failed to execute {name}: {errno_code(exc)}") from exc
+        raise
     except subprocess.TimeoutExpired as exc:
         raise GitError(
             f"Git command timed out: {name}",

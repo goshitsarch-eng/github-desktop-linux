@@ -355,6 +355,8 @@ def test_window_actions_cover_menus() -> None:
         tip as tip_mod,
         find_upstream_remote as find_upstream_remote_mod,
         tutorial_assessor as tutorial_assessor_mod,
+        regex as regex_mod,
+        errno_exception as errno_exception_mod,
     )
     from github_desktop.git import delimiter as git_delimiter_mod
 
@@ -404,6 +406,8 @@ def test_window_actions_cover_menus() -> None:
     src += open(tip_mod.__file__, encoding="utf-8").read()
     src += open(find_upstream_remote_mod.__file__, encoding="utf-8").read()
     src += open(tutorial_assessor_mod.__file__, encoding="utf-8").read()
+    src += open(regex_mod.__file__, encoding="utf-8").read()
+    src += open(errno_exception_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -1106,5 +1110,18 @@ def test_window_actions_cover_menus() -> None:
         "orderedTutorialSteps",
         "AllDone",
         "Announced",
+        "getFileFromExceedsError",
+        "Files that exceed the limit",
+        "https://gh.io/lfs",
+        "Quota exceeded",
+        "File size limit exceeded",
+        "Upgrade to increase your limit.",
+        "https://github.com/features/copilot/plans",
+        "isErrnoException",
+        "Failed to execute",
+        "coerceToString",
+        "coerceToBuffer",
+        "isMaxBufferExceededError",
+        "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
     ]:
         assert phrase in src

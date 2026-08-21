@@ -496,18 +496,24 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
 
 def show_error_dialog(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
     from ..errors import is_auth_failure_error
-    from ..git_error_context import error_dialog_title
+    from ..git_error_context import error_dialog_title, format_app_error_body
 
     heading = error_dialog_title(
         git_context=payload.get("git_context"),
         retry_action=payload.get("retry_action"),
         title=payload.get("title"),
         retry_clone=bool(payload.get("retry_clone")),
+        git_error=payload.get("git_error"),
+        copilot_quota=bool(payload.get("copilot_quota")),
     )
-    body = str(payload.get("error") or "Something went wrong")
+    body = format_app_error_body(
+        str(payload.get("error") or "Something went wrong"),
+        git_error=payload.get("git_error"),
+        stderr=str(payload.get("stderr") or ""),
+        copilot_quota=bool(payload.get("copilot_quota")),
+    )
     retry = payload.get("retry")
     if payload.get("retry_clone"):
-        heading = "Clone failed"
         name = payload.get("name") or ""
         if name:
             body = f"{body}\n\nWould you like to retry cloning {name}?"
