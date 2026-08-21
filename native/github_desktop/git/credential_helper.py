@@ -206,20 +206,16 @@ def find_github_trampoline_account(
 
 
 def find_generic_trampoline_account(endpoint: str, username: str | None = None) -> dict[str, str] | None:
-    """Desktop `findGenericTrampolineAccount` against `secrets.get_generic`."""
-    from .. import secrets
+    """Desktop `findGenericTrampolineAccount` against generic git auth."""
+    from ..generic_git_auth import get_generic_password, get_generic_username
 
-    host = _generic_host(endpoint)
-    login = username
+    login = username or get_generic_username(endpoint)
     if not login:
-        stored_user, stored_pass = secrets.get_generic(host)
-        if stored_user and stored_pass:
-            return {"login": stored_user, "endpoint": endpoint, "token": stored_pass}
         return None
-    user, password = secrets.get_generic(host, login)
-    if not password:
+    token = get_generic_password(endpoint, login)
+    if not token:
         return None
-    return {"login": user or login, "endpoint": endpoint, "token": password}
+    return {"login": login, "endpoint": endpoint, "token": token}
 
 
 def _generic_host(endpoint: str) -> str:
@@ -386,9 +382,9 @@ def store_credential(
     password = cred.get("password")
     if not username or not password:
         return
-    from .. import secrets
+    from ..generic_git_auth import set_generic_credential
 
-    secrets.set_generic(_generic_host(get_credential_url(cred)), username, password)
+    set_generic_credential(url_without_credentials(str(get_credential_url(cred))), username, password)
 
 
 def erase_credential(
@@ -411,9 +407,9 @@ def erase_credential(
     username = cred.get("username")
     if not username:
         return
-    from .. import secrets
+    from ..generic_git_auth import delete_generic_credential
 
-    secrets.delete_generic(_generic_host(get_credential_url(cred)), username)
+    delete_generic_credential(url_without_credentials(str(get_credential_url(cred))), username)
 
 
 def create_credential_helper_trampoline_handler(

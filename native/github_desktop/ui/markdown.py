@@ -390,6 +390,7 @@ def sandboxed_markdown_label(
     issue_base_url: str | None = None,
     max_chars: int = 800,
     empty: str = "No description provided.",
+    repository=None,
 ):
     """Gtk.Label showing sandboxed markdown; activates https links."""
     import gi
@@ -399,6 +400,11 @@ def sandboxed_markdown_label(
 
     from ..shells import open_external
 
+    if repository is not None and issue_base_url is None:
+        github = getattr(repository, "github", None)
+        html = getattr(github, "html_url", None) if github is not None else None
+        if html:
+            issue_base_url = str(html).rstrip("/") + "/issues"
     text = (markdown or "").strip() or empty
     if len(text) > max_chars:
         text = text[: max_chars - 1] + "…"

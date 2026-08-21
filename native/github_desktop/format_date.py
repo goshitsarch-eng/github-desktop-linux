@@ -19,6 +19,8 @@ def format_date(when: datetime | None, *, date_style: str = "full", time_style: 
             return f"{local.strftime('%A, %B')} {local.day}, {local.strftime('%Y at %-I:%M %p')}"
         if date_style == "medium" and time_style == "short":
             return f"{local.strftime('%b')} {local.day}, {local.strftime('%Y, %-I:%M %p')}"
+        if date_style == "medium" and not time_style:
+            return f"{local.strftime('%b')} {local.day}, {local.strftime('%Y')}"
         return local.strftime("%c")
     except (OSError, OverflowError, ValueError, TypeError):
         return "Invalid date"

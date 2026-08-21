@@ -1111,7 +1111,7 @@ class GitHubAPI:
         except APIError as exc:
             if exc.status in {404, 405}:
                 return self._generate_commit_message_chat(diff, files)
-            raise CopilotError(self._copilot_error_message(exc)) from exc
+            raise CopilotError(self._copilot_error_message(exc), exc.status) from exc
         return self._commit_message_from_payload(payload)
 
     def _generate_commit_message_chat(self, diff: str, files: Iterable[str]) -> tuple[str, str]:
@@ -1132,7 +1132,7 @@ class GitHubAPI:
         try:
             payload = self.request("POST", "/v1/chat/completions", body=body, extra_headers=extra, raw_url=url)
         except APIError as exc:
-            raise CopilotError(self._copilot_error_message(exc)) from exc
+            raise CopilotError(self._copilot_error_message(exc), exc.status) from exc
         return self._commit_message_from_payload(payload)
 
     def _commit_message_from_payload(self, payload: Any) -> tuple[str, str]:

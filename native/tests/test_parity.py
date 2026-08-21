@@ -331,6 +331,15 @@ def test_window_actions_cover_menus() -> None:
         http_status as http_status_mod,
         feature_flag as feature_flag_mod,
         secrets as secrets_mod,
+        auth as auth_mod,
+        desktop_fake_repository as desktop_fake_repo_mod,
+        file_system as file_system_mod,
+        path as path_mod,
+        fatal_error as fatal_error_mod,
+        compare as compare_mod,
+        format_relative as format_relative_mod,
+        generic_git_auth as generic_git_auth_mod,
+        open_file as open_file_mod,
     )
     from github_desktop.git import delimiter as git_delimiter_mod
 
@@ -364,6 +373,15 @@ def test_window_actions_cover_menus() -> None:
     src += open(http_status_mod.__file__, encoding="utf-8").read()
     src += open(feature_flag_mod.__file__, encoding="utf-8").read()
     src += open(secrets_mod.__file__, encoding="utf-8").read()
+    src += open(auth_mod.__file__, encoding="utf-8").read()
+    src += open(desktop_fake_repo_mod.__file__, encoding="utf-8").read()
+    src += open(file_system_mod.__file__, encoding="utf-8").read()
+    src += open(path_mod.__file__, encoding="utf-8").read()
+    src += open(fatal_error_mod.__file__, encoding="utf-8").read()
+    src += open(compare_mod.__file__, encoding="utf-8").read()
+    src += open(format_relative_mod.__file__, encoding="utf-8").read()
+    src += open(generic_git_auth_mod.__file__, encoding="utf-8").read()
+    src += open(open_file_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -959,5 +977,30 @@ def test_window_actions_cover_menus() -> None:
         "enableResetToCommit",
         "enableCheckoutCommit",
         "TERM",
+        "getKeyForEndpoint",
+        "getKeyForAccount",
+        "GitHub Desktop Dev",
+        "DesktopFakeRepository",
+        "getMediaType",
+        "image/jpg",
+        "image/vnd-ms.dds",
+        "getTempFilePath",
+        "readPartialFile",
+        "resolveWithin",
+        "encodePathAsUrl",
+        "fatalError",
+        "forceUnwrap",
+        "assertNever",
+        "assertNonNullable",
+        "caseInsensitiveCompare",
+        "formatRelative",
+        "numeric: 'auto'",
+        "isQuotaExceededError",
+        "friendlyEndpointName",
+        "no-external-program",
+        "Unable to open file",
+        "createLFSProgressFile",
+        "getGenericUsername",
+        "setGenericCredential",
     ]:
         assert phrase in src

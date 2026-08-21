@@ -112,8 +112,12 @@ def open_file_manager(path: str) -> None:
     spawn("xdg-open", [path], start_new_session=True)
 
 
-def open_external(url: str) -> None:
-    spawn("xdg-open", [url], start_new_session=True)
+def open_external(url: str) -> bool:
+    try:
+        spawn("xdg-open", [url], start_new_session=True)
+        return True
+    except OSError:
+        return False
 
 
 def open_in_default_program(path: str) -> None:

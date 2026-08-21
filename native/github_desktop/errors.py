@@ -145,7 +145,19 @@ class MaxResultsError(DesktopError):
 
 
 class CopilotError(DesktopError):
-    pass
+    """Desktop `CopilotError` with HTTP status metadata."""
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.name = "CopilotError"
+        self.status_code = status_code
+
+    @property
+    def is_quota_exceeded_error(self) -> bool:
+        """Desktop `isQuotaExceededError`: HTTP 402 PaymentRequired."""
+        from .http_status import HttpStatusCode
+
+        return self.status_code == HttpStatusCode.PaymentRequired
 
 
 class ValidationError(DesktopError):

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 
+from .auth import get_key_for_endpoint
 from .logging import get_logger
 from .paths import config_dir
 
@@ -131,6 +132,26 @@ def get_token(login_endpoint: str) -> str | None:
 
 def delete_token(login_endpoint: str) -> None:
     delete_password(SERVICE, login_endpoint)
+
+
+def set_account_token(endpoint: str, login: str, token: str) -> None:
+    """Desktop `TokenStore.setItem(getKeyForAccount(account), login, token)`."""
+    set_password(get_key_for_endpoint(endpoint), login, token)
+    # Drop the pre-rewrite ``GitHub Desktop`` / ``endpoint|login`` key if present.
+    delete_password(SERVICE, f"{endpoint}|{login}")
+
+
+def get_account_token(endpoint: str, login: str) -> str | None:
+    """Look up a token with Desktop's key, then the legacy native key."""
+    stored = get_password(get_key_for_endpoint(endpoint), login)
+    if stored:
+        return stored
+    return get_password(SERVICE, f"{endpoint}|{login}")
+
+
+def delete_account_token(endpoint: str, login: str) -> None:
+    delete_password(get_key_for_endpoint(endpoint), login)
+    delete_password(SERVICE, f"{endpoint}|{login}")
 
 
 def set_generic(host: str, username: str, password: str) -> None:

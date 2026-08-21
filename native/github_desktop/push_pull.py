@@ -28,24 +28,12 @@ class PushPullPresentation:
 
 
 def format_relative_past(seconds: float) -> str:
-    """English relative time for a duration that already elapsed."""
-    sec = round(abs(seconds))
-    if sec < 45:
+    """RelativeTime-style elapsed text for a duration that already elapsed."""
+    from .format_relative import format_relative
+
+    if abs(seconds) < 60:
         return "just now"
-    minutes = round(sec / 60)
-    if minutes < 45:
-        return "a minute ago" if minutes == 1 else f"{minutes} minutes ago"
-    hours = round(minutes / 60)
-    if hours < 24:
-        return "an hour ago" if hours == 1 else f"{hours} hours ago"
-    days = round(hours / 24)
-    if days < 30:
-        return "a day ago" if days == 1 else f"{days} days ago"
-    months = round(days / 30)
-    if months < 18:
-        return "a month ago" if months == 1 else f"{months} months ago"
-    years = round(months / 12)
-    return "a year ago" if years == 1 else f"{years} years ago"
+    return format_relative(-abs(seconds) * 1000)
 
 
 def format_last_fetched(ts: float | None, *, now: float | None = None) -> str:
@@ -59,15 +47,13 @@ def format_last_fetched(ts: float | None, *, now: float | None = None) -> str:
 
 
 def format_commit_relative_time(when, *, now=None) -> str:
-    """Relative time for commit list items (`just now`, `3 minutes ago`, …)."""
+    """RelativeTime for commit list items (`just now`, `3 minutes ago`, …)."""
     from datetime import datetime, timezone
 
+    from .format_relative import get_relative_time_info_from_date
+
     current = now or datetime.now(timezone.utc)
-    if getattr(when, "tzinfo", None) is None:
-        when = when.replace(tzinfo=timezone.utc)
-    if getattr(current, "tzinfo", None) is None:
-        current = current.replace(tzinfo=timezone.utc)
-    return format_relative_past((current - when).total_seconds())
+    return get_relative_time_info_from_date(when, only_relative=True, now=current)["relative_text"]
 
 
 def describe_push_pull(

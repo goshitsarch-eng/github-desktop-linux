@@ -6,6 +6,7 @@ from .diff import (
     find_interactive_original_diff_range,
     format_discard_patch,
     format_partial_patch,
+    get_media_type,
     parse_line_endings_warning,
     parse_unified_diff,
     selectable_line_indices,

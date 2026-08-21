@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import cmp_to_key
 from urllib.parse import urlparse
 
+from .compare import case_insensitive_compare
 from .models import Repository, html_url_from_endpoint, is_dotcom_endpoint
 
 # Show a Recent group once the user has more repositories than this.
@@ -90,5 +92,11 @@ def group_repositories(
             item.needs_disambiguation = (
                 group_names.get(title, 0) > 1 and group.kind == "enterprise"
             ) or (all_names.get(title, 0) > 1 and group.kind == "recent")
-        group.items.sort(key=lambda item: (item.repository.display_name or "").casefold())
+        group.items.sort(
+            key=cmp_to_key(
+                lambda a, b: case_insensitive_compare(
+                    a.repository.display_name or "", b.repository.display_name or ""
+                )
+            )
+        )
     return ordered

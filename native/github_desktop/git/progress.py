@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 import os
-import tempfile
 import re
 from dataclasses import dataclass
 from typing import Sequence
@@ -121,11 +120,17 @@ def format_bytes(byte_count: int, decimals: int = 1, fixed: bool = True) -> str:
 
 
 def create_lfs_progress_file() -> str:
-    """Desktop `createLFSProgressFile`: empty file whose path is `GIT_LFS_PROGRESS`."""
-    directory = tempfile.mkdtemp(prefix="GitHubDesktop-lfs-progress-")
-    path = os.path.join(directory, "progress")
-    with open(path, "wb"):
-        pass
+    """Desktop `createLFSProgressFile`: empty file whose path is `GIT_LFS_PROGRESS`.
+
+    ``getTempFilePath('GitHubDesktop-lfs-progress')`` then open with ``wx`` so
+    we throw if the file already exists.
+    """
+    from ..file_system import get_temp_file_path
+
+    path = get_temp_file_path("GitHubDesktop-lfs-progress")
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    fd = os.open(path, flags, 0o600)
+    os.close(fd)
     return path
 
 _PERCENT_RE = re.compile(r"^(\d{1,3})% \((\d+)/(\d+)\)$")

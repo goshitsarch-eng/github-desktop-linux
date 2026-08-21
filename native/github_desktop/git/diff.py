@@ -35,6 +35,33 @@ def parse_line_endings_warning(stderr: str | bytes | None) -> tuple[str, str] | 
     return match.group(1), match.group(2)
 
 
+def get_media_type(extension: str) -> str:
+    """Desktop `getMediaType`: map a file extension to a data-URL media type.
+
+    ``.jpg`` / ``.jpeg`` use ``image/jpg`` (Desktop's mapping, not ``image/jpeg``).
+    ``.dds`` is ``image/vnd-ms.dds``. Unknown extensions fall back to ``text/plain``.
+    """
+    ext = (extension or "").lower()
+    if ext == ".png":
+        return "image/png"
+    if ext == ".jpg" or ext == ".jpeg":
+        return "image/jpg"
+    if ext == ".gif":
+        return "image/gif"
+    if ext == ".ico":
+        return "image/x-icon"
+    if ext == ".webp":
+        return "image/webp"
+    if ext == ".bmp":
+        return "image/bmp"
+    if ext == ".avif":
+        return "image/avif"
+    if ext == ".dds":
+        return "image/vnd-ms.dds"
+    # fallback value as per the spec
+    return "text/plain"
+
+
 def is_valid_buffer(data: bytes) -> bool:
     return len(data) <= MAX_DIFF_BUFFER_SIZE
 

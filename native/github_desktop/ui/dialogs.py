@@ -1149,6 +1149,9 @@ def show_terms(parent: Gtk.Window) -> None:
 
 
 def show_release_notes(parent: Gtk.Window) -> None:
+    from ..desktop_fake_repository import DesktopFakeRepository
+    from .markdown import sandboxed_markdown_label
+
     version, notes = load_release_notes()
     dialog = Adw.Dialog()
     dialog.set_content_width(520)
@@ -1158,12 +1161,12 @@ def show_release_notes(parent: Gtk.Window) -> None:
     header.set_title_widget(Adw.WindowTitle(title="Release notes", subtitle=f"GitHub Desktop {version}"))
     toolbar.add_top_bar(header)
     scroller = Gtk.ScrolledWindow(vexpand=True)
-    listbox = Gtk.ListBox()
-    listbox.add_css_class("boxed-list")
+    notes_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     for note in notes:
-        row = Adw.ActionRow(title=note)
-        listbox.append(row)
-    scroller.set_child(listbox)
+        notes_box.append(
+            sandboxed_markdown_label(note, repository=DesktopFakeRepository, empty=note or "")
+        )
+    scroller.set_child(notes_box)
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     box.set_margin_top(12)
     box.set_margin_bottom(12)
@@ -1209,9 +1212,11 @@ def show_thank_you(parent: Gtk.Window, payload: dict[str, Any] | None = None) ->
     heading.add_css_class("heading")
     box.append(heading)
     if contributions:
-        preview = Gtk.Label(label="\n".join(contributions[:12]), wrap=True, xalign=0)
-        preview.add_css_class("dim-label")
-        box.append(preview)
+        from ..desktop_fake_repository import DesktopFakeRepository
+        from .markdown import sandboxed_markdown_label
+
+        for line in contributions[:12]:
+            box.append(sandboxed_markdown_label(line, repository=DesktopFakeRepository, empty=line))
     links = Gtk.Box(spacing=8)
     desktop = Gtk.Button(label="desktop/desktop")
     desktop.connect("clicked", lambda *_: open_external("https://github.com/desktop/desktop"))

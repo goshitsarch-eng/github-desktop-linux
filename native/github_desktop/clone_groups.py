@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from functools import cmp_to_key
 from collections import defaultdict
 
+from .compare import case_insensitive_compare
 from .models import GitHubRepository
 
 YOUR_REPOSITORIES = "Your repositories"
@@ -24,7 +26,7 @@ def group_cloneable_repositories(
         key = YOUR_REPOSITORIES if owner.casefold() == login_key and login_key else owner
         groups[key].append(repo)
     for items in groups.values():
-        items.sort(key=lambda item: item.name.casefold())
+        items.sort(key=cmp_to_key(lambda a, b: case_insensitive_compare(a.name, b.name)))
 
     def sort_key(identifier: str) -> tuple[int, str]:
         if identifier == YOUR_REPOSITORIES:

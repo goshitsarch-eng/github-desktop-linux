@@ -435,8 +435,9 @@ class AppStore:
         except (OSError, json.JSONDecodeError):
             return
         for item in raw:
-            key = f"{item.get('endpoint')}|{item.get('login')}"
-            token = secrets.get_token(key) or ""
+            endpoint = item.get("endpoint", "")
+            login = item.get("login", "")
+            token = secrets.get_account_token(endpoint, login) or ""
             self.accounts.append(
                 Account(
                     login=item.get("login", ""),
@@ -456,9 +457,8 @@ class AppStore:
     def _save_accounts(self) -> None:
         payload = []
         for account in self.accounts:
-            key = f"{account.endpoint}|{account.login}"
             if account.token:
-                secrets.set_token(key, account.token)
+                secrets.set_account_token(account.endpoint, account.login, account.token)
             payload.append(
                 {
                     "login": account.login,
@@ -1415,6 +1415,11 @@ class AppStore:
                         merged.append(f.with_selection(old_sel[f.path]))
                     else:
                         merged.append(f)
+                from functools import cmp_to_key
+
+                from .compare import case_insensitive_compare
+
+                merged.sort(key=cmp_to_key(lambda a, b: case_insensitive_compare(a.path, b.path)))
                 status.working_directory = WorkingDirectoryStatus.from_files(merged)
             state.status = status
             state.commits = data.get("commits") or []
@@ -3204,9 +3209,20 @@ class AppStore:
         self.emit()
 
     def open_file_default(self, repo: Repository, relpath: str) -> None:
-        full = os.path.join(repo.path, relpath)
-        if os.path.exists(full):
-            open_external(full)
+        from .open_file import open_file
+        from .path import resolve_within
+
+        if os.path.isabs(relpath):
+            log.error("Refusing to open absolute path: %s", relpath)
+            return
+        resolved = resolve_within(repo.path, relpath)
+        if resolved is None:
+            log.error(
+                "Prevented attempt to open path outside of the repository root: %s",
+                relpath,
+            )
+            return
+        open_file(resolved, self)
 
     def ignore_path(self, repo: Repository, path: str) -> None:
         append_ignore_file(repo.path, path)
@@ -3624,6 +3640,10 @@ class AppStore:
             return
         last = float(self.settings.last_prune_dates.get(repo.path) or 0)
         if last and last * 1000.0 > offset_from_now(-24, "hours"):
+            from .format_relative import format_relative
+
+            time_ago = format_relative(last * 1000.0 - time.time() * 1000.0)
+            log.info("Last prune took place %s", time_ago)
             return
         self.settings.last_prune_dates[repo.path] = time.time()
         self.persist_settings()
@@ -4417,7 +4437,7 @@ class AppStore:
 
     def sign_out(self, account: Account) -> None:
         snapshot = account
-        secrets.delete_token(f"{account.endpoint}|{account.login}")
+        secrets.delete_account_token(account.endpoint, account.login)
         self.accounts = [a for a in self.accounts if a is not account and not (a.endpoint == account.endpoint and a.login == account.login)]
         self._save_accounts()
         self.emit()
@@ -4563,17 +4583,25 @@ class AppStore:
             except GitError:
                 pass
         if action.filepath:
-            self.set_section(RepositorySectionTab.CHANGES)
-            full = os.path.normpath(os.path.join(repo.path, action.filepath))
-            if not full.startswith(os.path.normpath(repo.path)):
+            if os.path.isabs(action.filepath):
+                log.error("Refusing to open absolute path: %s", action.filepath)
                 return
+            from .path import resolve_within
+
+            resolved = resolve_within(repo.path, action.filepath)
+            if resolved is None:
+                log.error(
+                    "Prevented attempt to open path outside of the repository root: %s",
+                    action.filepath,
+                )
+                return
+            open_file_manager(resolved)
+            self.set_section(RepositorySectionTab.CHANGES)
             file = None
             if state.status:
                 file = next((f for f in state.status.working_directory.files if f.path == action.filepath), None)
             if file:
                 self.select_file(repo, file)
-            elif os.path.exists(full):
-                self.open_in_editor(repo, full)
 
     def open_in_shell(self, repo: Repository) -> None:
         if self.settings.use_custom_shell and self.settings.custom_shell_path:

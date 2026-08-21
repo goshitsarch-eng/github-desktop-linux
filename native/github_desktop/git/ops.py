@@ -6,12 +6,13 @@ import os
 import re
 import signal
 import subprocess
-import tempfile
 from dataclasses import dataclass
+from functools import cmp_to_key
 from pathlib import Path
 from threading import Event
 from typing import Callable, Iterable, Mapping, Sequence
 
+from ..compare import case_insensitive_compare
 from ..errors import (
     GitError,
     NotARepositoryError,
@@ -80,6 +81,7 @@ from .delimiter import create_for_each_ref_parser, create_log_parser
 from .diff import (
     format_discard_patch,
     format_partial_patch,
+    get_media_type,
     is_buffer_too_large,
     is_diff_too_large,
     is_valid_buffer,
@@ -210,6 +212,8 @@ def get_status(repo_path: str, include_untracked: bool = True) -> IStatusResult 
             status,
             DiffSelection.from_initial_selection(initial),
         )
+    file_list = list(files.values())
+    file_list.sort(key=cmp_to_key(lambda a, b: case_insensitive_compare(a.path, b.path)))
     ab = info["ahead_behind"]
     ahead_behind = AheadBehind(*ab) if isinstance(ab, tuple) else None
     return IStatusResult(
@@ -218,7 +222,7 @@ def get_status(repo_path: str, include_untracked: bool = True) -> IStatusResult 
         current_upstream_branch=info["current_upstream_branch"],  # type: ignore[arg-type]
         current_tip=info["current_tip"],  # type: ignore[arg-type]
         branch_ahead_behind=ahead_behind,
-        working_directory=WorkingDirectoryStatus.from_files(list(files.values())),
+        working_directory=WorkingDirectoryStatus.from_files(file_list),
         merge_head_found=merge_head_found,
         squash_msg_found=_path_exists(repo_path, ".git/SQUASH_MSG"),
         rebase_internal_state=rebase_internal_state,
@@ -481,11 +485,14 @@ def get_partial_blob_contents_catch_path_not_in_ref(
 
 
 def get_working_directory_lines(repo: str, path: str) -> list[str]:
+    from ..file_system import read_partial_file
+
     full = os.path.join(repo, path)
     try:
-        return Path(full).read_text(encoding="utf-8", errors="replace").splitlines()
+        data = read_partial_file(full, 0, MAX_PARTIAL_BLOB_BYTES - 1)
     except OSError:
         return []
+    return data.decode("utf-8", errors="replace").splitlines()
 
 
 def get_blob_lines(repo: str, commitish: str, path: str) -> list[str]:
@@ -596,16 +603,7 @@ def _image_diff(repo: str, path: str, status: FileStatus, commitish: str | None)
                     current = fh.read()
             except OSError:
                 current = None
-    media = {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".gif": "image/gif",
-        ".webp": "image/webp",
-        ".bmp": "image/bmp",
-        ".ico": "image/x-icon",
-        ".avif": "image/avif",
-    }.get(os.path.splitext(path)[1].lower(), "application/octet-stream")
+    media = get_media_type(os.path.splitext(path)[1])
     return ImageDiff(previous=previous, current=current, previous_media_type=media, current_media_type=media)
 
 
@@ -2652,10 +2650,13 @@ def interactive_rebase_todo(
     message_path: str | None = None,
     *,
     progress: Callable[[MultiCommitProgress], None] | None = None,
+    todo_name: str = "rebaseTodo",
 ) -> RebaseResult:
     """Run `git rebase -i` with a pre-written todo list (squash / reorder)."""
+    from ..file_system import get_temp_file_path
+
     git_dir = _git_dir(repo)
-    todo_file = os.path.join(git_dir, "desktop-rebase-todo")
+    todo_file = get_temp_file_path(todo_name)
     Path(todo_file).write_text("\n".join(todo_lines) + "\n", encoding="utf-8")
     seq_editor = os.path.join(git_dir, "desktop-sequence-editor.sh")
     Path(seq_editor).write_text(f"#!/bin/sh\ncp '{todo_file}' \"$1\"\n", encoding="utf-8")
@@ -2698,6 +2699,11 @@ def interactive_rebase_todo(
         if get_rebase_internal_state(repo) is not None:
             return RebaseResult.CONFLICTS_ENCOUNTERED
         return RebaseResult.ERROR
+    finally:
+        try:
+            os.remove(todo_file)
+        except OSError:
+            pass
 
 
 def squash_commits(
@@ -2744,20 +2750,25 @@ def squash_commits(
             todo.append(line)
     if not found:
         raise GitError("The commit to squash onto was not found in the log.")
-    fd, msg_path = tempfile.mkstemp(prefix="desktop-squash-msg-")
-    os.write(fd, message.encode("utf-8"))
-    os.close(fd)
+    from ..file_system import get_temp_file_path
+
+    msg_path = None
+    if message.strip():
+        msg_path = get_temp_file_path("squashCommitMessage")
+        Path(msg_path).write_text(message, encoding="utf-8")
     try:
         # Rewrite first pick of squash group: after pick onto, subsequent squash
         # Use GIT_EDITOR to set the combined message when squash stops
-        env_editor_file = msg_path
-        result = interactive_rebase_todo(repo, last_retained, todo, env_editor_file, progress=progress)
+        result = interactive_rebase_todo(
+            repo, last_retained, todo, msg_path, progress=progress, todo_name="squashTodo"
+        )
         return result
     finally:
-        try:
-            os.remove(msg_path)
-        except OSError:
-            pass
+        if msg_path:
+            try:
+                os.remove(msg_path)
+            except OSError:
+                pass
 
 
 def reorder_commits(
@@ -2783,7 +2794,7 @@ def reorder_commits(
     if not inserted:
         insertion.extend(to_move)
     todo = [f"pick {c.sha} {c.summary}" for c in insertion]
-    return interactive_rebase_todo(repo, last_retained, todo, progress=progress)
+    return interactive_rebase_todo(repo, last_retained, todo, progress=progress, todo_name="reorderTodo")
 
 
 def get_ahead_behind(repo: str, upstream: str, branch: str | None = None) -> AheadBehind | None:

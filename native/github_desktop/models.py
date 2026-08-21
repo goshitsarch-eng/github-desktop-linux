@@ -1387,14 +1387,25 @@ class Account:
 
     @property
     def friendly_endpoint(self) -> str:
-        if self.is_dotcom:
-            return "GitHub.com"
-        return html_url_from_endpoint(self.endpoint)
+        return friendly_endpoint_name(self)
 
     @classmethod
     def anonymous(cls) -> "Account":
         """Desktop `Account.anonymous()` for unauthenticated public API access."""
         return cls(login="", endpoint="https://api.github.com", token="", id=-1, plan="free")
+
+
+def friendly_endpoint_name(account: Account) -> str:
+    """Desktop `friendlyEndpointName`.
+
+    GitHub.com accounts return ``GitHub.com``; Enterprise accounts return the
+    hostname without protocol or path.
+    """
+    from urllib.parse import urlparse
+
+    if account.is_dotcom:
+        return "GitHub.com"
+    return urlparse(account.endpoint).hostname or account.endpoint
 
 
 def enable_commit_message_generation(account: Account | None) -> bool:
