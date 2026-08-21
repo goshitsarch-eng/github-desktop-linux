@@ -274,6 +274,7 @@ from .remote_parsing import (
     sanitize_remote_url,
     url_matches_remote,
 )
+from .clamp import clamp, constrain
 from .settings import (
     Settings,
     defaultBranchDropdownWidth,
@@ -457,6 +458,15 @@ class AppStore:
         elif self.tutorial_assessor.tutorial_paused:
             self.settings.tutorial_paused = True
         self.tutorial_step = TutorialStep.PAUSED if self.tutorial_assessor.tutorial_paused else TutorialStep.NOT_APPLICABLE
+        self._constraint_window_width = int(self.settings.window_width or 0)
+        self.sidebar_constraints = constrain(self.settings.sidebar_width)
+        self.commit_summary_constraints = constrain(self.settings.commit_summary_width)
+        self.stashed_files_constraints = constrain(self.settings.stashed_files_width)
+        self.pull_request_file_list_constraints = constrain(self.settings.pull_request_file_list_width)
+        self.branch_dropdown_constraints = constrain(self.settings.branch_dropdown_width)
+        self.push_pull_constraints = constrain(self.settings.push_pull_button_width)
+        if self._constraint_window_width:
+            self.update_resizable_constraints(self._constraint_window_width)
         self.progress_kind: str | None = None
         self.progress_title: str = ""
         self.progress_value: float = 0.0
@@ -815,11 +825,13 @@ class AppStore:
             return
         self.settings.sidebar_width = width
         self.persist_settings()
+        self._refresh_resizable_constraints()
 
     def reset_sidebar_width(self) -> None:
         """Desktop `_resetSidebarWidth`."""
         self.settings.sidebar_width = defaultSidebarWidth
         self.persist_settings()
+        self._refresh_resizable_constraints()
         self.emit()
 
     def show_foldout(self, foldout: FoldoutType) -> None:
@@ -859,6 +871,7 @@ class AppStore:
             return
         self.settings.commit_summary_width = width
         self.persist_settings()
+        self._refresh_resizable_constraints()
 
     def set_stashed_files_width(self, width: int) -> None:
         """Desktop `_setStashedFilesWidth`."""
@@ -867,6 +880,7 @@ class AppStore:
             return
         self.settings.stashed_files_width = width
         self.persist_settings()
+        self._refresh_resizable_constraints()
 
     def set_pull_request_file_list_width(self, width: int) -> None:
         """Desktop `_setPullRequestFileListWidth`."""
@@ -875,6 +889,7 @@ class AppStore:
             return
         self.settings.pull_request_file_list_width = width
         self.persist_settings()
+        self._refresh_resizable_constraints()
 
     def set_branch_dropdown_width(self, width: int) -> None:
         """Desktop `_setBranchDropdownWidth`."""
@@ -883,6 +898,7 @@ class AppStore:
             return
         self.settings.branch_dropdown_width = width
         self.persist_settings()
+        self._refresh_resizable_constraints()
 
     def set_push_pull_button_width(self, width: int) -> None:
         """Desktop `_setPushPullButtonWidth`."""
@@ -891,6 +907,7 @@ class AppStore:
             return
         self.settings.push_pull_button_width = width
         self.persist_settings()
+        self._refresh_resizable_constraints()
 
     def load_git_description(self, repo: Repository, on_done: Callable[..., None]) -> None:
         """Desktop Publish `componentDidMount` / `getGitDescription`."""
@@ -910,31 +927,89 @@ class AppStore:
         """Desktop `_resetCommitSummaryWidth`."""
         self.settings.commit_summary_width = defaultCommitSummaryWidth
         self.persist_settings()
+        self._refresh_resizable_constraints()
         self.emit()
 
     def reset_stashed_files_width(self) -> None:
         """Desktop `_resetStashedFilesWidth`."""
         self.settings.stashed_files_width = defaultStashedFilesWidth
         self.persist_settings()
+        self._refresh_resizable_constraints()
         self.emit()
 
     def reset_pull_request_file_list_width(self) -> None:
         """Desktop `_resetPullRequestFileListWidth`."""
         self.settings.pull_request_file_list_width = defaultPullRequestFileListWidth
         self.persist_settings()
+        self._refresh_resizable_constraints()
         self.emit()
 
     def reset_branch_dropdown_width(self) -> None:
         """Desktop `_resetBranchDropdownWidth`."""
         self.settings.branch_dropdown_width = defaultBranchDropdownWidth
         self.persist_settings()
+        self._refresh_resizable_constraints()
         self.emit()
 
     def reset_push_pull_button_width(self) -> None:
         """Desktop `_resetPushPullButtonWidth`."""
         self.settings.push_pull_button_width = defaultPushPullButtonWidth
         self.persist_settings()
+        self._refresh_resizable_constraints()
         self.emit()
+
+    def _refresh_resizable_constraints(self) -> None:
+        if self._constraint_window_width > 0:
+            self.update_resizable_constraints(self._constraint_window_width)
+
+    def update_resizable_constraints(self, window_width: int) -> None:
+        """Desktop `updateResizableConstraints` (min/max only; persisted values stay)."""
+        self._constraint_window_width = int(window_width)
+        toolbar_buttons_min_width = defaultPushPullButtonWidth + defaultBranchDropdownWidth
+        available = float(window_width)
+        tutorial_min_width = 0.0 if self.tutorial_step == TutorialStep.NOT_APPLICABLE else 650.0
+        max_sidebar_width = available - max(toolbar_buttons_min_width, tutorial_min_width)
+        self.sidebar_constraints = constrain(self.settings.sidebar_width, 220, max_sidebar_width)
+        available -= clamp(self.sidebar_constraints)
+        diff_pane_min_width = 150
+        files_max = available - diff_pane_min_width
+        self.commit_summary_constraints = constrain(self.settings.commit_summary_width, 100, files_max)
+        self.stashed_files_constraints = constrain(self.settings.stashed_files_width, 100, files_max)
+        branch_dropdown_max = available - defaultPushPullButtonWidth
+        minimum_branch_dropdown_width = (
+            available / 2 - 10
+            if defaultBranchDropdownWidth > available / 2
+            else float(defaultBranchDropdownWidth)
+        )
+        self.branch_dropdown_constraints = constrain(
+            self.settings.branch_dropdown_width,
+            minimum_branch_dropdown_width,
+            branch_dropdown_max,
+        )
+        push_pull_button_max_width = available - self.branch_dropdown_constraints.value
+        minimum_push_pull_toolbar_width = (
+            available / 2 + 30
+            if defaultPushPullButtonWidth > available / 2
+            else float(defaultPushPullButtonWidth)
+        )
+        self.push_pull_constraints = constrain(
+            self.settings.push_pull_button_width,
+            minimum_push_pull_toolbar_width,
+            push_pull_button_max_width,
+        )
+        self.update_pull_request_resizable_constraints()
+
+    def update_pull_request_resizable_constraints(self) -> None:
+        """Desktop `updatePullRequestResizableConstraints` (dialog width 850)."""
+        available = 850
+        dialog_padding = 20
+        diff_pane_min_width = 150
+        files_list_max = available - dialog_padding - diff_pane_min_width
+        self.pull_request_file_list_constraints = constrain(
+            self.settings.pull_request_file_list_width,
+            100,
+            files_list_max,
+        )
 
     def desktop_stash_for_branch(self, repo: Repository, branch: str | None) -> StashEntry | None:
         """Refresh-cached Desktop stash for a branch (no live `git stash list`)."""

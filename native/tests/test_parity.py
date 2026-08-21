@@ -1315,5 +1315,8 @@ def test_window_actions_cover_menus() -> None:
         "View Pull Request on GitHub",
         "_showPullRequestByPR",
         "Copy branch name",
+        "updateResizableConstraints",
+        "updatePullRequestResizableConstraints",
+        "IConstrainedValue",
     ]:
         assert phrase in src

@@ -153,12 +153,16 @@ def wrap_toolbar_resizable(
     min_width: int = 160,
     max_width: int = 720,
     description: str = "",
+    constraints: dict[str, float] | None = None,
 ) -> Gtk.Box:
     """Desktop `Resizable` for toolbar branch / push-pull buttons (`enableResizingToolbarButtons`)."""
     box = Gtk.Box()
     box.add_css_class("toolbar-resizable")
     box.set_hexpand(False)
-    width = max(min_width, int(width))
+    limits = constraints if constraints is not None else {"min": float(min_width), "max": float(max_width)}
+    limits.setdefault("min", float(min_width))
+    limits.setdefault("max", float(max_width))
+    width = max(int(limits["min"]), int(width))
     widget.set_size_request(width, -1)
     widget.set_hexpand(True)
     handle = Gtk.Box()
@@ -177,10 +181,13 @@ def wrap_toolbar_resizable(
     start = {"width": width}
 
     def begin(_gesture, _x: float, _y: float) -> None:
-        start["width"] = max(min_width, widget.get_allocated_width() or widget.get_width() or start["width"])
+        min_w = int(limits["min"])
+        start["width"] = max(min_w, widget.get_allocated_width() or widget.get_width() or start["width"])
 
     def update(_gesture, dx: float, _dy: float) -> None:
-        new = max(min_width, min(max_width, int(start["width"] + dx)))
+        min_w = int(limits["min"])
+        max_w = int(limits["max"])
+        new = max(min_w, min(max_w, int(start["width"] + dx)))
         widget.set_size_request(new, -1)
         on_resize(new)
 

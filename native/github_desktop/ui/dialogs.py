@@ -49,6 +49,7 @@ from ..models import (
     default_publish_tab,
     uncommitted_changes_strategy_choices,
 )
+from ..clamp import clamp
 from ..settings import defaultPullRequestFileListWidth, get_default_dir, set_default_dir
 from ..shells import get_available_shells, open_external
 from ..store import AppStore
@@ -4032,7 +4033,7 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
 
     viewer = DiffViewer(interactive=False)
     paned.set_end_child(viewer)
-    paned.set_position(max(180, int(store.settings.pull_request_file_list_width or defaultPullRequestFileListWidth)))
+    paned.set_position(max(100, int(clamp(store.pull_request_file_list_constraints))))
     paned.connect(
         "notify::position",
         lambda moved, *_a: moved.get_position() > 0

@@ -50,6 +50,7 @@ from ..models import (
     enable_commit_message_generation,
     is_valid_tutorial_step,
 )
+from ..clamp import clamp
 from ..push_pull import describe_push_pull, format_commit_relative_time, format_last_fetched
 from ..settings import (
     defaultBranchDropdownWidth,
@@ -219,6 +220,26 @@ def format_banner_text(kind: BannerType, banner) -> str:
     return mapping.get(kind, kind.value)
 
 
+class _AllocatedBox(Gtk.Box):
+    """Gtk.Box that reports allocation changes (GTK 4 has no size-allocate signal)."""
+
+    __gtype_name__ = "GitHubDesktopAllocatedBox"
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._on_allocated = None
+        self._last_size = (0, 0)
+
+    def do_size_allocate(self, width: int, height: int, baseline: int) -> None:
+        Gtk.Box.do_size_allocate(self, width, height, baseline)
+        if width <= 0 or (width, height) == self._last_size:
+            return
+        self._last_size = (width, height)
+        callback = self._on_allocated
+        if callback is not None:
+            callback(width, height)
+
+
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application, store: AppStore) -> None:
         super().__init__(application=app, title=APP_NAME)
@@ -226,13 +247,18 @@ class MainWindow(Adw.ApplicationWindow):
         self.set_default_size(store.settings.window_width, store.settings.window_height)
         self._building = False
         self._applying_sidebar_width = False
+        self._applying_constraints = False
+        self._constraint_idle = 0
+        self._branch_resize_limits = {"min": 160.0, "max": 720.0}
+        self._push_resize_limits = {"min": 160.0, "max": 720.0}
         self._light_update = False
         self._keyboard_reorder = None
         self._toast = Adw.ToastOverlay()
         self.set_content(self._toast)
         self._overlay = Gtk.Overlay()
         self._toast.set_child(self._overlay)
-        self._root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self._root = _AllocatedBox(orientation=Gtk.Orientation.VERTICAL)
+        self._root._on_allocated = self._on_root_allocated
         self._overlay.set_child(self._root)
         self._window_info_box = Gtk.Box()
         self._window_info_box.add_css_class("toast-notification-container")
@@ -267,6 +293,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.store.api_repositories.subscribe(self._on_api_repositories)
         self.connect("close-request", self._on_close)
         self.connect("notify::fullscreened", self._on_fullscreened)
+        self.connect("notify::maximized", lambda *_: self._schedule_resizable_constraints())
+        self.connect("map", lambda *_: GLib.idle_add(self._apply_resizable_constraints))
         self._apply_underline_links()
         self._on_store()
 
@@ -318,6 +346,63 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_fullscreened(self, *_args: object) -> None:
         if self.is_fullscreen():
             self._show_window_info("Press F11 to exit fullscreen", hold_ms=3000, zoom=False)
+        self._schedule_resizable_constraints()
+
+    def _on_root_allocated(self, width: int, _height: int) -> None:
+        if width <= 0:
+            return
+        self._schedule_resizable_constraints()
+
+    def _schedule_resizable_constraints(self) -> None:
+        if getattr(self, "_building", False) or getattr(self, "_constraint_idle", 0):
+            return
+        self._constraint_idle = GLib.idle_add(self._apply_resizable_constraints)
+
+    def _apply_resizable_constraints(self) -> bool:
+        self._constraint_idle = 0
+        if getattr(self, "_building", False) or getattr(self, "_applying_constraints", False):
+            return False
+        width = self.get_width()
+        if width <= 0:
+            return False
+        self.store.update_resizable_constraints(width)
+        self._sync_resize_limits()
+        self._applying_constraints = True
+        self._applying_sidebar_width = True
+        try:
+            sidebar = int(clamp(self.store.sidebar_constraints))
+            if hasattr(self, "_changes_paned") and abs(self._changes_paned.get_position() - sidebar) > 1:
+                self._changes_paned.set_position(sidebar)
+            if hasattr(self, "_history_paned") and abs(self._history_paned.get_position() - sidebar) > 1:
+                self._history_paned.set_position(sidebar)
+            files = int(clamp(self.store.commit_summary_constraints))
+            if hasattr(self, "_hist_files_paned") and abs(self._hist_files_paned.get_position() - files) > 1:
+                self._hist_files_paned.set_position(files)
+            stash = int(clamp(self.store.stashed_files_constraints))
+            paned = getattr(getattr(self, "_stash_viewer", None), "_files_paned", None)
+            if paned is not None and abs(paned.get_position() - stash) > 1:
+                paned.set_position(stash)
+            branch = int(clamp(self.store.branch_dropdown_constraints))
+            if hasattr(self, "_branch_btn"):
+                self._branch_btn.set_size_request(max(1, branch), -1)
+            push = int(clamp(self.store.push_pull_constraints))
+            target = getattr(self, "_push_box", None)
+            if target is not None:
+                target.set_size_request(max(1, push), -1)
+            self._sync_repository_foldout_width()
+            self._sync_branch_foldout_width()
+        finally:
+            self._applying_constraints = False
+            self._applying_sidebar_width = False
+        return False
+
+    def _sync_resize_limits(self) -> None:
+        if hasattr(self, "_branch_resize_limits"):
+            self._branch_resize_limits["min"] = self.store.branch_dropdown_constraints.min
+            self._branch_resize_limits["max"] = self.store.branch_dropdown_constraints.max
+        if hasattr(self, "_push_resize_limits"):
+            self._push_resize_limits["min"] = self.store.push_pull_constraints.min
+            self._push_resize_limits["max"] = self.store.push_pull_constraints.max
 
     def _show_zoom_info(self, factor: float) -> None:
         """Desktop `ZoomInfo` overlay when Ctrl+0/=/− changes the zoom factor."""
@@ -364,6 +449,10 @@ class MainWindow(Adw.ApplicationWindow):
             self._stack.set_visible_child_name("repo")
             self._refresh_repo()
         self._sync_foldouts()
+        width = self.get_width()
+        if width > 0:
+            self.store.update_resizable_constraints(width)
+            self._sync_resize_limits()
         if self.store.banner:
             kind = self.store.banner.type
             self._banner.set_title(format_banner_text(kind, self.store.banner))
@@ -869,9 +958,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _sync_branch_foldout_width(self) -> None:
         if hasattr(self, "_branches_foldout"):
-            self._branches_foldout.set_foldout_width(
-                int(self.store.settings.branch_dropdown_width or defaultBranchDropdownWidth)
-            )
+            self._branches_foldout.set_foldout_width(int(clamp(self.store.branch_dropdown_constraints)))
 
     def _reset_branch_dropdown_width(self) -> None:
         self.store.reset_branch_dropdown_width()
@@ -894,7 +981,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _sidebar_foldout_width(self) -> int:
         """Desktop `clamp(sidebarWidth)` with min 220."""
-        return max(220, int(self.store.settings.sidebar_width or defaultSidebarWidth))
+        return max(220, int(clamp(self.store.sidebar_constraints)))
 
     def _sync_repository_foldout_width(self) -> None:
         """Desktop `foldoutWidth = clamp(this.state.sidebarWidth)` for the repository list."""
@@ -922,7 +1009,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_sidebar_paned_position(self, paned, *_args: object) -> None:
         """Desktop `setSidebarWidth` while dragging Changes/History."""
-        if getattr(self, "_building", False) or getattr(self, "_applying_sidebar_width", False):
+        if getattr(self, "_building", False) or getattr(self, "_applying_sidebar_width", False) or getattr(self, "_applying_constraints", False):
             return
         pos = paned.get_position()
         if pos <= 0:
@@ -1194,8 +1281,9 @@ class MainWindow(Adw.ApplicationWindow):
                     self._branch_btn,
                     self._on_branch_dropdown_resized,
                     self._reset_branch_dropdown_width,
-                    width=int(self.store.settings.branch_dropdown_width or defaultBranchDropdownWidth),
+                    width=int(clamp(self.store.branch_dropdown_constraints)),
                     description="Current branch dropdown button",
+                    constraints=self._branch_resize_limits,
                 )
             )
         else:
@@ -1237,8 +1325,9 @@ class MainWindow(Adw.ApplicationWindow):
                     self._push_box,
                     self.store.set_push_pull_button_width,
                     self._reset_push_pull_button_width,
-                    width=int(self.store.settings.push_pull_button_width or defaultPushPullButtonWidth),
+                    width=int(clamp(self.store.push_pull_constraints)),
                     description="Push pull button",
+                    constraints=self._push_resize_limits,
                 )
             )
         else:
@@ -1791,7 +1880,7 @@ class MainWindow(Adw.ApplicationWindow):
         paned.set_start_child(left)
         self._changes_paned = paned
         try:
-            paned.set_position(max(220, int(self.store.settings.sidebar_width or defaultSidebarWidth)))
+            paned.set_position(max(220, int(clamp(self.store.sidebar_constraints))))
         except Exception:
             pass
         attach_paned_reset(paned, self._reset_sidebar_width)
@@ -1827,7 +1916,11 @@ class MainWindow(Adw.ApplicationWindow):
             on_open_binary=self._open_binary_file,
             files_width=int(self.store.settings.stashed_files_width or defaultStashedFilesWidth),
             on_reset_width=self._reset_stashed_files_width,
-            on_width_changed=lambda width: self.store.set_stashed_files_width(width),
+            on_width_changed=lambda width: (
+                None
+                if getattr(self, "_applying_constraints", False)
+                else self.store.set_stashed_files_width(width)
+            ),
         )
         self._changes_stack.add_named(paned, "working")
         self._changes_stack.add_named(self._stash_viewer, "stash")
@@ -1947,7 +2040,7 @@ class MainWindow(Adw.ApplicationWindow):
         files_paned.set_end_child(self._hist_diff_view)
         try:
             files_paned.set_position(
-                max(100, int(self.store.settings.commit_summary_width or defaultCommitSummaryWidth))
+                max(100, int(clamp(self.store.commit_summary_constraints)))
             )
         except Exception:
             pass
@@ -1985,7 +2078,7 @@ class MainWindow(Adw.ApplicationWindow):
         paned.set_end_child(right)
         self._history_paned = paned
         try:
-            paned.set_position(max(220, int(self.store.settings.sidebar_width or defaultSidebarWidth)))
+            paned.set_position(max(220, int(clamp(self.store.sidebar_constraints))))
         except Exception:
             pass
         attach_paned_reset(paned, self._reset_sidebar_width)
@@ -4724,7 +4817,10 @@ class MainWindow(Adw.ApplicationWindow):
         if paned is None:
             return
         pos = paned.get_position()
-        paned.set_position(max(220, min(720, pos + delta)))
+        max_w = int(self.store.sidebar_constraints.max)
+        if max_w > 10**8:
+            max_w = 720
+        paned.set_position(max(220, min(max_w, pos + delta)))
 
     def _reset_sidebar_width(self) -> None:
         self._applying_sidebar_width = True
@@ -4740,7 +4836,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_commit_summary_paned_position(self, paned, *_args: object) -> None:
         """Desktop `setCommitSummaryWidth` while dragging the selected-commit file list."""
-        if getattr(self, "_building", False):
+        if getattr(self, "_building", False) or getattr(self, "_applying_constraints", False):
             return
         pos = paned.get_position()
         if pos > 0:

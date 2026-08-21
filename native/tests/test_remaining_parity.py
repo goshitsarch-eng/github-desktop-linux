@@ -404,6 +404,35 @@ def test_reset_sidebar_width_matches_desktop(isolated_config) -> None:
     assert store.settings.push_pull_button_width == 230
 
 
+def test_update_resizable_constraints_matches_desktop(isolated_config) -> None:
+    from github_desktop.clamp import clamp
+    from github_desktop.models import TutorialStep
+    from github_desktop.settings import defaultBranchDropdownWidth, defaultPushPullButtonWidth
+
+    store = AppStore()
+    store.tutorial_step = TutorialStep.NOT_APPLICABLE
+    store.settings.sidebar_width = 250
+    store.settings.branch_dropdown_width = 230
+    store.settings.push_pull_button_width = 230
+    store.update_resizable_constraints(1280)
+    assert store.sidebar_constraints.min == 220
+    assert store.sidebar_constraints.max == 1280 - (defaultBranchDropdownWidth + defaultPushPullButtonWidth)
+    assert clamp(store.sidebar_constraints) == 250
+    files_max = 1280 - 250 - 150
+    assert store.commit_summary_constraints.max == files_max
+    assert store.stashed_files_constraints.max == files_max
+    assert store.branch_dropdown_constraints.min == defaultBranchDropdownWidth
+    store.update_resizable_constraints(500)
+    assert store.sidebar_constraints.max == 220
+    assert clamp(store.sidebar_constraints) == 220
+    store.tutorial_step = TutorialStep.PICK_EDITOR
+    store.update_resizable_constraints(1280)
+    assert store.sidebar_constraints.max == 1280 - 650
+    store.update_pull_request_resizable_constraints()
+    assert store.pull_request_file_list_constraints.min == 100
+    assert store.pull_request_file_list_constraints.max == 850 - 20 - 150
+
+
 def test_change_clone_repositories_tab_persists(isolated_config) -> None:
     from github_desktop.models import CloneRepositoryTab
     from github_desktop.settings import defaultPullRequestFileListWidth, pullRequestFileListConfigKey

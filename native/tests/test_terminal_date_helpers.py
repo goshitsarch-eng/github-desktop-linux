@@ -51,9 +51,16 @@ def test_format_date_and_invalid() -> None:
 
 
 def test_clamp_directory_exists_and_http_status(tmp_path) -> None:
+    from github_desktop.clamp import ConstrainedValue, constrain
+
     assert clamp(0.5, 0.7, 3.0) == 0.7
     assert clamp(4.0, 0.7, 3.0) == 3.0
     assert clamp(1.2, 0.7, 3.0) == 1.2
+    limited = constrain(400, 220, 100)
+    assert limited.min == 220
+    assert limited.max == 220
+    assert clamp(limited) == 220
+    assert clamp(ConstrainedValue(50, min=10, max=40)) == 40
     assert directory_exists(str(tmp_path)) is True
     assert directory_exists(str(tmp_path / "missing")) is False
     assert HttpStatusCode.NotModified == 304
