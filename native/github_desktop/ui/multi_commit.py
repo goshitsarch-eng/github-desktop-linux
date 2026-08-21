@@ -18,10 +18,7 @@ from ..fuzzy_find import filter_items
 from ..git.ops import (
     determine_mergeability,
     get_ahead_behind_range,
-    get_binary_paths,
     get_commits_between,
-    get_files_with_conflict_markers,
-    warn_about_remote_commits,
 )
 from ..git.progress import MultiCommitProgress
 from ..models import (
@@ -447,13 +444,18 @@ def _show_choose_branch(parent: Gtk.Window, store: AppStore, kind: str, initial_
         if k == MultiCommitOperationKind.REBASE and current_branch and (
             store.settings.confirm_force_push or store.settings.ask_for_confirmation_on_force_push
         ):
-            if warn_about_remote_commits(repo.path, current_branch, branch.tip_sha):
+            def after_warn(should_warn: bool) -> None:
+                if should_warn:
 
-                def proceed() -> None:
-                    begin_operation(k, name, count)
+                    def proceed() -> None:
+                        begin_operation(k, name, count)
 
-                show_warn_force_push(parent, store, {"operation": "Rebase", "on_begin": proceed})
-                return
+                    show_warn_force_push(parent, store, {"operation": "Rebase", "on_begin": proceed})
+                    return
+                begin_operation(k, name, count)
+
+            store.warn_if_remote_commits(repo, current_branch, branch.tip_sha, after_warn)
+            return
         begin_operation(k, name, count)
 
     search.connect("search-changed", lambda *_: render_list())
@@ -863,21 +865,12 @@ def show_conflicts_dialog(parent: Gtk.Window, store: AppStore, kind: str | None 
             kind = MultiCommitOperationKind.MERGE
     files = get_conflicted_files(status.working_directory, state.manual_resolutions)
     resolved = get_resolved_files(status.working_directory, state.manual_resolutions)
-    leftover = {}
-    try:
-        leftover = get_files_with_conflict_markers(repo.path)
-    except Exception:
-        leftover = {}
-    leftover_count = sum(leftover.values())
-    ref = "HEAD"
-    if status.merge_head_found:
-        ref = "MERGE_HEAD"
-    elif status.rebase_internal_state:
-        ref = "REBASE_HEAD"
-    try:
-        binary_paths = set(get_binary_paths(repo.path, ref, [f.path for f in files]))
-    except Exception:
-        binary_paths = set()
+    leftover_count = sum(
+        (file.status.conflict_marker_count or 0)
+        for file in status.working_directory.files
+        if is_conflict_with_markers(file.status)
+        and file.path not in {item.path for item in files}
+    )
     dialog = Adw.Dialog()
     dialog.set_content_width(520)
     dialog.set_content_height(480)
@@ -917,7 +910,7 @@ def show_conflicts_dialog(parent: Gtk.Window, store: AppStore, kind: str | None 
             store,
             repo,
             file,
-            binary=file.path in binary_paths,
+            binary=is_manual_conflict(file.status),
             ours_label=get_label_for_manual_resolution_option(file.status.us, our),
             theirs_label=get_label_for_manual_resolution_option(file.status.them, their),
         )

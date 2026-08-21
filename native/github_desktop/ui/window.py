@@ -877,12 +877,13 @@ class MainWindow(Adw.ApplicationWindow):
                 else:
                     model = email_row.get_model()
                     chosen = model.get_string(idx) if model is not None else other_email.get_text().strip()
-                try:
-                    self.store.save_git_user(name_row.get_text(), chosen)
-                except Exception as exc:
-                    self.store.show_popup(PopupType.ERROR, error=str(exc))
-                    return
-                self.store.finish_welcome()
+                def finished(exc: BaseException | None) -> None:
+                    if exc:
+                        self.store.show_popup(PopupType.ERROR, error=str(exc))
+                        return
+                    self.store.finish_welcome()
+
+                self.store.save_git_user(name_row.get_text(), chosen, on_done=finished)
 
             finish.connect("clicked", done)
             self._welcome_extra.append(name_row)

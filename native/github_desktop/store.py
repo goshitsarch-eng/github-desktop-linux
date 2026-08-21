@@ -82,6 +82,7 @@ from .git import (
     get_remotes,
     get_remote_head,
     get_repository_kind,
+    get_repository_type,
     get_recent_branches,
     get_rebase_internal_state,
     get_stashes,
@@ -95,6 +96,8 @@ from .git import (
     init_repository,
     install_global_lfs_filters,
     install_lfs_hooks as git_install_lfs_hooks,
+    lfs_ls_files,
+    lfs_patterns_from_gitattributes,
     lfs_track as git_lfs_track,
     merge,
     move_item_to_trash,
@@ -906,16 +909,29 @@ class AppStore:
         if added:
             self._save_repositories()
             self.select_repository(added[-1].id)
-            lfs_repos: list[Repository] = []
-            for repo in added:
+            self._maybe_prompt_lfs(added)
+        return added
+
+    def _maybe_prompt_lfs(self, repos: Sequence[Repository]) -> None:
+        """Desktop add-repo: `isUsingLFS` after repositories are on the list."""
+        snapshots = list(repos)
+
+        def work() -> list[Repository]:
+            found: list[Repository] = []
+            for repo in snapshots:
                 try:
                     if is_using_lfs(repo.path):
-                        lfs_repos.append(repo)
+                        found.append(repo)
                 except GitError:
                     continue
-            if lfs_repos:
-                self.show_popup(PopupType.INITIALIZE_LFS, repositories=lfs_repos)
-        return added
+            return found
+
+        def done(exc: BaseException | None, result: list[Repository] | None = None) -> None:
+            if exc or not result:
+                return
+            self.show_popup(PopupType.INITIALIZE_LFS, repositories=result)
+
+        self._run_ui(work, done)
 
     def install_lfs_hooks(
         self,
@@ -973,6 +989,74 @@ class AppStore:
 
         self._run_ui(work, done)
 
+    def load_lfs_status(
+        self,
+        repo: Repository,
+        on_done: Callable[[list[str], list[str]], None],
+    ) -> None:
+        """Desktop Git LFS dialog: `lfs track` patterns plus `lfs ls-files`."""
+
+        def work() -> tuple[list[str], list[str]]:
+            return lfs_patterns_from_gitattributes(repo.path), lfs_ls_files(repo.path)
+
+        def done(exc: BaseException | None, result: tuple | None = None) -> None:
+            existing, tracked = result if result else ([], [])
+            if exc:
+                existing, tracked = [], []
+            on_done(list(existing or []), list(tracked or []))
+
+        self._run_ui(work, done)
+
+    def probe_repository_type(
+        self,
+        path: str,
+        on_done: Callable[[dict[str, str]], None],
+    ) -> None:
+        """Desktop `getRepositoryType` for add/create-repository path probes."""
+
+        def work() -> dict[str, str]:
+            return get_repository_type(path)
+
+        def done(exc: BaseException | None, result: dict[str, str] | None = None) -> None:
+            on_done(result if result is not None else {"kind": "missing"})
+
+        self._run_ui(work, done)
+
+    def classify_create_path_async(
+        self,
+        path: str,
+        on_done: Callable[[tuple[bool, bool]], None],
+    ) -> None:
+        """Desktop create-repository `getRepositoryType` classification."""
+
+        def work() -> tuple[bool, bool]:
+            from .create_repo import classify_create_path
+
+            return classify_create_path(path)
+
+        def done(exc: BaseException | None, result: tuple[bool, bool] | None = None) -> None:
+            on_done(result if result is not None else (False, False))
+
+        self._run_ui(work, done)
+
+    def add_safe_directory_path(
+        self,
+        path: str,
+        on_done: Callable[[dict[str, str]], None] | None = None,
+    ) -> None:
+        """Desktop `addSafeDirectory` from the add-existing-repository trust CTA."""
+
+        def work() -> dict[str, str]:
+            add_safe_directory(path)
+            return get_repository_type(path)
+
+        def done(exc: BaseException | None, result: dict[str, str] | None = None) -> None:
+            info = result if result is not None else {"kind": "unsafe", "path": path}
+            if on_done is not None:
+                on_done(info)
+
+        self._run_ui(work, done)
+
     def _associate_github(self, repo: Repository) -> None:
         try:
             remotes = get_remotes(repo.path)
@@ -1021,16 +1105,40 @@ class AppStore:
         self.emit()
 
     def check_repository_path(self, repo: Repository) -> None:
-        kind = get_repository_kind(repo.path)
-        repo.is_missing = kind != "regular"
-        repo.unsafe = kind == "unsafe"
-        if not repo.is_missing:
-            self.refresh_repository(repo)
-        self.emit()
+        def work() -> str:
+            return get_repository_kind(repo.path)
+
+        def done(exc: BaseException | None, kind: str | None = None) -> None:
+            resolved = kind if kind is not None else "missing"
+            if exc:
+                resolved = "missing"
+            repo.is_missing = resolved != "regular"
+            repo.unsafe = resolved == "unsafe"
+            if not repo.is_missing:
+                self.refresh_repository(repo)
+            else:
+                self.emit()
+
+        self._run_ui(work, done)
 
     def trust_repository(self, repo: Repository) -> None:
-        add_safe_directory(repo.path)
-        self.check_repository_path(repo)
+        def work() -> str:
+            add_safe_directory(repo.path)
+            return get_repository_kind(repo.path)
+
+        def done(exc: BaseException | None, kind: str | None = None) -> None:
+            resolved = kind if kind is not None else "regular"
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            repo.is_missing = resolved != "regular"
+            repo.unsafe = resolved == "unsafe"
+            if not repo.is_missing:
+                self.refresh_repository(repo)
+            else:
+                self.emit()
+
+        self._run_ui(work, done)
 
     def clone_again(self, repo: Repository) -> None:
         url = repo.github.clone_url if repo.github else ""
@@ -5092,6 +5200,23 @@ class AppStore:
 
         self._run(work, done)
 
+    def warn_if_remote_commits(
+        self,
+        repo: Repository,
+        branch: Branch,
+        oldest_ref: str | None,
+        on_done: Callable[[bool], None],
+    ) -> None:
+        """Desktop `warnAboutRemoteCommits` before a force-push rewrite."""
+
+        def work() -> bool:
+            return warn_about_remote_commits(repo.path, branch, oldest_ref)
+
+        def done(exc: BaseException | None, result: bool | None = None) -> None:
+            on_done(bool(result) if not exc else False)
+
+        self._run_ui(work, done)
+
     def rebase_branch(self, repo: Repository, base: str, on_done: Callable[..., None] | None = None, on_progress: Callable[..., None] | None = None) -> None:
         retry = RetryAction(type=RetryActionType.REBASE, repo_id=repo.id, base_branch=base)
         undo_sha = self._capture_undo(repo)
@@ -5387,11 +5512,14 @@ class AppStore:
         reason: str,
         placeholder_id: str | None = None,
         bypass_url: str = "",
+        on_done: Callable[[BaseException | None, dict[str, Any] | None], None] | None = None,
     ) -> dict[str, Any] | None:
         """Desktop `_createPushProtectionBypass`."""
         repo = self.selected_repository
         if repo is None or not repo.github:
             log.error("[_createPushProtectionBypass] - No GitHub repository selected")
+            if on_done is not None:
+                on_done(None, None)
             return None
         account = self.account_for_repo(repo)
         if account is None:
@@ -5399,14 +5527,33 @@ class AppStore:
                 "[_createPushProtectionBypass] - No account found for endpoint - %s",
                 repo.github.endpoint,
             )
+            if on_done is not None:
+                on_done(None, None)
             return None
-        return GitHubAPI.from_account(account).create_push_protection_bypass(
-            repo.github.owner,
-            repo.github.name,
-            reason,
-            placeholder_id=placeholder_id,
-            bypass_url=bypass_url,
-        )
+        owner = repo.github.owner
+        name = repo.github.name
+        holder: list[dict[str, Any] | None] = []
+
+        def work() -> dict[str, Any] | None:
+            return GitHubAPI.from_account(account).create_push_protection_bypass(
+                owner,
+                name,
+                reason,
+                placeholder_id=placeholder_id,
+                bypass_url=bypass_url,
+            )
+
+        def done(exc: BaseException | None, result: dict[str, Any] | None = None) -> None:
+            if on_done is not None:
+                on_done(exc, result)
+                return
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            holder.append(result)
+
+        self._run_ui(work, done)
+        return holder[0] if holder else None
 
     def retry_last_remote_action(self) -> None:
         self.perform_retry()
@@ -6269,15 +6416,45 @@ class AppStore:
         self.apply_theme()
         self.emit()
 
-    def save_git_user(self, name: str, email: str, default_branch: str | None = None) -> None:
+    def save_git_user(
+        self,
+        name: str,
+        email: str,
+        default_branch: str | None = None,
+        on_done: Callable[[BaseException | None], None] | None = None,
+    ) -> None:
         if not git_author_name_is_valid(name):
-            raise ValidationError(INVALID_GIT_AUTHOR_NAME_MESSAGE)
-        set_config_value(None, "user.name", name, global_only=True)
-        set_config_value(None, "user.email", email, global_only=True)
-        if default_branch:
-            set_default_branch(default_branch)
-            self.settings.default_branch = default_branch
-            self.persist_settings()
+            err = ValidationError(INVALID_GIT_AUTHOR_NAME_MESSAGE)
+            if on_done is not None:
+                on_done(err)
+                return
+            raise err
+        branch = default_branch
+        raised: list[BaseException] = []
+
+        def work() -> None:
+            set_config_value(None, "user.name", name, global_only=True)
+            set_config_value(None, "user.email", email, global_only=True)
+            if branch:
+                set_default_branch(branch)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                raised.append(exc)
+                if on_done is not None:
+                    on_done(exc)
+                    return
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            if branch:
+                self.settings.default_branch = branch
+                self.persist_settings()
+            if on_done is not None:
+                on_done(None)
+
+        self._run_ui(work, done)
+        if raised and on_done is None:
+            raise raised[0]
 
     def _multi_progress(self, callback: Callable[..., None] | None):
         if callback is None:

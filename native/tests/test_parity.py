@@ -1258,5 +1258,10 @@ def test_window_actions_cover_menus() -> None:
         "userHasResolvedConflicts",
         "Filter Options",
         "countActiveFilterOptions",
+        "getRepositoryType",
+        "isUsingLFS",
+        "warnAboutRemoteCommits",
+        "load_lfs_status",
+        "_maybe_prompt_lfs",
     ]:
         assert phrase in src

@@ -19,12 +19,9 @@ from ..stats import SamplesURL
 from ..editors import SUGGESTED_EXTERNAL_EDITOR, SUGGESTED_EXTERNAL_EDITOR_URL, get_available_editors
 from ..errors import GitError, ValidationError
 from ..git.ops import (
-    add_remote,
-    add_safe_directory,
     get_author_identity,
     get_config_value,
     get_default_branch,
-    get_repository_type,
     is_config_file_lock_error,
     parse_config_lock_file_path_from_error,
     read_gitignore,
@@ -1256,22 +1253,31 @@ def show_add_repository(parent: Gtk.Window, store: AppStore, initial: str) -> No
         return os.path.abspath(os.path.expanduser(path_row.get_text().strip() or ""))
 
     debounce = {"id": 0}
+    probe_token = {"n": 0}
+
+    def apply_kind(kind: str | None) -> None:
+        missing_row.set_visible(kind == "missing")
+        bare_row.set_visible(kind == "bare")
+        unsafe_row.set_visible(kind == "unsafe")
+        add_btn.set_sensitive(kind == "regular")
 
     def apply_probe() -> bool:
         debounce["id"] = 0
         raw = path_row.get_text().strip()
         if not raw:
-            missing_row.set_visible(False)
-            bare_row.set_visible(False)
-            unsafe_row.set_visible(False)
+            apply_kind(None)
             add_btn.set_sensitive(False)
             return False
-        info = get_repository_type(expanded_path())
-        kind = info.get("kind")
-        missing_row.set_visible(kind == "missing")
-        bare_row.set_visible(kind == "bare")
-        unsafe_row.set_visible(kind == "unsafe")
-        add_btn.set_sensitive(kind == "regular")
+        token = probe_token["n"] + 1
+        probe_token["n"] = token
+        path = expanded_path()
+
+        def finished(info: dict) -> None:
+            if probe_token["n"] != token:
+                return
+            apply_kind(info.get("kind"))
+
+        store.probe_repository_type(path, finished)
         return False
 
     def refresh(*_a: Any) -> None:
@@ -1289,9 +1295,12 @@ def show_add_repository(parent: Gtk.Window, store: AppStore, initial: str) -> No
         store.show_popup(PopupType.CREATE_REPOSITORY, path=expanded_path())
 
     def trust_directory(*_a: Any) -> None:
-        info = get_repository_type(expanded_path())
-        add_safe_directory(info.get("path") or expanded_path())
-        refresh()
+        path = expanded_path()
+
+        def finished(info: dict) -> None:
+            apply_kind(info.get("kind"))
+
+        store.add_safe_directory_path(path, finished)
 
     def submit(*_a: Any) -> None:
         path = expanded_path()
@@ -1322,7 +1331,6 @@ def show_create_repository(parent: Gtk.Window, store: AppStore, initial: str) ->
     from ..create_repo import (
         NO_GITIGNORE,
         NO_LICENSE,
-        classify_create_path,
         gitignore_names,
         license_templates,
         sanitized_repository_name,
@@ -1446,6 +1454,9 @@ def show_create_repository(parent: Gtk.Window, store: AppStore, initial: str) ->
             return os.path.abspath(base)
         return os.path.join(os.path.abspath(base), name)
 
+    classify_token = {"n": 0}
+    classify_debounce = {"id": 0}
+
     def refresh_hints(*_a: Any) -> None:
         raw = name_row.get_text().strip()
         clean = sanitized_repository_name(raw) if raw else ""
@@ -1455,16 +1466,39 @@ def show_create_repository(parent: Gtk.Window, store: AppStore, initial: str) ->
         else:
             sanitized_row.set_visible(False)
         full = resolved_path()
-        is_repo, is_sub = classify_create_path(full) if raw else (False, False)
-        exists_row.set_visible(is_repo)
-        subfolder_row.set_visible(is_sub and not is_repo)
         readme_exists = bool(raw) and readme.get_active() and os.path.isfile(os.path.join(full, "README.md"))
         readme_warn.set_visible(readme_exists)
-        if raw and not is_repo:
-            path_group.set_description(f"The repository will be created at {full}.")
-        else:
+        if not raw:
+            exists_row.set_visible(False)
+            subfolder_row.set_visible(False)
             path_group.set_description("")
-        create_btn.set_sensitive(bool(raw) and bool(path_row.get_text().strip()) and not is_repo)
+            create_btn.set_sensitive(False)
+            return
+        if classify_debounce["id"]:
+            GLib.source_remove(classify_debounce["id"])
+            classify_debounce["id"] = 0
+        token = classify_token["n"] + 1
+        classify_token["n"] = token
+
+        def probe() -> bool:
+            classify_debounce["id"] = 0
+
+            def finished(result: tuple[bool, bool]) -> None:
+                if classify_token["n"] != token:
+                    return
+                is_repo, is_sub = result
+                exists_row.set_visible(is_repo)
+                subfolder_row.set_visible(is_sub and not is_repo)
+                if not is_repo:
+                    path_group.set_description(f"The repository will be created at {full}.")
+                else:
+                    path_group.set_description("")
+                create_btn.set_sensitive(bool(path_row.get_text().strip()) and not is_repo)
+
+            store.classify_create_path_async(full, finished)
+            return False
+
+        classify_debounce["id"] = GLib.timeout_add(200, probe)
 
     def add_existing(*_a: Any) -> None:
         dialog.close()
@@ -3496,13 +3530,19 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
             branch = branch_row.get_text().strip() or None
 
             def save_user() -> None:
-                store.save_git_user(name, email, branch)
+                store.save_git_user(name, email, branch, on_done=finished)
+
+            def finished(exc: BaseException | None) -> None:
+                if exc is None:
+                    return
+                if isinstance(exc, GitError) and _handle_config_lock(parent, exc, save_user):
+                    return
+                if isinstance(exc, ValidationError):
+                    return
+                store.show_popup(PopupType.ERROR, error=str(exc))
 
             if git_author_name_is_valid(name):
-                try:
-                    save_user()
-                except GitError as exc:
-                    _handle_config_lock(parent, exc, save_user)
+                save_user()
         except ValidationError:
             pass
         store.set_stats_opt_out(s.opt_out_of_usage_tracking, False)
@@ -4188,10 +4228,6 @@ def show_lfs(parent: Gtk.Window, store: AppStore) -> None:
     repo = store.selected_repository
     if not repo:
         return
-    from ..git.ops import lfs_ls_files, lfs_patterns_from_gitattributes, lfs_track
-
-    existing = lfs_patterns_from_gitattributes(repo.path)
-    tracked = lfs_ls_files(repo.path)
     dialog = Adw.Dialog()
     dialog.set_content_width(480)
     toolbar = Adw.ToolbarView()
@@ -4203,26 +4239,38 @@ def show_lfs(parent: Gtk.Window, store: AppStore) -> None:
     box.set_margin_start(16)
     box.set_margin_end(16)
     box.set_margin_bottom(16)
-    if tracked:
-        box.append(Gtk.Label(label=f"{len(tracked)} LFS object(s) in this repository", xalign=0))
-    if existing:
-        box.append(Gtk.Label(label="Already tracking: " + ", ".join(existing[:12]), xalign=0))
+    status_label = Gtk.Label(label="Loading…", xalign=0)
+    status_label.add_css_class("dim-label")
+    box.append(status_label)
     patterns = Adw.EntryRow(title="Patterns to track")
-    patterns.set_text("*.psd *.zip *.mp4" if not existing else " ".join(existing))
+    patterns.set_text("*.psd *.zip *.mp4")
     box.append(patterns)
     init_btn = Gtk.Button(label="Initialize Git LFS and track")
     init_btn.add_css_class("suggested-action")
+    init_btn.set_sensitive(False)
 
     def confirm(*_a: Any) -> None:
         items = [p for p in patterns.get_text().split() if p]
         store.track_lfs_patterns(repo, items)
         dialog.close()
 
+    def filled(existing: list[str], tracked: list[str]) -> None:
+        if tracked:
+            status_label.set_text(f"{len(tracked)} LFS object(s) in this repository")
+        elif existing:
+            status_label.set_text("Already tracking: " + ", ".join(existing[:12]))
+        else:
+            status_label.set_text("Track large files with Git LFS")
+        if existing:
+            patterns.set_text(" ".join(existing))
+        init_btn.set_sensitive(True)
+
     init_btn.connect("clicked", confirm)
     box.append(init_btn)
     toolbar.set_content(box)
     dialog.set_child(toolbar)
     dialog.present(parent)
+    store.load_lfs_status(repo, filled)
 
 
 def show_push_protection(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
@@ -4528,21 +4576,24 @@ def show_bypass(parent: Gtk.Window, store: AppStore, payload: dict[str, Any], on
         bypass_url = str(
             payload.get("bypass_url") or (getattr(secret, "bypass_url", None) if secret is not None else "") or ""
         )
-        try:
-            store.create_push_protection_bypass(
-                selected["reason"].value,
-                placeholder_id=placeholder_id,
-                bypass_url=bypass_url,
-            )
-        except Exception as exc:
-            store.show_popup(PopupType.ERROR, error=str(exc))
+
+        def finished(exc: BaseException | None, _result: object = None) -> None:
+            if exc:
+                store.show_popup(PopupType.ERROR, error=str(exc))
+                if on_bypassed:
+                    on_bypassed(exc)
+                return
             if on_bypassed:
-                on_bypassed(exc)
-            return
-        if on_bypassed:
-            on_bypassed(None)
-            return
-        store.push_repo(repo)
+                on_bypassed(None)
+                return
+            store.push_repo(repo)
+
+        store.create_push_protection_bypass(
+            selected["reason"].value,
+            placeholder_id=placeholder_id,
+            bypass_url=bypass_url,
+            on_done=finished,
+        )
 
     cancel.connect("clicked", close)
     ok.connect("clicked", submit)

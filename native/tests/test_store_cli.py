@@ -240,3 +240,26 @@ def test_delete_branch_switches_off_current(isolated_config, git_repo: Path) -> 
     assert status.current_branch != "topic"
     names = {b.name for b in get_branches(str(git_repo))}
     assert "topic" not in names
+
+
+def test_probe_repository_type_and_check_path(isolated_config, git_repo: Path) -> None:
+    store = AppStore()
+    seen: list[dict] = []
+    store.probe_repository_type(str(git_repo), seen.append)
+    assert seen and seen[0].get("kind") == "regular"
+    classified: list[tuple[bool, bool]] = []
+    store.classify_create_path_async(str(git_repo), classified.append)
+    assert classified == [(True, False)]
+    repo = store.add_repositories([str(git_repo)])[0]
+    store.check_repository_path(repo)
+    assert repo.is_missing is False
+    assert repo.unsafe is False
+
+
+def test_save_git_user_writes_global_config(isolated_config, monkeypatch, tmp_path: Path) -> None:
+    from github_desktop.git.ops import get_config_value
+
+    store = AppStore()
+    store.save_git_user("Parity User", "parity@example.com")
+    assert get_config_value(None, "user.name", global_only=True) == "Parity User"
+    assert get_config_value(None, "user.email", global_only=True) == "parity@example.com"
