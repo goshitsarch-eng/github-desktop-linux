@@ -373,3 +373,54 @@ def test_commit_message_context_menu_labels() -> None:
     )
     assert committing[0] == ("Add co-authors", False)
     assert committing[1][1] is False
+
+
+def test_generate_repository_list_context_menu_specs() -> None:
+    from github_desktop.ui.menus import (
+        RevealInFileManagerLabel,
+        generate_repository_list_context_menu_specs,
+    )
+
+    local = generate_repository_list_context_menu_specs(
+        alias=None,
+        missing=False,
+        github=False,
+        shell_label="Open in GNOME Terminal",
+        editor_label="Open in Visual Studio Code",
+        confirm_remove=True,
+    )
+    assert local[0] == ("Create alias", True)
+    assert "Remove alias" not in [label for label, _enabled in local]
+    assert ("Copy repo name", True) in local
+    assert ("View on GitHub", False) in local
+    assert ("Open in GNOME Terminal", True) in local
+    assert (RevealInFileManagerLabel, True) in local
+    assert ("Remove…", True) in local
+
+    aliased = generate_repository_list_context_menu_specs(
+        alias="work",
+        missing=True,
+        github=True,
+        shell_label="Open in shell",
+        editor_label="Open in external editor",
+        confirm_remove=False,
+    )
+    assert aliased[0] == ("Change alias", True)
+    assert aliased[1] == ("Remove alias", True)
+    assert ("View on GitHub", True) in aliased
+    assert ("Open in shell", False) in aliased
+    assert (RevealInFileManagerLabel, False) in aliased
+    assert ("Open in external editor", False) in aliased
+    assert ("Remove", True) in aliased
+
+    cloning = generate_repository_list_context_menu_specs(
+        alias=None,
+        missing=False,
+        github=False,
+        shell_label="Open in shell",
+        editor_label="Open in external editor",
+        confirm_remove=True,
+        is_repository=False,
+    )
+    assert cloning[0] == ("Copy repo name", True)
+    assert "Create alias" not in [label for label, _enabled in cloning]

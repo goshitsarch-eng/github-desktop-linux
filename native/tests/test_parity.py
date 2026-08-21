@@ -1412,5 +1412,9 @@ def test_window_actions_cover_menus() -> None:
         "editMenu",
         "onToggleCoAuthors",
         "onGenerateCommitMessage",
+        "generateRepositoryListContextMenu",
+        "onRepositoryToolbarButtonContextMenu",
+        "buildAliasMenuItems",
+        "Create alias",
     ]:
         assert phrase in src

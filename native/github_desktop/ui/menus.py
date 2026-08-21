@@ -187,6 +187,36 @@ def view_on_github_label(*, enterprise: bool) -> str:
     return "View on GitHub Enterprise" if enterprise else "View on GitHub"
 
 
+def generate_repository_list_context_menu_specs(
+    *,
+    alias: str | None,
+    missing: bool,
+    github: bool,
+    shell_label: str,
+    editor_label: str,
+    confirm_remove: bool,
+    is_repository: bool = True,
+) -> list[tuple[str, bool]]:
+    """Desktop `generateRepositoryListContextMenu` / `buildAliasMenuItems` (Linux: Create alias)."""
+    items: list[tuple[str, bool]] = []
+    if is_repository:
+        items.append((f"{alias_verb(alias)} alias", True))
+        if alias:
+            items.append(("Remove alias", True))
+    items.extend(
+        [
+            ("Copy repo name", True),
+            ("Copy repo path", True),
+            ("View on GitHub", bool(github)),
+            (shell_label, not missing),
+            (RevealInFileManagerLabel, not missing),
+            (editor_label, not missing),
+            (remove_repository_label(confirm_remove), True),
+        ]
+    )
+    return items
+
+
 def committed_file_context_items(
     *,
     full_path: str,

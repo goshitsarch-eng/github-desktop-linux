@@ -124,6 +124,7 @@ from .menus import (
     clear_box,
     committed_file_context_items,
     copy_text,
+    generate_repository_list_context_menu_specs,
     open_in_editor_label,
     open_in_shell_label,
     remove_repository_label,
@@ -1448,6 +1449,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._repo_btn = Gtk.Button()
         self._repo_btn.set_label("No repository")
         self._repo_btn.connect("clicked", lambda *_: self._toggle_repo_sidebar())
+        attach_right_click(self._repo_btn, self._on_repository_toolbar_context_menu)
         header.pack_start(self._repo_btn)
 
         self._branch_btn = Gtk.MenuButton()
@@ -4668,25 +4670,47 @@ class MainWindow(Adw.ApplicationWindow):
         self._compare_cta.append(ops)
 
     def _repo_list_menu(self, widget: Gtk.Widget, repo) -> None:
-        items = [
-            (f"{alias_verb(repo.alias)} alias…", lambda: (self.store.select_repository(repo.id), self.store.show_popup(PopupType.CHANGE_REPOSITORY_ALIAS)), True),
-        ]
-        if repo.alias:
-            items.append(("Remove alias", lambda: self.store.remove_repository_alias(repo), True))
-        items.extend(
-            [
-                ("Copy repo name", lambda: copy_text(name_of(repo)), True),
-                ("Copy repo path", lambda: copy_text(repo.path), True),
-                None,
-                (view_on_github_label(enterprise=bool(repo.github and not is_dotcom_endpoint(repo.github.endpoint))), lambda: self.store.view_on_github(repo), bool(repo.github)),
-                (self._open_in_shell_label(), lambda: self.store.open_in_shell(repo), True),
-                (RevealInFileManagerLabel, lambda: self.store.reveal_in_file_manager(repo, ""), True),
-                (self._open_in_editor_label(), lambda: self.store.open_in_editor(repo, repo.path), True),
-                None,
-                (self._remove_repository_label(), lambda: (self.store.select_repository(repo.id), self.store.show_popup(PopupType.REMOVE_REPOSITORY)), True),
-            ]
+        """Desktop `generateRepositoryListContextMenu`."""
+        missing = bool(repo.is_missing)
+        github = bool(repo.github)
+        specs = generate_repository_list_context_menu_specs(
+            alias=repo.alias,
+            missing=missing,
+            github=github,
+            shell_label=self._open_in_shell_label(),
+            editor_label=self._open_in_editor_label(),
+            confirm_remove=self.store.settings.confirm_repository_removal,
         )
+        callbacks = {
+            f"{alias_verb(repo.alias)} alias": lambda: (
+                self.store.select_repository(repo.id),
+                self.store.show_popup(PopupType.CHANGE_REPOSITORY_ALIAS),
+            ),
+            "Remove alias": lambda: self.store.remove_repository_alias(repo),
+            "Copy repo name": lambda: copy_text(name_of(repo)),
+            "Copy repo path": lambda: copy_text(repo.path),
+            "View on GitHub": lambda: self.store.view_on_github(repo),
+            self._open_in_shell_label(): lambda: self.store.open_in_shell(repo),
+            RevealInFileManagerLabel: lambda: self.store.reveal_in_file_manager(repo, ""),
+            self._open_in_editor_label(): lambda: self.store.open_in_editor(repo, repo.path),
+            self._remove_repository_label(): lambda: (
+                self.store.select_repository(repo.id),
+                self.store.show_popup(PopupType.REMOVE_REPOSITORY),
+            ),
+        }
+        items = []
+        for label, enabled in specs:
+            items.append((label, callbacks.get(label, lambda: None), enabled))
+            if label in {"Copy repo path", self._open_in_editor_label()}:
+                items.append(None)
         show_context_menu(widget, items)
+
+    def _on_repository_toolbar_context_menu(self, widget: Gtk.Widget) -> None:
+        """Desktop `onRepositoryToolbarButtonContextMenu`."""
+        repo = self.store.selected_repository
+        if repo is None:
+            return
+        self._repo_list_menu(widget, repo)
 
     def _refresh_author_avatar(self, repo) -> None:
         if not hasattr(self, "_author_avatar_host"):
