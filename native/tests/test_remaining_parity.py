@@ -846,6 +846,7 @@ def test_load_repository_git_config_off_thread(isolated_config, git_repo: Path, 
     monkeypatch.setattr(store_module, "get_config_value", boom)
     monkeypatch.setattr(store_module, "get_global_config_value", boom)
     monkeypatch.setattr(store_module, "read_gitignore", boom)
+    monkeypatch.setattr(store_module, "get_remotes", boom)
     monkeypatch.setattr(AppStore, "_gtk_app_running", lambda self: True)
     monkeypatch.setattr(AppStore, "_run", lambda self, work, done: None)
 
@@ -893,4 +894,44 @@ def test_relocate_repository_skips_git_probe(isolated_config, git_repo: Path, tm
     assert repo.path == str(other)
     assert repo.name == "relocated"
     assert not repo.is_missing
+
+
+def test_handle_remote_error_auth_uses_cached_remotes(isolated_config, git_repo: Path, monkeypatch) -> None:
+    from github_desktop.errors import GitError
+    from github_desktop.models import PopupType, Remote
+    import github_desktop.store as store_module
+
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    store.state_for(repo).remotes = [Remote(name="origin", url="https://example.com/me/app.git")]
+
+    def boom(*_a, **_k):
+        raise AssertionError("live getRemotes on GTK thread")
+
+    monkeypatch.setattr(store_module, "get_remotes", boom)
+    store._handle_remote_error(repo, GitError("denied", stderr="authentication failed"))
+    assert store.popup is not None
+    assert store.popup.type == PopupType.GENERIC_GIT_AUTHENTICATION
+    assert store.popup.payload.get("remote_url") == "https://example.com/me/app.git"
+
+
+def test_load_repository_git_config_includes_remotes(isolated_config, git_repo: Path) -> None:
+    from tests.conftest import run_git
+
+    run_git(git_repo, "remote", "add", "origin", "https://github.com/me/app.git")
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    captured: dict = {}
+
+    def on_done(payload, *_exc) -> None:
+        captured.update(payload)
+
+    store.load_repository_git_config(repo, on_done)
+    remotes = list(captured.get("remotes") or [])
+    assert remotes
+    assert remotes[0].name == "origin"
 

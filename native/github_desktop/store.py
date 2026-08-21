@@ -879,13 +879,19 @@ class AppStore:
     ) -> None:
         """Desktop RepositorySettings `componentWillMount` / `isLoadingGitConfig`."""
 
-        def work() -> dict[str, str | None]:
+        def work() -> dict:
+            remotes = []
+            try:
+                remotes = get_remotes(repo.path)
+            except GitError:
+                remotes = []
             return {
                 "local_name": get_config_value(repo.path, "user.name", local_only=True),
                 "local_email": get_config_value(repo.path, "user.email", local_only=True),
                 "global_name": get_global_config_value("user.name"),
                 "global_email": get_global_config_value("user.email"),
                 "ignore_text": read_gitignore(repo.path),
+                "remotes": remotes,
             }
 
         def done(exc: BaseException | None, result: dict | None = None) -> None:
@@ -5044,11 +5050,6 @@ class AppStore:
             if exc.is_auth_failure:
                 url = ""
                 remotes = list(self.state_for(repo).remotes)
-                if not remotes:
-                    try:
-                        remotes = get_remotes(repo.path)
-                    except GitError:
-                        remotes = []
                 url = remotes[0].url if remotes else ""
                 github_remote = bool(repo.github) or (bool(url) and is_github_host(url, self.accounts))
                 retry = self._retry_action

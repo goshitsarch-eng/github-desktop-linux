@@ -265,12 +265,17 @@ class MainWindow(Adw.ApplicationWindow):
         if alloc[0] > 0:
             self.store.settings.window_width = alloc[0]
             self.store.settings.window_height = alloc[1]
-            if hasattr(self, "_changes_paned"):
+            if hasattr(self, "_view_stack") and self._view_stack.get_visible_child_name() == "history":
+                if hasattr(self, "_history_paned"):
+                    pos = self._history_paned.get_position()
+                    if pos > 0:
+                        self.store.settings.sidebar_width = pos
+            elif hasattr(self, "_changes_paned"):
                 pos = self._changes_paned.get_position()
                 if pos > 0:
                     self.store.settings.sidebar_width = pos
-            if hasattr(self, "_history_paned"):
-                pos = self._history_paned.get_position()
+            if hasattr(self, "_hist_files_paned"):
+                pos = self._hist_files_paned.get_position()
                 if pos > 0:
                     self.store.settings.commit_summary_width = pos
             if hasattr(self, "_stash_viewer"):
@@ -1718,13 +1723,24 @@ class MainWindow(Adw.ApplicationWindow):
         self._commit_summary = ExpandableCommitSummary()
         self._hist_detail.append(self._commit_summary)
         self._commit_header = self._commit_summary
+        files_paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        files_paned.set_resize_start_child(False)
+        files_paned.add_css_class("commit-details")
+        # Desktop Resizable description: "Selected commit file list"
+        files_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        files_box.set_size_request(100, -1)
+        self._hist_files_header = Gtk.Label(label="No files in commit", xalign=0)
+        self._hist_files_header.add_css_class("file-list-header")
+        self._hist_files_header.set_halign(Gtk.Align.START)
+        files_box.append(self._hist_files_header)
         self._hist_files = Gtk.ListBox()
         self._hist_files.connect("row-activated", self._on_hist_file)
         files_scroll = Gtk.ScrolledWindow()
-        files_scroll.set_min_content_height(120)
+        files_scroll.set_vexpand(True)
         files_scroll.set_child(self._hist_files)
         self._hist_files_scroll = files_scroll
-        self._hist_detail.append(files_scroll)
+        files_box.append(files_scroll)
+        files_paned.set_start_child(files_box)
         self._hist_diff_view = DiffViewer(
             interactive=False,
             on_expand_hunk=self._on_expand_hunk,
@@ -1735,7 +1751,16 @@ class MainWindow(Adw.ApplicationWindow):
             on_hide_whitespace_changed=self._set_history_hide_whitespace,
             on_side_by_side_changed=lambda enabled: self._set_side_by_side_value(enabled),
         )
-        self._hist_detail.append(self._hist_diff_view)
+        files_paned.set_end_child(self._hist_diff_view)
+        try:
+            files_paned.set_position(
+                max(100, int(self.store.settings.commit_summary_width or defaultCommitSummaryWidth))
+            )
+        except Exception:
+            pass
+        attach_paned_reset(files_paned, self._reset_commit_summary_width)
+        self._hist_files_paned = files_paned
+        self._hist_detail.append(files_paned)
         self._hist_blank = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self._hist_blank.add_css_class("blankslate")
         self._hist_blank.set_valign(Gtk.Align.CENTER)
@@ -1766,10 +1791,10 @@ class MainWindow(Adw.ApplicationWindow):
         paned.set_end_child(right)
         self._history_paned = paned
         try:
-            paned.set_position(max(220, int(self.store.settings.commit_summary_width or defaultCommitSummaryWidth)))
+            paned.set_position(max(220, int(self.store.settings.sidebar_width or defaultSidebarWidth)))
         except Exception:
             pass
-        attach_paned_reset(paned, self._reset_commit_summary_width)
+        attach_paned_reset(paned, self._reset_sidebar_width)
         return paned
 
     def _on_view_changed(self, *_args: object) -> None:
@@ -2890,7 +2915,15 @@ class MainWindow(Adw.ApplicationWindow):
                 github=repo.github if repo else None,
             )
         clear_box(self._hist_files)
-        for f in state.selected_commit_files:
+        files = list(state.selected_commit_files)
+        if hasattr(self, "_hist_files_header"):
+            count = len(files)
+            if count == 0:
+                self._hist_files_header.set_text("No files in commit")
+            else:
+                noun = "file" if count == 1 else "files"
+                self._hist_files_header.set_text(f"{count} changed {noun}")
+        for f in files:
             r = Adw.ActionRow(title=path_label(f.path, f.status), subtitle=map_status(f.status))
             r._file = f  # type: ignore[attr-defined]
             r.set_activatable(True)
@@ -4481,11 +4514,14 @@ class MainWindow(Adw.ApplicationWindow):
         self.store.reset_sidebar_width()
         if hasattr(self, "_changes_paned"):
             self._changes_paned.set_position(max(220, defaultSidebarWidth))
+        if hasattr(self, "_history_paned"):
+            self._history_paned.set_position(max(220, defaultSidebarWidth))
 
     def _reset_commit_summary_width(self) -> None:
+        """Desktop `onReset` for the selected-commit file list (`commitSummaryWidth`)."""
         self.store.reset_commit_summary_width()
-        if hasattr(self, "_history_paned"):
-            self._history_paned.set_position(max(220, defaultCommitSummaryWidth))
+        if hasattr(self, "_hist_files_paned"):
+            self._hist_files_paned.set_position(max(100, defaultCommitSummaryWidth))
 
     def _reset_stashed_files_width(self) -> None:
         self.store.reset_stashed_files_width()

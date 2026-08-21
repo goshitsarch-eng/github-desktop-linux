@@ -1290,5 +1290,7 @@ def test_window_actions_cover_menus() -> None:
         "isLoadingGitConfig",
         "getGlobalConfigValue",
         "Could not determine repository type",
+        "Selected commit file list",
+        "No files in commit",
     ]:
         assert phrase in src

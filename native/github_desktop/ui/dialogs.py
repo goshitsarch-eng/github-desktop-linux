@@ -2876,46 +2876,50 @@ def show_repository_settings(
     repo = store.selected_repository
     if not repo:
         return
-    from ..git.ops import get_remotes
-
     dialog = Adw.PreferencesDialog()
     dialog.set_title("Repository settings")
+    remotes = list(store.state_for(repo).remotes)
     remote_page = Adw.PreferencesPage(title="Remote", icon_name="network-server-symbolic")
     ignore_page = Adw.PreferencesPage(title="Ignored files", icon_name="folder-symbolic")
     git_page = Adw.PreferencesPage(title="Git Config", icon_name="utilities-terminal-symbolic")
     fork_page = Adw.PreferencesPage(title="Fork", icon_name="system-users-symbolic")
-    remotes = list(store.state_for(repo).remotes)
-    if not remotes:
-        remotes = get_remotes(repo.path)
     remote_group = Adw.PreferencesGroup(title="Remote")
     url_row = Adw.EntryRow(title="Primary remote URL (origin)")
+    remote_name = {"name": remotes[0].name if remotes else "origin"}
     url_row.set_text(remotes[0].url if remotes else "")
     remote_group.add(url_row)
-    if remotes:
-        save_remote = Gtk.Button(label="Save remote")
-        save_remote.add_css_class("suggested-action")
+    save_remote = Gtk.Button(label="Save remote")
+    save_remote.add_css_class("suggested-action")
+    publish_cta = Gtk.Button(label="Publish repository")
+    publish_cta.add_css_class("suggested-action")
+    hint = Adw.ActionRow(title="This repository has no remotes yet")
+    hint.set_subtitle("Publish this repository to GitHub to add an origin remote.")
 
-        def save_r(*_a: Any) -> None:
-            url = url_row.get_text().strip()
-            if not url:
-                return
-            store.save_remote_url(repo, remotes[0].name, url)
+    def save_r(*_a: Any) -> None:
+        url = url_row.get_text().strip()
+        if not url:
+            return
+        store.save_remote_url(repo, remote_name["name"], url)
 
-        save_remote.connect("clicked", save_r)
-        remote_group.add(save_remote)
-    else:
-        publish_cta = Gtk.Button(label="Publish repository")
-        publish_cta.add_css_class("suggested-action")
+    def publish_now(*_a: Any) -> None:
+        dialog.close()
+        store.show_popup(PopupType.PUBLISH_REPOSITORY)
 
-        def publish_now(*_a: Any) -> None:
-            dialog.close()
-            store.show_popup(PopupType.PUBLISH_REPOSITORY)
+    def apply_remotes(items) -> None:
+        items = list(items or [])
+        has = bool(items)
+        url_row.set_text(items[0].url if has else "")
+        remote_name["name"] = items[0].name if has else "origin"
+        save_remote.set_visible(has)
+        hint.set_visible(not has)
+        publish_cta.set_visible(not has)
 
-        publish_cta.connect("clicked", publish_now)
-        hint = Adw.ActionRow(title="This repository has no remotes yet")
-        hint.set_subtitle("Publish this repository to GitHub to add an origin remote.")
-        remote_group.add(hint)
-        remote_group.add(publish_cta)
+    save_remote.connect("clicked", save_r)
+    publish_cta.connect("clicked", publish_now)
+    remote_group.add(save_remote)
+    remote_group.add(hint)
+    remote_group.add(publish_cta)
+    apply_remotes(remotes)
     remote_page.add(remote_group)
 
     ignore_group = Adw.PreferencesGroup(title=".gitignore")
@@ -3057,6 +3061,11 @@ def show_repository_settings(
 
     def apply_git_config(payload: dict, *_exc: object) -> None:
         buffer.set_text(str(payload.get("ignore_text") or ""))
+        if "remotes" in payload:
+            loaded = list(payload.get("remotes") or [])
+            apply_remotes(loaded)
+            if loaded:
+                store.state_for(repo).remotes = loaded
         cfg["local_n"] = payload.get("local_name")
         cfg["local_e"] = payload.get("local_email")
         cfg["global_n"] = payload.get("global_name") or cfg["global_n"]
