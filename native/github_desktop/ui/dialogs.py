@@ -47,6 +47,7 @@ from ..models import (
     pr_base_branches,
     accounts_for_publish_tab,
     default_publish_tab,
+    enable_commit_message_generation,
     uncommitted_changes_strategy_choices,
 )
 from ..clamp import clamp
@@ -82,11 +83,15 @@ from .menus import (
     attach_paned_keyboard_resize,
     attach_paned_reset,
     attach_right_click,
+    commit_message_shared_menu_specs,
+    commit_spellcheck_menu_label,
     committed_file_context_items,
+    edit_menu_items,
     open_in_editor_label,
     resizable_limit,
     show_context_menu,
     view_on_github_label,
+    widget_is_or_inside,
     DefaultMaxWidth,
 )
 from .multi_commit import show_multi_commit, show_warn_force_push
@@ -4964,6 +4969,7 @@ def _ssh_secret_dialog(
 
 
 def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
+    """Desktop `CommitMessageDialog` wrapping `CommitMessage` (including context menus)."""
     from .spellcheck import attach_spellcheck
 
     repo = store.selected_repository
@@ -5010,7 +5016,7 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
     scrolled.set_min_content_height(120)
     scrolled.set_child(description)
     box.append(scrolled)
-    attach_spellcheck(summary, description, enabled=store.settings.spellcheck_enabled)
+    spell = attach_spellcheck(summary, description, enabled=store.settings.spellcheck_enabled)
 
     def exclude_login() -> str | None:
         account = store.account_for_repo(repo) if repo else None
@@ -5043,6 +5049,7 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
     refresh_completion()
 
     author_input = None
+    co_check = None
     github_repo = bool(repo and repo.github)
     show_co = bool(payload.get("show_co_authors") or payload.get("co_authors") or github_repo)
     if show_co:
@@ -5116,6 +5123,101 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
 
     save.connect("clicked", submit)
     summary.connect("activate", submit)
+
+    def shared_commit_menu_items() -> list:
+        showing = bool(co_check is not None and co_check.get_active())
+        committing = bool(state and state.is_committing)
+        specs = commit_message_shared_menu_specs(
+            showing_co_authors=showing,
+            github_repository=github_repo,
+            is_committing=committing,
+            accounts_can_generate=any(
+                enable_commit_message_generation(account) for account in store.accounts
+            ),
+            is_generating=bool(state and state.is_generating_commit_message),
+            commit_to_amend=False,
+            files_selected=False,
+        )
+        items = []
+        for label, enabled in specs:
+            if label in {"Add co-authors", "Remove co-authors"}:
+                callback = (
+                    (lambda: co_check.set_active(not co_check.get_active()))
+                    if co_check is not None
+                    else (lambda: None)
+                )
+            else:
+                callback = (
+                    (lambda: store.generate_commit_message(repo)) if repo else (lambda: None)
+                )
+            items.append((label, callback, enabled))
+        return items
+
+    def on_commit_form_context(_gesture, n_press: int, x: float, y: float) -> None:
+        """Desktop commit-message `onContextMenu` (skip HTMLInputElement / HTMLTextAreaElement)."""
+        if n_press != 1:
+            return
+        target = None
+        try:
+            target = box.pick(x, y, Gtk.PickFlags.DEFAULT)
+        except Exception:
+            target = None
+        inputs = [summary, description]
+        if author_input is not None:
+            inputs.append(author_input)
+        if any(widget_is_or_inside(target, widget) for widget in inputs):
+            return
+        show_context_menu(box, shared_commit_menu_items())
+
+    def on_commit_input_context(widget: Gtk.Widget) -> None:
+        """Desktop `onAutocompletingInputContextMenu`."""
+        items = list(shared_commit_menu_items())
+        items.append(None)
+        items.extend(edit_menu_items(widget))
+        items.append(None)
+        enabled = bool(store.settings.spellcheck_enabled)
+        items.append(
+            (
+                commit_spellcheck_menu_label(enabled=enabled),
+                lambda: (
+                    store.set_commit_spellcheck_enabled(not enabled),
+                    spell.set_enabled(not enabled),
+                ),
+                True,
+            )
+        )
+        show_context_menu(widget, items)
+
+    for field in (summary, description):
+        gesture = Gtk.GestureClick()
+        gesture.set_button(3)
+        try:
+            gesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        except Exception:
+            pass
+
+        def pressed(
+            g: Gtk.GestureClick,
+            n_press: int,
+            _x: float,
+            _y: float,
+            widget: Gtk.Widget = field,
+        ) -> None:
+            if n_press != 1:
+                return
+            on_commit_input_context(widget)
+            try:
+                g.set_state(Gtk.EventSequenceState.CLAIMED)
+            except Exception:
+                pass
+
+        gesture.connect("pressed", pressed)
+        field.add_controller(gesture)
+    chrome = Gtk.GestureClick()
+    chrome.set_button(3)
+    chrome.connect("pressed", on_commit_form_context)
+    box.add_controller(chrome)
+
     dialog.present(parent)
 
 

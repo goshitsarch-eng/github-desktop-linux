@@ -105,12 +105,15 @@ from .menus import (
     OpenWithDefaultProgramLabel,
     RevealInFileManagerLabel,
     alias_verb,
+    apply_edit_menu_action,
     attach_paned_keyboard_resize,
     attach_paned_reset,
     attach_right_click,
     changes_list_context_menu_blocked,
     commit_message_shared_menu_specs,
     commit_spellcheck_menu_label,
+    copy_tags_menu_label,
+    delete_tags_menu_item,
     discard_changes_item_label,
     find_active_resizable,
     ignore_extension_globs,
@@ -129,7 +132,9 @@ from .menus import (
     open_in_shell_label,
     remove_repository_label,
     show_context_menu,
+    unpushed_tags_for_commit,
     view_on_github_label,
+    widget_is_or_inside,
 )
 from .multi_commit import MERGE_OPTIONS, _their_branch, merge_cta_message, show_confirm_abort, show_conflicts_dialog
 from .spellcheck import attach_spellcheck
@@ -3313,18 +3318,7 @@ class MainWindow(Adw.ApplicationWindow):
             inputs.append(self._description)
         if hasattr(self, "_author_input"):
             inputs.append(self._author_input)
-        return any(self._widget_is_or_inside(target, widget) for widget in inputs)
-
-    def _widget_is_or_inside(self, widget, ancestor) -> bool:
-        current = widget
-        seen: set[int] = set()
-        while current is not None and id(current) not in seen:
-            if current is ancestor:
-                return True
-            seen.add(id(current))
-            getter = getattr(current, "get_parent", None)
-            current = getter() if callable(getter) else None
-        return False
+        return any(widget_is_or_inside(target, widget) for widget in inputs)
 
     def _on_commit_input_context(self, widget: Gtk.Widget) -> None:
         """Desktop `onAutocompletingInputContextMenu` (shared items + `{ role: 'editMenu' }` + spellcheck)."""
@@ -4136,6 +4130,7 @@ class MainWindow(Adw.ApplicationWindow):
             if is_tip:
                 items.append(("Amend commit…", self._on_amend, rewrite))
                 items.append(("Undo commit…", self._undo, local and rewrite))
+            tags = list(commit.tags or [])
             items.extend(
                 [
                     ("Reset to commit…", lambda: self.store.reset_to_commit(repo, commit), (not is_tip) and local and rewrite),
@@ -4145,19 +4140,22 @@ class MainWindow(Adw.ApplicationWindow):
                     None,
                     ("Create branch from commit", lambda: self.store.show_popup(PopupType.CREATE_BRANCH, start=commit.sha), True),
                     ("Create tag…", lambda: self.store.show_popup(PopupType.CREATE_TAG, sha=commit.sha), True),
-                    *[
-                        (
-                            f"Delete tag {name}…",
-                            lambda n=name: self.store.show_popup(PopupType.DELETE_TAG, tag=n),
-                            True,
-                        )
-                        for name in (commit.tags or [])
-                        if name in set(getattr(state, "local_tags_to_push", None) or [])
-                    ],
+                ]
+            )
+            delete_item = delete_tags_menu_item(
+                tags,
+                unpushed_tags_for_commit(tags, list(getattr(state, "local_tags_to_push", None) or [])),
+                lambda name: self.store.show_popup(PopupType.DELETE_TAG, tag=name),
+            )
+            if delete_item is not None:
+                items.append(None)
+                items.append(delete_item)
+            items.extend(
+                [
                     ("Cherry-pick commit…", lambda: self.store.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind="Cherry-pick", shas=[commit.sha]), True),
                     None,
                     ("Copy SHA", lambda: copy_text(commit.sha), True),
-                    ("Copy tags", lambda: copy_text(" ".join(commit.tags)), bool(commit.tags)),
+                    (copy_tags_menu_label(tags), lambda: copy_text(" ".join(tags)), bool(tags)),
                     (view_on_github_label(enterprise=bool(repo.github and not is_dotcom_endpoint(repo.github.endpoint))), lambda: self.store.view_commit_on_github(repo, commit.sha), bool(repo.github) and not local),
                 ]
             )
@@ -5243,86 +5241,10 @@ class MainWindow(Adw.ApplicationWindow):
         if widget is None:
             return
         clipboard = self.get_clipboard()
-        if action in {"undo", "redo"}:
-            self._edit_undo_redo(widget, redo=action == "redo")
-            return
-        if isinstance(widget, Gtk.Editable):
-            if action == "cut":
-                widget.cut_clipboard()
-            elif action == "copy":
-                widget.copy_clipboard()
-            elif action == "paste":
-                widget.paste_clipboard()
-            elif action == "select-all":
-                widget.select_region(0, -1)
-            return
-        if isinstance(widget, Gtk.TextView):
-            buf = widget.get_buffer()
-            bounds = buf.get_selection_bounds()
-            if isinstance(bounds, tuple) and len(bounds) == 3:
-                has_sel, start, end = bounds
-            elif isinstance(bounds, tuple) and len(bounds) == 2:
-                has_sel, start, end = True, bounds[0], bounds[1]
-            else:
-                has_sel, start, end = False, None, None
-            if action == "copy" and has_sel:
-                clipboard.set(buf.get_text(start, end, True))
-            elif action == "cut" and has_sel:
-                clipboard.set(buf.get_text(start, end, True))
-                buf.delete(start, end)
-            elif action == "paste":
-                def _paste(_c, result) -> None:
-                    try:
-                        text = clipboard.read_text_finish(result)
-                    except Exception:
-                        return
-                    if text:
-                        buf.insert_at_cursor(text)
-
-                clipboard.read_text_async(None, _paste)
-            elif action == "select-all":
-                buf.select_range(buf.get_start_iter(), buf.get_end_iter())
+        if apply_edit_menu_action(widget, action, clipboard=clipboard):
             return
         if action == "select-all":
             self._select_all_from_focus(widget)
-
-    def _edit_undo_redo(self, widget, *, redo: bool) -> None:
-        """Undo/redo the focused text field. Never undoes a Git commit (Desktop Edit → Undo)."""
-        current = widget
-        seen: set[int] = set()
-        while current is not None and id(current) not in seen:
-            seen.add(id(current))
-            if isinstance(current, Gtk.TextView):
-                buf = current.get_buffer()
-                try:
-                    buf.set_enable_undo(True)
-                except Exception:
-                    pass
-                try:
-                    if redo:
-                        if buf.get_can_redo():
-                            buf.redo()
-                    elif buf.get_can_undo():
-                        buf.undo()
-                except Exception:
-                    pass
-                return
-            delegate = getattr(current, "get_delegate", None)
-            inner = delegate() if callable(delegate) else None
-            if inner is not None and inner is not current and hasattr(inner, "undo"):
-                current = inner
-                continue
-            if hasattr(current, "undo") and hasattr(current, "get_can_undo"):
-                try:
-                    if redo:
-                        if current.get_can_redo():
-                            current.redo()
-                    elif current.get_can_undo():
-                        current.undo()
-                except Exception:
-                    pass
-                return
-            current = current.get_parent() if hasattr(current, "get_parent") else None
 
     def _resize_active_resizable(self, increase: bool) -> None:
         """Desktop `resizeActiveResizable` (`increase-active-resizable-width` / `decrease-active-resizable-width`)."""

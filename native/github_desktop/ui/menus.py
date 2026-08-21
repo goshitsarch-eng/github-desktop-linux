@@ -140,6 +140,36 @@ def commit_message_shared_menu_specs(
     return items
 
 
+def copy_tags_menu_label(tags: Sequence[str]) -> str:
+    """Linux `windowTagsLabel` (`Copy tag` vs `Copy tags`)."""
+    return "Copy tags" if len(tags) > 1 else "Copy tag"
+
+
+def unpushed_tags_for_commit(tags: Sequence[str], tags_to_push: Sequence[str]) -> list[str]:
+    """Desktop `getUnpushedTags`."""
+    pending = set(tags_to_push)
+    return [name for name in tags if name in pending]
+
+
+def delete_tags_menu_item(
+    tags: Sequence[str],
+    unpushed: Sequence[str],
+    on_delete: Callable[[str], None],
+) -> MenuItem:
+    """Desktop `getDeleteTagsMenuItem`. ``None`` when the commit has no tags."""
+    if not tags:
+        return None
+    unpushed_set = set(unpushed)
+    if len(tags) == 1:
+        name = tags[0]
+        return (f"Delete tag {name}", lambda: on_delete(name), name in unpushed_set)
+    return (
+        "Delete tag…",
+        [(name, lambda n=name: on_delete(n), name in unpushed_set) for name in tags],
+        True,
+    )
+
+
 def rebase_changed_file_menu_labels(
     kind: AppFileStatusKind,
     *,
@@ -258,6 +288,122 @@ def copy_text(text: str) -> None:
     display = Gdk.Display.get_default()
     if display is not None:
         display.get_clipboard().set(text)
+
+
+def widget_is_or_inside(widget, ancestor) -> bool:
+    """True when ``widget`` is ``ancestor`` or a descendant of it."""
+    if widget is None or ancestor is None:
+        return False
+    current = widget
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        if current is ancestor:
+            return True
+        seen.add(id(current))
+        getter = getattr(current, "get_parent", None)
+        current = getter() if callable(getter) else None
+    return False
+
+
+def _edit_undo_redo(widget, *, redo: bool) -> None:
+    """Undo/redo the focused text field. Never undoes a Git commit (Desktop Edit → Undo)."""
+    current = widget
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, Gtk.TextView):
+            buf = current.get_buffer()
+            try:
+                buf.set_enable_undo(True)
+            except Exception:
+                pass
+            try:
+                if redo:
+                    if buf.get_can_redo():
+                        buf.redo()
+                elif buf.get_can_undo():
+                    buf.undo()
+            except Exception:
+                pass
+            return
+        delegate = getattr(current, "get_delegate", None)
+        inner = delegate() if callable(delegate) else None
+        if inner is not None and inner is not current and hasattr(inner, "undo"):
+            current = inner
+            continue
+        if hasattr(current, "undo") and hasattr(current, "get_can_undo"):
+            try:
+                if redo:
+                    if current.get_can_redo():
+                        current.redo()
+                elif current.get_can_undo():
+                    current.undo()
+            except Exception:
+                pass
+            return
+        current = current.get_parent() if hasattr(current, "get_parent") else None
+
+
+def apply_edit_menu_action(widget, action: str, *, clipboard=None) -> bool:
+    """Apply `{ role: 'editMenu' }` to a GTK text widget. Returns True if handled."""
+    if widget is None:
+        return False
+    if clipboard is None:
+        getter = getattr(widget, "get_clipboard", None)
+        clipboard = getter() if callable(getter) else None
+    if action in {"undo", "redo"}:
+        _edit_undo_redo(widget, redo=action == "redo")
+        return True
+    if isinstance(widget, Gtk.Editable):
+        if action == "cut":
+            widget.cut_clipboard()
+        elif action == "copy":
+            widget.copy_clipboard()
+        elif action == "paste":
+            widget.paste_clipboard()
+        elif action == "select-all":
+            widget.select_region(0, -1)
+        return True
+    if isinstance(widget, Gtk.TextView):
+        buf = widget.get_buffer()
+        bounds = buf.get_selection_bounds()
+        if isinstance(bounds, tuple) and len(bounds) == 3:
+            has_sel, start, end = bounds
+        elif isinstance(bounds, tuple) and len(bounds) == 2:
+            has_sel, start, end = True, bounds[0], bounds[1]
+        else:
+            has_sel, start, end = False, None, None
+        if action == "copy" and has_sel and clipboard is not None:
+            clipboard.set(buf.get_text(start, end, True))
+        elif action == "cut" and has_sel and clipboard is not None:
+            clipboard.set(buf.get_text(start, end, True))
+            buf.delete(start, end)
+        elif action == "paste" and clipboard is not None:
+            def _paste(_c, result) -> None:
+                try:
+                    text = clipboard.read_text_finish(result)
+                except Exception:
+                    return
+                if text:
+                    buf.insert_at_cursor(text)
+
+            clipboard.read_text_async(None, _paste)
+        elif action == "select-all":
+            buf.select_range(buf.get_start_iter(), buf.get_end_iter())
+        return True
+    return False
+
+
+def edit_menu_items(widget) -> list[MenuItem]:
+    """Desktop `{ role: 'editMenu' }` (Undo/Redo/Cut/Copy/Paste/Select All)."""
+    return [
+        ("Undo", lambda: apply_edit_menu_action(widget, "undo"), True),
+        ("Redo", lambda: apply_edit_menu_action(widget, "redo"), True),
+        ("Cut", lambda: apply_edit_menu_action(widget, "cut"), True),
+        ("Copy", lambda: apply_edit_menu_action(widget, "copy"), True),
+        ("Paste", lambda: apply_edit_menu_action(widget, "paste"), True),
+        ("Select All", lambda: apply_edit_menu_action(widget, "select-all"), True),
+    ]
 
 
 def show_context_menu(anchor: Gtk.Widget, items: Sequence[MenuItem]) -> None:

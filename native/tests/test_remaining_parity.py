@@ -1139,6 +1139,39 @@ def test_generate_pull_request_context_menu_items_matches_desktop() -> None:
     assert generate_pull_request_context_menu_items() == []
 
 
+def test_copy_and_delete_tags_menu_items_match_desktop() -> None:
+    from github_desktop.ui.menus import (
+        copy_tags_menu_label,
+        delete_tags_menu_item,
+        unpushed_tags_for_commit,
+    )
+
+    assert copy_tags_menu_label([]) == "Copy tag"
+    assert copy_tags_menu_label(["v1"]) == "Copy tag"
+    assert copy_tags_menu_label(["v1", "v2"]) == "Copy tags"
+    assert unpushed_tags_for_commit(["v1", "v2"], ["v2", "other"]) == ["v2"]
+    assert delete_tags_menu_item([], [], lambda _name: None) is None
+    deleted: list[str] = []
+    single = delete_tags_menu_item(["v1"], ["v1"], deleted.append)
+    assert single is not None
+    assert single[0] == "Delete tag v1"
+    assert single[2] is True
+    single[1]()
+    assert deleted == ["v1"]
+    pushed = delete_tags_menu_item(["v1"], [], deleted.append)
+    assert pushed is not None
+    assert pushed[0] == "Delete tag v1"
+    assert pushed[2] is False
+    multi = delete_tags_menu_item(["v1", "v2"], ["v2"], deleted.append)
+    assert multi is not None
+    assert multi[0] == "Delete tag…"
+    submenu = multi[1]
+    assert [item[0] for item in submenu] == ["v1", "v2"]
+    assert [item[2] for item in submenu] == [False, True]
+    submenu[1][1]()
+    assert deleted == ["v1", "v2"]
+
+
 def test_show_pull_request_by_pr_opens_html_url(isolated_config, monkeypatch) -> None:
     from github_desktop.models import PullRequest
 
