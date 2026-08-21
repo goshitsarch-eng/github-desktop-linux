@@ -15,6 +15,21 @@ from .paths import settings_path
 # Desktop `last-clone-location` localStorage key (persisted here as clone_default_directory).
 LAST_CLONE_LOCATION_KEY = "last-clone-location"
 
+# Desktop app-store.ts localStorage keys / defaults used on Linux.
+tabSizeDefault = 8
+tabSizeKey = "tab-size"
+useCustomEditorKey = "use-custom-editor"
+useCustomShellKey = "use-custom-shell"
+underlineLinksKey = "underline-links"
+underlineLinksDefault = True
+showDiffCheckMarksDefault = True
+showDiffCheckMarksKey = "diff-check-marks-visible"
+showChangesFilterKey = "show-changes-filter"
+showChangesFilterDefault = True
+commitSpellcheckEnabledKey = "commit-spellcheck-enabled"
+repositoryIndicatorsEnabledKey = "enable-repository-indicators"
+showCommitLengthWarningKey = "show-commit-length-warning"
+
 
 @dataclass
 class Settings:
@@ -40,7 +55,7 @@ class Settings:
     use_custom_shell: bool = False
     custom_shell_path: str = ""
     custom_shell_args: str = ""
-    tab_size: int = 4
+    tab_size: int = tabSizeDefault
     show_commit_length_warning: bool = True
     notifications_enabled: bool = True
     opt_out_of_usage_tracking: bool = True

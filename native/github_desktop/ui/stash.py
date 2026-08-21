@@ -11,6 +11,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Gtk
 
 from ..models import CommittedFileChange, StashEntry, map_status, path_label
+from ..settings import tabSizeDefault
 from .diff_view import DiffViewer
 from .menus import clear_box
 
@@ -91,7 +92,7 @@ class StashDiffViewer(Gtk.Box):
         image_mode: str = "TwoUp",
         hide_whitespace: bool = False,
         can_collapse: bool = False,
-        tab_size: int = 4,
+        tab_size: int = tabSizeDefault,
     ) -> None:
         clear_box(self._file_list)
         for file in files:

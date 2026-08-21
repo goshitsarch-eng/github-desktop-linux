@@ -12,6 +12,7 @@ import re
 from functools import lru_cache
 
 from ..models import DiffLine, DiffLineType
+from ..settings import tabSizeDefault
 
 _STRING = re.compile(r"(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*')")
 _NUMBER = re.compile(r"\b\d+(?:\.\d+)?\b")
@@ -121,13 +122,13 @@ def highlight_diff_line(text: str, path: str) -> str:
     return _regex_highlight(text, path)
 
 
-def highlight_file(contents: list[str], path: str, tab_size: int = 4) -> dict[int, str]:
+def highlight_file(contents: list[str], path: str, tab_size: int = tabSizeDefault) -> dict[int, str]:
     """Lex the whole file and return 1-based line number → Pango markup.
 
     Tab characters are expanded the same way DiffViewer displays them so tokens
     line up with the rendered diff body.
     """
-    tab_size = max(1, int(tab_size or 4))
+    tab_size = max(1, int(tab_size or tabSizeDefault))
     expanded = [line.replace("\t", " " * tab_size) for line in contents]
     if not expanded:
         return {}
@@ -166,7 +167,7 @@ def markup_for_diff_line(
     *,
     old_markup: dict[int, str] | None = None,
     new_markup: dict[int, str] | None = None,
-    tab_size: int = 4,
+    tab_size: int = tabSizeDefault,
 ) -> str:
     """Prefer file-level tokens (Desktop getTokens), else per-line lex."""
     if line.kind == DiffLineType.ADD and new_markup and line.new_line_number:

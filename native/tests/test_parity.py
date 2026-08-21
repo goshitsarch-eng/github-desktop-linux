@@ -349,6 +349,9 @@ def test_window_actions_cover_menus() -> None:
         format_commit_message as format_commit_message_mod,
         enum as enum_mod,
         local_storage as local_storage_mod,
+        welcome as welcome_mod,
+        tip as tip_mod,
+        find_upstream_remote as find_upstream_remote_mod,
     )
     from github_desktop.git import delimiter as git_delimiter_mod
 
@@ -394,6 +397,9 @@ def test_window_actions_cover_menus() -> None:
     src += open(format_commit_message_mod.__file__, encoding="utf-8").read()
     src += open(enum_mod.__file__, encoding="utf-8").read()
     src += open(local_storage_mod.__file__, encoding="utf-8").read()
+    src += open(welcome_mod.__file__, encoding="utf-8").read()
+    src += open(tip_mod.__file__, encoding="utf-8").read()
+    src += open(find_upstream_remote_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -1055,5 +1061,21 @@ def test_window_actions_cover_menus() -> None:
         "core.autocrlf",
         "core.safecrlf",
         "1 conflict",
+        "hasShownWelcomeFlow",
+        "markWelcomeFlowComplete",
+        "has-shown-welcome-flow",
+        "getTipSha",
+        "tipEquals",
+        "findUpstreamRemote",
+        "UpstreamRemoteName",
+        "tabSizeDefault",
+        "tab-size",
+        "use-custom-editor",
+        "use-custom-shell",
+        "diff-check-marks-visible",
+        "show-changes-filter",
+        "commit-spellcheck-enabled",
+        "enable-repository-indicators",
+        "show-commit-length-warning",
     ]:
         assert phrase in src

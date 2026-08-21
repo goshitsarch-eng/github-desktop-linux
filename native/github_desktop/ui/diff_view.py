@@ -30,6 +30,7 @@ from ..models import (
     ImageDiffType,
     TextDiff,
 )
+from ..settings import tabSizeDefault
 from .menus import MenuItem, attach_right_click, clear_box, copy_text, show_context_menu
 from .syntax import markup_for_diff_line
 
@@ -197,7 +198,7 @@ class DiffViewer(Gtk.Box):
         self.append(self._scroll)
         self._path = ""
         self._show_checks = True
-        self._tab_size = 4
+        self._tab_size = tabSizeDefault
         self._selection: DiffSelection | None = None
         self._list_store: Gio.ListStore | None = None
         self._list_view: Gtk.ListView | None = None
@@ -252,7 +253,7 @@ class DiffViewer(Gtk.Box):
         show_checks: bool = True,
         hide_whitespace: bool = False,
         can_collapse: bool = False,
-        tab_size: int = 4,
+        tab_size: int = tabSizeDefault,
         comments: list | None = None,
         ask_discard_confirm: bool = True,
     ) -> None:

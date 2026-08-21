@@ -261,6 +261,7 @@ from .remote_parsing import (
     url_matches_remote,
 )
 from .settings import Settings, get_default_dir, load_settings, save_settings, set_default_dir
+from .welcome import has_shown_welcome_flow, mark_welcome_flow_complete
 from .shells import find_shell, get_available_shells, open_custom_shell, open_external, open_file_manager, open_shell, reveal_in_file_manager as reveal_path_in_file_manager
 from .thank_you import (
     current_app_version,
@@ -387,7 +388,7 @@ class AppStore:
         self._popups = PopupManager()
         self.banner: Banner | None = None
         self.cached_repo_rulesets: dict[int, dict] = {}
-        self.welcome_step: WelcomeStep | None = None if self.settings.welcome_shown else WelcomeStep.START
+        self.welcome_step: WelcomeStep | None = None if has_shown_welcome_flow(self.settings.welcome_shown) else WelcomeStep.START
         self.sign_in_step: SignInStep | None = None
         self.sign_in_endpoint: str = dotcom_endpoint()
         self.sign_in_error: str | None = None
@@ -4602,6 +4603,7 @@ class AppStore:
 
     def finish_welcome(self) -> None:
         self.settings.welcome_shown = True
+        mark_welcome_flow_complete()
         self.welcome_step = None
         self.persist_settings()
         self._maybe_show_accessibility_banner()
