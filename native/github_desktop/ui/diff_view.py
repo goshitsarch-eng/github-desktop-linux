@@ -28,7 +28,12 @@ from ..models import (
     FileDiff,
     ImageDiff,
     ImageDiffType,
+    SubmoduleDiff,
     TextDiff,
+    shorten_sha,
+    submodule_commit_change_copy,
+    submodule_repository_link,
+    submodule_working_changes_copy,
 )
 from ..settings import tabSizeDefault
 from .menus import MenuItem, attach_right_click, clear_box, copy_text, show_context_menu
@@ -606,62 +611,85 @@ class DiffViewer(Gtk.Box):
                 widget.add_css_class("diff-search-current")
 
     def _render_submodule(self, diff) -> None:
-        from ..models import SubmoduleDiff
-
+        """Desktop `SubmoduleDiff` interstitial (`submodule-diff.tsx`)."""
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.add_css_class("submodule-diff")
         box.set_margin_top(24)
         box.set_margin_start(24)
         box.set_margin_end(24)
         title = Gtk.Label(label="Submodule changes", xalign=0)
-        title.add_css_class("heading")
+        title.add_css_class("title-1")
         box.append(title)
-        path = getattr(diff, "path", "") or self._path
-        box.append(Gtk.Label(label=path, xalign=0))
         url = getattr(diff, "url", None)
-        if url:
-            from ..remote_parsing import parse_remote
-
-            parsed = parse_remote(url)
-            if parsed:
-                link = Gtk.LinkButton(uri=url, label=f"{parsed.owner}/{parsed.name}")
-                link.set_halign(Gtk.Align.START)
-                box.append(link)
-            else:
-                box.append(Gtk.Label(label=f"Remote: {url}", xalign=0))
+        link_info = submodule_repository_link(url)
+        if link_info:
+            uri, caption = link_info
+            info = Gtk.Box(spacing=6)
+            info_label = Gtk.Label(label="This is a submodule based on the repository ", xalign=0)
+            info_label.set_wrap(True)
+            link = Gtk.LinkButton(uri=uri, label=caption)
+            link.set_halign(Gtk.Align.START)
+            info.append(info_label)
+            info.append(link)
+            box.append(info)
         old_sha = getattr(diff, "old_sha", None)
         new_sha = getattr(diff, "new_sha", None)
-
-        def _sha_row(label: str, sha: str | None) -> None:
-            if not sha:
-                return
-            row = Gtk.Box(spacing=8)
-            row.append(Gtk.Label(label=f"{label}: {sha[:7]}", xalign=0))
-            copy = Gtk.Button(label=f"Copy the full {label.lower()} SHA")
-            copy.add_css_class("flat")
-            copy.connect("clicked", lambda *_a, value=sha: copy_text(value))
-            row.append(copy)
-            box.append(row)
-
-        _sha_row("Previous", old_sha)
-        _sha_row("New", new_sha)
-        status = getattr(diff, "status", None)
-        if status:
-            if status.commit_changed:
-                box.append(Gtk.Label(label="The checked-out commit changed.", xalign=0))
-            if status.modified_changes:
-                box.append(Gtk.Label(label="The submodule has modified content.", xalign=0))
-            if status.untracked_changes:
-                box.append(Gtk.Label(label="The submodule has untracked content.", xalign=0))
+        read_only = not self.interactive
+        change_copy = submodule_commit_change_copy(old_sha, new_sha, read_only=read_only)
+        if change_copy:
+            change = Gtk.Label(label=change_copy, xalign=0, wrap=True)
+            box.append(change)
+            if old_sha and new_sha:
+                self._append_sha_copy(box, old_sha, "previous")
+                self._append_sha_copy(box, new_sha, "new")
+            elif new_sha:
+                self._append_sha_copy(box, new_sha, None)
+            elif old_sha:
+                self._append_sha_copy(box, old_sha, None)
+        working = submodule_working_changes_copy(getattr(diff, "status", None))
+        if working:
+            box.append(Gtk.Label(label=working, xalign=0, wrap=True))
         full = getattr(diff, "full_path", "") or ""
-        if full and self.on_open_submodule:
-            open_btn = Gtk.Button(label="Open submodule")
+        # Desktop hides Open when `diff.url === null` (deleted submodule in history).
+        if url is not None and self.on_open_submodule:
+            action = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            action_title = Gtk.Label(label="Open this submodule on GitHub Desktop", xalign=0)
+            action_title.add_css_class("heading")
+            action_desc = Gtk.Label(
+                label=(
+                    "You can open this submodule on GitHub Desktop as a normal "
+                    "repository to manage and commit any changes in it."
+                ),
+                xalign=0,
+                wrap=True,
+            )
+            open_btn = Gtk.Button(label="Open repository")
             open_btn.add_css_class("suggested-action")
             open_btn.set_halign(Gtk.Align.START)
-            open_btn.connect("clicked", lambda *_ , p=full: self.on_open_submodule and self.on_open_submodule(p))
-            box.append(open_btn)
+            if full:
+                open_btn.connect(
+                    "clicked",
+                    lambda *_a, p=full: self.on_open_submodule and self.on_open_submodule(p),
+                )
+            else:
+                open_btn.set_sensitive(False)
+            action.append(action_title)
+            action.append(action_desc)
+            action.append(open_btn)
+            box.append(action)
         elif isinstance(diff, SubmoduleDiff) and not full:
             box.append(Gtk.Label(label="This submodule isn't checked out locally.", xalign=0))
         self._inner.append(box)
+
+    def _append_sha_copy(self, box: Gtk.Box, sha: str, which: str | None) -> None:
+        infix = f" {which}" if which else ""
+        row = Gtk.Box(spacing=8)
+        row.append(Gtk.Label(label=shorten_sha(sha), xalign=0))
+        copy = Gtk.Button(label=f"Copy the full{infix} SHA")
+        copy.add_css_class("flat")
+        copy.connect("clicked", lambda *_a, value=sha: copy_text(value))
+        row.append(copy)
+        box.append(row)
 
     def _flatten(self, diff: TextDiff, side_by_side: bool) -> list[RowSpec]:
         rows: list[RowSpec] = []

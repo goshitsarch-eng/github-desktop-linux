@@ -389,3 +389,56 @@ def test_high_signal_notification_filter() -> None:
     assert is_high_signal_notification(review, "octo/hello")
     assert not is_high_signal_notification(other, "octo/hello")
     assert not is_high_signal_notification(other_repo, "octo/hello")
+
+
+def test_submodule_diff_copy_helpers() -> None:
+    from github_desktop.models import (
+        SubmoduleStatus,
+        shorten_sha,
+        submodule_commit_change_copy,
+        submodule_repository_link,
+        submodule_working_changes_copy,
+    )
+
+    assert shorten_sha("abcdef1234567890") == "abcdef1"
+    uri, caption = submodule_repository_link("https://github.com/desktop/desktop.git")
+    assert uri == "https://github.com/desktop/desktop"
+    assert caption == "desktop/desktop"
+    _ent_uri, ent_caption = submodule_repository_link("https://github.example.com/acme/app.git")
+    assert ent_caption == "acme/app (github.example.com)"
+    assert submodule_repository_link(None) is None
+    assert "This change can be committed to the parent repository." in (
+        submodule_commit_change_copy("aaa1111bbbb", "ccc2222dddd", read_only=False) or ""
+    )
+    history = submodule_commit_change_copy(None, "ccc2222dddd", read_only=True) or ""
+    assert history.startswith("This submodule was added pointing at commit")
+    assert "This change can be committed" not in history
+    both = submodule_working_changes_copy(
+        SubmoduleStatus(modified_changes=True, untracked_changes=True)
+    )
+    assert both and "modified and untracked" in both
+    assert "Those changes must be committed inside of the submodule" in both
+
+
+def test_select_file_records_submodule_diff_viewed(isolated_config, git_repo, monkeypatch) -> None:
+    from github_desktop.models import (
+        AppFileStatusKind,
+        FileStatus,
+        SubmoduleStatus,
+        WorkingDirectoryFileChange,
+    )
+
+    store = AppStore()
+    repo = store.add_repositories([str(git_repo)])[0]
+    monkeypatch.setattr(store, "_load_working_diff", lambda *_a, **_k: None)
+    file = WorkingDirectoryFileChange(
+        "vendor/lib",
+        FileStatus(
+            AppFileStatusKind.MODIFIED,
+            submodule_status=SubmoduleStatus(commit_changed=True),
+        ),
+    )
+    store.select_file(repo, file)
+    assert store.stats.get_daily_measures()["submoduleDiffViewedFromChangesListCount"] == 1
+    store.select_file(repo, file)
+    assert store.stats.get_daily_measures()["submoduleDiffViewedFromChangesListCount"] == 1

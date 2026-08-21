@@ -997,6 +997,65 @@ class SubmoduleDiff:
     url: str | None = None
 
 
+def shorten_sha(sha: str) -> str:
+    """Desktop `shortenSHA`."""
+    return sha[:7]
+
+
+def submodule_repository_link(url: str | None) -> tuple[str, str] | None:
+    """Desktop `renderSubmoduleInfo` https URI and `owner/name` caption."""
+    if not url:
+        return None
+    from .remote_parsing import parse_repository_identifier
+
+    ident = parse_repository_identifier(url)
+    if ident is None:
+        return None
+    hostname = ident.hostname or "github.com"
+    suffix = "" if hostname == "github.com" else f" ({hostname})"
+    uri = f"https://{hostname}/{ident.owner}/{ident.name}"
+    return uri, f"{ident.owner}/{ident.name}{suffix}"
+
+
+def submodule_commit_change_copy(
+    old_sha: str | None,
+    new_sha: str | None,
+    *,
+    read_only: bool,
+) -> str | None:
+    """Desktop `renderCommitChangeInfo` (short SHAs inlined)."""
+    verb = "was" if read_only else "has been"
+    suffix = "" if read_only else " This change can be committed to the parent repository."
+    if old_sha and new_sha:
+        return (
+            f"This submodule changed its commit from {shorten_sha(old_sha)} to "
+            f"{shorten_sha(new_sha)}.{suffix}"
+        )
+    if not old_sha and new_sha:
+        return f"This submodule {verb} added pointing at commit {shorten_sha(new_sha)}.{suffix}"
+    if old_sha and not new_sha:
+        return (
+            f"This submodule {verb} removed while it was pointing at commit "
+            f"{shorten_sha(old_sha)}.{suffix}"
+        )
+    return None
+
+
+def submodule_working_changes_copy(status: SubmoduleStatus | None) -> str | None:
+    """Desktop `renderSubmodulesChangesInfo`."""
+    if status is None or not (status.untracked_changes or status.modified_changes):
+        return None
+    if status.untracked_changes and status.modified_changes:
+        changes = "modified and untracked"
+    elif status.untracked_changes:
+        changes = "untracked"
+    else:
+        changes = "modified"
+    return (
+        f"This submodule has {changes} changes. Those changes must be committed inside of the submodule before they can be part of the parent repository."
+    )
+
+
 @dataclass
 class LargeTextDiff:
     kind: DiffType = DiffType.LARGE_TEXT

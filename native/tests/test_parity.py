@@ -1376,5 +1376,17 @@ def test_window_actions_cover_menus() -> None:
         "_startOpenInDesktop",
         "openSubmoduleFromDiffCount",
         "onOpenSubmodule",
+        "shortenSHA",
+        "renderSubmoduleInfo",
+        "renderCommitChangeInfo",
+        "renderSubmodulesChangesInfo",
+        "Open this submodule on GitHub Desktop",
+        "This change can be committed to the parent repository.",
+        "Those changes must be committed inside of the submodule",
+        "Open repository",
+        "recordSubmoduleDiffViewedFromChangesIfNeeded",
+        "recordSubmoduleDiffViewedFromHistoryIfNeeded",
+        "submoduleDiffViewedFromChangesListCount",
+        "submoduleDiffViewedFromHistoryCount",
     ]:
         assert phrase in src

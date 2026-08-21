@@ -4792,9 +4792,15 @@ class AppStore:
 
     def select_file(self, repo: Repository, file: WorkingDirectoryFileChange | None) -> None:
         state = self.state_for(repo)
+        previous = state.selected_file
         state.selected_file = file
         state.current_diff = None
         if file:
+            # Desktop `recordSubmoduleDiffViewedFromChangesIfNeeded`
+            if file.status.submodule_status is not None and (
+                previous is None or previous.path != file.path
+            ):
+                self.stats.increment("submoduleDiffViewedFromChangesListCount")
             self.emit()
             self._load_working_diff(repo, state)
             return
@@ -4871,6 +4877,11 @@ class AppStore:
 
     def load_history_diff(self, repo: Repository, path: str, sha: str, status) -> FileDiff | None:
         state = self.state_for(repo)
+        # Desktop `recordSubmoduleDiffViewedFromHistoryIfNeeded`
+        if getattr(status, "submodule_status", None) is not None:
+            prev = state.selected_commit_files[0].path if state.selected_commit_files else None
+            if prev != path:
+                self.stats.increment("submoduleDiffViewedFromHistoryCount")
         selected = list(state.selected_commits)
         history = state.compare_ahead if state.history_mode == HistoryTabMode.COMPARE and state.compare_ahead else state.commits
         sha_set = {c.sha for c in selected}
