@@ -35,6 +35,7 @@ class TutorialPanel(Gtk.Box):
         on_explore: Callable[[], None] | None = None,
         on_create_repository: Callable[[], None] | None = None,
         on_add_repository: Callable[[], None] | None = None,
+        on_announced: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.add_css_class("tutorial-panel")
@@ -48,6 +49,7 @@ class TutorialPanel(Gtk.Box):
         self._on_explore = on_explore
         self._on_create_repository = on_create_repository
         self._on_add_repository = on_add_repository
+        self._on_announced = on_announced
         self._expanders: dict[TutorialStep, Gtk.Expander] = {}
         title = Gtk.Label(label="Get started", xalign=0)
         title.add_css_class("title-4")
@@ -161,8 +163,12 @@ class TutorialPanel(Gtk.Box):
         self.append(exit_btn)
 
     def refresh(self, current: TutorialStep, editor_name: str | None = None) -> None:
-        done = current == TutorialStep.ALL_COMPLETE
+        done = current in {TutorialStep.ALL_DONE, TutorialStep.ALL_COMPLETE, TutorialStep.ANNOUNCED}
         self._done.set_visible(done)
+        if current == TutorialStep.ALL_DONE and self._on_announced:
+            from gi.repository import GLib
+
+            GLib.idle_add(self._on_announced)
         try:
             current_index = ORDERED.index(current)
         except ValueError:

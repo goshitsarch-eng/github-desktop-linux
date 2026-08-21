@@ -354,6 +354,7 @@ def test_window_actions_cover_menus() -> None:
         welcome as welcome_mod,
         tip as tip_mod,
         find_upstream_remote as find_upstream_remote_mod,
+        tutorial_assessor as tutorial_assessor_mod,
     )
     from github_desktop.git import delimiter as git_delimiter_mod
 
@@ -402,6 +403,7 @@ def test_window_actions_cover_menus() -> None:
     src += open(welcome_mod.__file__, encoding="utf-8").read()
     src += open(tip_mod.__file__, encoding="utf-8").read()
     src += open(find_upstream_remote_mod.__file__, encoding="utf-8").read()
+    src += open(tutorial_assessor_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -1092,5 +1094,17 @@ def test_window_actions_cover_menus() -> None:
         "getForkContributionTarget",
         "isForkedRepositoryContributingToParent",
         "getUpstreamRefForLocalBranchRef",
+        "tutorial-install-editor-skipped",
+        "tutorial-pull-request-step-complete",
+        "tutorial-paused",
+        "OnboardingTutorialAssessor",
+        "skipPickEditor",
+        "markPullRequestTutorialStepAsComplete",
+        "markTutorialCompletionAsAnnounced",
+        "onNewTutorialRepository",
+        "isValidTutorialStep",
+        "orderedTutorialSteps",
+        "AllDone",
+        "Announced",
     ]:
         assert phrase in src

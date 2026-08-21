@@ -263,6 +263,7 @@ from .remote_parsing import (
 )
 from .settings import Settings, get_default_dir, load_settings, save_settings, set_default_dir
 from .welcome import has_shown_welcome_flow, mark_welcome_flow_complete
+from .tutorial_assessor import OnboardingTutorialAssessor
 from .shells import find_shell, get_available_shells, open_custom_shell, open_external, open_file_manager, open_shell, reveal_in_file_manager as reveal_path_in_file_manager
 from .thank_you import (
     current_app_version,
@@ -401,7 +402,12 @@ class AppStore:
         self._clone_processes: dict[int, list] = {}
         self._clone_cancels: dict[int, threading.Event] = {}
         self.repo_state: dict[int, RepositoryViewState] = {}
-        self.tutorial_step = TutorialStep.PAUSED if self.settings.tutorial_paused else TutorialStep.NOT_APPLICABLE
+        self.tutorial_assessor = OnboardingTutorialAssessor(self._resolved_external_editor_name)
+        if self.settings.tutorial_paused:
+            self.tutorial_assessor.pause_tutorial()
+        elif self.tutorial_assessor.tutorial_paused:
+            self.settings.tutorial_paused = True
+        self.tutorial_step = TutorialStep.PAUSED if self.tutorial_assessor.tutorial_paused else TutorialStep.NOT_APPLICABLE
         self.progress_kind: str | None = None
         self.progress_title: str = ""
         self.progress_value: float = 0.0
@@ -1084,6 +1090,7 @@ class AppStore:
                     item.unsafe = False
                 if tutorial and repos:
                     repos[0].tutorial = True
+                    self.tutorial_assessor.on_new_tutorial_repository()
                     self.settings.tutorial_paused = False
                     self.tutorial_step = TutorialStep.PICK_EDITOR
                     self._save_repositories()
@@ -1640,49 +1647,59 @@ class AppStore:
             state.selected_file = file.with_selection(file.selection.with_selectable_lines(selectable_line_indices(restored)))
         self.emit()
 
+    def _resolved_external_editor_name(self) -> str | None:
+        editor = find_editor(self.settings.selected_external_editor)
+        return editor.name if editor is not None else None
+
     def _advance_tutorial(self, repo: Repository, state: RepositoryViewState) -> None:
-        if not repo.tutorial:
-            return
-        if self.tutorial_step == TutorialStep.PAUSED:
-            return
-        if self.tutorial_step == TutorialStep.NOT_APPLICABLE:
-            self.tutorial_step = TutorialStep.PICK_EDITOR
-        locals_ = [b for b in state.branches if b.type == BranchType.LOCAL]
-        if self.tutorial_step == TutorialStep.PICK_EDITOR:
-            return
-        if self.tutorial_step == TutorialStep.CREATE_BRANCH and len(locals_) > 1:
-            self.tutorial_step = TutorialStep.EDIT_FILE
-        elif self.tutorial_step == TutorialStep.EDIT_FILE and state.status and state.status.working_directory.files:
-            self.tutorial_step = TutorialStep.MAKE_COMMIT
-        elif self.tutorial_step == TutorialStep.MAKE_COMMIT and len(state.commits) > 1:
-            self.tutorial_step = TutorialStep.PUSH_BRANCH
-        elif self.tutorial_step == TutorialStep.PUSH_BRANCH and state.status and state.status.current_upstream_branch:
-            self.tutorial_step = TutorialStep.OPEN_PULL_REQUEST
-        elif self.tutorial_step == TutorialStep.OPEN_PULL_REQUEST and state.current_pull_request:
-            self.tutorial_step = TutorialStep.ALL_COMPLETE
+        """Desktop `updateCurrentTutorialStep` via `OnboardingTutorialAssessor.getCurrentStep`."""
+        current = self.tutorial_assessor.get_current_step(
+            bool(repo.tutorial),
+            state,
+            current_branch=state.status.current_branch if state.status else None,
+            default_branch=self.default_branch_name(repo) if repo.tutorial else None,
+        )
+        paused = self.tutorial_assessor.tutorial_paused
+        if self.settings.tutorial_paused != paused:
+            self.settings.tutorial_paused = paused
+            self.persist_settings()
+        self.tutorial_step = current
 
     def complete_tutorial_editor_step(self) -> None:
-        if self.tutorial_step == TutorialStep.PICK_EDITOR:
-            self.tutorial_step = TutorialStep.CREATE_BRANCH
-            self.emit()
+        self.tutorial_assessor.skip_pick_editor()
+        repo = next((item for item in self.repositories if item.tutorial), self.selected_repository)
+        if repo:
+            self._advance_tutorial(repo, self.state_for(repo))
+        self.emit()
 
     def skip_tutorial_pull_request(self) -> None:
-        if self.tutorial_step == TutorialStep.OPEN_PULL_REQUEST:
-            self.tutorial_step = TutorialStep.ALL_COMPLETE
-            self.emit()
+        self.tutorial_assessor.mark_pull_request_tutorial_step_as_complete()
+        repo = next((item for item in self.repositories if item.tutorial), self.selected_repository)
+        if repo:
+            self._advance_tutorial(repo, self.state_for(repo))
+        self.emit()
+
+    def mark_tutorial_completion_as_announced(self) -> None:
+        """Desktop `markTutorialCompletionAsAnnounced`."""
+        self.tutorial_assessor.mark_tutorial_completion_as_announced()
+        repo = next((item for item in self.repositories if item.tutorial), self.selected_repository)
+        if repo:
+            self._advance_tutorial(repo, self.state_for(repo))
+        self.emit()
 
     def pause_tutorial(self) -> None:
+        self.tutorial_assessor.pause_tutorial()
         self.tutorial_step = TutorialStep.PAUSED
         self.settings.tutorial_paused = True
         self.persist_settings()
         self.emit()
 
     def resume_tutorial(self) -> None:
+        self.tutorial_assessor.resume_tutorial()
         self.settings.tutorial_paused = False
         self.persist_settings()
-        repo = next((r for r in self.repositories if r.tutorial), self.selected_repository)
+        repo = next((item for item in self.repositories if item.tutorial), self.selected_repository)
         if repo:
-            self.tutorial_step = TutorialStep.PICK_EDITOR
             self.select_repository(repo.id)
             self._advance_tutorial(repo, self.state_for(repo))
         else:
@@ -1771,6 +1788,7 @@ class AppStore:
                     item.is_missing = False
                     item.unsafe = False
                 if repos:
+                    self.tutorial_assessor.on_new_tutorial_repository()
                     self.settings.tutorial_paused = False
                     self.tutorial_step = TutorialStep.PICK_EDITOR
                     self._save_repositories()

@@ -324,8 +324,28 @@ class TutorialStep(StrEnum):
     MAKE_COMMIT = "MakeCommit"
     PUSH_BRANCH = "PushBranch"
     OPEN_PULL_REQUEST = "OpenPullRequest"
-    ALL_COMPLETE = "AllComplete"
+    ALL_DONE = "AllDone"
+    ALL_COMPLETE = "AllDone"
     PAUSED = "Paused"
+    ANNOUNCED = "Announced"
+
+
+def is_valid_tutorial_step(step: TutorialStep) -> bool:
+    """Desktop `isValidTutorialStep`: exclude NotApplicable and Paused."""
+    return step not in {TutorialStep.NOT_APPLICABLE, TutorialStep.PAUSED}
+
+
+ORDERED_TUTORIAL_STEPS: tuple[TutorialStep, ...] = (
+    TutorialStep.PICK_EDITOR,
+    TutorialStep.CREATE_BRANCH,
+    TutorialStep.EDIT_FILE,
+    TutorialStep.MAKE_COMMIT,
+    TutorialStep.PUSH_BRANCH,
+    TutorialStep.OPEN_PULL_REQUEST,
+    TutorialStep.ALL_DONE,
+    TutorialStep.ANNOUNCED,
+)
+"""Desktop `orderedTutorialSteps`."""
 
 
 class FetchType(StrEnum):

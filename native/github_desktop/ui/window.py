@@ -46,6 +46,7 @@ from ..models import (
     commit_summary_placeholder,
     submodule_include_tooltip,
     enable_commit_message_generation,
+    is_valid_tutorial_step,
 )
 from ..push_pull import describe_push_pull, format_commit_relative_time, format_last_fetched
 from ..shells import open_external, open_in_default_program
@@ -949,6 +950,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_explore=lambda: self._repo_op(self.store.show_github_explore),
             on_create_repository=lambda: self.store.show_popup(PopupType.CREATE_REPOSITORY),
             on_add_repository=lambda: self.store.show_popup(PopupType.ADD_REPOSITORY),
+            on_announced=self.store.mark_tutorial_completion_as_announced,
         )
         self._tutorial_panel.set_visible(False)
         self._work_area = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
@@ -3445,10 +3447,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _update_tutorial_banner(self, repo, state) -> None:
         if hasattr(self, "_tutorial_panel"):
-            active = bool(repo.tutorial) and self.store.tutorial_step not in {
-                TutorialStep.NOT_APPLICABLE,
-                TutorialStep.PAUSED,
-            }
+            active = bool(repo.tutorial) and is_valid_tutorial_step(self.store.tutorial_step)
             self._tutorial_panel.set_visible(active)
             if active:
                 editor = self.store.settings.selected_external_editor

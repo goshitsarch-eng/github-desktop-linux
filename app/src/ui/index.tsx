@@ -122,7 +122,11 @@ if (__LINUX__) {
       '/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem', // RHEL/CentOS
       '/etc/ssl/cert.pem', // Alpine
     ]
-    const caCertPath = caCertPaths.find(p => fs.existsSync(p))
+    const caCertPath = caCertPaths.find(p => {
+      // Startup CA discovery has to be synchronous so bundled Git can verify HTTPS.
+      // eslint-disable-next-line no-sync
+      return fs.existsSync(p)
+    })
     if (caCertPath) {
       process.env['GIT_SSL_CAINFO'] = caCertPath
     }
