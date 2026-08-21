@@ -101,6 +101,7 @@ from .menus import (
     CopyRelativeFilePathLabel,
     CopySelectedPathsLabel,
     CopySelectedRelativePathsLabel,
+    GitIgnoreFileName,
     OpenWithDefaultProgramLabel,
     RevealInFileManagerLabel,
     alias_verb,
@@ -108,6 +109,9 @@ from .menus import (
     attach_paned_reset,
     attach_right_click,
     find_active_resizable,
+    ignore_extension_globs,
+    ignore_folder_labels,
+    is_safe_file_extension,
     resizable_limit,
     resize_active_resizable,
     wrap_toolbar_resizable,
@@ -3824,29 +3828,67 @@ class MainWindow(Adw.ApplicationWindow):
             None,
         ]
         if len(paths) == 1:
-            items.append(("Ignore file (add to .gitignore)", lambda: self.store.ignore_path(repo, file.path), True))
-            folder = "/".join(file.path.split("/")[:-1])
-            if folder:
-                items.append((f"Ignore folder /{folder}", lambda: self.store.ignore_path(repo, folder), True))
-            ext = ""
-            if "." in file.path.split("/")[-1]:
-                ext = "." + file.path.split(".")[-1]
-                items.append((f"Ignore all {ext} files", lambda: self.store.ignore_pattern(repo, f"*{ext}"), True))
+            ignore_enabled = os.path.basename(file.path) != GitIgnoreFileName
+            items.append(("Ignore file (add to .gitignore)", lambda: self.store.ignore_path(repo, file.path), ignore_enabled))
+            folders = ignore_folder_labels(file.path)
+            if folders:
+                items.append(
+                    (
+                        "Ignore folder (add to .gitignore)",
+                        [
+                            (label, lambda folder=label: self.store.ignore_path(repo, folder), True)
+                            for label in folders
+                        ],
+                        ignore_enabled,
+                    )
+                )
         else:
-            items.append((f"Ignore {len(paths)} selected files (add to .gitignore)", lambda: [self.store.ignore_path(repo, p) for p in paths], True))
-            items.append(("Include selected files", lambda: self.store.set_files_included(repo, paths, True), True))
-            items.append(("Exclude selected files", lambda: self.store.set_files_included(repo, paths, False), True))
-            items.append((CopySelectedPathsLabel, lambda: copy_text("\n".join(os.path.join(repo.path, p) for p in paths)), True))
-            items.append((CopySelectedRelativePathsLabel, lambda: copy_text("\n".join(paths)), True))
+            ignorable = [p for p in paths if os.path.basename(p) != GitIgnoreFileName]
+            items.append(
+                (
+                    f"Ignore {len(paths)} selected files (add to .gitignore)",
+                    lambda: self.store.ignore_path(repo, ignorable),
+                    bool(ignorable),
+                )
+            )
+        for ext in ignore_extension_globs(paths):
+            items.append(
+                (
+                    f"Ignore all {ext} files",
+                    lambda pattern=f"*{ext}": self.store.ignore_pattern(repo, pattern),
+                    True,
+                )
+            )
+        if len(paths) > 1:
+            items.extend(
+                [
+                    None,
+                    ("Include selected files", lambda: self.store.set_files_included(repo, paths, True), True),
+                    ("Exclude selected files", lambda: self.store.set_files_included(repo, paths, False), True),
+                    None,
+                    (CopySelectedPathsLabel, lambda: copy_text("\n".join(os.path.join(repo.path, p) for p in paths)), True),
+                    (CopySelectedRelativePathsLabel, lambda: copy_text("\n".join(paths)), True),
+                ]
+            )
+        else:
+            items.extend(
+                [
+                    None,
+                    (CopyFilePathLabel, lambda: copy_text(os.path.join(repo.path, file.path)), True),
+                    (CopyRelativeFilePathLabel, lambda: copy_text(file.path), True),
+                ]
+            )
+        exists = file.status.kind != AppFileStatusKind.DELETED
         items.extend(
             [
                 None,
-                (CopyFilePathLabel, lambda: copy_text(os.path.join(repo.path, file.path)), True),
-                (CopyRelativeFilePathLabel, lambda: copy_text(file.path), True),
-                None,
-                (RevealInFileManagerLabel, lambda: self.store.reveal_in_file_manager(repo, file.path), file.status.kind != AppFileStatusKind.DELETED),
-                (self._open_in_editor_label(), lambda: self.store.open_in_editor(repo, os.path.join(repo.path, file.path)), file.status.kind != AppFileStatusKind.DELETED),
-                (OpenWithDefaultProgramLabel, lambda: self.store.open_file_default(repo, file.path), file.status.kind != AppFileStatusKind.DELETED),
+                (RevealInFileManagerLabel, lambda: self.store.reveal_in_file_manager(repo, file.path), exists),
+                (self._open_in_editor_label(), lambda: self.store.open_in_editor(repo, os.path.join(repo.path, file.path)), exists),
+                (
+                    OpenWithDefaultProgramLabel,
+                    lambda: self.store.open_file_default(repo, file.path),
+                    exists and is_safe_file_extension(os.path.splitext(file.path)[1]),
+                ),
             ]
         )
         if file.status.is_conflicted:

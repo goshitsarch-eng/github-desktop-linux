@@ -11,7 +11,8 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gdk, Gtk
 
 
-MenuItem = tuple[str, Callable[[], None], bool] | None
+MenuCallback = Callable[[], None]
+MenuItem = tuple[str, MenuCallback | Sequence["MenuItem"], bool] | None
 
 # Desktop `ui/lib/context-menu.ts` Linux labels.
 CopyFilePathLabel = "Copy file path"
@@ -24,6 +25,26 @@ RevealInFileManagerLabel = "Show in your File Manager"
 OpenWithDefaultProgramLabel = "Open with default program"
 TrashNameLabel = "Trash"
 FileDoesNotExistOnDiskLabel = "File does not exist on disk"
+GitIgnoreFileName = ".gitignore"  # Desktop Darwin: Ignore File (Add to .gitignore)
+
+
+def ignore_folder_labels(path: str) -> list[str]:
+    """Desktop ignore-folder submenu labels (`/a`, `/a/b`), deepest first."""
+    components = path.split("/")[:-1]
+    return ["/" + "/".join(components[: len(components) - index]) for index in range(len(components))]
+
+
+def ignore_extension_globs(paths: Sequence[str], *, limit: int = 5) -> list[str]:
+    """Desktop: up to five unique extensions from the selection."""
+    # Five menu items should be enough for everyone
+    seen: list[str] = []
+    for path in paths:
+        extension = os.path.splitext(path)[1]
+        if extension and extension not in seen:
+            seen.append(extension)
+        if len(seen) >= limit:
+            break
+    return seen
 
 
 def open_in_editor_label(editor_name: str | None) -> str:
@@ -103,14 +124,44 @@ def show_context_menu(anchor: Gtk.Widget, items: Sequence[MenuItem]) -> None:
         if item is None:
             box.append(Gtk.Separator())
             continue
-        label, callback, enabled = item
+        label, action, enabled = item
+        if not callable(action):
+            expander = Gtk.Expander(label=label)
+            expander.set_sensitive(enabled)
+            inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            for sub in action:
+                if sub is None:
+                    inner.append(Gtk.Separator())
+                    continue
+                sub_label, sub_cb, sub_enabled = sub
+                if not callable(sub_cb):
+                    continue
+                sub_btn = Gtk.Button(label=sub_label)
+                sub_btn.add_css_class("flat")
+                sub_btn.add_css_class("context-menu-item")
+                sub_btn.set_halign(Gtk.Align.FILL)
+                sub_btn.set_sensitive(sub_enabled)
+
+                def _sub_activate(
+                    _b: Gtk.Button,
+                    cb: Callable[[], None] = sub_cb,
+                    pop: Gtk.Popover = popover,
+                ) -> None:
+                    pop.popdown()
+                    cb()
+
+                sub_btn.connect("clicked", _sub_activate)
+                inner.append(sub_btn)
+            expander.set_child(inner)
+            box.append(expander)
+            continue
         btn = Gtk.Button(label=label)
         btn.add_css_class("flat")
         btn.add_css_class("context-menu-item")
         btn.set_halign(Gtk.Align.FILL)
         btn.set_sensitive(enabled)
 
-        def _activate(_b: Gtk.Button, cb: Callable[[], None] = callback, pop: Gtk.Popover = popover) -> None:
+        def _activate(_b: Gtk.Button, cb: Callable[[], None] = action, pop: Gtk.Popover = popover) -> None:
             pop.popdown()
             cb()
 

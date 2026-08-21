@@ -1388,5 +1388,9 @@ def test_window_actions_cover_menus() -> None:
         "recordSubmoduleDiffViewedFromHistoryIfNeeded",
         "submoduleDiffViewedFromChangesListCount",
         "submoduleDiffViewedFromHistoryCount",
+        "GitIgnoreFileName",
+        "Ignore folder (add to .gitignore)",
+        "Five menu items should be enough for everyone",
+        "Ignore File (Add to .gitignore)",
     ]:
         assert phrase in src

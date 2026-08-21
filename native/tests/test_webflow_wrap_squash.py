@@ -261,3 +261,19 @@ def test_linux_context_menu_labels() -> None:
     from github_desktop.models import Author as CoAuthor
 
     assert isinstance(CoAuthor("a", "b"), Author)
+
+
+def test_ignore_folder_labels_deepest_first() -> None:
+    from github_desktop.ui.menus import GitIgnoreFileName, ignore_extension_globs, ignore_folder_labels
+
+    assert GitIgnoreFileName == ".gitignore"
+    assert ignore_folder_labels("src/ui/file.ts") == ["/src/ui", "/src"]
+    assert ignore_folder_labels("file.ts") == []
+    assert ignore_extension_globs(["a.ts", "b.ts", "c.py", "d.md", "e.css", "f.json", "g.sh"]) == [
+        ".ts",
+        ".py",
+        ".md",
+        ".css",
+        ".json",
+    ]
+    assert ignore_extension_globs(["README", ".gitignore"]) == []

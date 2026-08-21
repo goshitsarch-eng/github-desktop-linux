@@ -4747,7 +4747,7 @@ class AppStore:
             return
         open_file(resolved, self)
 
-    def ignore_path(self, repo: Repository, path: str) -> None:
+    def ignore_path(self, repo: Repository, path: str | Sequence[str]) -> None:
         def work() -> None:
             append_ignore_file(repo.path, path)
 
