@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import gi
@@ -77,6 +77,28 @@ def get_hunk_handle_label(range_type: DiffRangeType | None, first: int | None, l
     start = first if first is not None else 0
     end = last if last is not None else start
     return f"Lines {start} to {end} {kind}"
+
+
+def hunks_expand_whole_file_enabled(hunks: Sequence) -> bool:
+    """Desktop `buildExpandMenuItem` `.enabled` when the diff is not already expanded."""
+    if not hunks:
+        return False
+    first = hunks[0]
+    return len(hunks) != 1 or first.expansion_type != DiffHunkExpansionType.NONE
+
+
+def build_expand_menu_item(
+    *,
+    can_expand_diff: bool,
+    is_expanded: bool,
+    hunks: Sequence,
+) -> tuple[str, bool] | None:
+    """Desktop `buildExpandMenuItem` (Linux). ``None`` when the diff cannot expand."""
+    if not can_expand_diff:
+        return None
+    if is_expanded:
+        return ("Collapse expanded lines", True)
+    return ("Expand whole file", hunks_expand_whole_file_enabled(hunks))
 
 
 def is_only_one_check_in_row(found) -> bool:
@@ -218,6 +240,7 @@ class DiffViewer(Gtk.Box):
         self._side_by_side = False
         self._force_show_large = False
         self._ask_discard_confirm = True
+        self._can_collapse = False
         self._temporary_selection: dict[str, int | bool] | None = None
         self._hovered_hunk: int | None = None
         self._scroll_timer_id = 0
@@ -270,6 +293,7 @@ class DiffViewer(Gtk.Box):
         self._selection = selection
         self._comments = list(comments or [])
         self._ask_discard_confirm = ask_discard_confirm
+        self._can_collapse = can_collapse
         self._temporary_selection = None
         self._hovered_hunk = None
         self._clear_scroll_timer()
@@ -1345,6 +1369,7 @@ class DiffViewer(Gtk.Box):
         return box
 
     def _line_menu(self, index: int, selection: DiffSelection | None, line: DiffLine | None = None) -> None:
+        """Desktop line-number discard menu plus `onContextMenuText` (Copy / Select all / expand)."""
         items: list[MenuItem] = []
         if self.interactive and selection is not None and not getattr(self, "_hide_whitespace", False):
             selected = selection.is_selected(index)
@@ -1366,12 +1391,37 @@ class DiffViewer(Gtk.Box):
                 )
             items.append(None)
         copied = (line.text[1:] if line and line.text[:1] in "+- " else (line.text if line else ""))
-        items.append(("Copy", lambda: copy_text(copied), True))
-        if self.on_expand_whole:
-            items.append(("Expand whole file", lambda: self.on_expand_whole and self.on_expand_whole(), True))
-        if self.on_collapse:
-            items.append(("Collapse expanded lines", lambda: self.on_collapse and self.on_collapse(), True))
+        items.append(("Copy", lambda: copy_text(copied), bool(copied)))
+        items.append(("Select all", self._select_all_text, True))
+        expand = build_expand_menu_item(
+            can_expand_diff=bool(self.on_expand_whole or self.on_collapse),
+            is_expanded=bool(self._can_collapse),
+            hunks=list(getattr(self._diff, "hunks", None) or []),
+        )
+        if expand is not None:
+            label, enabled = expand
+            items.append(None)
+            if label == "Collapse expanded lines":
+                items.append((label, lambda: self.on_collapse and self.on_collapse(), enabled))
+            else:
+                items.append((label, lambda: self.on_expand_whole and self.on_expand_whole(), enabled))
         show_context_menu(self, items)
+
+    def _select_all_text(self) -> None:
+        """Desktop diff `onSelectAll` / `selectAllChildren` of the diff container."""
+        def walk(node: Gtk.Widget) -> None:
+            if isinstance(node, Gtk.Label):
+                try:
+                    if node.get_selectable():
+                        node.select_region(0, -1)
+                except Exception:
+                    pass
+            child = node.get_first_child() if hasattr(node, "get_first_child") else None
+            while child is not None:
+                walk(child)
+                child = child.get_next_sibling()
+
+        walk(self)
 
     def _hunk_menu(
         self,
@@ -1381,6 +1431,7 @@ class DiffViewer(Gtk.Box):
         hunk_index: int,
         expansion: DiffHunkExpansionType,
     ) -> None:
+        """Desktop hunk-handle discard menu plus `onContextMenuExpandHunk`."""
         items: list[MenuItem] = []
         if self.interactive:
             items.append(("Include hunk", lambda: self.on_hunk_toggle and self.on_hunk_toggle(self._path, start, length, True), True))

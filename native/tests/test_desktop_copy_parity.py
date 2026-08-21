@@ -289,6 +289,31 @@ def test_get_hunk_handle_label_matches_desktop() -> None:
     assert is_only_one_check_in_row(DiffRange(4, 7, DiffRangeType.ADDITIONS)) is False
 
 
+def test_build_expand_menu_item_matches_desktop() -> None:
+    from types import SimpleNamespace
+
+    from github_desktop.models import DiffHunkExpansionType
+    from github_desktop.ui.diff_view import build_expand_menu_item, hunks_expand_whole_file_enabled
+
+    none = SimpleNamespace(expansion_type=DiffHunkExpansionType.NONE)
+    up = SimpleNamespace(expansion_type=DiffHunkExpansionType.UP)
+    assert build_expand_menu_item(can_expand_diff=False, is_expanded=False, hunks=[up]) is None
+    assert build_expand_menu_item(can_expand_diff=True, is_expanded=True, hunks=[up]) == (
+        "Collapse expanded lines",
+        True,
+    )
+    assert build_expand_menu_item(can_expand_diff=True, is_expanded=False, hunks=[none]) == (
+        "Expand whole file",
+        False,
+    )
+    assert build_expand_menu_item(can_expand_diff=True, is_expanded=False, hunks=[up]) == (
+        "Expand whole file",
+        True,
+    )
+    assert hunks_expand_whole_file_enabled([none, up]) is True
+    assert hunks_expand_whole_file_enabled([]) is False
+
+
 def test_keyboard_reorder_copy() -> None:
     from github_desktop.ui.window import keyboard_reorder_insert_message, keyboard_reorder_intro_message
 

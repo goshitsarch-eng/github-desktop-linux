@@ -1441,5 +1441,10 @@ def test_window_actions_cover_menus() -> None:
         "File does not exist on",
         "No editor configured in Options > Advanced",
         "manualConflictString",
+        "onContextMenuText",
+        "buildExpandMenuItem",
+        "onContextMenuExpandHunk",
+        "Expand whole file",
+        "Collapse expanded lines",
     ]:
         assert phrase in src
