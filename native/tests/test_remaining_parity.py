@@ -394,6 +394,35 @@ def test_change_clone_repositories_tab_persists(isolated_config) -> None:
     assert store.settings.pull_request_file_list_width == 250
 
 
+def test_load_repositories_uses_persisted_missing(isolated_config, git_repo: Path, monkeypatch) -> None:
+    import json
+    from github_desktop.paths import repositories_path
+    import github_desktop.store as store_module
+
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    repo.is_missing = True
+    repo.unsafe = True
+    store._save_repositories()
+    payload = json.loads(repositories_path().read_text(encoding="utf-8"))
+    assert payload[0]["missing"] is True
+    assert payload[0]["unsafe"] is True
+
+    def boom(*_a, **_k):
+        raise AssertionError("live getRepositoryType on GTK thread")
+
+    monkeypatch.setattr(store_module, "get_repository_kind", boom)
+    monkeypatch.setattr(AppStore, "_gtk_app_running", lambda self: True)
+    monkeypatch.setattr(AppStore, "_run", lambda self, work, done: None)
+
+    loaded = AppStore()
+    assert loaded.repositories
+    assert loaded.repositories[0].is_missing is True
+    assert loaded.repositories[0].unsafe is True
+
+
 def test_desktop_stash_for_branch_uses_refresh_cache(isolated_config, git_repo: Path, monkeypatch) -> None:
     from github_desktop.git.ops import get_status
     from github_desktop.models import StashEntry

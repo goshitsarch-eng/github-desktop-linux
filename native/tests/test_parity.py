@@ -1283,5 +1283,6 @@ def test_window_actions_cover_menus() -> None:
         "_resetBranchDropdownWidth",
         "_resetPushPullButtonWidth",
         "onDoubleClick",
+        "updateRepositoryMissing",
     ]:
         assert phrase in src

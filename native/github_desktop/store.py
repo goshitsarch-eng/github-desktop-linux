@@ -611,15 +611,17 @@ class AppStore:
             if gh:
                 github = github_from_dict(gh)
             path_str = item.get("path", "")
-            kind = get_repository_kind(path_str)
-            missing = kind != "regular"
+            missing = bool(item.get("missing") or item.get("is_missing"))
+            unsafe = bool(item.get("unsafe"))
+            if not path_str or not os.path.isdir(path_str):
+                missing = True
             self.repositories.append(
                 Repository(
                     id=repo_id,
                     path=path_str,
                     name=item.get("name") or os.path.basename(path_str),
                     is_missing=missing,
-                    unsafe=kind == "unsafe",
+                    unsafe=unsafe,
                     alias=item.get("alias"),
                     github=github,
                     tutorial=bool(item.get("tutorial")),
@@ -631,6 +633,43 @@ class AppStore:
             self.repo_state[repo_id].local_tags_to_push = get_tags_to_push(self.settings, loaded)
             self._hydrate_github_api_cache(loaded)
         self._next_id = max_id + 1
+        self._probe_loaded_repository_types()
+
+    def _probe_loaded_repository_types(self) -> None:
+        """Desktop `getRepositoryType` after RepositoriesStore.getAll (off the GTK thread)."""
+        snapshots = [(repo.id, repo.path) for repo in self.repositories]
+        if not snapshots:
+            return
+
+        def work() -> list[tuple[int, str]]:
+            results: list[tuple[int, str]] = []
+            for repo_id, path in snapshots:
+                try:
+                    results.append((repo_id, get_repository_kind(path)))
+                except (GitError, GitNotFoundError, OSError):
+                    results.append((repo_id, "missing"))
+            return results
+
+        def done(exc: BaseException | None, result: list[tuple[int, str]] | None = None) -> None:
+            if exc or not result:
+                return
+            by_id = {repo.id: repo for repo in self.repositories}
+            changed = False
+            for repo_id, kind in result:
+                repo = by_id.get(repo_id)
+                if repo is None:
+                    continue
+                missing = kind != "regular"
+                unsafe = kind == "unsafe"
+                if repo.is_missing != missing or repo.unsafe != unsafe:
+                    repo.is_missing = missing
+                    repo.unsafe = unsafe
+                    changed = True
+            if changed:
+                self._save_repositories()
+                self.emit()
+
+        self._run_ui(work, done)
 
     def _save_repositories(self) -> None:
         payload = []
@@ -644,6 +683,8 @@ class AppStore:
                     "tutorial": repo.tutorial,
                     "github": github_to_dict(repo.github),
                     "workflow_preferences": repo.workflow_preferences,
+                    "missing": repo.is_missing,
+                    "unsafe": repo.unsafe,
                 }
             )
         repositories_path().write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -1257,6 +1298,7 @@ class AppStore:
                 resolved = "missing"
             repo.is_missing = resolved != "regular"
             repo.unsafe = resolved == "unsafe"
+            self._save_repositories()  # Desktop `updateRepositoryMissing`
             if not repo.is_missing:
                 self.refresh_repository(repo)
             else:
@@ -1276,6 +1318,7 @@ class AppStore:
                 return
             repo.is_missing = resolved != "regular"
             repo.unsafe = resolved == "unsafe"
+            self._save_repositories()  # Desktop `updateRepositoryMissing`
             if not repo.is_missing:
                 self.refresh_repository(repo)
             else:
