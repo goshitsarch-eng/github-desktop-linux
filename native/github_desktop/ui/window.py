@@ -734,10 +734,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.store.show_popup(PopupType.CREATE_TUTORIAL_REPOSITORY)
 
     def _open_submodule(self, full_path: str) -> None:
-        try:
-            self.store.add_repositories([full_path])
-        except Exception as exc:
-            self.store.show_popup(PopupType.ERROR, error=str(exc))
+        self.store.add_repositories([full_path])
 
     def _install_file_drop(self) -> None:
         try:

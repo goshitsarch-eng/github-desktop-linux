@@ -756,3 +756,141 @@ def test_fetch_poll_interval_helper_exists() -> None:
 
     assert callable(GitHubAPI.get_fetch_poll_interval)
 
+
+def test_add_repositories_uses_toplevel(isolated_config, git_repo: Path) -> None:
+    import os
+
+    nested = git_repo / "nested"
+    nested.mkdir()
+    store = AppStore()
+    repos = store.add_repositories([str(nested)])
+    assert repos
+    assert os.path.abspath(repos[0].path) == os.path.abspath(str(git_repo))
+
+
+def test_add_repositories_unsafe_is_missing(isolated_config, git_repo: Path, monkeypatch) -> None:
+    import github_desktop.store as store_module
+
+    store = AppStore()
+
+    def fake_type(path: str) -> dict[str, str]:
+        return {"kind": "unsafe", "path": path}
+
+    monkeypatch.setattr(store_module, "get_repository_type", fake_type)
+    repos = store.add_repositories([str(git_repo)])
+    assert repos
+    assert repos[0].is_missing is True
+    assert repos[0].unsafe is True
+    assert store.popup is None
+
+
+def test_add_repositories_invalid_paths_message(isolated_config, git_repo: Path, monkeypatch) -> None:
+    import github_desktop.store as store_module
+    from github_desktop.models import PopupType
+
+    store = AppStore()
+
+    def fake_type(_path: str) -> dict[str, str]:
+        return {"kind": "missing"}
+
+    monkeypatch.setattr(store_module, "get_repository_type", fake_type)
+    added = store.add_repositories([str(git_repo)])
+    assert added == []
+    assert store.popup is not None
+    assert store.popup.type == PopupType.ERROR
+    assert "isn't a Git repository." in str(store.popup.payload.get("error") or "")
+
+
+def test_add_repositories_probes_off_thread(isolated_config, git_repo: Path, monkeypatch) -> None:
+    import github_desktop.store as store_module
+
+    store = AppStore()
+
+    def boom(*_a, **_k):
+        raise AssertionError("live getRepositoryType on GTK thread")
+
+    monkeypatch.setattr(store_module, "get_repository_type", boom)
+    monkeypatch.setattr(AppStore, "_gtk_app_running", lambda self: True)
+    monkeypatch.setattr(AppStore, "_run", lambda self, work, done: None)
+
+    added = store.add_repositories([str(git_repo)])
+    assert added == []
+
+
+def test_invalid_repo_paths_message_lists_paths() -> None:
+    from github_desktop.store import AppStore, MaxInvalidFoldersToDisplay
+
+    store = AppStore()
+    single = store._invalid_repo_paths_message(["/tmp/one"])
+    assert single == "/tmp/one isn't a Git repository."
+    many = store._invalid_repo_paths_message(["/a", "/b", "/c", "/d"])
+    assert "The following paths aren't Git repositories:" in many
+    assert "- /a" in many
+    assert "- /c" in many
+    assert "/d" not in many
+    assert "(and 1 more)" in many
+    assert MaxInvalidFoldersToDisplay == 3
+
+
+def test_load_repository_git_config_off_thread(isolated_config, git_repo: Path, monkeypatch) -> None:
+    import github_desktop.store as store_module
+
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+
+    def boom(*_a, **_k):
+        raise AssertionError("live git config on GTK thread")
+
+    monkeypatch.setattr(store_module, "get_config_value", boom)
+    monkeypatch.setattr(store_module, "get_global_config_value", boom)
+    monkeypatch.setattr(store_module, "read_gitignore", boom)
+    monkeypatch.setattr(AppStore, "_gtk_app_running", lambda self: True)
+    monkeypatch.setattr(AppStore, "_run", lambda self, work, done: None)
+
+    called = {"n": 0}
+
+    def on_done(*_a, **_k) -> None:
+        called["n"] += 1
+
+    store.load_repository_git_config(repo, on_done)
+    assert called["n"] == 0
+
+
+def test_load_global_git_preferences_off_thread(isolated_config, monkeypatch) -> None:
+    import github_desktop.store as store_module
+
+    store = AppStore()
+
+    def boom(*_a, **_k):
+        raise AssertionError("live git config on GTK thread")
+
+    monkeypatch.setattr(store_module, "get_global_config_value", boom)
+    monkeypatch.setattr(store_module, "get_default_branch", boom)
+    monkeypatch.setattr(AppStore, "_gtk_app_running", lambda self: True)
+    monkeypatch.setattr(AppStore, "_run", lambda self, work, done: None)
+
+    called = {"n": 0}
+
+    def on_done(*_a, **_k) -> None:
+        called["n"] += 1
+
+    store.load_global_git_preferences(on_done)
+    assert called["n"] == 0
+
+
+def test_relocate_repository_skips_git_probe(isolated_config, git_repo: Path, tmp_path: Path) -> None:
+    from tests.conftest import run_git
+
+    other = tmp_path / "relocated"
+    other.mkdir()
+    run_git(other, "init")
+    store = AppStore()
+    repos = store.add_repositories([str(git_repo)])
+    repo = repos[0]
+    store.relocate_repository(repo, str(other))
+    assert repo.path == str(other)
+    assert repo.name == "relocated"
+    assert not repo.is_missing
+

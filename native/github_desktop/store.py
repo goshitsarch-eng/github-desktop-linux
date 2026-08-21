@@ -16,7 +16,7 @@ from typing import Any, Callable, Sequence
 from . import secrets
 from .custom_integration import command_for_custom_integration
 from .editors import Editor, find_editor, get_available_editors, open_in_editor
-from .errors import APIError, CopilotError, DiscardChangesError, GitError, GitNotFoundError, MaxResultsError, NotARepositoryError, ValidationError, extract_secret_scanning_results, overwritten_files_from_error, parse_saml_organization
+from .errors import APIError, CopilotError, DiscardChangesError, GitError, GitNotFoundError, MaxResultsError, ValidationError, extract_secret_scanning_results, overwritten_files_from_error, parse_saml_organization
 from .git import (
     abort_cherry_pick,
     abort_merge,
@@ -76,6 +76,7 @@ from .git import (
     get_default_branch,
     get_files_diff_text,
     get_global_config_path,
+    get_global_config_value,
     get_last_desktop_stash_entry_for_branch,
     get_last_fetched,
     get_rebase_snapshot,
@@ -92,7 +93,6 @@ from .git import (
     get_working_directory_diff,
     is_using_lfs,
     get_working_directory_lines,
-    git_path_is_repository,
     init_repository,
     install_global_lfs_filters,
     install_lfs_hooks as git_install_lfs_hooks,
@@ -134,7 +134,7 @@ from .git.credential_helper import (
     set_credential_callback,
     start_credential_helper_server,
 )
-from .git.runner import find_git, git, resolve_repository_root
+from .git.runner import find_git, git
 from .github.api import GitHubAPI, merge_updated_issues, merge_updated_pull_requests, on_token_invalidated
 from .email import stealth_email_for_user
 from .github.ci_checks import (
@@ -300,6 +300,7 @@ log = get_logger()
 Listener = Callable[[], None]
 
 # Desktop BackgroundFetchMinimumInterval (30 minutes) and BackgroundFetcher intervals.
+MaxInvalidFoldersToDisplay = 3  # Desktop MaxInvalidFoldersToDisplay
 BACKGROUND_FETCH_MINIMUM_INTERVAL = 30 * 60
 BACKGROUND_FETCH_DEFAULT_INTERVAL = 60 * 60
 # Desktop `UpdateIssuesThrottleInterval` in issues-autocompletion-provider.tsx.
@@ -871,6 +872,53 @@ class AppStore:
 
         self._run_ui(work, done)
 
+    def load_repository_git_config(
+        self,
+        repo: Repository,
+        on_done: Callable[..., None],
+    ) -> None:
+        """Desktop RepositorySettings `componentWillMount` / `isLoadingGitConfig`."""
+
+        def work() -> dict[str, str | None]:
+            return {
+                "local_name": get_config_value(repo.path, "user.name", local_only=True),
+                "local_email": get_config_value(repo.path, "user.email", local_only=True),
+                "global_name": get_global_config_value("user.name"),
+                "global_email": get_global_config_value("user.email"),
+                "ignore_text": read_gitignore(repo.path),
+            }
+
+        def done(exc: BaseException | None, result: dict | None = None) -> None:
+            payload = result if isinstance(result, dict) else {}
+            try:
+                on_done(payload, exc)
+            except TypeError:
+                on_done(payload)
+
+        self._run_ui(work, done)
+
+    def load_global_git_preferences(self, on_done: Callable[..., None]) -> None:
+        """Desktop Preferences `getGlobalConfigValue` / `getDefaultBranch` / `isLoadingGitConfig`."""
+
+        def work() -> dict[str, str | None]:
+            return {
+                "name": get_global_config_value("user.name"),
+                "email": get_global_config_value("user.email"),
+                "default_branch": get_default_branch(),
+            }
+
+        def done(exc: BaseException | None, result: dict | None = None) -> None:
+            payload = result if isinstance(result, dict) else {}
+            if payload.get("name") is not None or payload.get("email") is not None:
+                self.author_name = payload.get("name")
+                self.author_email = payload.get("email")
+            try:
+                on_done(payload, exc)
+            except TypeError:
+                on_done(payload)
+
+        self._run_ui(work, done)
+
     def set_stats_opt_out(self, opt_out: bool, user_viewed_prompt: bool = False) -> None:
         """Desktop `setStatsOptOut`."""
         self.stats.set_opt_out(opt_out, user_viewed_prompt)
@@ -1024,40 +1072,93 @@ class AppStore:
         self.persist_settings()
         self.emit()
         repo = self.selected_repository
-        if repo:
+        if repo and not repo.is_missing:
             self.refresh_repository(repo)
 
-    def add_repositories(self, paths: Sequence[str], *, onboarding: str | None = "add") -> list[Repository]:
+    def _existing_repository_for_path(self, path: str) -> Repository | None:
+        existing = match_existing_repository(self.repositories, path)
+        if existing is not None:
+            return existing
+        for candidate in self.repositories:
+            try:
+                same = os.path.isdir(candidate.path) and os.path.isdir(path) and os.path.samefile(candidate.path, path)
+            except OSError:
+                same = candidate.path == path
+            if same:
+                return candidate
+        return None
+
+    def _invalid_repo_paths_message(self, invalid_paths: Sequence[str]) -> str:
+        """Desktop `getInvalidRepoPathsMessage`."""
+        if len(invalid_paths) == 1:
+            return f"{invalid_paths[0]} isn't a Git repository."
+        shown = list(invalid_paths[:MaxInvalidFoldersToDisplay])
+        extra = len(invalid_paths) - MaxInvalidFoldersToDisplay
+        lines = "\n".join(f"- {item}" for item in shown)
+        suffix = f"\n\n(and {extra} more)" if extra > 0 else ""
+        return f"The following paths aren't Git repositories:\n\n{lines}{suffix}"
+
+    def _add_known_repository_path(self, path: str, *, onboarding: str | None = "add") -> list[Repository]:
+        resolved = os.path.abspath(os.path.expanduser(path))
+        return self._add_repositories_from_types(
+            [(resolved, {"kind": "regular", "topLevelWorkingDirectory": resolved})],
+            onboarding=onboarding,
+        )
+
+    def _add_repositories_from_types(
+        self,
+        items: Sequence[tuple[str, dict[str, str]]],
+        *,
+        onboarding: str | None = "add",
+    ) -> list[Repository]:
         added: list[Repository] = []
         created: list[Repository] = []
-        for raw in paths:
-            path = os.path.abspath(os.path.expanduser(raw))
-            if not git_path_is_repository(path):
-                root = resolve_repository_root(path)
-                if not root:
-                    raise NotARepositoryError(f"{path} isn't a Git repository.")
-                path = root
-            existing = match_existing_repository(self.repositories, path)
-            if existing is None:
-                for candidate in self.repositories:
-                    try:
-                        same = os.path.isdir(candidate.path) and os.path.isdir(path) and os.path.samefile(candidate.path, path)
-                    except OSError:
-                        same = candidate.path == path
-                    if same:
-                        existing = candidate
-                        break
-            if existing:
-                added.append(existing)
+        associate_targets: list[Repository] = []
+        lfs_targets: list[Repository] = []
+        invalid: list[str] = []
+        for raw_path, info in items:
+            kind = info.get("kind") or "missing"
+            if kind == "unsafe":
+                path = info.get("path") or raw_path
+                existing = self._existing_repository_for_path(path)
+                if existing is not None:
+                    existing.is_missing = True
+                    existing.unsafe = True
+                    added.append(existing)
+                    continue
+                repo = Repository(
+                    id=self._next_id,
+                    path=path,
+                    name=os.path.basename(path),
+                    is_missing=True,
+                    unsafe=True,
+                )
+                self._next_id += 1
+                self.repositories.append(repo)
+                self.repo_state[repo.id] = RepositoryViewState()
+                added.append(repo)
+                created.append(repo)
                 continue
-            name = os.path.basename(path)
-            repo = Repository(id=self._next_id, path=path, name=name)
-            self._next_id += 1
-            self.repositories.append(repo)
-            self.repo_state[repo.id] = RepositoryViewState()
-            self.repo_state[repo.id].local_tags_to_push = get_tags_to_push(self.settings, repo)
-            added.append(repo)
-            created.append(repo)
+            if kind == "regular":
+                path = info.get("topLevelWorkingDirectory") or raw_path
+                log.info("[AppStore] adding repository at %s to store", path)
+                existing = self._existing_repository_for_path(path)
+                if existing is not None:
+                    added.append(existing)
+                    continue
+                repo = Repository(id=self._next_id, path=path, name=os.path.basename(path))
+                self._next_id += 1
+                self.repositories.append(repo)
+                self.repo_state[repo.id] = RepositoryViewState()
+                self.repo_state[repo.id].local_tags_to_push = get_tags_to_push(self.settings, repo)
+                added.append(repo)
+                created.append(repo)
+                associate_targets.append(repo)
+                lfs_targets.append(repo)
+                continue
+            invalid.append(raw_path)
+        if invalid:
+            self.show_popup(PopupType.ERROR, error=self._invalid_repo_paths_message(invalid))
         if created:
             if onboarding == "add":
                 self.stats.record_add_existing_repository()
@@ -1065,10 +1166,9 @@ class AppStore:
                 self.stats.record_clone_repository()
             elif onboarding == "create":
                 self.stats.record_create_repository()
-        if created:
+        if associate_targets:
             last = added[-1]
-            snapshots = list(created)
-            lfs_targets = list(added)
+            snapshots = list(associate_targets)
 
             def associate() -> None:
                 for item in snapshots:
@@ -1086,7 +1186,31 @@ class AppStore:
         if added:
             self._save_repositories()
             self.select_repository(added[-1].id)
-            self._maybe_prompt_lfs(added)
+        return added
+
+    def add_repositories(self, paths: Sequence[str], *, onboarding: str | None = "add") -> list[Repository]:
+        """Desktop `_addRepositories`: off-thread `getRepositoryType`, unsafe → missing."""
+        added: list[Repository] = []
+
+        def work() -> list[tuple[str, dict[str, str]]]:
+            results: list[tuple[str, dict[str, str]]] = []
+            for raw in paths:
+                path = os.path.abspath(os.path.expanduser(raw))
+                try:
+                    info = get_repository_type(path)
+                except Exception as exc:
+                    log.error("Could not determine repository type: %s", exc)
+                    info = {"kind": "missing"}
+                results.append((path, info))
+            return results
+
+        def done(exc: BaseException | None, result: list[tuple[str, dict[str, str]]] | None = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            added.extend(self._add_repositories_from_types(result or [], onboarding=onboarding))
+
+        self._run_ui(work, done)
         return added
 
     def _maybe_prompt_lfs(self, repos: Sequence[Repository]) -> None:
@@ -1274,12 +1398,8 @@ class AppStore:
         self.emit()
 
     def relocate_repository(self, repo: Repository, new_path: str) -> None:
+        """Desktop `_updateRepositoryPath`: persist the chosen path and clear missing."""
         path = os.path.abspath(os.path.expanduser(new_path))
-        if not git_path_is_repository(path):
-            root = resolve_repository_root(path)
-            if not root:
-                raise NotARepositoryError(f"{path} isn't a Git repository.")
-            path = root
         repo.path = path
         repo.name = os.path.basename(path)
         repo.is_missing = False
@@ -1479,7 +1599,7 @@ class AppStore:
                         git_context={"kind": "create-repository"},
                     )
                 return
-            repos = self.add_repositories([path], onboarding="create")
+            repos = self._add_known_repository_path(path, onboarding="create")
             if update_default_directory:
                 parent = os.path.dirname(os.path.abspath(path))
                 if parent:
@@ -1581,7 +1701,7 @@ class AppStore:
             if exc:
                 self._show_clone_error(exc, url, path, branch=branch, tutorial=tutorial)
             else:
-                repos = self.add_repositories([path], onboarding="clone")
+                repos = self._add_known_repository_path(path, onboarding="clone")
                 for item in repos:
                     item.is_missing = False
                     item.unsafe = False
@@ -2366,7 +2486,7 @@ class AppStore:
             if exc:
                 self.show_popup(PopupType.ERROR, error=str(exc))
             else:
-                repos = self.add_repositories([path], onboarding="create")
+                repos = self._add_known_repository_path(path, onboarding="create")
                 for item in repos:
                     item.tutorial = True
                     item.is_missing = False
@@ -3776,10 +3896,7 @@ class AppStore:
                 dirs.append(path)
         if not dirs:
             return
-        try:
-            self.add_repositories(dirs)
-        except (NotARepositoryError, OSError) as exc:
-            self.show_popup(PopupType.ERROR, error=str(exc))
+        self.add_repositories(dirs)
 
     def select_commits(self, repo: Repository, commits: Sequence[Commit]) -> None:
         state = self.state_for(repo)
@@ -7165,12 +7282,15 @@ class AppStore:
         for arg in argv:
             if arg.startswith("--cli-open="):
                 path = arg.split("=", 1)[1]
-                if git_path_is_repository(path) or resolve_repository_root(path):
-                    repos = self.add_repositories([path])
-                    if repos:
-                        self.select_repository(repos[0].id)
-                else:
-                    self.show_popup(PopupType.ADD_REPOSITORY, path=path)
+
+                def finished(info: dict, chosen: str = path) -> None:
+                    if info.get("kind") == "regular":
+                        top = info.get("topLevelWorkingDirectory") or chosen
+                        self._add_known_repository_path(top, onboarding="add")
+                    else:
+                        self.show_popup(PopupType.ADD_REPOSITORY, path=chosen)
+
+                self.probe_repository_type(path, finished)
             elif arg.startswith("--cli-clone="):
                 clone_url = arg.split("=", 1)[1]
             elif arg.startswith("--cli-branch="):

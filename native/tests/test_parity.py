@@ -1284,5 +1284,11 @@ def test_window_actions_cover_menus() -> None:
         "_resetPushPullButtonWidth",
         "onDoubleClick",
         "updateRepositoryMissing",
+        "_addRepositories",
+        "getInvalidRepoPathsMessage",
+        "_updateRepositoryPath",
+        "isLoadingGitConfig",
+        "getGlobalConfigValue",
+        "Could not determine repository type",
     ]:
         assert phrase in src

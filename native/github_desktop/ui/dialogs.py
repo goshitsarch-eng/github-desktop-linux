@@ -19,12 +19,8 @@ from ..stats import SamplesURL
 from ..editors import SUGGESTED_EXTERNAL_EDITOR, SUGGESTED_EXTERNAL_EDITOR_URL, get_available_editors
 from ..errors import GitError, ValidationError
 from ..git.ops import (
-    get_author_identity,
-    get_config_value,
-    get_default_branch,
     is_config_file_lock_error,
     parse_config_lock_file_path_from_error,
-    read_gitignore,
     remove_remote,
 )
 from ..github.oauth import dotcom_endpoint
@@ -1308,11 +1304,8 @@ def show_add_repository(parent: Gtk.Window, store: AppStore, initial: str) -> No
         path = expanded_path()
         if not path:
             return
-        try:
-            store.add_repositories([path])
-            dialog.close()
-        except Exception as exc:
-            store.show_popup(PopupType.ERROR, error=str(exc))
+        store.add_repositories([path])
+        dialog.close()
 
     create_here.connect("clicked", create_instead)
     trust_btn.connect("clicked", trust_directory)
@@ -2937,7 +2930,6 @@ def show_repository_settings(
     examples.set_halign(Gtk.Align.START)
     ignore_group.add(examples)
     buffer = Gtk.TextBuffer()
-    buffer.set_text(read_gitignore(repo.path))
     text = Gtk.TextView(buffer=buffer)
     text.set_wrap_mode(Gtk.WrapMode.NONE)
     scroll = Gtk.ScrolledWindow()
@@ -2956,16 +2948,18 @@ def show_repository_settings(
 
     git_group = Adw.PreferencesGroup(title="For this repository I wish to")
     git_group.set_description("Use my global Git config or a local Git config.")
+    git_group.set_sensitive(False)  # Desktop isLoadingGitConfig
     global_check = Gtk.CheckButton(label="Use my global Git config")
     local_check = Gtk.CheckButton(label="Use a local Git config")
     local_check.set_group(global_check)
-    local_n = get_config_value(repo.path, "user.name", local_only=True)
-    local_e = get_config_value(repo.path, "user.email", local_only=True)
-    global_n, global_e = store.author_identity()
-    if global_n is None and global_e is None:
-        global_n, global_e = get_author_identity(None)
-    use_local = bool(local_n or local_e)
-    (local_check if use_local else global_check).set_active(True)
+    cached_n, cached_e = store.author_identity(repo)
+    cfg: dict[str, str | None] = {
+        "local_n": None,
+        "local_e": None,
+        "global_n": cached_n,
+        "global_e": cached_e,
+    }
+    global_check.set_active(True)
     git_group.add(global_check)
     git_group.add(local_check)
     name_row = Adw.EntryRow(title="Name")
@@ -2977,24 +2971,32 @@ def show_repository_settings(
         for item in account_email_choices(account):
             if item not in email_choices:
                 email_choices.append(item)
-    current_email = (local_e if use_local else global_e) or ""
-    if current_email and current_email not in email_choices:
-        email_choices.insert(0, current_email)
     email_choices.append("Other")
     email_row = Adw.ComboRow(title="Email")
     email_row.set_model(Gtk.StringList.new(email_choices or ["Other"]))
-    if current_email and current_email in email_choices:
-        email_row.set_selected(email_choices.index(current_email))
     other_email = Adw.EntryRow(title="Other email")
-    other_email.set_text(current_email)
     other_email.set_visible(False)
+
+    def _rebuild_email_choices(current_email: str) -> None:
+        email_choices.clear()
+        if account:
+            for item in account_email_choices(account):
+                if item not in email_choices:
+                    email_choices.append(item)
+        if current_email and current_email not in email_choices:
+            email_choices.insert(0, current_email)
+        email_choices.append("Other")
+        email_row.set_model(Gtk.StringList.new(email_choices or ["Other"]))
+        if current_email and current_email in email_choices:
+            email_row.set_selected(email_choices.index(current_email))
+        other_email.set_text(current_email)
 
     def sync_other(*_a: Any) -> None:
         idx = email_row.get_selected()
         other_email.set_visible(local_check.get_active() and idx >= 0 and idx == len(email_choices) - 1)
 
     email_row.connect("notify::selected", sync_other)
-    name_row.set_text((local_n if use_local else global_n) or "")
+    name_row.set_text(cached_n or "")
     git_group.add(name_row)
     git_group.add(_author_name_error_row(name_row))
     git_group.add(email_row)
@@ -3022,9 +3024,9 @@ def show_repository_settings(
         email_row.set_sensitive(local)
         other_email.set_sensitive(local)
         if local:
-            name_row.set_text(local_n or global_n or "")
+            name_row.set_text(cfg["local_n"] or cfg["global_n"] or "")
         else:
-            name_row.set_text(global_n or "")
+            name_row.set_text(cfg["global_n"] or "")
         sync_other()
         refresh_email_warning()
 
@@ -3053,12 +3055,25 @@ def show_repository_settings(
 
         retry()
 
+    def apply_git_config(payload: dict, *_exc: object) -> None:
+        buffer.set_text(str(payload.get("ignore_text") or ""))
+        cfg["local_n"] = payload.get("local_name")
+        cfg["local_e"] = payload.get("local_email")
+        cfg["global_n"] = payload.get("global_name") or cfg["global_n"]
+        cfg["global_e"] = payload.get("global_email") or cfg["global_e"]
+        use_local = cfg["local_n"] is not None or cfg["local_e"] is not None
+        current_email = (cfg["local_e"] if use_local else cfg["global_e"]) or ""
+        _rebuild_email_choices(current_email)
+        (local_check if use_local else global_check).set_active(True)
+        git_group.set_sensitive(True)
+        apply_location()
+
     global_check.connect("toggled", apply_location)
     local_check.connect("toggled", apply_location)
     save_git.connect("clicked", save_g)
     git_group.add(save_git)
     git_page.add(git_group)
-    apply_location()
+    store.load_repository_git_config(repo, apply_git_config)
 
     fork_group = Adw.PreferencesGroup(title="Contribute to")
     fork_group.set_description("When this repository is a fork, choose whether to contribute to the parent or the fork.")
@@ -3275,12 +3290,12 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
 
     git_page = Adw.PreferencesPage(title="Git", icon_name="utilities-terminal-symbolic")
     git_group = Adw.PreferencesGroup(title="Git author")
+    git_group.set_sensitive(False)  # Desktop isLoadingGitConfig
     name_row = Adw.EntryRow(title="Name")
     n, e = store.author_identity()
-    if n is None and e is None:
-        n, e = get_author_identity(None)
     name_row.set_text(n or "")
     from ..models import account_email_choices
+    from ..email import lookup_preferred_email
 
     email_choices: list[str] = []
     for account in store.accounts:
@@ -3305,7 +3320,7 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
     email_row.connect("notify::selected", sync_other)
     sync_other()
     branch_row = Adw.EntryRow(title="Default branch name")
-    branch_row.set_text(store.settings.default_branch or get_default_branch())
+    branch_row.set_text(store.settings.default_branch or "")
     git_group.add(name_row)
     git_group.add(_author_name_error_row(name_row))
     git_group.add(email_row)
@@ -3329,6 +3344,31 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
     edit_cfg.connect("clicked", lambda *_: (store.edit_global_git_config(), dialog.close()))
     git_group.add(edit_cfg)
     git_page.add(git_group)
+
+    def apply_global_git(payload: dict, *_exc: object) -> None:
+        name = payload.get("name")
+        email = payload.get("email")
+        branch = payload.get("default_branch")
+        if not name or not email:
+            account = next((a for a in store.accounts if a.is_dotcom), store.accounts[0] if store.accounts else None)
+            if account is not None:
+                name = name or account.login
+                email = email or lookup_preferred_email(account)
+        if name:
+            name_row.set_text(name)
+        if email:
+            if email not in email_choices:
+                email_choices.insert(0, email)
+                email_row.set_model(Gtk.StringList.new(email_choices or ["Other"]))
+            if email in email_choices:
+                email_row.set_selected(email_choices.index(email))
+            other_email.set_text(email)
+            sync_other()
+        if branch and not branch_row.get_text():
+            branch_row.set_text(branch)
+        git_group.set_sensitive(True)
+
+    store.load_global_git_preferences(apply_global_git)
 
     appearance = Adw.PreferencesPage(title="Appearance", icon_name="applications-graphics-symbolic")
     theme_group = Adw.PreferencesGroup(title="Theme")
