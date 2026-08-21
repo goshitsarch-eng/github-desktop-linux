@@ -152,12 +152,19 @@ def test_commit_batch_size_constant() -> None:
 
 
 def test_add_dropped_paths_opens_error_for_non_repo(isolated_config, tmp_path) -> None:
+    import os
+    from pathlib import Path
+
     store = AppStore()
-    empty = tmp_path / "not-a-repo"
-    empty.mkdir()
-    store.add_dropped_paths([str(empty)])
-    assert store.popup is not None
-    assert store.popup.type == PopupType.ERROR
+    empty = Path.home() / f".github-desktop-test-not-a-repo-{os.getpid()}"
+    empty.mkdir(parents=True, exist_ok=True)
+    try:
+        store.add_dropped_paths([str(empty)])
+        assert store.popup is not None
+        assert store.popup.type == PopupType.ERROR
+        assert "isn't a Git repository." in str(store.popup.payload.get("error") or "")
+    finally:
+        empty.rmdir()
 
 
 def test_partial_commit_still_works_with_changeset(git_repo) -> None:
