@@ -4115,28 +4115,36 @@ class AppStore:
         self._run_ui(work, done)
         return holder[0]
 
-    def add_dropped_paths(self, paths: Sequence[str]) -> None:
-        """Desktop `handleDragAndDrop`.
+    def open_or_add_repository(self, path: str) -> Repository | None:
+        """Desktop `openOrAddRepository`.
 
-        Several dropped paths go through `_addRepositories`. A single path is
-        resolved with `getRepositoryType` (nested folders map to
-        `topLevelWorkingDirectory`) then `matchExistingRepository` — select if
-        already listed, otherwise `PopupType.AddRepository` so the user can
-        initialize a non-git folder.
+        Exact / same-path match selects the listed repository. Otherwise show
+        `PopupType.AddRepository` (Desktop `_startOpenInDesktop`); native
+        presents the dialog and returns None until the user confirms.
         """
-        dirs: list[str] = []
-        for raw in paths:
-            path = os.path.abspath(os.path.expanduser(raw))
-            if os.path.isfile(path):
-                path = os.path.dirname(path)
-            if os.path.isdir(path):
-                dirs.append(path)
-        if not dirs:
-            return
-        if len(dirs) > 1:
-            self.add_repositories(dirs, onboarding="add")
-            return
-        dropped = dirs[0]
+        target = os.path.abspath(os.path.expanduser(path))
+        existing = next((repo for repo in self.repositories if repo.path == target), None)
+        if existing is None:
+            existing = self._existing_repository_for_path(target)
+        if existing is not None:
+            self.select_repository(existing.id)
+            return existing
+        self.show_popup(PopupType.ADD_REPOSITORY, path=target)
+        return None
+
+    def open_submodule_from_diff(self, full_path: str) -> Repository | None:
+        """Desktop repository view `onOpenSubmodule`."""
+        self.stats.increment("openSubmoduleFromDiffCount")
+        return self.open_or_add_repository(full_path)
+
+    def _open_cli_repository(self, path: str) -> None:
+        """Desktop `dispatchCLIAction` `open-repository` (and single-path drop).
+
+        Probe `getRepositoryType` off-thread so a nested folder maps to
+        `topLevelWorkingDirectory`, then `matchExistingRepository` — select if
+        listed, otherwise `PopupType.AddRepository`.
+        """
+        dropped = os.path.abspath(os.path.expanduser(path))
 
         def work() -> str:
             try:
@@ -4157,6 +4165,27 @@ class AppStore:
             self.show_popup(PopupType.ADD_REPOSITORY, path=target)
 
         self._run_ui(work, done)
+
+    def add_dropped_paths(self, paths: Sequence[str]) -> None:
+        """Desktop `handleDragAndDrop`.
+
+        Several dropped paths go through `_addRepositories`. A single path
+        uses the CLI `open-repository` probe (nested folder → working copy
+        root, then select or Add Repository).
+        """
+        dirs: list[str] = []
+        for raw in paths:
+            path = os.path.abspath(os.path.expanduser(raw))
+            if os.path.isfile(path):
+                path = os.path.dirname(path)
+            if os.path.isdir(path):
+                dirs.append(path)
+        if not dirs:
+            return
+        if len(dirs) > 1:
+            self.add_repositories(dirs, onboarding="add")
+            return
+        self._open_cli_repository(dirs[0])
 
     def select_commits(self, repo: Repository, commits: Sequence[Commit]) -> None:
         state = self.state_for(repo)
@@ -7556,16 +7585,7 @@ class AppStore:
         clone_branch = None
         for arg in argv:
             if arg.startswith("--cli-open="):
-                path = arg.split("=", 1)[1]
-
-                def finished(info: dict, chosen: str = path) -> None:
-                    if info.get("kind") == "regular":
-                        top = info.get("topLevelWorkingDirectory") or chosen
-                        self._add_known_repository_path(top, onboarding="add")
-                    else:
-                        self.show_popup(PopupType.ADD_REPOSITORY, path=chosen)
-
-                self.probe_repository_type(path, finished)
+                self._open_cli_repository(arg.split("=", 1)[1])
             elif arg.startswith("--cli-clone="):
                 clone_url = arg.split("=", 1)[1]
             elif arg.startswith("--cli-branch="):

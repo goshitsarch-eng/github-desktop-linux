@@ -1371,5 +1371,10 @@ def test_window_actions_cover_menus() -> None:
         "handleDragAndDrop",
         "isShowingModal",
         "dropEffect",
+        "openOrAddRepository",
+        "open-repository",
+        "_startOpenInDesktop",
+        "openSubmoduleFromDiffCount",
+        "onOpenSubmodule",
     ]:
         assert phrase in src

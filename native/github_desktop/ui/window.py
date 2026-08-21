@@ -1020,7 +1020,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.store.show_popup(PopupType.CREATE_TUTORIAL_REPOSITORY)
 
     def _open_submodule(self, full_path: str) -> None:
-        self.store.add_repositories([full_path])
+        """Desktop `onOpenSubmodule`: metric then `openOrAddRepository`."""
+        self.store.open_submodule_from_diff(full_path)
 
     def _is_showing_modal(self) -> bool:
         """Desktop `isShowingModal` (`currentPopup !== null`).

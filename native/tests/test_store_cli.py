@@ -101,7 +101,59 @@ def test_cli_open_path(monkeypatch, tmp_path: Path) -> None:
 def test_handle_cli_open(isolated_config, git_repo: Path) -> None:
     store = AppStore()
     store.handle_cli([f"--cli-open={git_repo}"])
-    assert any(r.path == str(git_repo) for r in store.repositories)
+    assert store.popup is not None
+    assert store.popup.type == PopupType.ADD_REPOSITORY
+    assert store.repositories == []
+
+
+def test_handle_cli_open_selects_existing(isolated_config, git_repo: Path) -> None:
+    store = AppStore()
+    added = store.add_repositories([str(git_repo)])
+    store.selected_repository_id = None
+    store.handle_cli([f"--cli-open={git_repo}"])
+    assert store.selected_repository is added[0]
+    assert store.popup is None
+    assert len(store.repositories) == 1
+
+
+def test_handle_cli_open_nested_folder_selects_toplevel(isolated_config, git_repo: Path) -> None:
+    nested = git_repo / "cli-nested"
+    nested.mkdir()
+    store = AppStore()
+    added = store.add_repositories([str(git_repo)])
+    store.selected_repository_id = None
+    store.handle_cli([f"--cli-open={nested}"])
+    assert store.selected_repository is added[0]
+    assert store.popup is None
+
+
+def test_open_or_add_repository_selects_existing(isolated_config, git_repo: Path) -> None:
+    store = AppStore()
+    added = store.add_repositories([str(git_repo)])
+    store.selected_repository_id = None
+    result = store.open_or_add_repository(str(git_repo))
+    assert result is added[0]
+    assert store.selected_repository is added[0]
+    assert store.popup is None
+
+
+def test_open_or_add_repository_opens_add_dialog_for_new_git_repo(isolated_config, git_repo: Path) -> None:
+    store = AppStore()
+    result = store.open_or_add_repository(str(git_repo))
+    assert result is None
+    assert store.repositories == []
+    assert store.popup is not None
+    assert store.popup.type == PopupType.ADD_REPOSITORY
+
+
+def test_open_submodule_from_diff_increments_metric(isolated_config, git_repo: Path) -> None:
+    store = AppStore()
+    result = store.open_submodule_from_diff(str(git_repo))
+    assert result is None
+    assert store.stats.get_daily_measures()["openSubmoduleFromDiffCount"] == 1
+    assert store.popup is not None
+    assert store.popup.type == PopupType.ADD_REPOSITORY
+    assert store.repositories == []
 
 
 def test_handle_cli_clone_with_branch(isolated_config) -> None:
