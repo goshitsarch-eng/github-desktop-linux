@@ -8,6 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import re
+from concurrent.futures import ThreadPoolExecutor, wait
 from typing import Any, Callable, Iterable
 
 from ..errors import APIError, CopilotError, MaxResultsError
@@ -371,6 +372,7 @@ class GitHubAPI:
         per_page: int = 100,
         get_next_page_path: Callable[[Any], str | None] | None = None,
         continue_fn: Callable[[list[Any]], bool] | None = None,
+        on_page: Callable[[list[Any]], None] | None = None,
         suppress_errors: bool = True,
     ) -> list[Any]:
         """Desktop `API.fetchAll`: follow GitHub `Link` headers until exhausted."""
@@ -387,6 +389,8 @@ class GitHubAPI:
                 raise
             page = data if isinstance(data, list) else []
             buf.extend(page)
+            if on_page is not None:
+                on_page(page)
             next_path = resolve_next(headers)
             if not next_path:
                 break
@@ -394,13 +398,63 @@ class GitHubAPI:
                 break
         return buf
 
+    def stream_user_repositories(
+        self,
+        callback: Callable[[list[GitHubRepository]], None],
+        affiliation: str | None = None,
+        *,
+        continue_fn: Callable[[list[Any]], bool] | None = None,
+        suppress_errors: bool = True,
+    ) -> None:
+        """Desktop `streamUserRepositories`: invoke `callback` for each API page."""
+        try:
+            base = "user/repos"
+            path = f"{base}?affiliation={affiliation}" if affiliation else base
+
+            def on_page(page: list[Any]) -> None:
+                repos = [
+                    self._to_repo(item)
+                    for item in page
+                    if isinstance(item, dict) and item.get("owner") is not None
+                ]
+                callback(repos)
+
+            self.fetch_all(
+                path,
+                on_page=on_page,
+                continue_fn=continue_fn,
+                suppress_errors=suppress_errors,
+            )
+        except Exception as exc:
+            log.warn("streamUserRepositories: failed with endpoint %s", self.endpoint, exc_info=exc)
+
+    def load_cloneable_repositories(
+        self,
+        on_page: Callable[[list[GitHubRepository]], None],
+    ) -> None:
+        """Desktop `ApiRepositoriesStore.loadRepositories` streaming strategy.
+
+        One unfiltered first page, then owner / collaborator / organization_member
+        streams in parallel when more than 100 repositories exist.
+        """
+
+        def continue_after_first_page(_buf: list[Any]) -> bool:
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                wait(
+                    [
+                        pool.submit(self.stream_user_repositories, on_page, "owner"),
+                        pool.submit(self.stream_user_repositories, on_page, "collaborator"),
+                        pool.submit(self.stream_user_repositories, on_page, "organization_member"),
+                    ]
+                )
+            return False
+
+        self.stream_user_repositories(on_page, None, continue_fn=continue_after_first_page)
+
     def fetch_repos(self, affiliation: str = "owner,collaborator,organization_member") -> list[GitHubRepository]:
-        items = self._paginate("/user/repos", {"affiliation": affiliation, "sort": "updated"})
-        return [
-            self._to_repo(item)
-            for item in items
-            if isinstance(item, dict) and item.get("owner") is not None
-        ]
+        collected: list[GitHubRepository] = []
+        self.stream_user_repositories(collected.extend, affiliation)
+        return collected
 
     def fetch_orgs(self) -> list[dict[str, Any]]:
         return self._paginate("/user/orgs")

@@ -1163,6 +1163,8 @@ def test_window_actions_cover_menus() -> None:
         "removeRemote",
         "Loading repositories…",
         "streamUserRepositories",
+        "ApiRepositoriesStore",
+        "loadRepositories",
         "last-daily-stats-report",
         "stats-opt-out",
         "has-sent-stats-opt-in-ping",

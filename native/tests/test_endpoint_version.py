@@ -32,8 +32,8 @@ def test_try_update_endpoint_version_from_response(isolated_config) -> None:
 def test_fetch_repos_skips_null_owner() -> None:
     api = GitHubAPI("https://api.github.com", "token")
 
-    def fake_paginate(*_args, **_kwargs):
-        return [
+    def fake_fetch_all(path, **kwargs):
+        page = [
             {
                 "name": "ok",
                 "owner": {"login": "me"},
@@ -42,8 +42,12 @@ def test_fetch_repos_skips_null_owner() -> None:
             },
             {"name": "dangling", "owner": None},
         ]
+        on_page = kwargs.get("on_page")
+        if on_page is not None:
+            on_page(page)
+        return page
 
-    api._paginate = fake_paginate  # type: ignore[method-assign]
+    api.fetch_all = fake_fetch_all  # type: ignore[method-assign]
     repos = api.fetch_repos()
     assert [item.name for item in repos] == ["ok"]
     assert repos[0].owner == "me"

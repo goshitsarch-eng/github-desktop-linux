@@ -1893,21 +1893,49 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
         # Desktop `streamUserRepositories` / `ApiRepositoriesStore` load off the UI thread.
         _clear_listbox(repo_list)
         repo_list.append(Adw.ActionRow(title="Loading repositories…"))
+        by_url: dict[str, Any] = {}
 
-        def work() -> list:
-            from ..github.api import GitHubAPI
-
-            return GitHubAPI.from_account(account).fetch_repos()
-
-        def done(exc: BaseException | None, result: list | None = None) -> None:
+        def apply_page(page: list) -> None:
             if token != github_load_gen[0]:
                 return
+            for gh in page:
+                key = gh.clone_url or gh.full_name
+                by_url[key] = gh
             loaded.clear()
+            loaded.extend(by_url.values())
+            render_github_list()
+
+        def on_page(page: list) -> None:
+            def tick() -> bool:
+                apply_page(page)
+                return False
+
+            invoked = False
+            try:
+                from gi.repository import Gio, GLib
+
+                if Gio.Application.get_default() is not None:
+                    GLib.idle_add(tick)
+                    invoked = True
+            except Exception:
+                invoked = False
+            if not invoked:
+                apply_page(page)
+
+        def work() -> None:
+            from ..github.api import GitHubAPI
+
+            GitHubAPI.from_account(account).load_cloneable_repositories(on_page)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if token != github_load_gen[0]:
+                return
             if exc:
                 _clear_listbox(repo_list)
                 repo_list.append(Adw.ActionRow(title="Could not load repositories", subtitle=str(exc)))
                 return
-            loaded.extend(result or [])
+            loaded.clear()
+            loaded.extend(by_url.values())
             render_github_list()
 
         store._run(work, done)
@@ -1957,21 +1985,49 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
         token = ent_load_gen[0]
         _clear_listbox(ent_list)
         ent_list.append(Adw.ActionRow(title="Loading repositories…"))
+        by_url: dict[str, Any] = {}
 
-        def work() -> list:
-            from ..github.api import GitHubAPI
-
-            return GitHubAPI.from_account(account).fetch_repos()
-
-        def done(exc: BaseException | None, result: list | None = None) -> None:
+        def apply_page(page: list) -> None:
             if token != ent_load_gen[0]:
                 return
+            for gh in page:
+                key = gh.clone_url or gh.full_name
+                by_url[key] = gh
             loaded_ent.clear()
+            loaded_ent.extend(by_url.values())
+            render_enterprise_list()
+
+        def on_page(page: list) -> None:
+            def tick() -> bool:
+                apply_page(page)
+                return False
+
+            invoked = False
+            try:
+                from gi.repository import Gio, GLib
+
+                if Gio.Application.get_default() is not None:
+                    GLib.idle_add(tick)
+                    invoked = True
+            except Exception:
+                invoked = False
+            if not invoked:
+                apply_page(page)
+
+        def work() -> None:
+            from ..github.api import GitHubAPI
+
+            GitHubAPI.from_account(account).load_cloneable_repositories(on_page)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if token != ent_load_gen[0]:
+                return
             if exc:
                 _clear_listbox(ent_list)
                 ent_list.append(Adw.ActionRow(title="Could not load repositories", subtitle=str(exc)))
                 return
-            loaded_ent.extend(result or [])
+            loaded_ent.clear()
+            loaded_ent.extend(by_url.values())
             render_enterprise_list()
 
         store._run(work, done)

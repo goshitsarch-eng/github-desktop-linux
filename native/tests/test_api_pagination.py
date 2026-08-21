@@ -192,3 +192,73 @@ def test_offset_from_matches_desktop_units() -> None:
     now = 1_700_000_000_000
     assert offset_from(now, -24, "hours") == now - 86_400_000
     assert offset_from_now(0, "seconds")  # smoke: returns epoch ms
+
+
+def _repo_payload(name: str, owner: str | None = "me") -> dict:
+    return {
+        "name": name,
+        "owner": None if owner is None else {"login": owner},
+        "html_url": f"https://github.com/{owner or 'gone'}/{name}",
+        "clone_url": f"https://github.com/{owner or 'gone'}/{name}.git",
+    }
+
+
+def test_fetch_all_invokes_on_page_and_continue() -> None:
+    api = GitHubAPI("https://api.github.com", "tok")
+    seen: list[str] = []
+    pages: list[list] = []
+
+    def fake_request(method, path, **kwargs):
+        seen.append(path)
+        if "page=2" in path:
+            return [_repo_payload("two")], {}
+        return [_repo_payload("one")], {"Link": '</user/repos?page=2>; rel="next"'}
+
+    api.request = fake_request  # type: ignore[method-assign]
+    buf = api.fetch_all("user/repos", on_page=pages.append, continue_fn=lambda _items: False)
+    assert [item["name"] for item in buf] == ["one"]
+    assert len(pages) == 1
+    assert len(seen) == 1
+
+    seen.clear()
+    pages.clear()
+    buf = api.fetch_all("user/repos", on_page=pages.append)
+    assert [item["name"] for item in buf] == ["one", "two"]
+    assert len(pages) == 2
+
+
+def test_stream_user_repositories_skips_null_owner_and_pages() -> None:
+    api = GitHubAPI("https://api.github.com", "tok")
+    received: list[str] = []
+
+    def fake_request(method, path, **kwargs):
+        return [_repo_payload("ok"), _repo_payload("dangling", None)], {}
+
+    api.request = fake_request  # type: ignore[method-assign]
+    api.stream_user_repositories(lambda page: received.extend(item.name for item in page))
+    assert received == ["ok"]
+
+
+def test_load_cloneable_repositories_splits_affiliations_after_first_page() -> None:
+    api = GitHubAPI("https://api.github.com", "tok")
+    seen: list[str] = []
+    names: list[str] = []
+
+    def fake_request(method, path, **kwargs):
+        seen.append(path)
+        if "affiliation=owner" in path:
+            return [_repo_payload("owned")], {}
+        if "affiliation=collaborator" in path:
+            return [_repo_payload("collab")], {}
+        if "affiliation=organization_member" in path:
+            return [_repo_payload("org")], {}
+        return [_repo_payload("first")], {"Link": '</user/repos?page=2>; rel="next"'}
+
+    api.request = fake_request  # type: ignore[method-assign]
+    api.load_cloneable_repositories(lambda page: names.extend(item.name for item in page))
+    assert "first" in names
+    assert {"owned", "collab", "org"} <= set(names)
+    assert any("affiliation=owner" in path for path in seen)
+    assert any("affiliation=collaborator" in path for path in seen)
+    assert any("affiliation=organization_member" in path for path in seen)
+    assert not any("page=2" in path and "affiliation=" not in path for path in seen)

@@ -220,6 +220,9 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             ]
             with patch("github_desktop.github.api.GitHubAPI.fetch_orgs", return_value=[{"login": "acme"}]), patch(
                 "github_desktop.github.api.GitHubAPI.fetch_repos", return_value=[]
+            ), patch(
+                "github_desktop.github.api.GitHubAPI.load_cloneable_repositories",
+                lambda self, callback: None,
             ):
                 show_publish(win, store)
                 show_clone_repository(win, store, {})
