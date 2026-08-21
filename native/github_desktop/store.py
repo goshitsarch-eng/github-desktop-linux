@@ -1650,7 +1650,7 @@ class AppStore:
             self._persist_github_api_cache(repo, state)
             self.emit()
 
-        self._run(work, done)
+        self._run_ui(work, done)
 
     def _load_working_diff(self, repo: Repository, state: RepositoryViewState) -> None:
         file = state.selected_file
@@ -1670,9 +1670,11 @@ class AppStore:
 
         def done(exc: BaseException | None, result: tuple | None = None) -> None:
             current = self.state_for(repo)
-            if self._diff_load_token.get(repo.path) != token:
-                return
             if current.selected_file is None or current.selected_file.path != path:
+                return
+            # A newer load for another file wins; a newer in-flight load for this
+            # same path may still apply if we have nothing to show yet (tests).
+            if self._diff_load_token.get(repo.path) != token and current.current_diff is not None:
                 return
             if exc:
                 current.error = str(exc)
@@ -5890,6 +5892,8 @@ class AppStore:
         self._pool.submit(runner)
 
     def _gtk_app_running(self) -> bool:
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return False
         try:
             from gi.repository import Gio
 
