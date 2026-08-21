@@ -1263,5 +1263,11 @@ def test_window_actions_cover_menus() -> None:
         "warnAboutRemoteCommits",
         "load_lfs_status",
         "_maybe_prompt_lfs",
+        "changeBranchesTab",
+        "selectedBranchesTab",
+        "branch-dropdown-width",
+        "push-pull-button-width",
+        "stashed-files-width",
+        "author_identity",
     ]:
         assert phrase in src

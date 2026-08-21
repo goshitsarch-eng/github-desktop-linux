@@ -10,7 +10,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, GLib, Gtk
 
-from ..models import Branch, BranchType, PopupType, PullRequest
+from ..models import Branch, BranchesTab, BranchType, PopupType, PullRequest
 from ..fuzzy_find import filter_items
 from ..push_pull import format_commit_relative_time
 from ..shells import open_external
@@ -67,6 +67,7 @@ class BranchesFoldout(Gtk.Popover):
         on_cherry_pick_pr: Callable[[PullRequest, str], None] | None = None,
         on_cherry_pick_new_branch: Callable[[str], None] | None = None,
         on_create_pr: Callable[[], None] | None = None,
+        on_tab: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__()
         self.set_has_arrow(True)
@@ -82,6 +83,8 @@ class BranchesFoldout(Gtk.Popover):
         self._on_cherry_pick = on_cherry_pick
         self._on_cherry_pick_pr = on_cherry_pick_pr
         self._on_cherry_pick_new_branch = on_cherry_pick_new_branch
+        self._on_tab = on_tab
+        self._updating_tab = False
         self._current_name: str | None = None
         self._github = False
 
@@ -145,6 +148,8 @@ class BranchesFoldout(Gtk.Popover):
         pr_page.append(pr_scroll)
         self._stack.add_titled(pr_page, "prs", "Pull Requests")
 
+        self._stack.connect("notify::visible-child", self._on_visible_tab)
+
         root.append(self._stack)
         self.set_child(root)
         self._branches: list[Branch] = []
@@ -178,6 +183,7 @@ class BranchesFoldout(Gtk.Popover):
         is_on_default_branch: bool = True,
         prs_loading: bool = False,
         enterprise: bool = False,
+        selected_tab: str | None = None,
     ) -> None:
         self._branches = list(branches)
         self._prs = list(pull_requests)
@@ -191,7 +197,19 @@ class BranchesFoldout(Gtk.Popover):
         self._prs_loading = prs_loading
         self._enterprise = enterprise
         self._search.set_placeholder_text("Find a branch or pull request…")
+        wanted = "prs" if selected_tab == BranchesTab.PULL_REQUESTS.value else "branches"
+        if selected_tab is not None and self._stack.get_visible_child_name() != wanted:
+            self._updating_tab = True
+            self._stack.set_visible_child_name(wanted)
+            self._updating_tab = False
         self._refilter()
+
+    def _on_visible_tab(self, *_args: object) -> None:
+        if self._updating_tab or self._on_tab is None:
+            return
+        name = self._stack.get_visible_child_name() or "branches"
+        tab = BranchesTab.PULL_REQUESTS.value if name == "prs" else BranchesTab.BRANCHES.value
+        self._on_tab(tab)
 
     def popup_and_focus(self) -> None:
         self.popup()

@@ -4938,7 +4938,6 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
 
     def update_rules(*_a: object) -> None:
         from ..github.repo_rules import commit_rule_warnings, use_repo_rules_logic
-        from ..git.ops import get_author_identity
 
         text = summary.get_text().strip()
         start, end = description.get_buffer().get_bounds()
@@ -4947,7 +4946,7 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
         hard = False
         lines: list[str] = []
         if repo and state is not None and use_repo_rules_logic(store.account_for_repo(repo), repo):
-            _name, email = get_author_identity(repo.path)
+            _name, email = store.author_identity(repo)
             unpublished = state.ahead_behind is None
             lines, hard = commit_rule_warnings(
                 state.repo_rules,

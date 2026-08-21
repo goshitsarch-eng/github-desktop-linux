@@ -12,9 +12,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib
 
-from ..git.ops import checkout_branch
-from ..git.runner import is_git_on_path
 from ..exception_reporting import install_exception_hook, set_unhandled_rejection_handler
+from ..git.runner import is_git_on_path
 from ..linux import get_os
 from ..logging import get_logger
 from ..models import FetchType, PopupType
@@ -195,14 +194,11 @@ class DesktopApplication(Adw.Application):
         name = param.get_string() if param else ""
         repo = self.store.selected_repository
         if repo and name:
-            from ..models import Branch, BranchType
-
             branch = next((b for b in self.store.state_for(repo).branches if b.name == name), None)
             if branch:
                 self.store.checkout(repo, branch)
             else:
-                checkout_branch(repo.path, name)
-                self.store.refresh_repository(repo)
+                self.store._checkout_named_branch(repo, name)
 
     def _on_open_pr(self, _action, param) -> None:
         from ..shells import open_external

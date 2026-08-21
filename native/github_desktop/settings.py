@@ -18,6 +18,12 @@ LAST_CLONE_LOCATION_KEY = "last-clone-location"
 # Desktop app-store.ts localStorage keys / defaults used on Linux.
 tabSizeDefault = 8
 tabSizeKey = "tab-size"
+branchDropdownWidthConfigKey = "branch-dropdown-width"
+pushPullButtonWidthConfigKey = "push-pull-button-width"
+stashedFilesWidthConfigKey = "stashed-files-width"
+defaultBranchDropdownWidth = 230
+defaultPushPullButtonWidth = 230
+defaultStashedFilesWidth = 250
 useCustomEditorKey = "use-custom-editor"
 useCustomShellKey = "use-custom-shell"
 underlineLinksKey = "underline-links"
@@ -79,6 +85,10 @@ class Settings:
     window_height: int = 800
     sidebar_width: int = 320
     commit_summary_width: int = 360
+    branch_dropdown_width: int = defaultBranchDropdownWidth
+    push_pull_button_width: int = defaultPushPullButtonWidth
+    stashed_files_width: int = defaultStashedFilesWidth
+    selected_branches_tab: str = "Branches"
     selected_repository_id: int | None = None
     recent_repository_ids: list[int] = field(default_factory=list)
     repository_section: str = "Changes"

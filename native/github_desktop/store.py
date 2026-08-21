@@ -194,6 +194,7 @@ from .models import (
     Banner,
     BannerType,
     Branch,
+    BranchesTab,
     BranchType,
     ChangesListFilter,
     ChangesetData,
@@ -392,6 +393,11 @@ class RepositoryViewState:
     is_committing: bool = False  # Desktop isCommitting
     is_generating_commit_message: bool = False  # Desktop isGeneratingCommitMessage
     non_contiguous_selection: bool = False
+    author_name: str | None = None
+    author_email: str | None = None
+    remote_head: str | None = None
+    default_remote_name: str | None = None
+    init_default_branch: str | None = None
 
 
 class AppStore:
@@ -401,6 +407,11 @@ class AppStore:
         self.accounts: list[Account] = []
         self.selected_repository_id: int | None = self.settings.selected_repository_id
         self.section = RepositorySectionTab(self.settings.repository_section) if self.settings.repository_section in RepositorySectionTab._value2member_map_ else RepositorySectionTab.CHANGES
+        tab = self.settings.selected_branches_tab
+        self.selected_branches_tab = tab if tab in {item.value for item in BranchesTab} else BranchesTab.BRANCHES.value
+        self.author_name: str | None = None
+        self.author_email: str | None = None
+        self._global_author_loading = False
         self.foldout: FoldoutType | None = None
         self._popups = PopupManager()
         self.banner: Banner | None = None
@@ -707,7 +718,42 @@ class AppStore:
     def persist_settings(self) -> None:
         self.settings.selected_repository_id = self.selected_repository_id
         self.settings.repository_section = self.section.value
+        self.settings.selected_branches_tab = self.selected_branches_tab
         save_settings(self.settings)
+
+    def change_branches_tab(self, tab: str) -> None:
+        """Desktop `_changeBranchesTab` / `selectedBranchesTab`."""
+        allowed = {item.value for item in BranchesTab}
+        if tab not in allowed:
+            return
+        self.selected_branches_tab = tab
+        self.settings.selected_branches_tab = tab
+        self.persist_settings()
+        self.emit()
+
+    def author_identity(self, repo: Repository | None = None) -> tuple[str | None, str | None]:
+        """Cached Desktop `getAuthorIdentity` for UI (no live `git var`)."""
+        if repo is not None:
+            state = self.state_for(repo)
+            if state.author_name is not None or state.author_email is not None:
+                return state.author_name, state.author_email
+        return self.author_name, self.author_email
+
+    def ensure_global_author_identity(self) -> None:
+        if self._global_author_loading or self.author_name is not None or self.author_email is not None:
+            return
+        self._global_author_loading = True
+
+        def work() -> tuple[str | None, str | None]:
+            return get_author_identity(None)
+
+        def done(exc: BaseException | None, result: tuple | None = None) -> None:
+            self._global_author_loading = False
+            if result:
+                self.author_name, self.author_email = result
+                self.emit()
+
+        self._run_ui(work, done)
 
     def set_stats_opt_out(self, opt_out: bool, user_viewed_prompt: bool = False) -> None:
         """Desktop `setStatsOptOut`."""
@@ -858,13 +904,7 @@ class AppStore:
         self.emit()
         repo = self.selected_repository
         if repo:
-            kind = get_repository_kind(repo.path)
-            repo.is_missing = kind != "regular"
-            repo.unsafe = kind == "unsafe"
-            if not repo.is_missing:
-                self.refresh_repository(repo)
-            else:
-                self.emit()
+            self.refresh_repository(repo)
 
     def add_repositories(self, paths: Sequence[str], *, onboarding: str | None = "add") -> list[Repository]:
         added: list[Repository] = []
@@ -892,11 +932,9 @@ class AppStore:
             name = os.path.basename(path)
             repo = Repository(id=self._next_id, path=path, name=name)
             self._next_id += 1
-            self._associate_github(repo)
             self.repositories.append(repo)
             self.repo_state[repo.id] = RepositoryViewState()
             self.repo_state[repo.id].local_tags_to_push = get_tags_to_push(self.settings, repo)
-            self._hydrate_github_api_cache(repo)
             added.append(repo)
             created.append(repo)
         if created:
@@ -906,6 +944,24 @@ class AppStore:
                 self.stats.record_clone_repository()
             elif onboarding == "create":
                 self.stats.record_create_repository()
+        if created:
+            last = added[-1]
+            snapshots = list(created)
+            lfs_targets = list(added)
+
+            def associate() -> None:
+                for item in snapshots:
+                    self._associate_github(item)
+
+            def associated(exc: BaseException | None, result: object = None) -> None:
+                for item in snapshots:
+                    self._hydrate_github_api_cache(item)
+                self._save_repositories()
+                self.select_repository(last.id)
+                self._maybe_prompt_lfs(lfs_targets)
+
+            self._run_ui(associate, associated)
+            return added
         if added:
             self._save_repositories()
             self.select_repository(added[-1].id)
@@ -1057,19 +1113,26 @@ class AppStore:
 
         self._run_ui(work, done)
 
-    def _associate_github(self, repo: Repository) -> None:
-        try:
-            remotes = get_remotes(repo.path)
-        except GitError:
-            return
+    def _github_from_remotes(self, remotes: Sequence[Remote]) -> GitHubRepository | None:
         origin = next((r for r in remotes if r.name == "origin"), remotes[0] if remotes else None)
         if not origin:
-            return
+            return None
         account = account_for_remote(self.accounts, origin.url)
         endpoint = account.endpoint if account else dotcom_endpoint()
         parsed = parse_remote(origin.url)
         if parsed and parsed.hostname in ("github.com", "www.github.com") or account:
-            repo.github = github_from_remote(origin.url, endpoint)
+            return github_from_remote(origin.url, endpoint)
+        return None
+
+    def _associate_github(self, repo: Repository, remotes: Sequence[Remote] | None = None) -> None:
+        if remotes is None:
+            try:
+                remotes = get_remotes(repo.path)
+            except GitError:
+                return
+        found = self._github_from_remotes(remotes)
+        if found is not None:
+            repo.github = found
 
     def remove_repository(self, repo: Repository, delete_files: bool = False) -> None:
         if delete_files and not move_item_to_trash(repo.path):
@@ -1497,12 +1560,6 @@ class AppStore:
         repo = repo or self.selected_repository
         if not repo:
             return
-        kind = get_repository_kind(repo.path)
-        repo.is_missing = kind != "regular"
-        repo.unsafe = kind == "unsafe"
-        if repo.is_missing:
-            self.emit()
-            return
         state = self.state_for(repo)
         previous_files = list(state.status.working_directory.files) if state.status else []
         previous_selected = state.selected_file.path if state.selected_file else None
@@ -1519,6 +1576,9 @@ class AppStore:
         self.emit()
 
         def work() -> dict:
+            kind = get_repository_kind(repo.path)
+            if kind != "regular":
+                return {"kind": kind}
             status = get_status(repo.path)
             limit = max(COMMIT_BATCH_SIZE, len(state.commits) or COMMIT_BATCH_SIZE)
             grep = []
@@ -1554,6 +1614,7 @@ class AppStore:
                 if len(recent) >= 5:
                     break
             payload: dict = {
+                "kind": "regular",
                 "status": status,
                 "commits": commits,
                 "has_more_commits": len(commits) == limit,
@@ -1576,6 +1637,29 @@ class AppStore:
                 "current_branch_protected": False,
             }
             payload["upstream_mismatch"] = upstream_mismatch
+            author_name, author_email = get_author_identity(repo.path)
+            payload["author_name"] = author_name
+            payload["author_email"] = author_email
+            default_remote = find_default_remote(remotes)
+            remote_name = default_remote.name if default_remote else None
+            lookup = UPSTREAM_REMOTE_NAME if is_forked_repository_contributing_to_parent(repo) else remote_name
+            head = None
+            if lookup:
+                try:
+                    head = get_remote_head(repo.path, lookup)
+                except (GitError, GitNotFoundError, OSError):
+                    head = None
+            try:
+                init_default = get_default_branch()
+            except (GitError, GitNotFoundError):
+                init_default = self.settings.default_branch or "main"
+            payload["remote_head"] = head
+            payload["default_remote_name"] = remote_name
+            payload["init_default_branch"] = init_default
+            if repo.github is None:
+                associated = self._github_from_remotes(remotes)
+                if associated is not None:
+                    payload["github"] = associated
             if status and status.current_branch and status.current_upstream_branch:
                 payload["local_commit_shas"] = [
                     c.sha for c in get_commits(repo.path, f"{status.current_upstream_branch}..HEAD", limit=200)
@@ -1729,11 +1813,19 @@ class AppStore:
 
         def done(exc: BaseException | None, result: dict | None = None) -> None:
             state.loading = False
+            data = result or {}
+            kind = data.get("kind")
+            if kind is not None and kind != "regular":
+                repo.is_missing = True
+                repo.unsafe = kind == "unsafe"
+                self.emit()
+                return
             if exc:
                 state.error = str(exc)
                 self.emit()
                 return
-            data = result or {}
+            repo.is_missing = False
+            repo.unsafe = False
             status = data.get("status")
             if status and previous_files:
                 old_sel = {f.path: f.selection for f in previous_files}
@@ -1756,6 +1848,17 @@ class AppStore:
             state.has_more_commits = bool(data.get("has_more_commits"))
             state.branches = data.get("branches") or []
             state.remotes = data.get("remotes") or []
+            if "author_name" in data or "author_email" in data:
+                state.author_name = data.get("author_name")
+                state.author_email = data.get("author_email")
+                self.author_name = state.author_name
+                self.author_email = state.author_email
+            if "remote_head" in data:
+                state.remote_head = data.get("remote_head")
+            if "default_remote_name" in data:
+                state.default_remote_name = data.get("default_remote_name")
+            if "init_default_branch" in data:
+                state.init_default_branch = data.get("init_default_branch")
             state.tags = data.get("tags") or {}
             prev_stash_sha = state.stashes[0].stash_sha if state.stashes else None
             state.stashes = data.get("stashes") or []
@@ -2164,10 +2267,7 @@ class AppStore:
         found = get_account_for_repository(self.accounts, repo)
         if found is not None:
             return found
-        try:
-            remotes = get_remotes(repo.path)
-        except GitError:
-            return None
+        remotes = list(self.state_for(repo).remotes)
         if remotes:
             return account_for_remote(self.accounts, remotes[0].url)
         return self.accounts[0] if self.accounts else None
@@ -2213,11 +2313,13 @@ class AppStore:
         background: bool = False,
     ) -> dict[str, str] | None:
         if not url:
-            try:
-                remotes = get_remotes(repo.path)
-                url = remotes[0].url if remotes else None
-            except GitError:
-                url = None
+            remotes = list(self.state_for(repo).remotes)
+            if not remotes:
+                try:
+                    remotes = get_remotes(repo.path)
+                except GitError:
+                    remotes = []
+            url = remotes[0].url if remotes else None
         if not url:
             return None
         account = account_for_remote(self.accounts, url) or self.account_for_repo(repo)
@@ -2438,15 +2540,27 @@ class AppStore:
             )
             return
         if co_authors:
-            resolved, unknown = self.resolve_co_authors(list(co_authors))
-            if unknown:
-                self.show_popup(
-                    PopupType.UNKNOWN_AUTHORS,
-                    authors=unknown,
-                    on_commit=lambda: self._commit_now(repo, summary, description, amend=amend, co_authors=resolved),
-                )
-                return
-            co_authors = resolved
+            authors = list(co_authors)
+
+            def resolve() -> tuple[list[Author], list[Author]]:
+                return self.resolve_co_authors(authors)
+
+            def resolved(exc: BaseException | None, result: tuple | None = None) -> None:
+                if exc:
+                    self.show_popup(PopupType.ERROR, error=str(exc))
+                    return
+                found, unknown = result or ([], [])
+                if unknown:
+                    self.show_popup(
+                        PopupType.UNKNOWN_AUTHORS,
+                        authors=unknown,
+                        on_commit=lambda: self._commit_now(repo, summary, description, amend=amend, co_authors=found),
+                    )
+                    return
+                self._commit_now(repo, summary, description, amend=amend, co_authors=found)
+
+            self._run_ui(resolve, resolved)
+            return
         self._commit_now(repo, summary, description, amend=amend, co_authors=co_authors)
 
     def resolve_co_authors(self, authors: Sequence[Author]) -> tuple[list[Author], list[Author]]:
@@ -2499,18 +2613,6 @@ class AppStore:
         files = [f for f in state.status.working_directory.files if f.include]
         if not files and not amend:
             raise ValidationError("No files selected for commit")
-        oversized = get_large_file_paths(repo.path, files, limit=OVERSIZED_FILE_BYTES)
-        if oversized and not ignore_oversized:
-            oversized = files_not_tracked_by_lfs(repo.path, oversized)  # Desktop filesNotTrackedByLFS
-        if oversized and not ignore_oversized:
-            self.show_popup(
-                PopupType.OVERSIZED_FILES,
-                files=oversized,
-                on_commit=lambda: self._commit_now(
-                    repo, summary, description, amend=amend, co_authors=co_authors, ignore_oversized=True
-                ),
-            )
-            return
         conflicted = [f.path for f in files if f.status.kind == AppFileStatusKind.CONFLICTED]
         if conflicted and not ignore_conflicted:
             self.show_popup(
@@ -2530,16 +2632,36 @@ class AppStore:
         if state.is_committing:
             return
         trailers = co_author_trailers(co_authors)
-        message = format_commit_message(summary, description, trailers, repo=repo.path)
+        snapshot_files = list(files)
         state.is_committing = True
         self.emit()
 
-        def work() -> None:
-            create_commit(repo.path, message, files, amend=amend)
+        def work() -> dict:
+            if not ignore_oversized:
+                oversized = get_large_file_paths(repo.path, snapshot_files, limit=OVERSIZED_FILE_BYTES)
+                if oversized:
+                    oversized = files_not_tracked_by_lfs(repo.path, oversized)  # Desktop filesNotTrackedByLFS
+                if oversized:
+                    return {"kind": "oversized", "files": oversized}
+            message = format_commit_message(summary, description, trailers, repo=repo.path)
+            create_commit(repo.path, message, snapshot_files, amend=amend)
+            return {"kind": "ok"}
 
         amended_sha = state.commit_to_amend.sha if amend and state.commit_to_amend else None
 
-        def done(exc: BaseException | None) -> None:
+        def done(exc: BaseException | None, result: dict | None = None) -> None:
+            kind = (result or {}).get("kind") if not exc else None
+            if kind == "oversized":
+                state.is_committing = False
+                self.show_popup(
+                    PopupType.OVERSIZED_FILES,
+                    files=list((result or {}).get("files") or []),
+                    on_commit=lambda: self._commit_now(
+                        repo, summary, description, amend=amend, co_authors=co_authors, ignore_oversized=True
+                    ),
+                )
+                self.emit()
+                return
             state.is_committing = False
             if exc:
                 self.show_popup(PopupType.ERROR, error=str(exc))
@@ -2549,12 +2671,12 @@ class AppStore:
                 if amended_sha:
                     state.pending_force_push_before = amended_sha
                 self.stats.record_commit()
-                if files and state.status and len(files) < len(state.status.working_directory.files):
+                if snapshot_files and state.status and len(snapshot_files) < len(state.status.working_directory.files):
                     self.stats.increment("partialCommits")
                 if co_authors:
                     self.stats.increment("coAuthoredCommits")
                 if amend:
-                    self.stats.record_amend_commit_successful(bool(files))
+                    self.stats.record_amend_commit_successful(bool(snapshot_files))
                 gh = github_for_contribution(repo) or repo.github
                 if gh is not None and not has_write_permission(gh) and gh.db_id is not None:
                     self.stats.record_repository_committed_in_without_write_access(int(gh.db_id))
@@ -2565,7 +2687,7 @@ class AppStore:
                 self.refresh_repository(repo)
             self.emit()
 
-        self._run(work, done)
+        self._run_ui(work, done)
 
     def set_file_included(self, repo: Repository, path: str, included: bool) -> None:
         state = self.state_for(repo)
@@ -2754,24 +2876,10 @@ class AppStore:
         """Desktop `findDefaultBranch` using current remotes and `refs/remotes/*/HEAD`."""
         state = self.state_for(repo)
         remotes = list(state.remotes)
-        if not remotes and os.path.isdir(repo.path):
-            try:
-                remotes = get_remotes(repo.path)
-            except (GitError, GitNotFoundError, OSError):
-                remotes = []
         default_remote = find_default_remote(remotes)
-        remote_name = default_remote.name if default_remote else None
-        lookup = UPSTREAM_REMOTE_NAME if is_forked_repository_contributing_to_parent(repo) else remote_name
-        head = None
-        if lookup and os.path.isdir(repo.path):
-            try:
-                head = get_remote_head(repo.path, lookup)
-            except (GitError, GitNotFoundError, OSError):
-                head = None
-        try:
-            init_default = get_default_branch()
-        except (GitError, GitNotFoundError):
-            init_default = self.settings.default_branch or "main"
+        remote_name = default_remote.name if default_remote else state.default_remote_name
+        head = state.remote_head
+        init_default = state.init_default_branch or self.settings.default_branch or "main"
         found = find_default_branch(
             repo,
             state.branches,
@@ -2798,19 +2906,10 @@ class AppStore:
         gh = github_for_contribution(repo) or repo.github
         if gh and gh.default_branch:
             return gh.default_branch
-        try:
-            remotes = get_remotes(repo.path)
-            origin = find_default_remote(remotes)
-            if origin:
-                head = get_remote_head(repo.path, origin.name)
-                if head:
-                    return head
-        except (GitError, GitNotFoundError, OSError):
-            pass
-        try:
-            return get_default_branch()
-        except (GitError, GitNotFoundError):
-            return "main"
+        state = self.state_for(repo)
+        if state.remote_head:
+            return state.remote_head
+        return state.init_default_branch or self.settings.default_branch or "main"
 
     def update_from_default_branch(self, repo: Repository) -> None:
         name = self.default_branch_name(repo)
@@ -3644,16 +3743,22 @@ class AppStore:
         repo: Repository,
         to_squash: Sequence[Commit],
         onto: Commit,
-        message: str,
+        message: str | None = None,
         *,
+        summary: str | None = None,
+        description: str = "",
+        co_authors: Sequence[Author] = (),
         continue_with_force_push: bool = False,
     ) -> None:
+        retry_message = message or ""
+        if not retry_message and summary:
+            retry_message = f"{summary}\n\n{description}".strip() if description else summary
         retry = RetryAction(
             type=RetryActionType.SQUASH,
             repo_id=repo.id,
             onto_sha=onto.sha,
             to_squash_shas=[item.sha for item in to_squash],
-            message=message,
+            message=retry_message,
             last_retained=onto.parent_shas[0] if onto.parent_shas else None,
         )
         if not continue_with_force_push and self.check_for_uncommitted_changes(repo, retry):
@@ -3666,14 +3771,31 @@ class AppStore:
             repo,
             last_retained,
             "Squash",
-            lambda: self.squash_onto(repo, targets, onto, message, continue_with_force_push=True),
+            lambda: self.squash_onto(
+                repo,
+                targets,
+                onto,
+                message,
+                summary=summary,
+                description=description,
+                co_authors=co_authors,
+                continue_with_force_push=True,
+            ),
             continue_with_force_push,
         ):
             return
         undo_sha = self._capture_undo(repo)
 
         def work() -> RebaseResult:
-            return squash_commits(repo.path, targets, onto, last_retained, message)
+            text = message
+            if summary is not None:
+                text = format_commit_message(
+                    summary,
+                    description,
+                    co_author_trailers(co_authors),
+                    repo=repo.path,
+                )
+            return squash_commits(repo.path, targets, onto, last_retained, text or "")
 
         def done(exc: BaseException | None, result: RebaseResult | None = None) -> None:
             if exc:
@@ -3968,13 +4090,28 @@ class AppStore:
 
     def set_commit_author_email(self, repo: Repository, email: str, *, local: bool | None = None) -> None:
         """Desktop avatar Update email: global unless this repo already has local `user.email`."""
-        if local is None:
-            local = bool(get_config_value(repo.path, "user.email", local_only=True))
-        if local:
-            set_config_value(repo.path, "user.email", email)
-        else:
-            set_config_value(None, "user.email", email, global_only=True)
-        self.emit()
+
+        def work() -> tuple[str | None, str | None]:
+            use_local = local
+            if use_local is None:
+                use_local = bool(get_config_value(repo.path, "user.email", local_only=True))
+            if use_local:
+                set_config_value(repo.path, "user.email", email)
+            else:
+                set_config_value(None, "user.email", email, global_only=True)
+            return get_author_identity(repo.path)
+
+        def done(exc: BaseException | None, ident: tuple | None = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            if ident:
+                state = self.state_for(repo)
+                state.author_name, state.author_email = ident
+                self.author_name, self.author_email = ident
+            self.emit()
+
+        self._run_ui(work, done)
 
     def add_branch_to_force_push_list(self, repo: Repository, before_sha: str | None) -> None:
         state = self.state_for(repo)
@@ -4285,7 +4422,12 @@ class AppStore:
         self._run_ui(work, done)
 
     def _network_remote(self, repo: Repository, remotes: Sequence[Remote] | None = None, *, prefer_upstream: bool = False) -> Remote | None:
-        remotes = list(remotes) if remotes is not None else get_remotes(repo.path)
+        if remotes is None:
+            remotes = list(self.state_for(repo).remotes)
+            if not remotes:
+                remotes = get_remotes(repo.path)
+        else:
+            remotes = list(remotes)
         origin = next((r for r in remotes if r.name == "origin"), remotes[0] if remotes else None)
         if prefer_upstream and repo.is_fork and fork_contribution_target(repo) == ForkContributionTarget.PARENT:
             upstream = next((r for r in remotes if r.name == "upstream"), None)
@@ -4295,34 +4437,45 @@ class AppStore:
 
     def push_repo(self, repo: Repository, force: bool = False, on_success: Callable[[], None] | None = None) -> None:
         state = self.state_for(repo)
-        status = state.status or get_status(repo.path)
-        if not status or not status.current_branch:
-            return
-        remotes = state.remotes or get_remotes(repo.path)
-        remote = self._network_remote(repo, remotes)
-        if not remote:
-            self.show_popup(PopupType.PUBLISH_REPOSITORY)
-            return
-        if status.branch_ahead_behind and status.branch_ahead_behind.behind > 0 and not force:
-            self.show_popup(PopupType.PUSH_NEEDS_PULL)
-            return
-        env = self.env_for_repo(repo, remote.url)
+        cached_status = state.status
+        cached_remotes = list(state.remotes)
+        tags = list(state.local_tags_to_push)
 
-        def work() -> None:
+        def work() -> dict:
+            status = cached_status or get_status(repo.path)
+            remotes = cached_remotes or get_remotes(repo.path)
+            if not status or not status.current_branch:
+                return {"kind": "noop"}
+            remote = self._network_remote(repo, remotes)
+            if not remote:
+                return {"kind": "publish"}
+            if status.branch_ahead_behind and status.branch_ahead_behind.behind > 0 and not force:
+                return {"kind": "needs_pull"}
+            env = self.env_for_repo(repo, remote.url)
             push(
                 repo.path,
                 remote.name,
                 status.current_branch,
                 status.current_upstream_branch.split("/", 1)[-1] if status.current_upstream_branch else None,
-                tags=state.local_tags_to_push or None,
+                tags=tags or None,
                 force_with_lease=force,
                 set_upstream=not status.current_upstream_branch,
                 env=env,
                 progress=self._network_progress_cb("push", f"Pushing to {remote.name}"),
             )
+            return {"kind": "ok", "branch": status.current_branch}
 
-        def done(exc: BaseException | None) -> None:
+        def done(exc: BaseException | None, result: dict | None = None) -> None:
             self._clear_network_progress()
+            kind = (result or {}).get("kind") if not exc else None
+            if kind == "publish":
+                self.show_popup(PopupType.PUBLISH_REPOSITORY)
+                return
+            if kind == "needs_pull":
+                self.show_popup(PopupType.PUSH_NEEDS_PULL)
+                return
+            if kind == "noop":
+                return
             if exc:
                 self._retry_action = RetryAction(type=RetryActionType.PUSH, repo_id=repo.id, force=force)
                 self._handle_remote_error(repo, exc)
@@ -4333,7 +4486,8 @@ class AppStore:
                 clear_tags_to_push(self.settings, repo)
                 self.persist_settings()
                 self.refresh_repository(repo)
-                show_notification("Push complete", f"Pushed {status.current_branch}", enabled=self.settings.notifications_enabled)
+                branch = (result or {}).get("branch") or ""
+                show_notification("Push complete", f"Pushed {branch}", enabled=self.settings.notifications_enabled)
                 self.stats.record_push(self.account_for_repo(repo), force_with_lease=force)
                 if on_success:
                     on_success()
@@ -4342,23 +4496,29 @@ class AppStore:
         self._run(work, done)
 
     def pull_repo(self, repo: Repository) -> None:
-        remotes = get_remotes(repo.path)
-        remote = self._network_remote(repo, remotes, prefer_upstream=True)
-        if not remote:
-            return
-        env = self.env_for_repo(repo, remote.url)
+        state = self.state_for(repo)
+        cached_remotes = list(state.remotes)
 
-        def work() -> list[str]:
+        def work() -> dict:
+            remotes = cached_remotes or get_remotes(repo.path)
+            remote = self._network_remote(repo, remotes, prefer_upstream=True)
+            if not remote:
+                return {"kind": "noop", "tags": []}
+            env = self.env_for_repo(repo, remote.url)
             pull(repo.path, remote.name, env=env, progress=self._network_progress_cb("pull", f"Pulling {remote.name}"))
             try:
                 eligible = get_branches_differing_from_upstream(repo.path)
                 fast_forward_branches(repo.path, eligible)
             except GitError as exc:
                 log.debug("Branch fast-forwarding failed: %s", exc)
-            return self._tags_to_push(repo, remote)
+            return {"kind": "ok", "tags": self._tags_to_push(repo, remote)}
 
-        def done(exc: BaseException | None, tags: list[str] | None = None) -> None:
+        def done(exc: BaseException | None, result: dict | None = None) -> None:
             self._clear_network_progress()
+            kind = (result or {}).get("kind") if not exc else None
+            if kind == "noop":
+                return
+            tags = (result or {}).get("tags")
             if exc:
                 self._retry_action = RetryAction(type=RetryActionType.PULL, repo_id=repo.id)
                 self._handle_remote_error(repo, exc)
@@ -4494,17 +4654,16 @@ class AppStore:
             if not self.should_background_fetch(repo):
                 return
             self._background_fetch_in_flight = True
-        remotes = get_remotes(repo.path)
-        remote = self._network_remote(repo, remotes, prefer_upstream=True)
-        if not remote:
-            if quiet:
-                self._background_fetch_in_flight = False
-            return
-        env = self.env_for_repo(repo, remote.url, background=quiet)
-        extra = [r for r in remotes if r.name == "upstream" and r.name != remote.name]
-        progress = None if quiet else self._network_progress_cb("fetch", f"Fetching {remote.name}")
+        cached_remotes = list(self.state_for(repo).remotes)
 
-        def work() -> list[str]:
+        def work() -> dict:
+            remotes = cached_remotes or get_remotes(repo.path)
+            remote = self._network_remote(repo, remotes, prefer_upstream=True)
+            if not remote:
+                return {"kind": "noop", "tags": None}
+            env = self.env_for_repo(repo, remote.url, background=quiet)
+            extra = [r for r in remotes if r.name == "upstream" and r.name != remote.name]
+            progress = None if quiet else self._network_progress_cb("fetch", f"Fetching {remote.name}")
             fetch(repo.path, remote.name, env=env, progress=progress)
             try:
                 update_remote_head(repo.path, remote.name, env=env)
@@ -4523,13 +4682,18 @@ class AppStore:
             self._prune_merged_branches(repo)
             if quiet and repo.github:
                 self._update_background_fetch_interval(repo)
-            return self._tags_to_push(repo, remote)
+            return {"kind": "ok", "tags": self._tags_to_push(repo, remote)}
 
-        def done(exc: BaseException | None, tags: list[str] | None = None) -> None:
+        def done(exc: BaseException | None, result: dict | None = None) -> None:
             if quiet:
                 self._background_fetch_in_flight = False
             else:
                 self._clear_network_progress()
+            kind = (result or {}).get("kind") if not exc else None
+            if kind == "noop":
+                self.emit()
+                return
+            tags = (result or {}).get("tags")
             if exc:
                 if quiet:
                     log.debug("background fetch failed: %s", exc)
@@ -5993,12 +6157,29 @@ class AppStore:
                 number = 0
             pr = next((p for p in state.pull_requests if p.number == number), None)
             if pr is None and repo.github:
-                account = self.account_for_repo(repo)
-                if account:
+                owner, name = repo.github.owner, repo.github.name
+                branch = action.branch
+                filepath = action.filepath
+
+                def fetch_pr() -> object:
+                    account = self.account_for_repo(repo)
+                    if account is None:
+                        return None
                     try:
-                        pr = GitHubAPI.from_account(account).fetch_pull_request(repo.github.owner, repo.github.name, number)
+                        return GitHubAPI.from_account(account).fetch_pull_request(owner, name, number)
                     except APIError:
-                        pr = None
+                        return None
+
+                def fetched(exc: BaseException | None, result: object = None) -> None:
+                    if result is not None:
+                        self.checkout_pull_request(repo, result)
+                    elif branch:
+                        self._checkout_named_branch(repo, branch)
+                    if filepath:
+                        self._open_pending_filepath(repo, filepath)
+
+                self._run_ui(fetch_pr, fetched)
+                return
             if pr:
                 self.checkout_pull_request(repo, pr)
             elif action.branch:
@@ -6006,25 +6187,29 @@ class AppStore:
         elif action.branch:
             self._checkout_named_branch(repo, action.branch)
         if action.filepath:
-            if os.path.isabs(action.filepath):
-                log.error("Refusing to open absolute path: %s", action.filepath)
-                return
-            from .path import resolve_within
+            self._open_pending_filepath(repo, action.filepath)
 
-            resolved = resolve_within(repo.path, action.filepath)
-            if resolved is None:
-                log.error(
-                    "Prevented attempt to open path outside of the repository root: %s",
-                    action.filepath,
-                )
-                return
-            open_file_manager(resolved)
-            self.set_section(RepositorySectionTab.CHANGES)
-            file = None
-            if state.status:
-                file = next((f for f in state.status.working_directory.files if f.path == action.filepath), None)
-            if file:
-                self.select_file(repo, file)
+    def _open_pending_filepath(self, repo: Repository, filepath: str) -> None:
+        if os.path.isabs(filepath):
+            log.error("Refusing to open absolute path: %s", filepath)
+            return
+        from .path import resolve_within
+
+        resolved = resolve_within(repo.path, filepath)
+        if resolved is None:
+            log.error(
+                "Prevented attempt to open path outside of the repository root: %s",
+                filepath,
+            )
+            return
+        open_file_manager(resolved)
+        self.set_section(RepositorySectionTab.CHANGES)
+        file = None
+        state = self.state_for(repo)
+        if state.status:
+            file = next((f for f in state.status.working_directory.files if f.path == filepath), None)
+        if file:
+            self.select_file(repo, file)
 
     def open_in_shell(self, repo: Repository) -> None:
         if self.settings.use_custom_shell and self.settings.custom_shell_path:
@@ -6223,10 +6408,20 @@ class AppStore:
         target = github_for_contribution(repo) or repo.github
         if target.owner != repo.github.owner:
             head = f"{repo.github.owner}:{head}"
-        api = GitHubAPI.from_account(account)
-        pr = api.create_pull_request(target.owner, target.name, title, head, base, body, draft)
-        open_external(pr.html_url)
-        self.refresh_repository(repo)
+        owner, name = target.owner, target.name
+
+        def work() -> object:
+            return GitHubAPI.from_account(account).create_pull_request(owner, name, title, head, base, body, draft)
+
+        def done(exc: BaseException | None, pr: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            if pr is not None:
+                open_external(getattr(pr, "html_url", "") or "")
+                self.refresh_repository(repo)
+
+        self._run_ui(work, done)
 
     def generate_commit_message(self, repo: Repository) -> None:
         from .models import enable_commit_message_generation

@@ -286,6 +286,62 @@ def test_default_branch_uses_contribution_target(isolated_config) -> None:
     assert store.default_branch_name(repo) == "main"
 
 
+def test_default_branch_name_uses_refresh_cache(isolated_config, git_repo: Path, monkeypatch) -> None:
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+
+    def boom(*_a, **_k):
+        raise AssertionError("default branch lookup must not spawn git")
+
+    monkeypatch.setattr("github_desktop.store.get_remotes", boom)
+    monkeypatch.setattr("github_desktop.store.get_remote_head", boom)
+    monkeypatch.setattr("github_desktop.store.get_default_branch", boom)
+    store.default_branch_name(repo)
+    store.find_default_branch_for(repo)
+
+
+def test_author_identity_uses_refresh_cache(isolated_config, git_repo: Path, monkeypatch) -> None:
+    calls = {"n": 0}
+    import github_desktop.store as store_module
+
+    real = store_module.get_author_identity
+
+    def wrapped(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(store_module, "get_author_identity", wrapped)
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    before = calls["n"]
+    store.author_identity(repo)
+    assert calls["n"] == before
+
+
+def test_change_branches_tab_persists(isolated_config) -> None:
+    from github_desktop.models import BranchesTab
+    from github_desktop.settings import (
+        branchDropdownWidthConfigKey,
+        pushPullButtonWidthConfigKey,
+        stashedFilesWidthConfigKey,
+    )
+
+    store = AppStore()
+    store.change_branches_tab(BranchesTab.PULL_REQUESTS.value)
+    assert store.selected_branches_tab == BranchesTab.PULL_REQUESTS.value
+    assert store.settings.selected_branches_tab == BranchesTab.PULL_REQUESTS.value
+    assert branchDropdownWidthConfigKey == "branch-dropdown-width"
+    assert pushPullButtonWidthConfigKey == "push-pull-button-width"
+    assert stashedFilesWidthConfigKey == "stashed-files-width"
+    assert store.settings.branch_dropdown_width == 230
+    assert store.settings.push_pull_button_width == 230
+    assert store.settings.stashed_files_width == 250
+
+
 def test_handle_cli_clone_seeds_default_directory(isolated_config) -> None:
     store = AppStore()
     store.settings.clone_default_directory = "/tmp/desktop-clones"

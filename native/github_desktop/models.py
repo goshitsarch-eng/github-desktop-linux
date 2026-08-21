@@ -138,6 +138,13 @@ class FoldoutType(StrEnum):
     PUSH_PULL = "PushPull"
 
 
+class BranchesTab(StrEnum):
+    """Desktop `BranchesTab` / `selectedBranchesTab`."""
+
+    BRANCHES = "Branches"
+    PULL_REQUESTS = "PullRequests"
+
+
 class SelectionType(StrEnum):
     REPOSITORY = "Repository"
     CLONING = "CloningRepository"

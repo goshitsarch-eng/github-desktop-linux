@@ -271,6 +271,20 @@ class MainWindow(Adw.ApplicationWindow):
                 pos = self._history_paned.get_position()
                 if pos > 0:
                     self.store.settings.commit_summary_width = pos
+            if hasattr(self, "_stash_viewer"):
+                paned = getattr(self._stash_viewer, "_files_paned", None)
+                if paned is not None:
+                    pos = paned.get_position()
+                    if pos > 0:
+                        self.store.settings.stashed_files_width = pos
+            if hasattr(self, "_branch_btn"):
+                width = self._branch_btn.get_allocated_width()
+                if width > 0:
+                    self.store.settings.branch_dropdown_width = width
+            if hasattr(self, "_push_btn"):
+                width = self._push_btn.get_allocated_width()
+                if width > 0:
+                    self.store.settings.push_pull_button_width = width
             self.store.persist_settings()
         self._flush_commit_form()
         if getattr(self, "_window_info_source", 0):
@@ -839,10 +853,10 @@ class MainWindow(Adw.ApplicationWindow):
             self._welcome_redirect.set_visible(signing)
         if self.store.welcome_step == WelcomeStep.CONFIGURE_GIT:
             # Desktop `ConfigureGit` / `ConfigureGitUser` with account email choices.
-            from ..git.ops import get_author_identity
             from ..models import account_email_choices
 
-            name, email = get_author_identity()
+            self.store.ensure_global_author_identity()
+            name, email = self.store.author_identity()
             name_row = Adw.EntryRow(title="Name")
             name_row.set_text(name or "")
             email_choices: list[str] = []
@@ -974,6 +988,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         self._branch_btn = Gtk.MenuButton()
         self._branch_btn.set_always_show_arrow(True)
+        self._branch_btn.set_size_request(max(160, int(self.store.settings.branch_dropdown_width or 230)), -1)
         self._branches_foldout = BranchesFoldout(
             on_checkout=lambda b: self._repo_op(lambda r: self.store.checkout(r, b)),
             on_create=lambda: self.store.show_popup(PopupType.CREATE_BRANCH),
@@ -997,6 +1012,7 @@ class MainWindow(Adw.ApplicationWindow):
                     create_branch=True,
                 )
             ),
+            on_tab=lambda tab: self.store.change_branches_tab(tab),
         )
         self._branch_btn.set_popover(self._branches_foldout)
         header.pack_start(self._branch_btn)
@@ -1005,6 +1021,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._push_box.add_css_class("linked")
         self._push_btn = Gtk.Button()
         self._push_btn.add_css_class("push-pull-button")
+        self._push_btn.set_size_request(max(160, int(self.store.settings.push_pull_button_width or 230)), -1)
         push_inner = Gtk.Box(spacing=8)
         push_inner.set_valign(Gtk.Align.CENTER)
         self._push_icon = Gtk.Image.new_from_icon_name("view-refresh-symbolic")
@@ -1611,6 +1628,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_open_submodule=self._open_submodule,
             on_image_mode=self._on_image_mode,
             on_open_binary=self._open_binary_file,
+            files_width=int(self.store.settings.stashed_files_width or 250),
         )
         self._changes_stack.add_named(paned, "working")
         self._changes_stack.add_named(self._stash_viewer, "stash")
@@ -1809,6 +1827,7 @@ class MainWindow(Adw.ApplicationWindow):
             ),
             prs_loading=bool(state.loading),
             enterprise=bool(repo.github and not is_dotcom_endpoint(repo.github.endpoint)),
+            selected_tab=self.store.selected_branches_tab,
         )
         github_label = view_on_github_label(
             enterprise=bool(repo.github and not is_dotcom_endpoint(repo.github.endpoint))
@@ -3494,7 +3513,6 @@ class MainWindow(Adw.ApplicationWindow):
         others = [c for c in selected if c.sha != onto.sha]
         if not others:
             return
-        from ..git.ops import co_author_trailers, format_commit_message
         from ..models import get_squashed_commit_description, get_unique_coauthors_as_authors
 
         all_commits = [*others, onto]
@@ -3504,8 +3522,14 @@ class MainWindow(Adw.ApplicationWindow):
         title = f"Squash {count} Commits"
 
         def submit(summary: str, body: str, authors=()) -> None:
-            message = format_commit_message(summary, body, co_author_trailers(authors), repo=repo.path)
-            self.store.squash_onto(repo, others, onto, message)
+            self.store.squash_onto(
+                repo,
+                others,
+                onto,
+                summary=summary,
+                description=body,
+                co_authors=authors,
+            )
 
         self.store.show_popup(
             PopupType.COMMIT_MESSAGE,
@@ -3893,9 +3917,8 @@ class MainWindow(Adw.ApplicationWindow):
         if not hasattr(self, "_author_avatar_host"):
             return
         from ..email import is_attributable_email_for, lookup_preferred_email
-        from ..git.ops import get_author_identity
 
-        name, email = get_author_identity(repo.path)
+        name, email = self.store.author_identity(repo)
         account = self.store.account_for_repo(repo)
         state = self.store.state_for(repo)
         email_failures = state.repo_rules.commit_author_email_patterns.get_failed_rules(email or "")
@@ -4093,13 +4116,12 @@ class MainWindow(Adw.ApplicationWindow):
             self._apply_commit_busy()
             return
         from ..github.repo_rules import commit_rule_warnings, rulesets_url_for_branch, use_repo_rules_logic
-        from ..git.ops import get_author_identity
 
         state = self.store.state_for(repo)
         start, end = self._description.get_buffer().get_bounds()
         description = self._description.get_buffer().get_text(start, end, True).strip()
         message = "\n\n".join(part for part in (text.strip(), description) if part)
-        _name, email = get_author_identity(repo.path)
+        _name, email = self.store.author_identity(repo)
         unpublished = state.ahead_behind is None
         warnings: list[str] = []
         hard = False

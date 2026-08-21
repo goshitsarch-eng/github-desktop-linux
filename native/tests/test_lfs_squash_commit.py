@@ -129,13 +129,15 @@ def test_commit_sets_is_committing(isolated_config, git_repo: Path, monkeypatch)
     assert repo is not None
     store.state_for(repo).status = get_status(str(git_repo))
     flags: list[bool] = []
+    import github_desktop.store as store_module
 
-    def fake_run(work, done) -> None:
+    real = store_module.create_commit
+
+    def fake_create(*args, **kwargs):
         flags.append(store.state_for(repo).is_committing)
-        work()
-        done(None)
+        return real(*args, **kwargs)
 
-    monkeypatch.setattr(store, "_run", fake_run)
+    monkeypatch.setattr(store_module, "create_commit", fake_create)
     monkeypatch.setattr(store, "refresh_repository", lambda *_: None)
     store._commit_now(repo, "add a")
     assert flags == [True]
