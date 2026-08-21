@@ -1245,5 +1245,7 @@ def test_window_actions_cover_menus() -> None:
         "loadFilesForCurrentStashEntry",
         "_run_ui",
         "CreateBranchForCherryPick",
+        "stash_then_checkout",
+        "stash_all_changes",
     ]:
         assert phrase in src

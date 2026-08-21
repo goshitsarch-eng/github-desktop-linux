@@ -576,8 +576,7 @@ class MainWindow(Adw.ApplicationWindow):
             return
 
         def run() -> None:
-            self.store.stash_and_drop_previous(repo, state.status.current_branch if state.status else "unknown")
-            self.store.refresh_repository(repo)
+            self.store.stash_all_changes(repo)
 
         if not self.store.settings.confirm_stash_all_changes:
             run()

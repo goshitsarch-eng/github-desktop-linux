@@ -821,15 +821,10 @@ def _overwrite_stash(store: AppStore, payload: dict[str, Any]) -> None:
     repo = store.selected_repository
     if not repo:
         return
-    from ..git.ops import checkout_branch
-
-    state = store.state_for(repo)
-    branch = state.status.current_branch if state.status else "unknown"
-    store.stash_and_drop_previous(repo, branch or "unknown")
     target = payload.get("branch")
-    if target:
-        checkout_branch(repo.path, target)
-    store.refresh_repository(repo)
+    if not target:
+        return
+    store.stash_then_checkout(repo, str(target))
 
 
 def _stash_and_retry(store: AppStore, payload: dict[str, Any]) -> None:
@@ -3840,20 +3835,16 @@ def show_stash_switch(parent: Gtk.Window, store: AppStore, payload: dict[str, An
         dialog.close()
 
     def confirm(*_a: object) -> None:
-        from ..git.ops import checkout_branch
         from ..models import Branch, BranchType
 
         close()
         if leave.get_active():
             if has_stash:
-                store.show_popup(PopupType.CONFIRM_OVERWRITE_STASH, branch=branch)
+                store.show_popup(PopupType.CONFIRM_OVERWRITE_STASH, branch=target_name)
                 return
-            store.stash_and_drop_previous(repo, current or "unknown")
-            checkout_branch(repo.path, branch)
-            store.remember_branch(repo, branch)
-            store.refresh_repository(repo)
+            store.stash_then_checkout(repo, target_name)
             return
-        target = next((b for b in state.branches if b.name == branch), None) or Branch(
+        target = next((b for b in state.branches if b.name == target_name), None) or Branch(
             str(target_name), None, "", BranchType.LOCAL
         )
         store.checkout_and_bring_changes(repo, target)

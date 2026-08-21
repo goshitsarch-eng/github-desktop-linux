@@ -3817,8 +3817,16 @@ class AppStore:
         open_file(resolved, self)
 
     def ignore_path(self, repo: Repository, path: str) -> None:
-        append_ignore_file(repo.path, path)
-        self.refresh_repository(repo)
+        def work() -> None:
+            append_ignore_file(repo.path, path)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
 
     def resolve_conflict(self, repo: Repository, path: str, resolution: ManualConflictResolution) -> None:
         from .git.ops import stage_manual_resolution
@@ -4434,12 +4442,13 @@ class AppStore:
         if has_changes and strategy == UncommittedChangesStrategy.ASK_FOR_CONFIRMATION:
             self.show_popup(PopupType.STASH_AND_SWITCH_BRANCH, branch=branch.name)
             return
-        if has_changes and strategy == UncommittedChangesStrategy.STASH_ON_CURRENT_BRANCH:
-            current = status.current_branch if status else "unknown"
-            self.stash_and_drop_previous(repo, current or "unknown")
+        should_stash = has_changes and strategy == UncommittedChangesStrategy.STASH_ON_CURRENT_BRANCH
+        current = status.current_branch if status else "unknown"
         title = f"Checking out {branch.name}"
 
         def work() -> None:
+            if should_stash:
+                self.stash_and_drop_previous(repo, current or "unknown")
             checkout_branch(repo.path, branch, progress=self._network_progress_cb("checkout", title))
 
         def done(exc: BaseException | None) -> None:
@@ -4481,25 +4490,76 @@ class AppStore:
 
     def checkout_and_bring_changes(self, repo: Repository, branch: Branch) -> None:
         name = branch.name_without_remote if branch.type == BranchType.REMOTE else branch.name
-        try:
-            checkout_branch(repo.path, branch)
-        except GitError as exc:
-            if not exc.is_local_changes_overwritten:
-                raise
-            current = self.state_for(repo).status.current_branch if self.state_for(repo).status else name
-            if not self.stash_and_drop_previous(repo, name):
-                self._popup_local_changes_overwritten(
-                    repo,
-                    RetryAction(type=RetryActionType.CHECKOUT, repo_id=repo.id, branch=name),
-                    overwritten_files_from_error(str(exc)),
-                )
+        current = self.state_for(repo).status.current_branch if self.state_for(repo).status else name
+        retry = RetryAction(type=RetryActionType.CHECKOUT, repo_id=repo.id, branch=name)
+
+        def work() -> str | tuple[str, list[str]]:
+            try:
+                checkout_branch(repo.path, branch)
+                return "ok"
+            except GitError as exc:
+                if not exc.is_local_changes_overwritten:
+                    raise
+                if not self.stash_and_drop_previous(repo, current or name):
+                    return (
+                        "overwritten",
+                        overwritten_files_from_error(f"{exc.stderr}\n{exc.stdout}\n{exc}"),
+                    )
+                checkout_branch(repo.path, branch)
+                entry = get_last_desktop_stash_entry_for_branch(repo.path, name)
+                if entry:
+                    stash_pop(repo.path, entry.name)
+                return "ok"
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
                 return
-            checkout_branch(repo.path, branch)
-            entry = get_last_desktop_stash_entry_for_branch(repo.path, name)
-            if entry:
-                stash_pop(repo.path, entry.name)
-        self.remember_branch(repo, name)
-        self.refresh_repository(repo)
+            if isinstance(result, tuple) and result and result[0] == "overwritten":
+                self._popup_local_changes_overwritten(repo, retry, list(result[1]))
+                return
+            self.remember_branch(repo, name)
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
+
+    def stash_then_checkout(self, repo: Repository, target: str) -> None:
+        """Stash the current branch, then check out ``target`` (Desktop overwrite-stash confirm)."""
+        current = self.state_for(repo).status.current_branch if self.state_for(repo).status else "unknown"
+
+        def work() -> None:
+            self.stash_and_drop_previous(repo, current or "unknown")
+            checkout_branch(repo.path, target)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                if isinstance(exc, GitError) and exc.is_local_changes_overwritten:
+                    self._popup_local_changes_overwritten(
+                        repo,
+                        RetryAction(type=RetryActionType.CHECKOUT, repo_id=repo.id, branch=target),
+                        overwritten_files_from_error(f"{exc.stderr}\n{exc.stdout}"),
+                    )
+                    return
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.remember_branch(repo, target)
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
+
+    def stash_all_changes(self, repo: Repository) -> None:
+        current = self.state_for(repo).status.current_branch if self.state_for(repo).status else "unknown"
+
+        def work() -> None:
+            self.stash_and_drop_previous(repo, current or "unknown")
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
 
     def rename_current_branch(self, repo: Repository, old: str, new: str) -> None:
         new = sanitize_ref_name(new)
