@@ -12,7 +12,8 @@ from github_desktop.remote_parsing import (
 from github_desktop import remote_parsing
 
 
-def test_endpoint_version_persists_in_local_storage(isolated_config) -> None:
+def test_endpoint_version_persists_in_local_storage(isolated_config, monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_DESKTOP_ALLOW_ENDPOINT_VERSION_PERSIST", "1")
     endpoint = "https://ghe.example/api/v3"
     update_endpoint_version(endpoint, "3.12.1")
     assert get_item("endpoint-version:https://ghe.example/api/v3") == "3.12.1"

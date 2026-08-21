@@ -46,13 +46,16 @@ def test_get_api_endpoint_matches_desktop() -> None:
     assert get_api_endpoint("https://github.mycompany.com/org/repo.git") == "https://github.mycompany.com/api/v3"
 
 
-def test_is_github_host_skips_probe_by_default() -> None:
+def test_is_github_host_skips_probe_by_default(isolated_config) -> None:
+    from github_desktop import remote_parsing
+
+    remote_parsing._endpoint_versions.clear()
     assert not is_github_host("https://ghe.internal.example/org/repo.git")
     assert is_github_host("https://github.com/desktop/desktop.git")
     assert not is_github_host("https://gitlab.com/org/repo.git")
 
 
-def test_probe_github_host_meta_header(monkeypatch) -> None:
+def test_probe_github_host_meta_header(isolated_config, monkeypatch) -> None:
     monkeypatch.setenv("GITHUB_DESKTOP_ALLOW_META_PROBE", "1")
     seen: list[str] = []
 
@@ -83,7 +86,7 @@ def test_probe_github_host_meta_header(monkeypatch) -> None:
     assert is_github_host(url, probe=True) is True
 
 
-def test_probe_github_host_http_error_still_checks_header(monkeypatch) -> None:
+def test_probe_github_host_http_error_still_checks_header(isolated_config, monkeypatch) -> None:
     monkeypatch.setenv("GITHUB_DESKTOP_ALLOW_META_PROBE", "1")
     headers = Message()
     headers["X-GitHub-Request-Id"] = "from-error"

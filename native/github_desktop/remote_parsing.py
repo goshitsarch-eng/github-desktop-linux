@@ -107,6 +107,11 @@ def update_endpoint_version(endpoint: str, version: str) -> None:
     if _endpoint_versions.get(key_ep) == version:
         return
     _endpoint_versions[key_ep] = version
+    # Pytest must not write endpoint versions into the developer's real localStorage.
+    if os.environ.get("PYTEST_CURRENT_TEST") and os.environ.get(
+        "GITHUB_DESKTOP_ALLOW_ENDPOINT_VERSION_PERSIST"
+    ) != "1":
+        return
     try:
         from .local_storage import set_item
 
