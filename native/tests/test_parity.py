@@ -318,7 +318,11 @@ def test_window_actions_cover_menus() -> None:
         find_default_branch as find_default_branch_mod,
         find_branch_name as find_branch_name_mod,
         tags_to_push as tags_to_push_mod,
+        commit_url as commit_url_mod,
+        find_account as find_account_mod,
+        endpoint_capabilities as endpoint_capabilities_mod,
     )
+    from github_desktop.git import delimiter as git_delimiter_mod
 
     src += open(parse_pac_mod.__file__, encoding="utf-8").read()
     src += open(linux_proxy_mod.__file__, encoding="utf-8").read()
@@ -337,6 +341,10 @@ def test_window_actions_cover_menus() -> None:
     src += open(find_default_branch_mod.__file__, encoding="utf-8").read()
     src += open(find_branch_name_mod.__file__, encoding="utf-8").read()
     src += open(tags_to_push_mod.__file__, encoding="utf-8").read()
+    src += open(commit_url_mod.__file__, encoding="utf-8").read()
+    src += open(find_account_mod.__file__, encoding="utf-8").read()
+    src += open(endpoint_capabilities_mod.__file__, encoding="utf-8").read()
+    src += open(git_delimiter_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -887,5 +895,17 @@ def test_window_actions_cover_menus() -> None:
         "tags-to-push-",
         "VideoLinkFilter",
         "fuzzaldrin-plus",
+        "createCommitURL",
+        "findAccountForRemoteURL",
+        "Account.anonymous",
+        "endpointSatisfies",
+        "assumedGHESVersion",
+        "supportsRepoRules",
+        "supportsRerunningChecks",
+        "supportsAvatarsAPI",
+        "createLogParser",
+        "createForEachRefParser",
+        "splitBuffer",
+        "maxSize: 2500",
     ]:
         assert phrase in src

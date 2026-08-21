@@ -7,6 +7,7 @@ import re
 import time
 import urllib.parse
 
+from .endpoint_capabilities import supports_avatars_api
 from .models import Account, html_url_from_endpoint, is_dotcom_endpoint, is_ghe_endpoint, is_ghes_endpoint
 from .offset_from import offset_from_now
 
@@ -103,11 +104,14 @@ def avatar_urls(
         if resolved_login:
             urls.append(f"{GITHUB_LOGIN_AVATAR}/{urllib.parse.quote(resolved_login)}?s={size}")
     if email:
-        params: dict[str, str] = {"email": email, "s": str(size)}
-        if is_ghe_endpoint(ep) and avatar_token:
-            params["token"] = avatar_token
-        qs = urllib.parse.urlencode(params)
-        urls.append(f"{get_email_avatar_url(ep)}?{qs}")
+        if is_ghes_endpoint(ep) and not supports_avatars_api(ep):
+            params = None
+        else:
+            params = {"email": email, "s": str(size)}
+            if is_ghe_endpoint(ep) and avatar_token:
+                params["token"] = avatar_token
+            qs = urllib.parse.urlencode(params)
+            urls.append(f"{get_email_avatar_url(ep)}?{qs}")
         if is_dotcom_endpoint(ep):
             digest = hashlib.md5(email.strip().lower().encode("utf-8")).hexdigest()
             urls.append(f"https://www.gravatar.com/avatar/{digest}?s={size}&d=404")

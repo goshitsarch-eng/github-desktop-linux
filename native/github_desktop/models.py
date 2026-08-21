@@ -1391,6 +1391,11 @@ class Account:
             return "GitHub.com"
         return html_url_from_endpoint(self.endpoint)
 
+    @classmethod
+    def anonymous(cls) -> "Account":
+        """Desktop `Account.anonymous()` for unauthenticated public API access."""
+        return cls(login="", endpoint="https://api.github.com", token="", id=-1, plan="free")
+
 
 def enable_commit_message_generation(account: Account | None) -> bool:
     """Desktop `enableCommitMessageGeneration`: feature flag + Copilot Desktop entitlement."""

@@ -76,6 +76,7 @@ from ..models import (
     format_as_local_ref,
     get_old_path_or_default,
 )
+from .delimiter import create_for_each_ref_parser, create_log_parser
 from .diff import (
     format_discard_patch,
     format_partial_patch,
@@ -1150,25 +1151,30 @@ def lfs_patterns_from_gitattributes(repo: str) -> list[str]:
 
 def get_branches(repo: str, *prefixes: str) -> list[Branch]:
     prefixes = prefixes or ("refs/heads", "refs/remotes")
-    fmt = "%00".join(
-        ["%(refname)", "%(refname:short)", "%(upstream:short)", "%(objectname)", "%(symref)"]
+    parser = create_for_each_ref_parser(
+        {
+            "refname": "%(refname)",
+            "short": "%(refname:short)",
+            "upstream": "%(upstream:short)",
+            "sha": "%(objectname)",
+            "symref": "%(symref)",
+        }
     )
     result = git(
-        ["for-each-ref", f"--format=%00{fmt}%00", *prefixes],
+        ["for-each-ref", *parser.format_args, *prefixes],
         repo,
         success_exit_codes={0, 128},
         name="getBranches",
     )
     if result.exit_code == 128:
         return []
-    records = result.stdout.split("\0")
     branches: list[Branch] = []
-    # format starts with %00 so first record is empty
-    i = 1
-    fields = 5
-    while i + fields <= len(records):
-        full, short, upstream, sha, symref = records[i : i + fields]
-        i += fields + 1  # skip newline record
+    for entry in parser.parse(result.stdout):
+        full = entry.get("refname") or ""
+        short = entry.get("short") or ""
+        upstream = entry.get("upstream") or ""
+        sha = entry.get("sha") or ""
+        symref = entry.get("symref") or ""
         if not full or symref:
             continue
         if full.startswith("refs/heads/"):
@@ -1463,9 +1469,17 @@ def fetch_refspec(
 
 def get_branches_differing_from_upstream(repo: str) -> list[TrackingBranch]:
     """Local branches whose tip SHA differs from their upstream (excludes HEAD)."""
-    fmt = "%(refname)%00%(objectname)%00%(upstream)%00%(symref)%00%(HEAD)"
+    parser = create_for_each_ref_parser(
+        {
+            "fullName": "%(refname)",
+            "sha": "%(objectname)",
+            "upstream": "%(upstream)",
+            "symref": "%(symref)",
+            "head": "%(HEAD)",
+        }
+    )
     result = git(
-        ["for-each-ref", f"--format={fmt}", "refs/heads", "refs/remotes"],
+        ["for-each-ref", *parser.format_args, "refs/heads", "refs/remotes"],
         repo,
         success_exit_codes={0, 128},
         name="getBranchesDifferingFromUpstream",
@@ -1474,14 +1488,13 @@ def get_branches_differing_from_upstream(repo: str) -> list[TrackingBranch]:
         return []
     local: list[tuple[str, str, str]] = []
     remote_shas: dict[str, str] = {}
-    for record in result.stdout.split("\n"):
-        parts = record.split("\0")
-        if len(parts) < 5:
+    for entry in parser.parse(result.stdout):
+        full = entry.get("fullName") or ""
+        sha = entry.get("sha") or ""
+        upstream = entry.get("upstream") or ""
+        if not full or entry.get("symref") or entry.get("head") == "*":
             continue
-        full, sha, upstream, symref, head = parts[:5]
-        if not full or symref or head == "*":
-            continue
-        if full.startswith("refs/heads/"):
+        if full.startswith("refs/heads"):
             if upstream:
                 local.append((full, sha, upstream))
         else:
@@ -2163,39 +2176,40 @@ def stash_drop(repo: str, stash_ref: str) -> None:
 
 
 def get_stashes(repo: str) -> tuple[list[StashEntry], int]:
-    fields = ["%gD", "%H", "%gs", "%T", "%P"]
-    fmt = "%x00".join(fields)
+    parser = create_log_parser(
+        {
+            "name": "%gD",
+            "stashSha": "%H",
+            "message": "%gs",
+            "tree": "%T",
+            "parents": "%P",
+        }
+    )
     result = git(
-        ["log", "-g", "-z", f"--format={fmt}", "refs/stash", "--"],
+        ["log", "-g", *parser.format_args, "refs/stash", "--"],
         repo,
         success_exit_codes={0, 128},
         name="getStashes",
     )
     if result.exit_code == 128:
         return [], 0
-    records = [r for r in result.stdout.split("\0")]
-    if records and records[0] == "":
-        records = records[1:]
     entries: list[StashEntry] = []
-    total = 0
     marker_re = re.compile(r"!!GitHub_Desktop<(.+)>$")
-    for i in range(0, len(records) - 4, 5):
-        name, sha, message, tree, parents = records[i : i + 5]
-        if not name:
-            continue
-        total += 1
-        match = marker_re.search(message)
+    parsed = parser.parse(result.stdout)
+    for entry in parsed:
+        match = marker_re.search(entry.get("message") or "")
         if match:
+            parents = entry.get("parents") or ""
             entries.append(
                 StashEntry(
-                    name=name,
-                    stash_sha=sha,
+                    name=entry.get("name") or "",
+                    stash_sha=entry.get("stashSha") or "",
                     branch_name=match.group(1),
-                    tree=tree,
+                    tree=entry.get("tree") or "",
                     parents=parents.split() if parents else [],
                 )
             )
-    return entries, total
+    return entries, len(parsed)
 
 
 def get_stashed_files(repo: str, stash_sha: str) -> list[CommittedFileChange]:
@@ -3023,17 +3037,22 @@ def get_branches_pointed_at(repo: str, commitish: str) -> list[str] | None:
 
 def get_merged_branches(repo: str, branch_name: str) -> dict[str, str]:
     canonical = format_as_local_ref(branch_name)
-    fmt = "%(objectname)%00%(refname)"
+    parser = create_for_each_ref_parser(
+        {
+            "sha": "%(objectname)",
+            "canonicalRef": "%(refname)",
+        }
+    )
     result = git(
-        ["branch", f"--format={fmt}", "--merged", branch_name],
+        ["branch", *parser.format_args, "--merged", branch_name],
         repo,
         name="mergedBranches",
     )
     merged: dict[str, str] = {}
-    for line in result.stdout.splitlines():
-        sha, _, ref = line.partition("\0")
+    for entry in parser.parse(result.stdout):
+        ref = entry.get("canonicalRef") or ""
         if ref and ref != canonical:
-            merged[ref] = sha
+            merged[ref] = entry.get("sha") or ""
     return merged
 
 

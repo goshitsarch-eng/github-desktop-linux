@@ -3889,8 +3889,8 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
         enterprise = bool(repo.github and not is_dotcom_endpoint(repo.github.endpoint))
 
         def view_on_github() -> None:
-            if repo.github and non_local:
-                open_external(f"{repo.github.html_url}/blob/{non_local}/{file.path}")
+            if non_local:
+                store.view_commit_on_github(repo, non_local, file.path)
 
         items = committed_file_context_items(
             full_path=full,

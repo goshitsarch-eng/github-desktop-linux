@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterable, Literal
 from urllib.parse import quote
 
+from ..endpoint_capabilities import supports_repo_rules
 from ..models import Account, AheadBehind, GitHubRepository, Repository
 
 
@@ -139,10 +140,8 @@ def use_repo_rules_logic(account: Account | None, repository: Repository) -> boo
     if account is None or repository is None or repository.github is None:
         return False
     gh = repository.github
-    endpoint = (gh.endpoint or account.endpoint or "").lower()
-    if "github.com" not in endpoint and "api.github.com" not in endpoint:
-        # GitHub Enterprise Server may still expose rulesets; try anyway.
-        pass
+    if not supports_repo_rules(gh.endpoint or account.endpoint):
+        return False
     if account.login == gh.owner and (not account.plan or account.plan == "free") and gh.private:
         return False
     return True

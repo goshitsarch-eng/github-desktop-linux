@@ -7,6 +7,7 @@ import os
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -159,6 +160,8 @@ from .enterprise import (
     is_github_dotcom_address,
     validate_url,
 )
+from .commit_url import create_commit_url
+from .find_account import find_account_for_remote_url
 from .find_branch_name import find_remote_branch_name
 from .find_default_branch import find_default_branch, is_forked_repository_contributing_to_parent
 from .find_default_remote import find_default_remote
@@ -406,7 +409,8 @@ class AppStore:
         self._next_id = 1
         self._background_fetch_interval = BACKGROUND_FETCH_DEFAULT_INTERVAL
         self._background_fetch_in_flight = False
-        self._ahead_behind_cache: dict[tuple[str, str, str], AheadBehind | None] = {}
+        self._ahead_behind_cache: OrderedDict[tuple[str, str, str], AheadBehind | None] = OrderedDict()
+        # Desktop AheadBehindStore QuickLRU `maxSize: 2500`
         self._credential_sign_in_finish: list[Callable[[Account | None], None]] = []
         self._issue_refresh_at: dict[int, float] = {}
         self._load_accounts()
@@ -1006,7 +1010,7 @@ class AppStore:
         cloning = CloningRepository(id=clone_id, path=path, url=url)
         self.cloning.append(cloning)
         self.select_cloning(clone_id)
-        account = account or account_for_remote(self.accounts, url)
+        account = account or find_account_for_remote_url(url, self.accounts)
         holder: list = []
         cancel = threading.Event()
         self._clone_processes[clone_id] = holder
@@ -2553,16 +2557,21 @@ class AppStore:
         self.emit()
 
     def ahead_behind_between(self, repo: Repository, from_sha: str | None, to_sha: str | None) -> AheadBehind | None:
-        """Desktop `aheadBehindStore.tryGetAheadBehind` cache keyed by commit SHAs."""
+        """Desktop `aheadBehindStore.tryGetAheadBehind` LRU cache keyed by commit SHAs."""
         if not from_sha or not to_sha:
             return None
         if from_sha == to_sha:
             return AheadBehind(ahead=0, behind=0)
         key = (repo.path, from_sha, to_sha)
-        if key in self._ahead_behind_cache:
-            return self._ahead_behind_cache[key]
+        cache = self._ahead_behind_cache
+        if key in cache:
+            cache.move_to_end(key)
+            return cache[key]
         result = get_ahead_behind_range(repo.path, f"{from_sha}...{to_sha}")
-        self._ahead_behind_cache[key] = result
+        cache[key] = result
+        cache.move_to_end(key)
+        while len(cache) > 2500:
+            cache.popitem(last=False)
         return result
 
     def set_compare_mode(self, repo: Repository, mode: ComparisonMode) -> None:
@@ -3174,9 +3183,10 @@ class AppStore:
         self.state_for(repo).commit_to_amend = None
         self.emit()
 
-    def view_commit_on_github(self, repo: Repository, sha: str) -> None:
-        if repo.github:
-            open_external(f"{repo.github.html_url}/commit/{sha}")
+    def view_commit_on_github(self, repo: Repository, sha: str, file_path: str | None = None) -> None:
+        url = create_commit_url(repo.github, sha, file_path)
+        if url:
+            open_external(url)
 
     def reveal_in_file_manager(self, repo: Repository, relpath: str) -> None:
         full = os.path.join(repo.path, relpath)

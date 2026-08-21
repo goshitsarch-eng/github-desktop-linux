@@ -3074,8 +3074,8 @@ class MainWindow(Adw.ApplicationWindow):
         view_enabled = bool(repo.github and len(selected) == 1 and sha and sha not in local)
 
         def view_on_github() -> None:
-            if repo.github and sha:
-                open_external(f"{repo.github.html_url}/blob/{sha}/{file.path}")
+            if sha:
+                self.store.view_commit_on_github(repo, sha, file.path)
 
         items = committed_file_context_items(
             full_path=full,

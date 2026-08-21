@@ -32,6 +32,10 @@ def test_use_repo_rules_logic_skips_free_private_owner() -> None:
     collaborator = Account(login="friend", endpoint="https://api.github.com", token="x", plan="free")
     assert use_repo_rules_logic(collaborator, _repo(private=True)) is True
     assert use_repo_rules_logic(None, _repo()) is False
+    ghes = Account(login="octocat", endpoint="https://ghe.io/api/v3", token="x", plan="pro")
+    ghes_repo = _repo()
+    ghes_repo.github.endpoint = "https://ghe.io/api/v3"
+    assert use_repo_rules_logic(ghes, ghes_repo) is False
 
 
 def test_parse_commit_message_and_branch_patterns() -> None:

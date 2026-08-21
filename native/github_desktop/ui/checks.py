@@ -22,6 +22,10 @@ from ..github.ci_checks import (
     group_check_runs_by_workflow,
     is_failure,
 )
+from ..endpoint_capabilities import (
+    supports_rerunning_checks,
+    supports_rerunning_individual_or_failed_checks,
+)
 from ..models import CheckStep, PopupType, RefCheck, is_dotcom_endpoint
 from ..shells import open_external
 from ..store import AppStore
@@ -315,10 +319,12 @@ def _popover_body(
         popover.popdown()
         store.show_popup(PopupType.CI_CHECK_RUN_RERUN, checks=[run], failed_only=False)
 
-    box.append(_grouped_list(runs, store=store, repo=repo, on_rerun_one=rerun_one))
+    endpoint = repo.github.endpoint if repo and getattr(repo, "github", None) else ""
+    individual = supports_rerunning_individual_or_failed_checks(endpoint)
+    box.append(_grouped_list(runs, store=store, repo=repo, on_rerun_one=rerun_one if individual else None))
     failed = failing_checks(runs)
     actions = Gtk.Box(spacing=8)
-    if failed:
+    if failed and individual:
         rerun = Gtk.Button(label=f"Re-run {len(failed)} failed check(s)")
         rerun.add_css_class("suggested-action")
 
@@ -333,15 +339,16 @@ def _popover_body(
 
         rerun.connect("clicked", do_rerun)
         actions.append(rerun)
-    rerun_all = Gtk.Button(label="Re-run all checks")
-    rerun_all.connect(
-        "clicked",
-        lambda *_: (
-            popover.popdown(),
-            store.show_popup(PopupType.CI_CHECK_RUN_RERUN, checks=runs, failed_only=False),
-        ),
-    )
-    actions.append(rerun_all)
+    if supports_rerunning_checks(endpoint):
+        rerun_all = Gtk.Button(label="Re-run all checks")
+        rerun_all.connect(
+            "clicked",
+            lambda *_: (
+                popover.popdown(),
+                store.show_popup(PopupType.CI_CHECK_RUN_RERUN, checks=runs, failed_only=False),
+            ),
+        )
+        actions.append(rerun_all)
     state = store.state_for(repo)
     if state.current_pull_request:
         pr = Gtk.Button(label="View checks on GitHub")
