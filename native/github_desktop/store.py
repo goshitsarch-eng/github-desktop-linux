@@ -434,6 +434,7 @@ class AppStore:
         self.author_email: str | None = None
         self._global_author_loading = False
         self.foldout: FoldoutType | None = None
+        self.repository_filter_text: str = ""  # Desktop `repositoryFilterText`
         self._popups = PopupManager()
         self.banner: Banner | None = None
         self.cached_repo_rulesets: dict[int, dict] = {}
@@ -806,11 +807,49 @@ class AppStore:
         self.persist_settings()
         self.emit()
 
+    def set_sidebar_width(self, width: int) -> None:
+        """Desktop `_setSidebarWidth` (persist only; the GTK paned already moved)."""
+        width = max(220, int(width))
+        if self.settings.sidebar_width == width:
+            return
+        self.settings.sidebar_width = width
+        self.persist_settings()
+
     def reset_sidebar_width(self) -> None:
         """Desktop `_resetSidebarWidth`."""
         self.settings.sidebar_width = defaultSidebarWidth
         self.persist_settings()
         self.emit()
+
+    def show_foldout(self, foldout: FoldoutType) -> None:
+        """Desktop `_showFoldout`. Opening the repository list starts indicator refresh."""
+        already = self.foldout == foldout
+        self.foldout = foldout
+        if (
+            foldout == FoldoutType.REPOSITORY
+            and self.settings.repository_indicators_enabled
+            and not already
+        ):
+            self.refresh_repo_indicators()
+        if not already:
+            self.emit()
+
+    def close_foldout(self, foldout: FoldoutType | None = None) -> None:
+        """Desktop `_closeFoldout` (`None` is `_closeCurrentFoldout`)."""
+        if self.foldout is None:
+            return
+        if foldout is not None and self.foldout != foldout:
+            return
+        self.foldout = None
+        self.emit()
+
+    def close_current_foldout(self) -> None:
+        """Desktop `_closeCurrentFoldout`."""
+        self.close_foldout(None)
+
+    def set_repository_filter_text(self, text: str) -> None:
+        """Desktop `_setRepositoryFilterText`."""
+        self.repository_filter_text = text
 
     def reset_commit_summary_width(self) -> None:
         """Desktop `_resetCommitSummaryWidth`."""
@@ -1074,7 +1113,7 @@ class AppStore:
             self._remember_recent_repository(previous_id, repo_id)
         self.selected_cloning_id = None
         self.selected_repository_id = repo_id
-        self.foldout = None
+        self.foldout = None  # Desktop `closeFoldout(FoldoutType.Repository)` on selection
         self.persist_settings()
         self.emit()
         repo = self.selected_repository
@@ -4668,10 +4707,10 @@ class AppStore:
         self._run_ui(work, done)
 
     def _network_remote(self, repo: Repository, remotes: Sequence[Remote] | None = None, *, prefer_upstream: bool = False) -> Remote | None:
+        # Cache-only when remotes are omitted so this is safe on the GTK thread.
+        # Push/pull/fetch workers pass remotes collected off-thread.
         if remotes is None:
             remotes = list(self.state_for(repo).remotes)
-            if not remotes:
-                remotes = get_remotes(repo.path)
         else:
             remotes = list(remotes)
         origin = next((r for r in remotes if r.name == "origin"), remotes[0] if remotes else None)

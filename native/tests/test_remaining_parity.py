@@ -360,6 +360,10 @@ def test_reset_sidebar_width_matches_desktop(isolated_config) -> None:
     store.settings.sidebar_width = 400
     store.reset_sidebar_width()
     assert store.settings.sidebar_width == 250
+    store.set_sidebar_width(400)
+    assert store.settings.sidebar_width == 400
+    store.set_sidebar_width(100)
+    assert store.settings.sidebar_width == 220
     store.settings.commit_summary_width = 500
     store.reset_commit_summary_width()
     assert store.settings.commit_summary_width == 250
@@ -934,4 +938,56 @@ def test_load_repository_git_config_includes_remotes(isolated_config, git_repo: 
     remotes = list(captured.get("remotes") or [])
     assert remotes
     assert remotes[0].name == "origin"
+
+
+def test_show_foldout_matches_desktop(isolated_config, git_repo: Path, monkeypatch) -> None:
+    from github_desktop.models import FoldoutType
+
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    called: list[bool] = []
+    monkeypatch.setattr(store, "refresh_repo_indicators", lambda **_k: called.append(True))
+    store.show_foldout(FoldoutType.REPOSITORY)
+    assert store.foldout == FoldoutType.REPOSITORY
+    assert called == [True]
+    store.show_foldout(FoldoutType.REPOSITORY)
+    assert called == [True]
+    store.close_foldout(FoldoutType.BRANCH)
+    assert store.foldout == FoldoutType.REPOSITORY
+    store.close_foldout(FoldoutType.REPOSITORY)
+    assert store.foldout is None
+    store.show_foldout(FoldoutType.REPOSITORY)
+    repo = store.selected_repository
+    assert repo is not None
+    store.select_repository(repo.id)
+    assert store.foldout is None
+    store.settings.repository_indicators_enabled = False
+    store.show_foldout(FoldoutType.REPOSITORY)
+    assert called == [True, True]
+
+
+def test_set_repository_filter_text_matches_desktop(isolated_config) -> None:
+    store = AppStore()
+    assert store.repository_filter_text == ""
+    store.set_repository_filter_text("desktop")
+    assert store.repository_filter_text == "desktop"
+
+
+def test_network_remote_uses_cached_remotes(isolated_config, git_repo: Path, monkeypatch) -> None:
+    import github_desktop.store as store_module
+    from github_desktop.models import Remote
+
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    store.state_for(repo).remotes = []
+
+    def boom(*_a, **_k):
+        raise AssertionError("live get_remotes on GTK thread")
+
+    monkeypatch.setattr(store_module, "get_remotes", boom)
+    assert store._network_remote(repo) is None
+    origin = Remote(name="origin", url="https://github.com/me/app.git")
+    assert store._network_remote(repo, [origin]) is origin
 

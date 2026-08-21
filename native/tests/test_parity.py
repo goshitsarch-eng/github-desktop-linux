@@ -1292,5 +1292,11 @@ def test_window_actions_cover_menus() -> None:
         "Could not determine repository type",
         "Selected commit file list",
         "No files in commit",
+        "_showFoldout",
+        "_closeFoldout",
+        "_setSidebarWidth",
+        "_setRepositoryFilterText",
+        "repositoryFilterText",
+        "foldoutWidth",
     ]:
         assert phrase in src

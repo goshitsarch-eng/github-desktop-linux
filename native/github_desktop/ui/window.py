@@ -20,6 +20,7 @@ from ..models import (
     ComparisonMode,
     ComputedAction,
     DiffSelectionType,
+    FoldoutType,
     ForcePushBranchState,
     HistoryTabMode,
     ManualConflictResolution,
@@ -216,6 +217,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.store = store
         self.set_default_size(store.settings.window_width, store.settings.window_height)
         self._building = False
+        self._applying_sidebar_width = False
         self._light_update = False
         self._keyboard_reorder = None
         self._toast = Adw.ToastOverlay()
@@ -353,6 +355,7 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self._stack.set_visible_child_name("repo")
             self._refresh_repo()
+        self._sync_repository_foldout()
         if self.store.banner:
             kind = self.store.banner.type
             self._banner.set_title(format_banner_text(kind, self.store.banner))
@@ -776,8 +779,56 @@ class MainWindow(Adw.ApplicationWindow):
             self.store.undo_last_commit(repo)
 
     def _toggle_repo_sidebar(self) -> None:
-        if hasattr(self, "_split"):
-            self._split.set_show_sidebar(not self._split.get_show_sidebar())
+        """Desktop `onRepositoryDropdownStateChanged` — toggle FoldoutType.Repository."""
+        if self.store.foldout == FoldoutType.REPOSITORY:
+            self.store.close_foldout(FoldoutType.REPOSITORY)
+        else:
+            self.store.show_foldout(FoldoutType.REPOSITORY)
+
+    def _sidebar_foldout_width(self) -> int:
+        """Desktop `clamp(sidebarWidth)` with min 220."""
+        return max(220, int(self.store.settings.sidebar_width or defaultSidebarWidth))
+
+    def _sync_repository_foldout_width(self) -> None:
+        """Desktop `foldoutWidth = clamp(this.state.sidebarWidth)` for the repository list."""
+        if not hasattr(self, "_split"):
+            return
+        width = self._sidebar_foldout_width()
+        self._split.set_min_sidebar_width(width)
+        self._split.set_max_sidebar_width(width)
+
+    def _sync_repository_foldout(self) -> None:
+        if not hasattr(self, "_split"):
+            return
+        want = self.store.foldout == FoldoutType.REPOSITORY
+        if bool(self._split.get_show_sidebar()) != want:
+            self._split.set_show_sidebar(want)
+        self._sync_repository_foldout_width()
+
+    def _on_split_show_sidebar(self, split, *_args: object) -> None:
+        showing = bool(split.get_show_sidebar())
+        if showing:
+            if self.store.foldout != FoldoutType.REPOSITORY:
+                self.store.show_foldout(FoldoutType.REPOSITORY)
+        elif self.store.foldout == FoldoutType.REPOSITORY:
+            self.store.close_foldout(FoldoutType.REPOSITORY)
+
+    def _on_sidebar_paned_position(self, paned, *_args: object) -> None:
+        """Desktop `setSidebarWidth` while dragging Changes/History."""
+        if getattr(self, "_building", False) or getattr(self, "_applying_sidebar_width", False):
+            return
+        pos = paned.get_position()
+        if pos <= 0:
+            return
+        visible = ""
+        if hasattr(self, "_view_stack"):
+            visible = self._view_stack.get_visible_child_name() or ""
+        if paned is getattr(self, "_history_paned", None) and visible != "history":
+            return
+        if paned is getattr(self, "_changes_paned", None) and visible == "history":
+            return
+        self.store.set_sidebar_width(pos)
+        self._sync_repository_foldout_width()
 
     def _build_welcome(self) -> Gtk.Widget:
         page = Adw.StatusPage()
@@ -979,9 +1030,11 @@ class MainWindow(Adw.ApplicationWindow):
     def _build_repo_page(self) -> Gtk.Widget:
         self._split = Adw.OverlaySplitView()
         self._split.set_sidebar(self._build_repo_list())
-        self._split.set_sidebar_width_fraction(0.22)
-        self._split.set_max_sidebar_width(320)
+        # Desktop repository foldout width is clamp(sidebarWidth), min 220.
+        # Pin min=max so the list is not independently resizable.
+        self._sync_repository_foldout_width()
         self._split.set_show_sidebar(False)
+        self._split.connect("notify::show-sidebar", self._on_split_show_sidebar)
 
         toolbar = Adw.ToolbarView()
         header = Adw.HeaderBar()
@@ -1369,7 +1422,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _build_repo_list(self) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         search = Gtk.SearchEntry()
-        search.set_placeholder_text("Filter repositories")
+        search.set_placeholder_text("Filter")
         box.append(search)
         scroller = Gtk.ScrolledWindow(vexpand=True)
         self._repo_list = Gtk.ListBox()
@@ -1377,7 +1430,7 @@ class MainWindow(Adw.ApplicationWindow):
         scroller.set_child(self._repo_list)
         box.append(scroller)
         self._repo_filter = search
-        search.connect("search-changed", lambda *_: self._refresh_repo_list())
+        search.connect("search-changed", self._on_repository_filter_text)
         add_box = Gtk.Box(spacing=6)
         for label, action in (("Add", "win.add-local-repository"), ("Clone", "win.clone-repository"), ("New", "win.new-repository")):
             b = Gtk.Button(label=label)
@@ -1390,7 +1443,7 @@ class MainWindow(Adw.ApplicationWindow):
         paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         paned.set_resize_start_child(False)
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        left.set_size_request(280, -1)
+        left.set_size_request(220, -1)
         self._filter = Gtk.SearchEntry()
         self._filter.set_placeholder_text("Filter changed files")
         self._filter.connect("search-changed", self._on_changes_filter_text)
@@ -1604,6 +1657,7 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception:
             pass
         attach_paned_reset(paned, self._reset_sidebar_width)
+        paned.connect("notify::position", self._on_sidebar_paned_position)
         self._diff_view = DiffViewer(
             interactive=True,
             on_line_toggle=self._on_line_toggle,
@@ -1795,6 +1849,7 @@ class MainWindow(Adw.ApplicationWindow):
         except Exception:
             pass
         attach_paned_reset(paned, self._reset_sidebar_width)
+        paned.connect("notify::position", self._on_sidebar_paned_position)
         return paned
 
     def _on_view_changed(self, *_args: object) -> None:
@@ -2147,7 +2202,12 @@ class MainWindow(Adw.ApplicationWindow):
         return menu
 
     def _refresh_repo_list(self) -> None:
-        needle = self._repo_filter.get_text() if hasattr(self, "_repo_filter") else ""
+        if hasattr(self, "_repo_filter"):
+            needle = self._repo_filter.get_text()
+            if needle != self.store.repository_filter_text:
+                self.store.repository_filter_text = needle
+        else:
+            needle = self.store.repository_filter_text
         while True:
             row = self._repo_list.get_first_child()
             if row is None:
@@ -2374,6 +2434,12 @@ class MainWindow(Adw.ApplicationWindow):
         if repo:
             self._update_commit_placeholder(repo, state)
         self._update_copilot_button(state)
+
+    def _on_repository_filter_text(self, *_args: object) -> None:
+        """Desktop `onRepositoryFilterTextChanged` / `_setRepositoryFilterText`."""
+        if hasattr(self, "_repo_filter"):
+            self.store.set_repository_filter_text(self._repo_filter.get_text())
+        self._refresh_repo_list()
 
     def _on_changes_filter_text(self, *_args: object) -> None:
         if self._building:
@@ -4508,14 +4574,19 @@ class MainWindow(Adw.ApplicationWindow):
         if paned is None:
             return
         pos = paned.get_position()
-        paned.set_position(max(180, min(720, pos + delta)))
+        paned.set_position(max(220, min(720, pos + delta)))
 
     def _reset_sidebar_width(self) -> None:
-        self.store.reset_sidebar_width()
-        if hasattr(self, "_changes_paned"):
-            self._changes_paned.set_position(max(220, defaultSidebarWidth))
-        if hasattr(self, "_history_paned"):
-            self._history_paned.set_position(max(220, defaultSidebarWidth))
+        self._applying_sidebar_width = True
+        try:
+            self.store.reset_sidebar_width()
+            if hasattr(self, "_changes_paned"):
+                self._changes_paned.set_position(max(220, defaultSidebarWidth))
+            if hasattr(self, "_history_paned"):
+                self._history_paned.set_position(max(220, defaultSidebarWidth))
+            self._sync_repository_foldout_width()
+        finally:
+            self._applying_sidebar_width = False
 
     def _reset_commit_summary_width(self) -> None:
         """Desktop `onReset` for the selected-commit file list (`commitSummaryWidth`)."""
