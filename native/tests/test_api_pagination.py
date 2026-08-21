@@ -321,3 +321,135 @@ def test_create_repository_org_and_network_errors() -> None:
     api.request = fail_net  # type: ignore[method-assign]
     with pytest.raises(APIError, match="Unable to publish repository"):
         api.create_repository("hello")
+
+
+def test_fetch_protected_branches_is_a_single_get() -> None:
+    api = GitHubAPI("https://api.github.com", "tok")
+    seen: list[str] = []
+
+    def fake_request(method, path, **kwargs):
+        seen.append(path)
+        payload = [{"name": "release"}, {"name": "main"}]
+        if kwargs.get("return_headers"):
+            return payload, {"Link": '</repos/o/r/branches?page=2>; rel="next"'}
+        return payload
+
+    api.request = fake_request  # type: ignore[method-assign]
+    assert api.fetch_protected_branches("o", "r") == ["release", "main"]
+    assert len(seen) == 1
+    assert "protected=true" in seen[0]
+
+
+def test_fetch_user_by_login_404_is_none_other_errors_raise() -> None:
+    from github_desktop.http_status import HttpStatusCode
+
+    api = GitHubAPI("https://api.github.com", "tok")
+
+    def not_found(method, path, **kwargs):
+        raise APIError("gone", status=HttpStatusCode.NotFound)
+
+    api.request = not_found  # type: ignore[method-assign]
+    assert api.fetch_user_by_login("ghost") is None
+
+    def fail(method, path, **kwargs):
+        raise APIError("boom", status=500)
+
+    api.request = fail  # type: ignore[method-assign]
+    with pytest.raises(APIError, match="boom"):
+        api.fetch_user_by_login("octocat")
+
+
+def test_fetch_pull_request_comments_is_a_single_get() -> None:
+    api = GitHubAPI("https://api.github.com", "tok")
+    seen: list[str] = []
+
+    def fake_request(method, path, **kwargs):
+        seen.append(path)
+        payload = [{"id": 1}]
+        if kwargs.get("return_headers"):
+            return payload, {"Link": '</repos/o/r/pulls/3/comments?page=2>; rel="next"'}
+        return payload
+
+    api.request = fake_request  # type: ignore[method-assign]
+    assert api.fetch_pull_request_comments("o", "r", 3) == [{"id": 1}]
+    assert seen == ["/repos/o/r/pulls/3/comments"]
+
+
+def test_get_avatar_token_logs_and_returns_none(caplog) -> None:
+    import logging
+
+    api = GitHubAPI("https://api.github.com", "tok")
+
+    def boom(*_a, **_k):
+        raise APIError("nope", status=500)
+
+    api.get = boom  # type: ignore[method-assign]
+    with caplog.at_level(logging.DEBUG, logger="github_desktop"):
+        assert api.get_avatar_token() is None
+    assert "Failed to load avatar token" in caplog.text
+
+
+def test_fetch_check_suite_logs_on_failure(caplog) -> None:
+    import logging
+
+    api = GitHubAPI("https://api.github.com", "tok")
+
+    def boom(*_a, **_k):
+        raise APIError("nope", status=404)
+
+    api.get = boom  # type: ignore[method-assign]
+    with caplog.at_level(logging.DEBUG, logger="github_desktop"):
+        assert api.fetch_check_suite("o", "r", 9) is None
+    assert "[fetchCheckSuite] Failed fetch check suite id 9 (o/r)" in caplog.text
+
+
+def test_fetch_repo_rules_skip_log_when_not_enabled(caplog) -> None:
+    import logging
+
+    from github_desktop.http_status import HttpStatusCode
+
+    api = GitHubAPI("https://api.github.com", "tok")
+    body = '{"message": "Upgrade to GitHub Pro or make this repository public to enable this feature."}'
+
+    def forbidden(*_a, **_k):
+        raise APIError("nope", status=HttpStatusCode.Forbidden, body=body)
+
+    api.get = forbidden  # type: ignore[method-assign]
+    with caplog.at_level(logging.INFO, logger="github_desktop"):
+        assert api.fetch_repo_rules_for_branch("o", "r", "main") == []
+        assert api.fetch_all_repo_rulesets("o", "r") is None
+    assert "[fetchRepoRulesForBranch]" not in caplog.text
+    assert "[fetchAllRepoRulesets]" not in caplog.text
+
+
+def test_fetch_repo_rules_logs_other_errors(caplog) -> None:
+    import logging
+
+    api = GitHubAPI("https://api.github.com", "tok")
+
+    def fail(*_a, **_k):
+        raise APIError("boom", status=500)
+
+    api.get = fail  # type: ignore[method-assign]
+    with caplog.at_level(logging.INFO, logger="github_desktop"):
+        assert api.fetch_repo_rules_for_branch("o", "r", "main") == []
+        assert api.fetch_repo_ruleset("o", "r", 7) is None
+        assert api.fetch_all_repo_rulesets("o", "r") is None
+    assert "[fetchRepoRulesForBranch] unable to fetch repo rules for branch: main | /repos/o/r/rules/branches/main" in caplog.text
+    assert "[fetchRepoRuleset] unable to fetch repo ruleset for ID: 7 | /repos/o/r/rulesets/7" in caplog.text
+    assert "[fetchAllRepoRulesets] unable to fetch all repo rulesets | /repos/o/r/rulesets" in caplog.text
+
+
+def test_fork_repository_logs_and_reraises(caplog) -> None:
+    import logging
+
+    api = GitHubAPI("https://api.github.com", "tok")
+
+    def boom(*_a, **_k):
+        raise APIError("nope", status=500)
+
+    api.post = boom  # type: ignore[method-assign]
+    with caplog.at_level(logging.ERROR, logger="github_desktop"):
+        with pytest.raises(APIError, match="nope"):
+            api.fork_repository("o", "r")
+    assert "forkRepository: failed to fork o/r at endpoint: https://api.github.com" in caplog.text

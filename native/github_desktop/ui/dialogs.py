@@ -4533,14 +4533,17 @@ def show_bypass(parent: Gtk.Window, store: AppStore, payload: dict[str, Any], on
             return
         closed["done"] = True
         dialog.close()
-        from ..github.api import GitHubAPI
-
         placeholder_id = payload.get("placeholder_id") or (
             getattr(secret, "id", None) if secret is not None else None
         )
+        bypass_url = str(
+            payload.get("bypass_url") or (getattr(secret, "bypass_url", None) if secret is not None else "") or ""
+        )
         try:
-            GitHubAPI.from_account(account).create_push_protection_bypass(
-                repo.github.owner, repo.github.name, selected["reason"].value, placeholder_id=placeholder_id
+            store.create_push_protection_bypass(
+                selected["reason"].value,
+                placeholder_id=placeholder_id,
+                bypass_url=bypass_url,
             )
         except Exception as exc:
             store.show_popup(PopupType.ERROR, error=str(exc))

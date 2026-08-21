@@ -20,10 +20,12 @@ def stealth_email_host_for_endpoint(endpoint: str) -> str:
 
 
 def stealth_email_for_user(user_id: int, login: str, endpoint: str) -> str:
+    """Desktop `getStealthEmailForUser`."""
     return f"{user_id}+{login}@{stealth_email_host_for_endpoint(endpoint)}"
 
 
 def legacy_stealth_email_for_user(login: str, endpoint: str) -> str:
+    """Desktop `getLegacyStealthEmailForUser`."""
     return f"{login}@{stealth_email_host_for_endpoint(endpoint)}"
 
 

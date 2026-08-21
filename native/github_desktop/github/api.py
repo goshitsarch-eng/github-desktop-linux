@@ -135,6 +135,29 @@ def emit_token_invalidated(endpoint: str, token: str) -> None:
         callback(endpoint, token)
 
 
+def _api_error_message(error: APIError) -> str:
+    raw = error.body or ""
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict) and parsed.get("message"):
+            return str(parsed["message"])
+    except Exception:
+        pass
+    return raw or str(error)
+
+
+def is_rulesets_not_enabled_error(error: Any) -> bool:
+    """Desktop `isRulesetsNotEnabledError`: HTTP 403 with an upgrade-to-enable message."""
+    if not isinstance(error, APIError) or error.status != HttpStatusCode.Forbidden:
+        return False
+    return bool(re.search(r"upgrade.*to enable this feature.*", _api_error_message(error), re.I))
+
+
+def is_not_found_api_error(error: Any) -> bool:
+    """Desktop `isNotFoundApiError`."""
+    return isinstance(error, APIError) and error.status == HttpStatusCode.NotFound
+
+
 def get_dotcom_api_endpoint() -> str:
     import os
 
@@ -345,26 +368,6 @@ class GitHubAPI:
             features=features,
         )
 
-    def _paginate(self, path: str, query: dict[str, str] | None = None) -> list[Any]:
-        items: list[Any] = []
-        page = 1
-        q = dict(query or {})
-        q["per_page"] = str(PER_PAGE)
-        while True:
-            q["page"] = str(page)
-            data = self.get(path, query=q)
-            if not isinstance(data, list) or not data:
-                if isinstance(data, list):
-                    items.extend(data)
-                break
-            items.extend(data)
-            if len(data) < PER_PAGE:
-                break
-            page += 1
-            if page > 50:
-                break
-        return items
-
     def fetch_all(
         self,
         path: str,
@@ -545,13 +548,25 @@ class GitHubAPI:
             ) from exc
 
     def fork_repository(self, owner: str, name: str, org: str | None = None) -> GitHubRepository:
+        """Desktop `forkRepository`."""
         body = {"organization": org} if org else {}
-        data = self.post(f"/repos/{owner}/{name}/forks", body)
-        return self._to_repo(data)
+        try:
+            data = self.post(f"/repos/{owner}/{name}/forks", body)
+            return self._to_repo(data)
+        except Exception as exc:
+            log.error(
+                "forkRepository: failed to fork %s/%s at endpoint: %s",
+                owner,
+                name,
+                self.endpoint,
+                exc_info=exc,
+            )
+            raise
 
     def fetch_pull_requests(self, owner: str, name: str, state: str = "open") -> list[PullRequest]:
-        items = self._paginate(f"/repos/{owner}/{name}/pulls", {"state": state, "sort": "updated"})
-        return [self._to_pr(item) for item in items]
+        path = url_with_query_string(f"/repos/{owner}/{name}/pulls", {"state": state, "sort": "updated"})
+        items = self.fetch_all(path)
+        return [self._to_pr(item) for item in items if isinstance(item, dict)]
 
     def fetch_all_open_pull_requests(self, owner: str, name: str) -> list[PullRequest]:
         """Desktop `fetchAllOpenPullRequests`: `GET /repos/{owner}/{name}/pulls?state=open`."""
@@ -769,7 +784,8 @@ class GitHubAPI:
         """Desktop `getAvatarToken` (`GET /desktop/avatar-token`) for GHE email avatars."""
         try:
             data = self.get("/desktop/avatar-token")
-        except APIError:
+        except Exception as err:
+            log.debug("Failed to load avatar token", exc_info=err)
             return None
         if isinstance(data, dict):
             token = data.get("avatar_token")
@@ -891,9 +907,16 @@ class GitHubAPI:
         return check_runs
 
     def fetch_check_suite(self, owner: str, name: str, suite_id: int) -> CheckSuite | None:
+        """Desktop `fetchCheckSuite`."""
         try:
             data = self.get(f"/repos/{owner}/{name}/check-suites/{suite_id}")
-        except APIError:
+        except Exception:
+            log.debug(
+                "[fetchCheckSuite] Failed fetch check suite id %s (%s/%s)",
+                suite_id,
+                owner,
+                name,
+            )
             return None
         if not isinstance(data, dict):
             return None
@@ -954,10 +977,14 @@ class GitHubAPI:
         self.post(f"/repos/{owner}/{name}/actions/jobs/{job_id}/rerun")
 
     def fetch_protected_branches(self, owner: str, name: str) -> list[str]:
+        """Desktop `fetchProtectedBranches`: one `GET .../branches?protected=true`."""
+        path = f"/repos/{owner}/{name}/branches?protected=true"
         try:
-            items = self._paginate(f"/repos/{owner}/{name}/branches", {"protected": "true"})
-            return [i.get("name") for i in items if i.get("name")]
-        except APIError:
+            data = self.get(path)
+            items = data if isinstance(data, list) else []
+            return [item.get("name") for item in items if isinstance(item, dict) and item.get("name")]
+        except Exception as err:
+            log.info("[fetchProtectedBranches] unable to list protected branches", exc_info=err)
             return []
 
     def fetch_push_control(self, owner: str, name: str, branch: str) -> PushControl:
@@ -986,33 +1013,49 @@ class GitHubAPI:
         )
 
     def fetch_repo_rules_for_branch(self, owner: str, name: str, branch: str) -> list[dict[str, Any]]:
+        """Desktop `fetchRepoRulesForBranch`."""
         path = f"/repos/{owner}/{name}/rules/branches/{urllib.parse.quote(branch, safe='')}"
         try:
             data = self.get(path)
             return data if isinstance(data, list) else []
-        except APIError as exc:
-            if exc.status in {403, 404}:
-                return []
-            log.info("fetch repo rules for %s/%s@%s failed: %s", owner, name, branch, exc)
+        except Exception as err:
+            if not is_rulesets_not_enabled_error(err) and not is_not_found_api_error(err):
+                log.info(
+                    "[fetchRepoRulesForBranch] unable to fetch repo rules for branch: %s | %s",
+                    branch,
+                    path,
+                    exc_info=err,
+                )
             return []
 
     def fetch_repo_ruleset(self, owner: str, name: str, ruleset_id: int) -> dict[str, Any] | None:
+        """Desktop `fetchRepoRuleset`."""
+        path = f"/repos/{owner}/{name}/rulesets/{int(ruleset_id)}"
         try:
-            data = self.get(f"/repos/{owner}/{name}/rulesets/{int(ruleset_id)}")
+            data = self.get(path)
             return data if isinstance(data, dict) else None
-        except APIError as exc:
-            log.info("fetch repo ruleset %s failed: %s", ruleset_id, exc)
+        except Exception as err:
+            log.info(
+                "[fetchRepoRuleset] unable to fetch repo ruleset for ID: %s | %s",
+                ruleset_id,
+                path,
+                exc_info=err,
+            )
             return None
 
     def fetch_all_repo_rulesets(self, owner: str, name: str) -> list[dict[str, Any]] | None:
         """Desktop `fetchAllRepoRulesets`: slim rulesets for cache prefetch."""
+        path = f"/repos/{owner}/{name}/rulesets"
         try:
-            data = self.get(f"/repos/{owner}/{name}/rulesets")
+            data = self.get(path)
             return data if isinstance(data, list) else []
-        except APIError as exc:
-            if exc.status in {403, 404}:
-                return None
-            log.info("fetchAllRepoRulesets unable to fetch all repo rulesets | /repos/%s/%s/rulesets", owner, name)
+        except Exception as err:
+            if not is_rulesets_not_enabled_error(err) and not is_not_found_api_error(err):
+                log.info(
+                    "[fetchAllRepoRulesets] unable to fetch all repo rulesets | %s",
+                    path,
+                    exc_info=err,
+                )
             return None
 
     def fetch_mentionables(
@@ -1066,17 +1109,29 @@ class GitHubAPI:
         return []
 
     def fetch_user_by_login(self, login: str) -> dict[str, Any] | None:
+        """Desktop `fetchUser`: `GET /users/{login}`; 404 is null, other errors throw."""
         try:
             data = self.get(f"/users/{urllib.parse.quote(login)}")
             return data if isinstance(data, dict) else None
-        except APIError:
-            return None
+        except APIError as exc:
+            if exc.status == HttpStatusCode.NotFound:
+                return None
+            log.warn("fetchUser: failed with endpoint %s", self.endpoint, exc_info=exc)
+            raise
 
     def fetch_pull_request_comments(self, owner: str, name: str, number: int) -> list[dict[str, Any]]:
+        """Desktop `fetchPullRequestComments`: one `GET .../pulls/{n}/comments`."""
         try:
-            items = self._paginate(f"/repos/{owner}/{name}/pulls/{number}/comments")
-            return items if isinstance(items, list) else []
-        except APIError:
+            data = self.get(f"/repos/{owner}/{name}/pulls/{number}/comments")
+            return data if isinstance(data, list) else []
+        except APIError as exc:
+            log.debug(
+                "failed fetching PR comments for %s/%s/pulls/%s",
+                owner,
+                name,
+                number,
+                exc_info=exc,
+            )
             return []
 
     def fetch_issue_comment(self, owner: str, name: str, comment_id: str | int) -> dict[str, Any] | None:
@@ -1279,12 +1334,27 @@ class GitHubAPI:
         return f"Copilot request failed: {exc.status or body[:200]}"
 
     def create_push_protection_bypass(
-        self, owner: str, name: str, reason: str, placeholder_id: str | None = None
+        self,
+        owner: str,
+        name: str,
+        reason: str,
+        placeholder_id: str | None = None,
+        bypass_url: str = "",
     ) -> dict[str, Any]:
-        body: dict[str, Any] = {"reason": reason}
-        if placeholder_id:
-            body["placeholder_id"] = placeholder_id
-        return self.post(f"/repos/{owner}/{name}/secret-scanning/push-protection-bypasses", body)
+        """Desktop `createPushProtectionBypass`."""
+        body: dict[str, Any] = {"reason": reason, "placeholder_id": placeholder_id}
+        try:
+            return self.post(f"/repos/{owner}/{name}/secret-scanning/push-protection-bypasses", body)
+        except Exception as exc:
+            msg = (
+                "Unable to create push protection bypass.\n\n"
+                f"    Repository: {owner}/{name}\n"
+                f"    Reason: {reason}\n"
+                f"    Placeholder Id: {placeholder_id}.\n\n"
+                f"    Try again at: {bypass_url}"
+            )
+            log.error(msg, exc_info=exc)
+            raise APIError(msg) from exc
 
     def _to_repo(self, data: dict[str, Any]) -> GitHubRepository:
         owner = data.get("owner") or {}

@@ -334,14 +334,45 @@ def test_push_protection_bypass_uses_secret_scanning_path() -> None:
 
     api = GitHubAPI("https://api.github.com", "tok")
     seen: list[str] = []
+    posted: list[dict] = []
 
     def fake_post(path, body=None, **kwargs):
         seen.append(path)
+        posted.append(body or {})
         return {"id": 1}
 
     api.post = fake_post  # type: ignore[method-assign]
     api.create_push_protection_bypass("desktop", "desktop", "false_positive", "ph")
     assert seen == ["/repos/desktop/desktop/secret-scanning/push-protection-bypasses"]
+    assert posted == [{"reason": "false_positive", "placeholder_id": "ph"}]
+
+
+def test_create_push_protection_bypass_includes_retry_url() -> None:
+    from github_desktop.errors import APIError
+    from github_desktop.github.api import GitHubAPI
+
+    api = GitHubAPI("https://api.github.com", "tok")
+
+    def boom(path, body=None, **kwargs):
+        raise APIError("nope", status=403)
+
+    api.post = boom  # type: ignore[method-assign]
+    try:
+        api.create_push_protection_bypass(
+            "desktop",
+            "desktop",
+            "used_in_tests",
+            placeholder_id="ph",
+            bypass_url="https://github.com/desktop/desktop/security/secret-scanning/unblock-secret/ABC",
+        )
+        raise AssertionError("expected APIError")
+    except APIError as exc:
+        text = str(exc)
+        assert "Unable to create push protection bypass" in text
+        assert "Repository: desktop/desktop" in text
+        assert "Reason: used_in_tests" in text
+        assert "Placeholder Id: ph." in text
+        assert "Try again at: https://github.com/desktop/desktop/security/secret-scanning/unblock-secret/ABC" in text
 
 
 def test_merge_updated_pull_requests_and_issues() -> None:
@@ -487,3 +518,53 @@ def test_fetch_notification_subject_uses_typed_endpoints() -> None:
         "/repos/o/r/pulls/comments/8",
         "/repos/o/r/pulls/3/reviews/7",
     ]
+
+
+def test_create_push_protection_bypass_logs_without_github_repo(isolated_config, git_repo, caplog) -> None:
+    import logging
+
+    from github_desktop.models import GitHubRepository
+    from github_desktop.store import AppStore
+
+    store = AppStore()
+    repos = store.add_repositories([str(git_repo)])
+    store.selected_repository_id = repos[0].id
+    with caplog.at_level(logging.ERROR, logger="github_desktop"):
+        assert store.create_push_protection_bypass("false_positive", "ph", "https://example") is None
+    assert "[_createPushProtectionBypass] - No GitHub repository selected" in caplog.text
+
+    repos[0].github = GitHubRepository(
+        name="hello",
+        owner="octocat",
+        html_url="https://github.com/octocat/hello",
+        clone_url="https://github.com/octocat/hello.git",
+        endpoint="https://api.github.com",
+    )
+    store.accounts = []
+    caplog.clear()
+    with caplog.at_level(logging.ERROR, logger="github_desktop"):
+        assert store.create_push_protection_bypass("false_positive", "ph", "https://example") is None
+    assert "[_createPushProtectionBypass] - No account found for endpoint - https://api.github.com" in caplog.text
+
+
+def test_resolve_co_authors_uses_stealth_email(isolated_config, monkeypatch) -> None:
+    from github_desktop.models import Account, Author
+    from github_desktop.store import AppStore
+
+    store = AppStore()
+    store.accounts = [Account(login="me", endpoint="https://api.github.com", token="t")]
+
+    def fake_user(self, login):
+        if login == "github":
+            return {"login": "github", "id": 2, "type": "Organization"}
+        return {"login": login, "name": "The Octocat", "id": 1, "type": "User", "email": None}
+
+    monkeypatch.setattr("github_desktop.github.api.GitHubAPI.fetch_user_by_login", fake_user)
+    resolved, unknown = store.resolve_co_authors(
+        [Author(name="octocat", email="", username="octocat")]
+    )
+    assert unknown == []
+    assert resolved[0].email == "1+octocat@users.noreply.github.com"
+    assert resolved[0].name == "The Octocat"
+    _, org_unknown = store.resolve_co_authors([Author(name="github", email="", username="github")])
+    assert [author.username for author in org_unknown] == ["github"]

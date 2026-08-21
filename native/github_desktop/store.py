@@ -130,6 +130,7 @@ from .git.credential_helper import (
 )
 from .git.runner import find_git, git, resolve_repository_root
 from .github.api import GitHubAPI, merge_updated_issues, merge_updated_pull_requests, on_token_invalidated
+from .email import stealth_email_for_user
 from .github.ci_checks import (
     attach_workflow_jobs_to_checks,
     failing_checks,
@@ -2186,14 +2187,20 @@ class AppStore:
         api = GitHubAPI.from_account(account) if account else None
         for author in authors:
             login = author.username
-            if login and api is not None:
-                user = api.fetch_user_by_login(login)
-                if user and user.get("login"):
+            if login and api is not None and account is not None:
+                try:
+                    user = api.fetch_user_by_login(login)
+                except Exception:
+                    user = None
+                if user and user.get("login") and user.get("type") == "User":
                     handle = str(user["login"])
+                    email = str(user.get("email") or "")
+                    if not email:
+                        email = stealth_email_for_user(int(user.get("id") or 0), handle, account.endpoint)
                     resolved.append(
                         Author(
                             name=str(user.get("name") or handle),
-                            email=str(user.get("email") or f"{handle}@users.noreply.github.com"),
+                            email=email,
                             username=handle,
                         )
                     )
@@ -4416,6 +4423,32 @@ class AppStore:
                 self.convert_repository_to_fork(repo, fork)
 
         self._run(work, done)
+
+    def create_push_protection_bypass(
+        self,
+        reason: str,
+        placeholder_id: str | None = None,
+        bypass_url: str = "",
+    ) -> dict[str, Any] | None:
+        """Desktop `_createPushProtectionBypass`."""
+        repo = self.selected_repository
+        if repo is None or not repo.github:
+            log.error("[_createPushProtectionBypass] - No GitHub repository selected")
+            return None
+        account = self.account_for_repo(repo)
+        if account is None:
+            log.error(
+                "[_createPushProtectionBypass] - No account found for endpoint - %s",
+                repo.github.endpoint,
+            )
+            return None
+        return GitHubAPI.from_account(account).create_push_protection_bypass(
+            repo.github.owner,
+            repo.github.name,
+            reason,
+            placeholder_id=placeholder_id,
+            bypass_url=bypass_url,
+        )
 
     def retry_last_remote_action(self) -> None:
         self.perform_retry()
