@@ -37,10 +37,10 @@ from .git import (
     create_commit,
     create_desktop_stash_entry,
     create_merge_commit,
-    create_tag,
+    create_tag as git_create_tag,
     delete_local_branch,
     delete_remote_branch,
-    delete_tag,
+    delete_tag as git_delete_tag,
     determine_mergeability,
     do_merge_commits_exist_after_commit,
     discard_changes_from_selection,
@@ -93,7 +93,9 @@ from .git import (
     get_working_directory_lines,
     git_path_is_repository,
     init_repository,
+    install_global_lfs_filters,
     install_lfs_hooks as git_install_lfs_hooks,
+    lfs_track as git_lfs_track,
     merge,
     move_item_to_trash,
     move_stash_entry,
@@ -103,6 +105,7 @@ from .git import (
     push,
     read_gitignore,
     rebase,
+    remove_config_value,
     remove_remote,
     rename_branch,
     reorder_commits,
@@ -380,6 +383,7 @@ class RepositoryViewState:
     last_fetched: float | None = None
     manual_resolutions: dict[str, ManualConflictResolution] = field(default_factory=dict)
     stash_load_state: StashedChangesLoadStates = StashedChangesLoadStates.NOT_LOADED
+    user_has_resolved_conflicts: bool = False  # Desktop userHasResolvedConflicts
     pr_preview_loading: bool = False
     changed_files_count: int = 0
     is_committing: bool = False  # Desktop isCommitting
@@ -815,7 +819,7 @@ class AppStore:
             self._popups.remove_popup(closed)
         self.emit()
         if closed is not None and closed.type == PopupType.SIGN_IN and self.sign_in_step != SignInStep.SUCCESS:
-            self._finish_credential_sign_in(None)
+            self.reset_sign_in_state()
 
     def close_popup_by_type(self, popup_type: PopupType) -> None:
         """Desktop `PopupManager.removePopupByType`."""
@@ -923,11 +927,51 @@ class AppStore:
         if not repos and paths:
             wanted = {os.path.abspath(p) for p in paths}
             repos = [item for item in self.repositories if os.path.abspath(item.path) in wanted]
-        for repo in repos:
-            try:
+        targets = list(repos)
+
+        def work() -> None:
+            for repo in targets:
                 git_install_lfs_hooks(repo.path, True)
-            except GitError as exc:
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
                 self.show_popup(PopupType.ERROR, error=str(exc))
+
+        self._run_ui(work, done)
+
+    def install_global_lfs_filters_now(self, force: bool = False) -> None:
+        """Desktop `installGlobalLFSFilters` from the LFS mismatch dialog."""
+
+        def work() -> None:
+            install_global_lfs_filters(force=force)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                if isinstance(exc, GitError) and exc.is_lfs_attribute_mismatch:
+                    self.show_popup(PopupType.LFS_ATTRIBUTE_MISMATCH)
+                    return
+                self.show_popup(PopupType.ERROR, error=str(exc))
+
+        self._run_ui(work, done)
+
+    def track_lfs_patterns(self, repo: Repository, patterns: Sequence[str]) -> None:
+        """Desktop Initialize Git LFS: install global filters then `lfs track`."""
+        items = [item for item in patterns if item] or ["*"]
+
+        def work() -> None:
+            install_global_lfs_filters()
+            git_lfs_track(repo.path, items)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                if isinstance(exc, GitError) and exc.is_lfs_attribute_mismatch:
+                    self.show_popup(PopupType.LFS_ATTRIBUTE_MISMATCH)
+                    return
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
 
     def _associate_github(self, repo: Repository) -> None:
         try:
@@ -1058,7 +1102,8 @@ class AppStore:
         gitignore: str | None = None,
         license_name: str | None = None,
         update_default_directory: bool = True,
-    ) -> Repository:
+        on_done: Callable[[BaseException | None, Repository | None], None] | None = None,
+    ) -> Repository | None:
         from .create_repo import (
             NO_GITIGNORE,
             NO_LICENSE,
@@ -1069,67 +1114,93 @@ class AppStore:
             write_named_gitignore,
         )
 
-        os.makedirs(path, exist_ok=True)
         folder_name = os.path.basename(os.path.abspath(path))
         display_name = name or folder_name
-        branch = default_branch or get_default_branch()
-        init_repository(path, branch)
-        repos = self.add_repositories([path], onboarding="create")
-        if create_readme:
-            try:
-                write_default_readme(path, display_name, description)
-            except OSError as exc:
-                log.debug("createRepository: unable to write README at %s: %s", path, exc)
-        if gitignore and gitignore != NO_GITIGNORE:
-            try:
-                write_named_gitignore(path, gitignore)
-            except (OSError, ValueError) as exc:
-                log.debug("createRepository: unable to write .gitignore at %s: %s", path, exc)
-        if description:
-            from .git.ops import write_description
+        created: list[Repository] = []
+        raised: list[BaseException] = []
 
-            try:
-                write_description(path, description)
-            except OSError as exc:
-                log.debug("createRepository: unable to write .git/description at %s: %s", path, exc)
-        if license_name and license_name != NO_LICENSE:
-            template = next((item for item in license_templates() if item.name == license_name), None)
-            if template is not None:
+        def work() -> str:
+            os.makedirs(path, exist_ok=True)
+            branch = default_branch or get_default_branch()
+            init_repository(path, branch)
+            if create_readme:
                 try:
-                    author_name, author_email = get_author_identity(path)
-                    write_license(
-                        path,
-                        template,
-                        fullname=author_name or "",
-                        email=author_email or "",
-                        project=display_name,
-                        description=description,
-                    )
+                    write_default_readme(path, display_name, description)
                 except OSError as exc:
-                    log.debug("createRepository: unable to write LICENSE at %s: %s", path, exc)
-        try:
-            write_git_attributes(path)
-        except OSError as exc:
-            log.debug("createRepository: unable to write .gitattributes at %s: %s", path, exc)
-        try:
-            status = get_status(path, reject_on_error=True)
-        except GitError as exc:
-            log.debug("createRepository: git status failed at %s: %s", path, exc)
-            raise
-        files = list(status.working_directory.files) if status else []
-        if files:
+                    log.debug("createRepository: unable to write README at %s: %s", path, exc)
+            if gitignore and gitignore != NO_GITIGNORE:
+                try:
+                    write_named_gitignore(path, gitignore)
+                except (OSError, ValueError) as exc:
+                    log.debug("createRepository: unable to write .gitignore at %s: %s", path, exc)
+            if description:
+                from .git.ops import write_description
+
+                try:
+                    write_description(path, description)
+                except OSError as exc:
+                    log.debug("createRepository: unable to write .git/description at %s: %s", path, exc)
+            if license_name and license_name != NO_LICENSE:
+                template = next((item for item in license_templates() if item.name == license_name), None)
+                if template is not None:
+                    try:
+                        author_name, author_email = get_author_identity(path)
+                        write_license(
+                            path,
+                            template,
+                            fullname=author_name or "",
+                            email=author_email or "",
+                            project=display_name,
+                            description=description,
+                        )
+                    except OSError as exc:
+                        log.debug("createRepository: unable to write LICENSE at %s: %s", path, exc)
             try:
-                create_commit(path, "Initial commit", files)
+                write_git_attributes(path)
+            except OSError as exc:
+                log.debug("createRepository: unable to write .gitattributes at %s: %s", path, exc)
+            try:
+                status = get_status(path, reject_on_error=True)
             except GitError as exc:
-                log.debug("createRepository: initial commit failed at %s: %s", path, exc)
-        if update_default_directory:
-            parent = os.path.dirname(os.path.abspath(path))
-            if parent:
-                set_default_dir(self.settings, parent)
-                self.persist_settings()
-        if repos:
-            self.refresh_repository(repos[0])
-        return repos[0]
+                log.debug("createRepository: git status failed at %s: %s", path, exc)
+                raise
+            files = list(status.working_directory.files) if status else []
+            if files:
+                try:
+                    create_commit(path, "Initial commit", files)
+                except GitError as exc:
+                    log.debug("createRepository: initial commit failed at %s: %s", path, exc)
+            return path
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                raised.append(exc)
+                if on_done is not None:
+                    on_done(exc, None)
+                    return
+                if self._gtk_app_running():
+                    self.show_popup(
+                        PopupType.ERROR,
+                        error=str(exc),
+                        git_context={"kind": "create-repository"},
+                    )
+                return
+            repos = self.add_repositories([path], onboarding="create")
+            if update_default_directory:
+                parent = os.path.dirname(os.path.abspath(path))
+                if parent:
+                    set_default_dir(self.settings, parent)
+                    self.persist_settings()
+            if repos:
+                created.append(repos[0])
+                self.refresh_repository(repos[0])
+            if on_done is not None:
+                on_done(None, created[0] if created else None)
+
+        self._run_ui(work, done)
+        if raised and on_done is None:
+            raise raised[0]
+        return created[0] if created else None
 
     def abort_clone(self, clone_id: int) -> None:
         """Cancel an in-flight `git clone` and drop it from the cloning list."""
@@ -2760,8 +2831,19 @@ class AppStore:
         diff = state.current_diff
         if file is None or not isinstance(diff, TextDiff):
             return
-        discard_changes_from_selection(repo.path, path, diff, file.selection)
-        self.refresh_repository(repo)
+        snapshot_diff = diff
+        snapshot_sel = file.selection
+
+        def work() -> None:
+            discard_changes_from_selection(repo.path, path, snapshot_diff, snapshot_sel)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
 
     def discard_line_range(self, repo: Repository, path: str, start: int, end: int) -> None:
         state = self.state_for(repo)
@@ -2772,12 +2854,31 @@ class AppStore:
         lo = min(start, end)
         hi = max(start, end)
         selection = file.selection.with_select_none().with_range_selection(lo, hi - lo + 1, True)
-        discard_changes_from_selection(repo.path, path, diff, selection)
-        self.refresh_repository(repo)
+        snapshot_diff = diff
+        snapshot_sel = selection
+
+        def work() -> None:
+            discard_changes_from_selection(repo.path, path, snapshot_diff, snapshot_sel)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
 
     def ignore_pattern(self, repo: Repository, pattern: str) -> None:
-        append_ignore_rule(repo.path, pattern)
-        self.refresh_repository(repo)
+        def work() -> None:
+            append_ignore_rule(repo.path, pattern)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
 
     def compare_to_branch(self, repo: Repository, branch_name: str | None) -> None:
         state = self.state_for(repo)
@@ -2791,50 +2892,70 @@ class AppStore:
         branch = next((b for b in state.branches if b.name == branch_name), None)
         state.compare_branch = branch
         state.history_mode = HistoryTabMode.COMPARE
-        state.compare_ahead = get_commits(repo.path, f"{branch_name}..HEAD", limit=max(COMMIT_BATCH_SIZE, 100))
-        state.compare_behind = get_commits(repo.path, f"HEAD..{branch_name}", limit=max(COMMIT_BATCH_SIZE, 100))
         state.compare_mode = ComparisonMode.AHEAD
-        state.commits = state.compare_ahead
         ours = state.status.current_tip if state.status else None
         theirs = branch.tip_sha if branch else None
-        behind = len(state.compare_behind)
-        # Desktop `_compare`: Loading then async `determineMergeability` when behind > 0.
+        compare_name = branch.name if branch else branch_name
         token = self._compare_merge_token.get(repo.path, 0) + 1
         self._compare_merge_token[repo.path] = token
-        if ours and theirs and behind > 0:
-            state.merge_tree = MergeTreeResult(kind=ComputedAction.LOADING)
-        else:
-            state.merge_tree = None
-        self.emit()
-        if not (ours and theirs and behind > 0):
-            return
-        compare_name = branch.name if branch else branch_name
-        compare_sha = theirs
+        limit = max(COMMIT_BATCH_SIZE, 100)
 
-        def work() -> MergeTreeResult:
-            return determine_mergeability(repo.path, ours, theirs)
+        def work() -> tuple:
+            ahead = get_commits(repo.path, f"{branch_name}..HEAD", limit=limit)
+            behind = get_commits(repo.path, f"HEAD..{branch_name}", limit=limit)
+            return ahead, behind
 
-        def done(exc: BaseException | None, result: MergeTreeResult | None = None) -> None:
-            if self._compare_merge_token.get(repo.path) != token:
-                return
+        def done(exc: BaseException | None, result: tuple | None = None) -> None:
             current = self.state_for(repo)
-            if current.compare_branch is None or current.compare_branch.name != compare_name:
+            if current.compare_branch is None or (
+                current.compare_branch.name != compare_name and current.compare_branch.name != branch_name
+            ):
                 return
             if exc:
-                log.warn(
-                    "Error occurred while trying to merge %s (%s) and %s (%s)",
-                    current.status.current_branch if current.status else "HEAD",
-                    ours,
-                    compare_name,
-                    compare_sha,
-                    exc_info=exc,
-                )
-                current.merge_tree = None
+                current.error = str(exc)
+                self.emit()
+                return
+            ahead, behind_list = result if result else ([], [])
+            current.compare_ahead = list(ahead or [])
+            current.compare_behind = list(behind_list or [])
+            current.commits = current.compare_ahead
+            behind = len(current.compare_behind)
+            # Desktop `_compare`: Loading then async `determineMergeability` when behind > 0.
+            if ours and theirs and behind > 0:
+                current.merge_tree = MergeTreeResult(kind=ComputedAction.LOADING)
             else:
-                current.merge_tree = result
+                current.merge_tree = None
             self.emit()
+            if not (ours and theirs and behind > 0):
+                return
+            compare_sha = theirs
 
-        self._run(work, done)
+            def merge_work() -> MergeTreeResult:
+                return determine_mergeability(repo.path, ours, theirs)
+
+            def merge_done(merge_exc: BaseException | None, merge_result: MergeTreeResult | None = None) -> None:
+                if self._compare_merge_token.get(repo.path) != token:
+                    return
+                latest = self.state_for(repo)
+                if latest.compare_branch is None or latest.compare_branch.name != compare_name:
+                    return
+                if merge_exc:
+                    log.warn(
+                        "Error occurred while trying to merge %s (%s) and %s (%s)",
+                        latest.status.current_branch if latest.status else "HEAD",
+                        ours,
+                        compare_name,
+                        compare_sha,
+                        exc_info=merge_exc,
+                    )
+                    latest.merge_tree = None
+                else:
+                    latest.merge_tree = merge_result
+                self.emit()
+
+            self._run(merge_work, merge_done)
+
+        self._run_ui(work, done)
 
     def ahead_behind_between(self, repo: Repository, from_sha: str | None, to_sha: str | None) -> AheadBehind | None:
         """Desktop `aheadBehindStore` synchronous cache fill for callers that need an immediate result."""
@@ -3442,20 +3563,25 @@ class AppStore:
         ):
             return
         undo_sha = self._capture_undo(repo)
-        try:
-            result = squash_commits(repo.path, targets, onto, last_retained, message)
-        except GitError as exc:
-            if not self._maybe_local_changes_overwritten(repo, exc, retry):
-                self.show_popup(PopupType.ERROR, error=str(exc))
-            return
-        if result == RebaseResult.COMPLETED_WITHOUT_ERROR:
-            self.state_for(repo).pending_force_push_before = undo_sha
-            self.show_banner(Banner(BannerType.SUCCESSFUL_SQUASH, count=len(targets) + 1, undo_sha=undo_sha))
-        elif result == RebaseResult.CONFLICTS_ENCOUNTERED:
-            current = self.state_for(repo).status.current_branch if self.state_for(repo).status else None
-            self.show_banner(Banner(BannerType.CONFLICTS_FOUND, operation_description="squashing commits on", target_branch=current, operation_kind=MultiCommitOperationKind.SQUASH.value))
-            self.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind=MultiCommitOperationKind.SQUASH, step="conflicts")
-        self.refresh_repository(repo)
+
+        def work() -> RebaseResult:
+            return squash_commits(repo.path, targets, onto, last_retained, message)
+
+        def done(exc: BaseException | None, result: RebaseResult | None = None) -> None:
+            if exc:
+                if not self._maybe_local_changes_overwritten(repo, exc, retry):
+                    self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            if result == RebaseResult.COMPLETED_WITHOUT_ERROR:
+                self.state_for(repo).pending_force_push_before = undo_sha
+                self.show_banner(Banner(BannerType.SUCCESSFUL_SQUASH, count=len(targets) + 1, undo_sha=undo_sha))
+            elif result == RebaseResult.CONFLICTS_ENCOUNTERED:
+                current = self.state_for(repo).status.current_branch if self.state_for(repo).status else None
+                self.show_banner(Banner(BannerType.CONFLICTS_FOUND, operation_description="squashing commits on", target_branch=current, operation_kind=MultiCommitOperationKind.SQUASH.value))
+                self.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind=MultiCommitOperationKind.SQUASH, step="conflicts")
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
 
     def reorder_onto(
         self,
@@ -3491,20 +3617,25 @@ class AppStore:
         ):
             return
         undo_sha = self._capture_undo(repo)
-        try:
-            result = reorder_commits(repo.path, moving, before, last_retained)
-        except GitError as exc:
-            if not self._maybe_local_changes_overwritten(repo, exc, retry):
-                self.show_popup(PopupType.ERROR, error=str(exc))
-            return
-        if result == RebaseResult.COMPLETED_WITHOUT_ERROR:
-            self.state_for(repo).pending_force_push_before = undo_sha
-            self.show_banner(Banner(BannerType.SUCCESSFUL_REORDER, count=len(moving), undo_sha=undo_sha))
-        elif result == RebaseResult.CONFLICTS_ENCOUNTERED:
-            current = self.state_for(repo).status.current_branch if self.state_for(repo).status else None
-            self.show_banner(Banner(BannerType.CONFLICTS_FOUND, operation_description="reordering commits on", target_branch=current, operation_kind=MultiCommitOperationKind.REORDER.value))
-            self.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind=MultiCommitOperationKind.REORDER, step="conflicts")
-        self.refresh_repository(repo)
+
+        def work() -> RebaseResult:
+            return reorder_commits(repo.path, moving, before, last_retained)
+
+        def done(exc: BaseException | None, result: RebaseResult | None = None) -> None:
+            if exc:
+                if not self._maybe_local_changes_overwritten(repo, exc, retry):
+                    self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            if result == RebaseResult.COMPLETED_WITHOUT_ERROR:
+                self.state_for(repo).pending_force_push_before = undo_sha
+                self.show_banner(Banner(BannerType.SUCCESSFUL_REORDER, count=len(moving), undo_sha=undo_sha))
+            elif result == RebaseResult.CONFLICTS_ENCOUNTERED:
+                current = self.state_for(repo).status.current_branch if self.state_for(repo).status else None
+                self.show_banner(Banner(BannerType.CONFLICTS_FOUND, operation_description="reordering commits on", target_branch=current, operation_kind=MultiCommitOperationKind.REORDER.value))
+                self.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind=MultiCommitOperationKind.REORDER, step="conflicts")
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
 
     def _confirm_rewrite_force_push(
         self,
@@ -3571,16 +3702,26 @@ class AppStore:
 
         self._run(work, done)
 
-    def reset_to_commit(self, repo: Repository, commit: Commit, *, show_confirmation: bool = True) -> None:
+    def reset_to_commit(
+        self,
+        repo: Repository,
+        commit: Commit | None = None,
+        *,
+        show_confirmation: bool = True,
+        sha: str | None = None,
+    ) -> None:
+        target = sha or (commit.sha if commit is not None else None)
+        if not target:
+            return
         state = self.state_for(repo)
         dirty = bool(state.status and state.status.working_directory.files)
         if show_confirmation and dirty:
-            self.show_popup(PopupType.WARNING_BEFORE_RESET, commit=commit, sha=commit.sha)
+            self.show_popup(PopupType.WARNING_BEFORE_RESET, commit=commit, sha=target)
             return
         self.set_section(RepositorySectionTab.CHANGES)
 
         def work() -> None:
-            reset(repo.path, commit.sha, "mixed")
+            reset(repo.path, target, "mixed")
 
         def done(exc: BaseException | None, result: object = None) -> None:
             if exc:
@@ -3845,9 +3986,14 @@ class AppStore:
                 self.show_popup(PopupType.ERROR, error=str(exc))
                 return
             self.state_for(repo).manual_resolutions[path] = resolution
+            self.state_for(repo).user_has_resolved_conflicts = True
             self.refresh_repository(repo)
 
         self._run_ui(work, done)
+
+    def set_conflicts_resolved(self, repo: Repository) -> None:
+        """Desktop `_setConflictsResolved`: remember that the user resolved at least one conflict."""
+        self.state_for(repo).user_has_resolved_conflicts = True
 
     def set_include_all(self, repo: Repository, included: bool) -> None:
         state = self.state_for(repo)
@@ -4474,6 +4620,27 @@ class AppStore:
 
         self._run(work, done)
 
+    def _checkout_named_branch(self, repo: Repository, name: str) -> None:
+        state = self.state_for(repo)
+        branch = next(
+            (item for item in state.branches if item.name == name or item.name_without_remote == name),
+            None,
+        )
+        if branch is not None:
+            self.checkout(repo, branch)
+            return
+
+        def work() -> None:
+            checkout_branch(repo.path, name)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                log.debug("checkout named branch failed: %s", exc)
+                return
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
+
     def stash_and_drop_previous(self, repo: Repository, branch_name: str) -> bool:
         previous = get_last_desktop_stash_entry_for_branch(repo.path, branch_name)
         status = self.state_for(repo).status
@@ -4563,6 +4730,41 @@ class AppStore:
 
         self._run_ui(work, done)
 
+    def stash_and_retry(self, repo: Repository, payload: dict[str, Any] | None = None) -> None:
+        """Desktop stash-then-retry after local changes would be overwritten."""
+        payload = payload or {}
+        current = self.state_for(repo).status.current_branch if self.state_for(repo).status else "unknown"
+        retry = payload.get("retry")
+        action = payload.get("retry_action")
+        kind = payload.get("retry_kind")
+        branch = payload.get("branch")
+
+        def work() -> None:
+            stash_push(repo.path, current or "unknown")
+            if kind == "checkout" and branch and not callable(retry) and action is None:
+                checkout_branch(repo.path, str(branch))
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            if callable(retry):
+                retry()
+                return
+            if isinstance(action, RetryAction) or isinstance(action, dict):
+                self.perform_retry(action)
+                return
+            if kind == "pull":
+                self.pull_repo(repo)
+            elif kind == "push":
+                self.push_repo(repo)
+            elif kind == "fetch":
+                self.fetch_repo(repo)
+            else:
+                self.refresh_repository(repo)
+
+        self._run_ui(work, done)
+
     def rename_current_branch(self, repo: Repository, old: str, new: str) -> None:
         new = sanitize_ref_name(new)
 
@@ -4578,6 +4780,176 @@ class AppStore:
                 return
             self.remember_branch(repo, new)
             self.refresh_repository(repo)
+
+        self._run_ui(work, done)
+
+    def create_tag(self, repo: Repository, name: str, sha: str) -> None:
+        """Desktop `_createTag` / gitStore.createTag."""
+
+        def work() -> None:
+            git_create_tag(repo.path, name, sha)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.state_for(repo).tags[name] = str(sha)
+            self.remember_tag_to_push(repo, name)
+            self.stats.increment("tagsCreatedInDesktop")
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
+
+    def delete_tag(self, repo: Repository, name: str) -> None:
+        """Desktop `_deleteTag` / gitStore.deleteTag."""
+
+        def work() -> None:
+            git_delete_tag(repo.path, name)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.forget_tag_to_push(repo, name)
+            self.stats.increment("tagsDeleted")
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
+
+    def _branch_to_checkout_after_delete(self, repo: Repository, branch: Branch) -> Branch | None:
+        """Desktop `getBranchToCheckoutAfterDelete`."""
+        state = self.state_for(repo)
+        current = state.status.current_branch if state.status else None
+        if current is not None and branch.name != current:
+            return None
+        default = self.find_default_branch_for(repo)
+        if default is not None and default.name != branch.name:
+            return default
+        for name in state.recent_branches:
+            found = next((item for item in state.branches if item.name == name and item.name != branch.name), None)
+            if found is not None:
+                return found
+        other = next(
+            (item for item in state.branches if item.type == BranchType.LOCAL and item.name != branch.name),
+            None,
+        )
+        if other is None:
+            raise ValueError("It's not possible to delete the only existing branch in a repository.")
+        return other
+
+    def delete_branch(
+        self,
+        repo: Repository,
+        branch: Branch | str,
+        *,
+        include_upstream: bool = False,
+        remote_only: bool = False,
+    ) -> None:
+        """Desktop `_deleteBranch`: checkout another branch if needed, then delete local/remote."""
+        state = self.state_for(repo)
+        if isinstance(branch, str):
+            found = next(
+                (item for item in state.branches if item.name == branch or item.name_without_remote == branch),
+                None,
+            )
+            if found is None:
+                found = Branch(
+                    branch,
+                    None,
+                    "",
+                    BranchType.REMOTE if remote_only else BranchType.LOCAL,
+                )
+            branch = found
+        to_checkout: Branch | None = None
+        if not remote_only and branch.type != BranchType.REMOTE:
+            try:
+                to_checkout = self._branch_to_checkout_after_delete(repo, branch)
+            except ValueError as exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+        remotes = list(state.remotes or [])
+        env_url = remotes[0].url if remotes else ""
+        env = self.env_for_repo(repo, env_url) if env_url else None
+        snapshot = branch
+        include = include_upstream
+
+        def work() -> None:
+            if snapshot.type == BranchType.REMOTE or remote_only:
+                remote_name = snapshot.upstream_remote_name or snapshot.remote or (remotes[0].name if remotes else "origin")
+                local_name = snapshot.name_without_remote
+                delete_remote_branch(repo.path, remote_name, local_name, env)
+                log.info(
+                    "Deleted branch %s (was %s)",
+                    snapshot.upstream_without_remote or local_name,
+                    snapshot.tip_sha,
+                )
+                return
+            if to_checkout is not None:
+                checkout_branch(repo.path, to_checkout)
+            delete_local_branch(repo.path, snapshot.name)
+            if include and snapshot.upstream_remote_name and snapshot.upstream_without_remote:
+                delete_remote_branch(
+                    repo.path,
+                    snapshot.upstream_remote_name,
+                    snapshot.upstream_without_remote,
+                    env,
+                )
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
+
+    def save_remote_url(self, repo: Repository, name: str, url: str) -> None:
+        def work() -> None:
+            set_remote_url(repo.path, name, url)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
+
+    def save_gitignore_text(self, repo: Repository, text: str) -> None:
+        def work() -> None:
+            write_gitignore(repo.path, text)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
+
+    def save_local_git_config(
+        self,
+        repo: Repository,
+        *,
+        use_local: bool,
+        name: str = "",
+        email: str = "",
+        on_done: Callable[[BaseException | None], None] | None = None,
+    ) -> None:
+        def work() -> None:
+            if use_local:
+                set_config_value(repo.path, "user.name", name)
+                set_config_value(repo.path, "user.email", email)
+            else:
+                remove_config_value(repo.path, "user.name")
+                remove_config_value(repo.path, "user.email")
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if on_done is not None:
+                on_done(exc)
+                return
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
 
         self._run_ui(work, done)
 
@@ -4651,22 +5023,30 @@ class AppStore:
         target_branch = self.banner.target_branch if self.banner else None
         if not sha:
             return
-        try:
+        banner_type_snap = banner_type
+        count_snap = count
+        target_snap = target_branch
+
+        def work() -> None:
             reset(repo.path, sha, "hard")
-        except GitError as exc:
-            self.show_popup(PopupType.ERROR, error=str(exc))
-            return
-        undone = {
-            BannerType.SUCCESSFUL_CHERRY_PICK: BannerType.CHERRY_PICK_UNDONE,
-            BannerType.SUCCESSFUL_SQUASH: BannerType.SQUASH_UNDONE,
-            BannerType.SUCCESSFUL_REORDER: BannerType.REORDER_UNDONE,
-        }.get(banner_type or BannerType.SUCCESSFUL_MERGE)
-        if undone:
-            self.show_banner(Banner(undone, count=count, target_branch=target_branch))
-        else:
-            self.clear_banner()
-        state.undo_sha = None
-        self.refresh_repository(repo)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            undone = {
+                BannerType.SUCCESSFUL_CHERRY_PICK: BannerType.CHERRY_PICK_UNDONE,
+                BannerType.SUCCESSFUL_SQUASH: BannerType.SQUASH_UNDONE,
+                BannerType.SUCCESSFUL_REORDER: BannerType.REORDER_UNDONE,
+            }.get(banner_type_snap or BannerType.SUCCESSFUL_MERGE)
+            if undone:
+                self.show_banner(Banner(undone, count=count_snap, target_branch=target_snap))
+            else:
+                self.clear_banner()
+            self.state_for(repo).undo_sha = None
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
 
     def merge_branch(self, repo: Repository, branch: str, squash: bool = False, on_done: Callable[..., None] | None = None) -> None:
         retry = RetryAction(
@@ -4799,22 +5179,33 @@ class AppStore:
                     self.state_for(repo).pending_force_push_before = self.state_for(repo).undo_sha
             if not exc:
                 self.state_for(repo).manual_resolutions.clear()
+                self.state_for(repo).user_has_resolved_conflicts = False
             self.refresh_repository(repo)
 
         self._run(work, done)
 
     def abort_conflict_operation(self, repo: Repository, kind: MultiCommitOperationKind) -> None:
         backend = self._conflict_backend(repo, kind)
-        if backend == "rebase":
-            abort_rebase(repo.path)
-        elif backend == "cherry":
-            abort_cherry_pick(repo.path)
-        elif backend == "squash-merge":
-            abort_squash_merge(repo.path)
-        else:
-            abort_merge(repo.path)
-        self.state_for(repo).manual_resolutions.clear()
-        self.refresh_repository(repo)
+
+        def work() -> None:
+            if backend == "rebase":
+                abort_rebase(repo.path)
+            elif backend == "cherry":
+                abort_cherry_pick(repo.path)
+            elif backend == "squash-merge":
+                abort_squash_merge(repo.path)
+            else:
+                abort_merge(repo.path)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.state_for(repo).manual_resolutions.clear()
+            self.state_for(repo).user_has_resolved_conflicts = False
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
 
     def _conflict_backend(self, repo: Repository, kind: MultiCommitOperationKind | str | None = None) -> str:
         """Choose abort/continue git backend from on-disk state, then operation kind."""
@@ -4916,42 +5307,56 @@ class AppStore:
         self.emit()
 
     def update_existing_upstream_remote(self, repo: Repository, parent_url: str) -> None:
-        try:
+        def work() -> None:
             set_remote_url(repo.path, "upstream", parent_url)
-        except GitError as exc:
-            self.show_popup(PopupType.ERROR, error=str(exc))
-            return
-        self.settings.ignored_upstream_remotes.pop(repo.path, None)
-        self.persist_settings()
-        self.refresh_repository(repo)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.settings.ignored_upstream_remotes.pop(repo.path, None)
+            self.persist_settings()
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
 
     def ignore_existing_upstream_remote(self, repo: Repository) -> None:
         self.settings.ignored_upstream_remotes[repo.path] = True
         self.persist_settings()
 
     def convert_repository_to_fork(self, repo: Repository, fork: GitHubRepository) -> None:
-        remotes = get_remotes(repo.path)
-        origin = next((r for r in remotes if r.name == "origin"), remotes[0] if remotes else None)
-        old_url = sanitize_remote_url(origin.url) if origin else (repo.github.clone_url if repo.github else "")
-        fork_url = sanitize_remote_url(fork.clone_url)
-        if origin:
-            set_remote_url(repo.path, origin.name, fork_url)
-        else:
-            add_remote(repo.path, "origin", fork_url)
-        if old_url:
-            try:
-                add_remote(repo.path, "upstream", old_url)
-            except GitError:
+        clone_url = repo.github.clone_url if repo.github else ""
+
+        def work() -> None:
+            remotes = get_remotes(repo.path)
+            origin = next((r for r in remotes if r.name == "origin"), remotes[0] if remotes else None)
+            old_url = sanitize_remote_url(origin.url) if origin else sanitize_remote_url(clone_url)
+            fork_url = sanitize_remote_url(fork.clone_url)
+            if origin:
+                set_remote_url(repo.path, origin.name, fork_url)
+            else:
+                add_remote(repo.path, "origin", fork_url)
+            if old_url:
                 try:
-                    set_remote_url(repo.path, "upstream", old_url)
-                except GitError as exc:
-                    log.debug("could not set upstream after fork: %s", exc)
-        if fork.parent is None and repo.github:
-            fork.parent = repo.github
-        repo.github = fork
-        self._save_repositories()
-        self.show_popup(PopupType.CHOOSE_FORK_SETTINGS)
-        self.refresh_repository(repo)
+                    add_remote(repo.path, "upstream", old_url)
+                except GitError:
+                    try:
+                        set_remote_url(repo.path, "upstream", old_url)
+                    except GitError as exc:
+                        log.debug("could not set upstream after fork: %s", exc)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            if fork.parent is None and repo.github:
+                fork.parent = repo.github
+            repo.github = fork
+            self._save_repositories()
+            self.show_popup(PopupType.CHOOSE_FORK_SETTINGS)
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
 
     def create_fork(
         self,
@@ -5077,8 +5482,18 @@ class AppStore:
             if branch is not None:
                 self.checkout(repo, branch)
             else:
-                checkout_branch(repo.path, action.branch)
-                self.refresh_repository(repo)
+                target = action.branch
+
+                def work() -> None:
+                    checkout_branch(repo.path, target)
+
+                def done(exc: BaseException | None, result: object = None) -> None:
+                    if exc:
+                        self.show_popup(PopupType.ERROR, error=str(exc))
+                        return
+                    self.refresh_repository(repo)
+
+                self._run_ui(work, done)
         elif action.type == RetryActionType.MERGE and action.their_branch:
             self.merge_branch(repo, action.their_branch, squash=bool(action.squash))
         elif action.type == RetryActionType.REBASE and action.base_branch:
@@ -5088,15 +5503,42 @@ class AppStore:
         elif action.type == RetryActionType.CREATE_BRANCH_FOR_CHERRY_PICK and action.branch:
             self.cherry_pick_to_new_branch(repo, action.shas, action.branch)
         elif action.type == RetryActionType.SQUASH and action.onto_sha:
-            onto = get_commit(repo.path, action.onto_sha)
-            targets = [item for sha in action.to_squash_shas if (item := get_commit(repo.path, sha))]
-            if onto is not None and targets:
-                self.squash_onto(repo, targets, onto, action.message)
+            onto_sha = action.onto_sha
+            squash_shas = list(action.to_squash_shas)
+            message = action.message
+
+            def work() -> tuple:
+                onto = get_commit(repo.path, onto_sha)
+                targets = [item for sha in squash_shas if (item := get_commit(repo.path, sha))]
+                return onto, targets
+
+            def done(exc: BaseException | None, result: tuple | None = None) -> None:
+                if exc:
+                    self.show_popup(PopupType.ERROR, error=str(exc))
+                    return
+                onto, targets = result if result else (None, [])
+                if onto is not None and targets:
+                    self.squash_onto(repo, targets, onto, message)
+
+            self._run_ui(work, done)
         elif action.type == RetryActionType.REORDER:
-            moving = [item for sha in action.to_move_shas if (item := get_commit(repo.path, sha))]
-            before = get_commit(repo.path, action.before_sha) if action.before_sha else None
-            if moving:
-                self.reorder_onto(repo, moving, before)
+            move_shas = list(action.to_move_shas)
+            before_sha = action.before_sha
+
+            def work() -> tuple:
+                moving = [item for sha in move_shas if (item := get_commit(repo.path, sha))]
+                before = get_commit(repo.path, before_sha) if before_sha else None
+                return moving, before
+
+            def done(exc: BaseException | None, result: tuple | None = None) -> None:
+                if exc:
+                    self.show_popup(PopupType.ERROR, error=str(exc))
+                    return
+                moving, before = result if result else ([], None)
+                if moving:
+                    self.reorder_onto(repo, moving, before)
+
+            self._run_ui(work, done)
         elif action.type == RetryActionType.DISCARD_CHANGES and action.files:
             state = self.state_for(repo)
             files = [
@@ -5201,6 +5643,17 @@ class AppStore:
                 self.sign_in_error = str(exc)
         except Exception as exc:
             self.sign_in_error = str(exc)
+        self.emit()
+
+    def reset_sign_in_state(self) -> None:
+        """Desktop `SignInStore.reset` / `_resetSignInState`."""
+        if self.sign_in_step != SignInStep.SUCCESS:
+            self._finish_credential_sign_in(None)
+        self.oauth_state = None
+        self.sign_in_step = None
+        self.sign_in_error = None
+        self.sign_in_existing = None
+        self.sign_in_credential_helper_url = None
         self.emit()
 
     def request_browser_auth(self) -> str:
@@ -5402,17 +5855,9 @@ class AppStore:
             if pr:
                 self.checkout_pull_request(repo, pr)
             elif action.branch:
-                try:
-                    checkout_branch(repo.path, action.branch)
-                    self.refresh_repository(repo)
-                except GitError:
-                    pass
+                self._checkout_named_branch(repo, action.branch)
         elif action.branch:
-            try:
-                checkout_branch(repo.path, action.branch)
-                self.refresh_repository(repo)
-            except GitError:
-                pass
+            self._checkout_named_branch(repo, action.branch)
         if action.filepath:
             if os.path.isabs(action.filepath):
                 log.error("Refusing to open absolute path: %s", action.filepath)

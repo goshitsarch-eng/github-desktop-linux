@@ -165,3 +165,78 @@ def test_compare_to_branch(isolated_config, git_repo: Path) -> None:
     assert state.merge_tree is not None
     store.compare_to_branch(repo, None)
     assert store.state_for(repo).history_mode.value == "History"
+
+
+def test_reset_sign_in_state_clears_oauth(isolated_config) -> None:
+    from github_desktop.models import SignInStep
+
+    store = AppStore()
+    store.oauth_state = "abc"
+    store.sign_in_step = SignInStep.AUTHENTICATION
+    store.sign_in_error = "nope"
+    store.reset_sign_in_state()
+    assert store.oauth_state is None
+    assert store.sign_in_step is None
+    assert store.sign_in_error is None
+
+
+def test_set_files_included_toggles_subset(isolated_config, git_repo: Path) -> None:
+    from github_desktop.git.ops import get_status
+
+    (git_repo / "a.txt").write_text("a\n", encoding="utf-8")
+    (git_repo / "b.txt").write_text("b\n", encoding="utf-8")
+    store = AppStore()
+    repo = store.add_repositories([str(git_repo)])[0]
+    status = get_status(str(git_repo))
+    store.state_for(repo).status = status
+    files = status.working_directory.files
+    store.set_include_all(repo, False)
+    store.set_files_included(repo, [files[0].path], True)
+    updated = store.state_for(repo).status.working_directory.files
+    by_path = {f.path: f.include for f in updated}
+    assert by_path[files[0].path] is True
+    assert by_path[files[1].path] is False
+
+
+def test_set_conflicts_resolved_skips_abort_confirm(isolated_config, git_repo: Path) -> None:
+    from github_desktop.git.ops import get_status
+
+    store = AppStore()
+    repo = store.add_repositories([str(git_repo)])[0]
+    store.state_for(repo).status = get_status(str(git_repo))
+    assert store.state_for(repo).user_has_resolved_conflicts is False
+    store.set_conflicts_resolved(repo)
+    assert store.state_for(repo).user_has_resolved_conflicts is True
+
+
+def test_create_and_delete_tag_via_store(isolated_config, git_repo: Path) -> None:
+    from github_desktop.git.ops import get_status, get_all_tags
+
+    store = AppStore()
+    repo = store.add_repositories([str(git_repo)])[0]
+    store.state_for(repo).status = get_status(str(git_repo))
+    sha = store.state_for(repo).status.current_tip
+    assert sha
+    store.create_tag(repo, "v-store", sha)
+    assert "v-store" in get_all_tags(str(git_repo))
+    assert "v-store" in store.state_for(repo).local_tags_to_push
+    store.delete_tag(repo, "v-store")
+    assert "v-store" not in get_all_tags(str(git_repo))
+    assert "v-store" not in store.state_for(repo).local_tags_to_push
+
+
+def test_delete_branch_switches_off_current(isolated_config, git_repo: Path) -> None:
+    from github_desktop.git.ops import checkout_branch, create_branch, get_branches, get_status
+
+    create_branch(str(git_repo), "topic")
+    checkout_branch(str(git_repo), "topic")
+    store = AppStore()
+    repo = store.add_repositories([str(git_repo)])[0]
+    store.state_for(repo).status = get_status(str(git_repo))
+    store.state_for(repo).branches = get_branches(str(git_repo))
+    topic = next(b for b in store.state_for(repo).branches if b.name == "topic")
+    store.delete_branch(repo, topic)
+    status = get_status(str(git_repo))
+    assert status.current_branch != "topic"
+    names = {b.name for b in get_branches(str(git_repo))}
+    assert "topic" not in names

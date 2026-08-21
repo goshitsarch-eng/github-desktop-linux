@@ -1247,5 +1247,16 @@ def test_window_actions_cover_menus() -> None:
         "CreateBranchForCherryPick",
         "stash_then_checkout",
         "stash_all_changes",
+        "resetSignInState",
+        "No local changes",
+        "Stashed Changes",
+        "onIncludeAllChanged",
+        "stash_and_retry",
+        "_createTag",
+        "_deleteBranch",
+        "_setConflictsResolved",
+        "userHasResolvedConflicts",
+        "Filter Options",
+        "countActiveFilterOptions",
     ]:
         assert phrase in src

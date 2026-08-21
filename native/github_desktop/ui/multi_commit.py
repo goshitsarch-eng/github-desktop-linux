@@ -861,8 +861,8 @@ def show_conflicts_dialog(parent: Gtk.Window, store: AppStore, kind: str | None 
             kind = MultiCommitOperationKind.SQUASH
         else:
             kind = MultiCommitOperationKind.MERGE
-    files = get_conflicted_files(status.working_directory)
-    resolved = get_resolved_files(status.working_directory)
+    files = get_conflicted_files(status.working_directory, state.manual_resolutions)
+    resolved = get_resolved_files(status.working_directory, state.manual_resolutions)
     leftover = {}
     try:
         leftover = get_files_with_conflict_markers(repo.path)
@@ -972,7 +972,15 @@ def show_conflicts_dialog(parent: Gtk.Window, store: AppStore, kind: str | None 
             dialog.close()
             store.abort_conflict_operation(repo, MultiCommitOperationKind(kind))
 
-        show_confirm_abort(parent, kind, confirm)
+        current = store.state_for(repo)
+        resolved_now = get_resolved_files(
+            current.status.working_directory if current.status else [],
+            current.manual_resolutions,
+        )
+        if current.user_has_resolved_conflicts or resolved_now:
+            show_confirm_abort(parent, kind, confirm)
+        else:
+            confirm()
 
     def open_editor(*_a: object) -> None:
         path = files[0].path if files else None
@@ -989,6 +997,16 @@ def show_conflicts_dialog(parent: Gtk.Window, store: AppStore, kind: str | None 
     box.append(actions)
     toolbar.set_content(box)
     dialog.set_child(toolbar)
+
+    def on_closed(*_a: object) -> None:
+        current = store.state_for(repo)
+        if not current.status:
+            return
+        resolved_now = get_resolved_files(current.status.working_directory, current.manual_resolutions)
+        if resolved_now:
+            store.set_conflicts_resolved(repo)
+
+    dialog.connect("closed", on_closed)
     dialog.present(parent)
 
 

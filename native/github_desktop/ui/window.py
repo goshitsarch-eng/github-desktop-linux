@@ -1402,6 +1402,20 @@ class MainWindow(Adw.ApplicationWindow):
         self._filter_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self._filter_box.append(self._filter)
         self._filter_box.append(chips)
+        applied_row = Gtk.Box(spacing=8)
+        applied_row.set_margin_start(4)
+        applied_row.set_margin_end(4)
+        self._filter_applied = Gtk.Label(xalign=0)
+        self._filter_applied.add_css_class("dim-label")
+        self._filter_applied.set_hexpand(True)
+        self._filter_clear_bar = Gtk.Button(label="Clear filters")
+        self._filter_clear_bar.add_css_class("clear-filters-button")
+        self._filter_clear_bar.connect("clicked", lambda *_: self._clear_changes_filter())
+        applied_row.append(self._filter_applied)
+        applied_row.append(self._filter_clear_bar)
+        self._filter_applied_row = applied_row
+        self._filter_applied_row.set_visible(False)
+        self._filter_box.append(applied_row)
         self._filter_box.set_visible(self.store.settings.show_changes_filter)
         left.append(self._filter_box)
         tools = Gtk.Box(spacing=6)
@@ -2261,10 +2275,23 @@ class MainWindow(Adw.ApplicationWindow):
                     btn.set_active(want)
         all_files = list(state.status.working_directory.files) if state.status else []
         filters = file_list_filter_state_from_view(state)
+        from ..filter_changes import count_active_filter_options, has_active_filters
+
         if self.store.settings.show_changes_filter:
             files = filter_changed_files(all_files, filters)
         else:
             files = all_files
+        if hasattr(self, "_filter_applied_row"):
+            active_count = count_active_filter_options(filters)
+            active = has_active_filters(filters)
+            if active_count:
+                self._filter_applied.set_text(f"Filter Options ({active_count} applied)")
+            elif filters.filter_text.strip():
+                self._filter_applied.set_text("Filter Options")
+            else:
+                self._filter_applied.set_text("")
+            self._filter_applied_row.set_visible(active)
+            self._filter_clear_bar.set_visible(active)
         clear_box(self._file_list)
         if not all_files and hasattr(self, "_changes_pages"):
             self._changes_pages.set_visible_child_name("suggested")
@@ -2277,9 +2304,17 @@ class MainWindow(Adw.ApplicationWindow):
             else:
                 for file in files:
                     self._file_list.append(self._file_row(file))
-        include_all = state.status.working_directory.include_all if state.status else True
+        include_all = True
+        if files:
+            from ..models import WorkingDirectoryStatus
+
+            include_all = WorkingDirectoryStatus.from_files(files).include_all
+        elif all_files:
+            include_all = False
+        elif state.status:
+            include_all = state.status.working_directory.include_all
         busy = bool(state.is_committing or state.is_generating_commit_message)
-        self._include_all.set_sensitive(not busy)
+        self._include_all.set_sensitive(not busy and bool(files))
         self._include_all.set_inconsistent(include_all is None)
         self._include_all.set_active(bool(include_all))
         if hasattr(self, "_stash_all_action"):
@@ -2308,6 +2343,22 @@ class MainWindow(Adw.ApplicationWindow):
         repo = self.store.selected_repository
         if not repo:
             return
+        header = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        header.add_css_class("interstitial-header")
+        title = Gtk.Label(label="No local changes", xalign=0)
+        title.add_css_class("title-4")
+        body = Gtk.Label(
+            label=(
+                "There are no uncommitted changes in this repository. Here are "
+                "some friendly suggestions for what to do next."
+            ),
+            wrap=True,
+            xalign=0,
+        )
+        body.add_css_class("dim-label")
+        header.append(title)
+        header.append(body)
+        self._suggested.append(header)
         current = state.status.current_branch if state.status else None
         remotes = list(state.remotes or [])
         remote_name = remotes[0].name if remotes else "origin"
@@ -2561,10 +2612,21 @@ class MainWindow(Adw.ApplicationWindow):
             self._light_update = False
 
     def _on_include_all(self, btn: Gtk.CheckButton) -> None:
+        """Desktop `onIncludeAllChanged`: toggle only the currently filtered files."""
         if self._building:
             return
         repo = self.store.selected_repository
-        if repo:
+        if not repo:
+            return
+        state = self.store.state_for(repo)
+        from ..filter_changes import file_list_filter_state_from_view, filter_changed_files
+
+        all_files = list(state.status.working_directory.files) if state.status else []
+        filters = file_list_filter_state_from_view(state)
+        files = filter_changed_files(all_files, filters) if self.store.settings.show_changes_filter else all_files
+        if files and files != all_files:
+            self.store.set_files_included(repo, [f.path for f in files], btn.get_active())
+        else:
             self.store.set_include_all(repo, btn.get_active())
 
     def _on_hide_ws(self, btn: Gtk.CheckButton) -> None:
@@ -2987,17 +3049,16 @@ class MainWindow(Adw.ApplicationWindow):
         repo = self.store.selected_repository
         if not repo or not state.stashes:
             return
-        label = Gtk.Label(label=f"{len(state.stashes)} stashed change{'s' if len(state.stashes) != 1 else ''}")
-        view = Gtk.Button(label="View")
-        view.connect("clicked", lambda *_: self.store.toggle_stash(repo) if not state.stashed_visible else None)
-        restore = Gtk.Button(label="Restore")
-        restore.connect("clicked", lambda *_: self.store.restore_stash(repo))
-        discard = Gtk.Button(label="Discard")
-        discard.connect("clicked", lambda *_: self.store.discard_stash(repo))
-        self._stash_bar.append(label)
-        self._stash_bar.append(view)
-        self._stash_bar.append(restore)
-        self._stash_bar.append(discard)
+        btn = Gtk.Button()
+        btn.add_css_class("stashed-changes-button")
+        if state.stashed_visible:
+            btn.add_css_class("selected")
+        btn.set_hexpand(True)
+        label = Gtk.Label(label="Stashed Changes", xalign=0)
+        btn.set_child(label)
+        btn.set_tooltip_text("View stashed changes")
+        btn.connect("clicked", lambda *_: self.store.toggle_stash(repo))
+        self._stash_bar.append(btn)
 
     def _refresh_stash_viewer(self, state) -> None:
         if not hasattr(self, "_stash_viewer"):
@@ -3137,6 +3198,11 @@ class MainWindow(Adw.ApplicationWindow):
         if not repo:
             return
         self.store.set_file_filter(repo, value)
+
+    def _clear_changes_filter(self) -> None:
+        repo = self.store.selected_repository
+        if repo:
+            self.store.clear_changes_filter(repo)
 
     def _selected_change_files(self) -> list[WorkingDirectoryFileChange]:
         files = []

@@ -10,7 +10,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, Gtk
+from gi.repository import Adw, Gio, GLib, Gtk
 
 from ..changelog import load_release_notes
 from ..thank_you import thank_you_note
@@ -28,11 +28,7 @@ from ..git.ops import (
     is_config_file_lock_error,
     parse_config_lock_file_path_from_error,
     read_gitignore,
-    remove_config_value,
     remove_remote,
-    set_config_value,
-    set_remote_url,
-    write_gitignore,
 )
 from ..github.oauth import dotcom_endpoint
 from ..models import (
@@ -752,9 +748,7 @@ def show_lfs_mismatch(parent: Gtk.Window, store: AppStore) -> None:
         if response == "edit":
             store.edit_global_git_config()
         elif response == "ok":
-            from ..git.ops import install_global_lfs_filters
-
-            install_global_lfs_filters(force=True)
+            store.install_global_lfs_filters_now(force=True)
 
     dialog.choose(parent, None, done)
 
@@ -777,10 +771,7 @@ def _reset(store: AppStore, payload: dict[str, Any]) -> None:
         store.reset_to_commit(repo, commit, show_confirmation=False)
         return
     if repo and sha:
-        from ..git.ops import reset
-
-        reset(repo.path, sha, "mixed")
-        store.refresh_repository(repo)
+        store.reset_to_commit(repo, show_confirmation=False, sha=sha)
 
 
 def _checkout_sha(store: AppStore, payload: dict[str, Any], *, skip_confirm: bool = False) -> None:
@@ -798,14 +789,8 @@ def _discard_stash(store: AppStore, payload: dict[str, Any], *, skip_confirm: bo
         store.settings.confirm_discard_stash = False
         store.persist_settings()
     repo = store.selected_repository
-    name = payload.get("stash")
-    if repo and name:
-        from ..git.ops import stash_drop
-
-        stash_drop(repo.path, name)
-        state = store.state_for(repo)
-        state.stashed_visible = False
-        store.refresh_repository(repo)
+    if repo:
+        store.discard_stash(repo, confirmed=True)
 
 
 def _discard_selection(store: AppStore, payload: dict[str, Any], *, skip_confirm: bool = False) -> None:
@@ -831,32 +816,7 @@ def _stash_and_retry(store: AppStore, payload: dict[str, Any]) -> None:
     repo = store.selected_repository
     if not repo:
         return
-    from ..git.ops import checkout_branch, stash_push
-    from ..models import RetryAction
-
-    state = store.state_for(repo)
-    stash_push(repo.path, state.status.current_branch if state.status else "unknown")
-    retry = payload.get("retry")
-    if callable(retry):
-        retry()
-        return
-    action = payload.get("retry_action")
-    if isinstance(action, RetryAction) or isinstance(action, dict):
-        store.perform_retry(action)
-        return
-    kind = payload.get("retry_kind")
-    branch = payload.get("branch")
-    if kind == "checkout" and branch:
-        checkout_branch(repo.path, branch)
-        store.refresh_repository(repo)
-    elif kind == "pull":
-        store.pull_repo(repo)
-    elif kind == "push":
-        store.push_repo(repo)
-    elif kind == "fetch":
-        store.fetch_repo(repo)
-    else:
-        store.refresh_repository(repo)
+    store.stash_and_retry(repo, payload)
 
 
 def show_oversized_files(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
@@ -1007,10 +967,7 @@ def _delete_current_branch(store: AppStore) -> None:
     state = store.state_for(repo)
     branch = state.status.current_branch if state.status else None
     if branch:
-        from ..git.ops import delete_local_branch
-
-        delete_local_branch(repo.path, branch)
-        store.refresh_repository(repo)
+        store.delete_branch(repo, branch)
 
 
 def show_about(parent: Gtk.Window) -> None:
@@ -1298,20 +1255,34 @@ def show_add_repository(parent: Gtk.Window, store: AppStore, initial: str) -> No
     def expanded_path() -> str:
         return os.path.abspath(os.path.expanduser(path_row.get_text().strip() or ""))
 
-    def refresh(*_a: Any) -> None:
+    debounce = {"id": 0}
+
+    def apply_probe() -> bool:
+        debounce["id"] = 0
         raw = path_row.get_text().strip()
         if not raw:
             missing_row.set_visible(False)
             bare_row.set_visible(False)
             unsafe_row.set_visible(False)
             add_btn.set_sensitive(False)
-            return
+            return False
         info = get_repository_type(expanded_path())
         kind = info.get("kind")
         missing_row.set_visible(kind == "missing")
         bare_row.set_visible(kind == "bare")
         unsafe_row.set_visible(kind == "unsafe")
         add_btn.set_sensitive(kind == "regular")
+        return False
+
+    def refresh(*_a: Any) -> None:
+        if debounce["id"]:
+            GLib.source_remove(debounce["id"])
+            debounce["id"] = 0
+        raw = path_row.get_text().strip()
+        if not raw:
+            apply_probe()
+            return
+        debounce["id"] = GLib.timeout_add(200, apply_probe)
 
     def create_instead(*_a: Any) -> None:
         dialog.close()
@@ -1512,23 +1483,27 @@ def show_create_repository(parent: Gtk.Window, store: AppStore, initial: str) ->
         except OSError:
             invalid_row.set_visible(True)
             return
-        try:
-            store.create_repository(
-                full,
-                desc_row.get_text().strip(),
-                name=raw_name,
-                create_readme=readme.get_active(),
-                gitignore=selected_label(ignore_row, NO_GITIGNORE),
-                license_name=selected_label(license_row, NO_LICENSE),
-                update_default_directory=not bool(initial_path),
-            )
+
+        def finished(exc: BaseException | None, _repo: object = None) -> None:
+            if exc:
+                store.show_popup(
+                    PopupType.ERROR,
+                    error=str(exc),
+                    git_context={"kind": "create-repository"},
+                )
+                return
             dialog.close()
-        except Exception as exc:
-            store.show_popup(
-                PopupType.ERROR,
-                error=str(exc),
-                git_context={"kind": "create-repository"},
-            )
+
+        store.create_repository(
+            full,
+            desc_row.get_text().strip(),
+            name=raw_name,
+            create_readme=readme.get_active(),
+            gitignore=selected_label(ignore_row, NO_GITIGNORE),
+            license_name=selected_label(license_row, NO_LICENSE),
+            update_default_directory=not bool(initial_path),
+            on_done=finished,
+        )
 
     name_row.connect("changed", refresh_hints)
     path_row.connect("changed", refresh_hints)
@@ -2080,7 +2055,7 @@ def show_sign_in(
 
     def on_closed(*_a: Any) -> None:
         if store.sign_in_step != SignInStep.SUCCESS:
-            store._finish_credential_sign_in(None)
+            store.reset_sign_in_state()
 
     dialog.connect("closed", on_closed)
     dialog.present(parent)
@@ -2405,21 +2380,11 @@ def show_delete_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, A
     def done(_d, response: str) -> None:
         if response != "delete":
             return
-        from ..git.ops import delete_local_branch, delete_remote_branch
-
-        if remote or include_remote.get_active():
-            remotes = state.remotes
-            remote_name = (branch.upstream.split("/", 1)[0] if branch and branch.upstream and "/" in branch.upstream else None)
-            if remotes:
-                rname = remote_name or remotes[0].name
-                local = name if not remote else name
-                try:
-                    delete_remote_branch(repo.path, rname, local, store.env_for_repo(repo, remotes[0].url))
-                except Exception:
-                    pass
-        if not remote:
-            delete_local_branch(repo.path, name)
-        store.refresh_repository(repo)
+        include = remote or include_remote.get_active()
+        if branch is not None:
+            store.delete_branch(repo, branch, include_upstream=include, remote_only=remote)
+            return
+        store.delete_branch(repo, name, include_upstream=include, remote_only=remote)
 
     dialog.connect("response", done)
     dialog.present(parent)
@@ -2879,8 +2844,7 @@ def show_repository_settings(
             url = url_row.get_text().strip()
             if not url:
                 return
-            set_remote_url(repo.path, remotes[0].name, url)
-            store.refresh_repository(repo)
+            store.save_remote_url(repo, remotes[0].name, url)
 
         save_remote.connect("clicked", save_r)
         remote_group.add(save_remote)
@@ -2922,7 +2886,7 @@ def show_repository_settings(
 
     def save_i(*_a: Any) -> None:
         start, end = buffer.get_bounds()
-        write_gitignore(repo.path, buffer.get_text(start, end, True))
+        store.save_gitignore_text(repo, buffer.get_text(start, end, True))
 
     save_ignore.connect("clicked", save_i)
     ignore_group.add(save_ignore)
@@ -3001,22 +2965,29 @@ def show_repository_settings(
         refresh_email_warning()
 
     def save_g(*_a: Any) -> None:
-        def apply_config() -> None:
-            if local_check.get_active():
-                name = name_row.get_text()
-                if not git_author_name_is_valid(name):
-                    return
-                set_config_value(repo.path, "user.name", name)
-                set_config_value(repo.path, "user.email", _selected_email())
-            else:
-                remove_config_value(repo.path, "user.name")
-                remove_config_value(repo.path, "user.email")
+        use_local = local_check.get_active()
+        name = name_row.get_text() if use_local else ""
+        if use_local and not git_author_name_is_valid(name):
+            return
+        email = _selected_email() if use_local else ""
 
-        try:
-            apply_config()
-        except GitError as exc:
-            if not _handle_config_lock(parent, exc, apply_config):
-                store.show_popup(PopupType.ERROR, error=str(exc))
+        def retry() -> None:
+            store.save_local_git_config(
+                repo,
+                use_local=use_local,
+                name=name,
+                email=email,
+                on_done=finished,
+            )
+
+        def finished(exc: BaseException | None) -> None:
+            if exc is None:
+                return
+            if isinstance(exc, GitError) and _handle_config_lock(parent, exc, retry):
+                return
+            store.show_popup(PopupType.ERROR, error=str(exc))
+
+        retry()
 
     global_check.connect("toggled", apply_location)
     local_check.connect("toggled", apply_location)
@@ -3627,7 +3598,6 @@ def show_create_tag(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]
     repo = store.selected_repository
     if not repo:
         return
-    from ..git.ops import create_tag
     from ..models import create_tag_error, sanitize_ref_name
 
     state = store.state_for(repo)
@@ -3722,10 +3692,7 @@ def show_create_tag(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]
             return
         closed["done"] = True
         dialog.close()
-        create_tag(repo.path, name, sha)
-        state.tags[name] = str(sha)
-        store.remember_tag_to_push(repo, name)
-        store.refresh_repository(repo)
+        store.create_tag(repo, name, sha)
 
     def cancel_clicked(*_a: Any) -> None:
         if closed["done"]:
@@ -3744,19 +3711,13 @@ def show_delete_tag(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]
     repo = store.selected_repository
     name = payload.get("tag")
     if repo and name:
-        from ..git.ops import delete_tag
-
         _alert(
             parent,
             "Delete tag?",
             name,
             destructive=True,
             confirm="Delete",
-            on_confirm=lambda: (
-                delete_tag(repo.path, name),
-                store.forget_tag_to_push(repo, name),
-                store.refresh_repository(repo),
-            ),
+            on_confirm=lambda: store.delete_tag(repo, name),
         )
 
 
@@ -4254,21 +4215,8 @@ def show_lfs(parent: Gtk.Window, store: AppStore) -> None:
 
     def confirm(*_a: Any) -> None:
         items = [p for p in patterns.get_text().split() if p]
-        from ..errors import GitError
-        from ..git.ops import install_global_lfs_filters, lfs_track
-
-        try:
-            install_global_lfs_filters()
-        except GitError as exc:
-            if exc.is_lfs_attribute_mismatch:
-                dialog.close()
-                store.show_popup(PopupType.LFS_ATTRIBUTE_MISMATCH)
-                return
-            store.show_popup(PopupType.ERROR, error=str(exc))
-            return
-        lfs_track(repo.path, items or ["*"])
+        store.track_lfs_patterns(repo, items)
         dialog.close()
-        store.refresh_repository(repo)
 
     init_btn.connect("clicked", confirm)
     box.append(init_btn)
