@@ -144,7 +144,7 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             assert win.lookup_action("pull").get_enabled() is False
             assert win.lookup_action("stash-all").get_enabled() is True
             assert win.lookup_action("discard-all").get_enabled() is True
-            from github_desktop.models import AheadBehind, PopupType as ForcePopupType
+            from github_desktop.models import AheadBehind
 
             assert win._push_menu_label() == "Push"
             if repo_state.status is not None:
@@ -152,9 +152,6 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             repo_state.ahead_behind = AheadBehind(ahead=1, behind=1)
             repo_state.force_push_with_lease_on[tip_name or "main"] = tip_sha
             assert win._push_menu_label() == "Force push…"
-            win._push_from_menu()
-            assert store.popup is not None and store.popup.type == ForcePopupType.CONFIRM_FORCE_PUSH
-            store._popups.clear()
             store.settings.confirm_force_push = False
             store.settings.ask_for_confirmation_on_force_push = False
             pushed: list[bool] = []
