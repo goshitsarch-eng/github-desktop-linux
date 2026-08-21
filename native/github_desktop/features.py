@@ -5,13 +5,15 @@ from __future__ import annotations
 import os
 import sys
 
+from .local_storage import get_boolean
+
 
 def get_feature_override(feature_name: str, default_value: bool) -> bool:
     """Desktop `getFeatureOverride`: `features/{featureName}` with a default."""
     raw = os.environ.get(f"GITHUB_DESKTOP_FEATURE_{feature_name.upper().replace('-', '_')}")
     if raw is not None:
         return raw.strip().lower() in {"1", "true", "yes", "on"}
-    return default_value
+    return bool(get_boolean(f"features/{feature_name}", default_value))
 
 
 def should_render_application_menu() -> bool:

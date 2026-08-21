@@ -31,7 +31,9 @@ from ..models import (
     MultiCommitOperationKind,
     WorkingDirectoryFileChange,
     get_label_for_manual_resolution_option,
-    has_unresolved_conflicts,
+    get_conflicted_files,
+    get_resolved_file_status_summary,
+    get_resolved_files,
     is_conflict_with_markers,
     is_manual_conflict,
 )
@@ -858,8 +860,8 @@ def show_conflicts_dialog(parent: Gtk.Window, store: AppStore, kind: str | None 
             kind = MultiCommitOperationKind.SQUASH
         else:
             kind = MultiCommitOperationKind.MERGE
-    files = [f for f in status.working_directory.files if f.status.is_conflicted and has_unresolved_conflicts(f.status)]
-    resolved = [f for f in status.working_directory.files if f.status.is_conflicted and not has_unresolved_conflicts(f.status)]
+    files = get_conflicted_files(status.working_directory)
+    resolved = get_resolved_files(status.working_directory)
     leftover = {}
     try:
         leftover = get_files_with_conflict_markers(repo.path)
@@ -920,7 +922,7 @@ def show_conflicts_dialog(parent: Gtk.Window, store: AppStore, kind: str | None 
         )
         listbox.append(row)
     for file in resolved:
-        row = Adw.ActionRow(title=file.path, subtitle="Resolved")
+        row = Adw.ActionRow(title=file.path, subtitle=get_resolved_file_status_summary(file.status))
         ok = Gtk.Image.new_from_icon_name("emblem-ok-symbolic")
         row.add_prefix(ok)
         listbox.append(row)

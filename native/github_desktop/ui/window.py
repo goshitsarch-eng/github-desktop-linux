@@ -35,6 +35,8 @@ from ..models import (
     format_commit_attribution,
     get_conflicted_files,
     get_label_for_manual_resolution_option,
+    get_untracked_files,
+    has_conflicted_files,
     is_dotcom_endpoint,
     is_partially_committable_submodule,
     is_uncommittable_submodule,
@@ -420,7 +422,10 @@ class MainWindow(Adw.ApplicationWindow):
         add("rename-branch", lambda: self.store.show_popup(PopupType.RENAME_BRANCH))
         add("delete-branch", self._delete_branch)
         add("discard-all", lambda: self.store.show_popup(PopupType.CONFIRM_DISCARD_CHANGES, discarding_all=True))
-        add("stash-all", self._stash_all)
+        stash_all = Gio.SimpleAction.new("stash-all", None)
+        stash_all.connect("activate", lambda *_: self._stash_all())
+        self.add_action(stash_all)
+        self._stash_all_action = stash_all
         add("merge-branch", lambda: self.store.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind="Merge"))
         add("squash-merge", lambda: self.store.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind="Squash"))
         add("rebase-branch", lambda: self.store.show_popup(PopupType.MULTI_COMMIT_OPERATION, kind="Rebase"))
@@ -554,6 +559,9 @@ class MainWindow(Adw.ApplicationWindow):
         if not repo:
             return
         state = self.store.state_for(repo)
+        wd = state.status.working_directory if state.status else None
+        if wd is not None and has_conflicted_files(wd):
+            return
 
         def run() -> None:
             self.store.stash_and_drop_previous(repo, state.status.current_branch if state.status else "unknown")
@@ -2139,6 +2147,10 @@ class MainWindow(Adw.ApplicationWindow):
         self._include_all.set_sensitive(not busy)
         self._include_all.set_inconsistent(include_all is None)
         self._include_all.set_active(bool(include_all))
+        if hasattr(self, "_stash_all_action"):
+            wd = state.status.working_directory if state.status else None
+            has_files = bool(wd and wd.files)
+            self._stash_all_action.set_enabled(has_files and not (wd is not None and has_conflicted_files(wd)))
         self._building = False
         self._render_working_diff(state)
         repo = self.store.selected_repository
@@ -2707,15 +2719,14 @@ class MainWindow(Adw.ApplicationWindow):
         status = state.status
         if not repo or not status:
             return
-        files = list(status.working_directory.files) if status.working_directory else []
-        unresolved = get_conflicted_files(files)
+        unresolved = get_conflicted_files(status.working_directory)
         can_continue = not unresolved
         continue_tooltip = (
             "Continue rebase"
             if can_continue
             else "Resolve all conflicts before continuing"
         )
-        has_untracked = any(f.status.kind == AppFileStatusKind.UNTRACKED for f in files)
+        has_untracked = bool(get_untracked_files(status.working_directory))
         squash_merge = bool(status.squash_msg_found) and not status.merge_head_found and not status.rebase_internal_state
         if status.merge_head_found or squash_merge:
             kind = MultiCommitOperationKind.SQUASH if squash_merge else MultiCommitOperationKind.MERGE
@@ -3008,11 +3019,12 @@ class MainWindow(Adw.ApplicationWindow):
             return
         state = self.store.state_for(repo)
         has = bool(state.status and state.status.working_directory.files)
+        has_conflicts = bool(state.status and has_conflicted_files(state.status.working_directory))
         show_context_menu(
             self._file_list,
             [
                 ("Discard all changes…", lambda: self.store.show_popup(PopupType.CONFIRM_DISCARD_CHANGES, discarding_all=True), has),
-                ("Stash all changes…", self._stash_all, has),
+                ("Stash all changes…", self._stash_all, has and not has_conflicts),
             ],
         )
 
@@ -3497,6 +3509,9 @@ class MainWindow(Adw.ApplicationWindow):
             return
         if state is None:
             state = self.store.state_for(repo)
+        for cancel in getattr(self, "_compare_ab_cancels", []):
+            cancel()
+        self._compare_ab_cancels = []
         query = (self._compare_search.get_text() if hasattr(self, "_compare_search") else "").strip()
         current_tip = state.status.current_tip if state.status else None
         current_name = state.status.current_branch if state.status else None
@@ -3522,13 +3537,28 @@ class MainWindow(Adw.ApplicationWindow):
             row = Gtk.ListBoxRow()
             box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
             box.append(Gtk.Label(label=branch.name, xalign=0, hexpand=True))
-            ab = self.store.ahead_behind_between(repo, current_tip, branch.tip_sha)
-            if ab and (ab.ahead or ab.behind):
-                counts = Gtk.Label(label=f"{ab.ahead} ahead · {ab.behind} behind")
-                counts.add_css_class("ahead-behind")
-                box.append(counts)
+            counts = Gtk.Label(label="")
+            counts.add_css_class("ahead-behind")
+            counts.set_visible(False)
+            cached = self.store.try_get_ahead_behind(repo, current_tip, branch.tip_sha)
+            if cached and (cached.ahead or cached.behind):
+                counts.set_label(f"{cached.ahead} ahead · {cached.behind} behind")
+                counts.set_visible(True)
+            elif cached is None and current_tip and branch.tip_sha:
+                def on_ab(ab, label=counts, expected=branch.tip_sha, item=row):
+                    if getattr(item, "tip_sha", None) != expected:
+                        return
+                    if ab and (ab.ahead or ab.behind):
+                        label.set_label(f"{ab.ahead} ahead · {ab.behind} behind")
+                        label.set_visible(True)
+
+                self._compare_ab_cancels.append(
+                    self.store.request_ahead_behind(repo, current_tip, branch.tip_sha, on_ab)
+                )
+            box.append(counts)
             row.set_child(box)
             row.branch_name = branch.name
+            row.tip_sha = branch.tip_sha
             self._compare_list.append(row)
             shown += 1
 

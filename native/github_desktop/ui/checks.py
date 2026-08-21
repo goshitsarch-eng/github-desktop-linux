@@ -14,9 +14,9 @@ from gi.repository import Adw, Gtk, Pango
 from ..github.ci_checks import (
     check_run_step_url,
     checks_header_state,
-    duration_ms,
     failing_checks,
-    format_precise_duration,
+    get_formatted_check_run_duration,
+    get_formatted_check_run_long_duration,
     get_check_status_count_map,
     get_combined_status_summary,
     group_check_runs_by_workflow,
@@ -154,10 +154,18 @@ def _runs_from_payload(store: AppStore, payload: dict[str, Any]) -> list[RefChec
 
 def _step_subtitle(step: CheckStep) -> str:
     status = step.conclusion or step.status or ""
-    ms = duration_ms(step.started_at, step.completed_at)
-    if ms:
-        return f"{status} · {format_precise_duration(ms)}".strip(" ·")
+    short = get_formatted_check_run_duration(step)
+    if short:
+        return f"{status} · {short}".strip(" ·")
     return status
+
+
+def _step_row_widget(step: CheckStep) -> Adw.ActionRow:
+    row = Adw.ActionRow(title=step.name or "step", subtitle=_step_subtitle(step))
+    long = get_formatted_check_run_long_duration(step)
+    if long:
+        row.set_tooltip_text(f"{step.name}, {long}")
+    return row
 
 
 def _open_step(run: RefCheck, step: CheckStep, payload: dict[str, Any] | None = None) -> None:
@@ -207,7 +215,7 @@ def _run_expander(
     steps = run.steps or []
     if steps:
         for step in steps:
-            step_row = Adw.ActionRow(title=step.name or "step", subtitle=_step_subtitle(step))
+            step_row = _step_row_widget(step)
             if step.number:
                 link = Gtk.Button(icon_name="web-browser-symbolic")
                 link.add_css_class("flat")
@@ -418,7 +426,7 @@ def show_checks(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) ->
                 steps_box = Gtk.ListBox()
                 steps_box.add_css_class("boxed-list")
                 for step in run.steps:
-                    step_row = Adw.ActionRow(title=step.name or "step", subtitle=_step_subtitle(step))
+                    step_row = _step_row_widget(step)
                     if step.number:
                         link = Gtk.Button(icon_name="web-browser-symbolic")
                         link.add_css_class("flat")

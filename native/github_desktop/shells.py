@@ -112,6 +112,12 @@ def open_file_manager(path: str) -> None:
     spawn("xdg-open", [path], start_new_session=True)
 
 
+def reveal_in_file_manager(repository, path: str) -> None:
+    """Desktop `revealInFileManager`: join repo root with a relative path and show it."""
+    fully_qualified = os.path.join(repository.path, path)
+    open_file_manager(fully_qualified if os.path.exists(fully_qualified) else repository.path)
+
+
 def open_external(url: str) -> bool:
     try:
         spawn("xdg-open", [url], start_new_session=True)

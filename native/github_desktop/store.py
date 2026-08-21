@@ -235,6 +235,7 @@ from .models import (
     github_from_dict,
     github_to_dict,
     get_old_path_or_default,
+    get_untracked_files,
     has_write_permission,
     html_url_from_endpoint,
     is_dotcom_endpoint,
@@ -255,7 +256,7 @@ from .remote_parsing import (
     url_matches_remote,
 )
 from .settings import Settings, get_default_dir, load_settings, save_settings, set_default_dir
-from .shells import find_shell, get_available_shells, open_custom_shell, open_external, open_file_manager, open_shell
+from .shells import find_shell, get_available_shells, open_custom_shell, open_external, open_file_manager, open_shell, reveal_in_file_manager as reveal_path_in_file_manager
 from .thank_you import (
     current_app_version,
     get_user_contributions,
@@ -412,6 +413,12 @@ class AppStore:
         self._background_fetch_in_flight = False
         self._ahead_behind_cache: OrderedDict[tuple[str, str, str], AheadBehind | None] = OrderedDict()
         # Desktop AheadBehindStore QuickLRU `maxSize: 2500`
+        # The maximum number of _concurrent_ `git rev-list` operations we'll run.
+        # MaxConcurrent = 1
+        self._ahead_behind_workers: dict[tuple[str, str, str], list[tuple[Callable[[AheadBehind], None], dict]]] = {}
+        self._ahead_behind_pending: list[tuple[str, str, str]] = []
+        self._ahead_behind_inflight = 0
+        self._ahead_behind_lock = threading.Lock()
         self._credential_sign_in_finish: list[Callable[[Account | None], None]] = []
         self._issue_refresh_at: dict[int, float] = {}
         self._load_accounts()
@@ -2568,7 +2575,7 @@ class AppStore:
         self.emit()
 
     def ahead_behind_between(self, repo: Repository, from_sha: str | None, to_sha: str | None) -> AheadBehind | None:
-        """Desktop `aheadBehindStore.tryGetAheadBehind` LRU cache keyed by commit SHAs."""
+        """Desktop `aheadBehindStore` synchronous cache fill for callers that need an immediate result."""
         if not from_sha or not to_sha:
             return None
         if from_sha == to_sha:
@@ -2584,6 +2591,101 @@ class AppStore:
         while len(cache) > 2500:
             cache.popitem(last=False)
         return result
+
+    def try_get_ahead_behind(self, repo: Repository, from_sha: str | None, to_sha: str | None) -> AheadBehind | None:
+        """Desktop `tryGetAheadBehind`: synchronous cache lookup only."""
+        if not from_sha or not to_sha:
+            return None
+        if from_sha == to_sha:
+            return AheadBehind(ahead=0, behind=0)
+        key = (repo.path, from_sha, to_sha)
+        cache = self._ahead_behind_cache
+        if key not in cache:
+            return None
+        cache.move_to_end(key)
+        return cache[key]
+
+    def request_ahead_behind(
+        self,
+        repo: Repository,
+        from_sha: str | None,
+        to_sha: str | None,
+        callback: Callable[[AheadBehind], None],
+    ) -> Callable[[], None]:
+        """Desktop `AheadBehindStore.getAheadBehind` with `MaxConcurrent = 1`."""
+        cancelled = {"v": False}
+
+        def cancel() -> None:
+            cancelled["v"] = True
+
+        if not from_sha or not to_sha:
+            return cancel
+        if from_sha == to_sha:
+            if not cancelled["v"]:
+                callback(AheadBehind(ahead=0, behind=0))
+            return cancel
+        key = (repo.path, from_sha, to_sha)
+        cache = self._ahead_behind_cache
+        if key in cache:
+            existing = cache[key]
+            cache.move_to_end(key)
+            # Failed lookups are stored as None and are not retried.
+            if existing is not None and not cancelled["v"]:
+                callback(existing)
+            return cancel
+        with self._ahead_behind_lock:
+            waiting = self._ahead_behind_workers.get(key)
+            if waiting is None:
+                self._ahead_behind_workers[key] = [(callback, cancelled)]
+                self._ahead_behind_pending.append(key)
+            else:
+                waiting.append((callback, cancelled))
+        self._pump_ahead_behind()
+        return cancel
+
+    def _pump_ahead_behind(self) -> None:
+        with self._ahead_behind_lock:
+            # MaxConcurrent = 1
+            if self._ahead_behind_inflight >= 1 or not self._ahead_behind_pending:
+                return
+            key = self._ahead_behind_pending.pop(0)
+            self._ahead_behind_inflight += 1
+        path, from_sha, to_sha = key
+        skipped = object()
+
+        def work() -> AheadBehind | None | object:
+            with self._ahead_behind_lock:
+                waiting = list(self._ahead_behind_workers.get(key, []))
+                if not waiting or all(flag["v"] for _, flag in waiting):
+                    return skipped
+            try:
+                return get_ahead_behind_range(path, f"{from_sha}...{to_sha}")
+            except Exception as exc:
+                log.error("Failed calculating ahead/behind status: %s", exc)
+                return None
+
+        def done(_err: BaseException | None, result: AheadBehind | None | object = None) -> None:
+            if result is skipped:
+                with self._ahead_behind_lock:
+                    self._ahead_behind_workers.pop(key, None)
+                    self._ahead_behind_inflight = max(0, self._ahead_behind_inflight - 1)
+                self._pump_ahead_behind()
+                return
+            cache = self._ahead_behind_cache
+            cache[key] = result  # type: ignore[assignment]
+            cache.move_to_end(key)
+            while len(cache) > 2500:
+                cache.popitem(last=False)
+            with self._ahead_behind_lock:
+                callbacks = self._ahead_behind_workers.pop(key, [])
+                self._ahead_behind_inflight = max(0, self._ahead_behind_inflight - 1)
+            if isinstance(result, AheadBehind):
+                for callback, cancelled in callbacks:
+                    if not cancelled["v"]:
+                        callback(result)
+            self._pump_ahead_behind()
+
+        self._run(work, done)
 
     def set_compare_mode(self, repo: Repository, mode: ComparisonMode) -> None:
         state = self.state_for(repo)
@@ -3200,8 +3302,7 @@ class AppStore:
             open_external(url)
 
     def reveal_in_file_manager(self, repo: Repository, relpath: str) -> None:
-        full = os.path.join(repo.path, relpath)
-        open_file_manager(full if os.path.exists(full) else repo.path)
+        reveal_path_in_file_manager(repo, relpath)
 
     def remove_repository_alias(self, repo: Repository) -> None:
         repo.alias = None
@@ -3770,9 +3871,7 @@ class AppStore:
     def stash_and_drop_previous(self, repo: Repository, branch_name: str) -> bool:
         previous = get_last_desktop_stash_entry_for_branch(repo.path, branch_name)
         status = self.state_for(repo).status
-        untracked = [
-            f for f in (status.working_directory.files if status else []) if f.status.kind == AppFileStatusKind.UNTRACKED
-        ]
+        untracked = get_untracked_files(status.working_directory) if status else []
         created = create_desktop_stash_entry(repo.path, branch_name, untracked_files=untracked)
         if created and previous is not None:
             drop_desktop_stash_entry(repo.path, previous.stash_sha)

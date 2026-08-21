@@ -546,6 +546,11 @@ def is_conflict_with_markers(status: FileStatus) -> bool:
     return status.is_conflicted and status.conflict_marker_count is not None
 
 
+def is_conflicted_file(status: FileStatus) -> bool:
+    """Desktop `isConflictedFile`."""
+    return status.is_conflicted
+
+
 def map_status(status: FileStatus) -> str:
     """Desktop `mapStatus`: human-readable file status for lists."""
     if status.kind in (AppFileStatusKind.NEW, AppFileStatusKind.UNTRACKED):
@@ -580,18 +585,93 @@ def has_unresolved_conflicts(
     return (status.conflict_marker_count or 0) > 0
 
 
+def _working_directory_files(
+    status_or_files: WorkingDirectoryStatus | Sequence[WorkingDirectoryFileChange],
+) -> Sequence[WorkingDirectoryFileChange]:
+    return getattr(status_or_files, "files", status_or_files)
+
+
+def has_conflicted_files(
+    working_directory_status: WorkingDirectoryStatus | Sequence[WorkingDirectoryFileChange],
+) -> bool:
+    """Desktop `hasConflictedFiles`."""
+    return any(is_conflicted_file(file.status) for file in _working_directory_files(working_directory_status))
+
+
+def get_unmerged_files(
+    status: WorkingDirectoryStatus | Sequence[WorkingDirectoryFileChange],
+) -> list[WorkingDirectoryFileChange]:
+    """Desktop `getUnmergedFiles`: conflicted or resolved unmerged paths."""
+    return [file for file in _working_directory_files(status) if is_conflicted_file(file.status)]
+
+
+def get_untracked_files(
+    working_directory_status: WorkingDirectoryStatus | Sequence[WorkingDirectoryFileChange],
+) -> list[WorkingDirectoryFileChange]:
+    """Desktop `getUntrackedFiles`."""
+    return [
+        file
+        for file in _working_directory_files(working_directory_status)
+        if file.status.kind == AppFileStatusKind.UNTRACKED
+    ]
+
+
+def get_resolved_files(
+    status: WorkingDirectoryStatus | Sequence[WorkingDirectoryFileChange],
+    manual_resolutions: Mapping[str, ManualConflictResolution] | None = None,
+) -> list[WorkingDirectoryFileChange]:
+    """Desktop `getResolvedFiles`."""
+    resolutions = manual_resolutions or {}
+    return [
+        file
+        for file in _working_directory_files(status)
+        if is_conflicted_file(file.status)
+        and not has_unresolved_conflicts(file.status, resolutions.get(file.path))
+    ]
+
+
 def get_conflicted_files(
-    files: Sequence[WorkingDirectoryFileChange],
+    files: WorkingDirectoryStatus | Sequence[WorkingDirectoryFileChange],
     manual_resolutions: Mapping[str, ManualConflictResolution] | None = None,
 ) -> list[WorkingDirectoryFileChange]:
     """Desktop `getConflictedFiles`: still-unresolved conflicted paths."""
     resolutions = manual_resolutions or {}
     return [
         file
-        for file in files
-        if file.status.is_conflicted
+        for file in _working_directory_files(files)
+        if is_conflicted_file(file.status)
         and has_unresolved_conflicts(file.status, resolutions.get(file.path))
     ]
+
+
+def get_unmerged_status_entry_description(entry: GitStatusEntry | None, branch: str | None = None) -> str:
+    """Desktop `getUnmergedStatusEntryDescription`."""
+    suffix = f" from {branch}" if branch else ""
+    if entry == GitStatusEntry.ADDED:
+        return f"Using the added file{suffix}"
+    if entry == GitStatusEntry.UPDATED_BUT_UNMERGED:
+        return f"Using the modified file{suffix}"
+    if entry == GitStatusEntry.DELETED:
+        return f"Using the deleted file{suffix}"
+    return f"Using ours{suffix}" if not branch else f"Using {branch}"
+
+
+DEFAULT_CONFLICTS_RESOLVED_MESSAGE = "No conflicts remaining"
+
+
+def get_resolved_file_status_summary(
+    status: FileStatus,
+    manual_resolution: ManualConflictResolution | None = None,
+    branch: str | None = None,
+) -> str:
+    """Desktop `getResolvedFileStatusSummary` / `resolvedFileStatusString`."""
+    if is_conflict_with_markers(status) and (status.conflict_marker_count or 0) == 0:
+        return DEFAULT_CONFLICTS_RESOLVED_MESSAGE
+    if manual_resolution == ManualConflictResolution.OURS:
+        return get_unmerged_status_entry_description(status.us, branch)
+    if manual_resolution == ManualConflictResolution.THEIRS:
+        return get_unmerged_status_entry_description(status.them, branch)
+    return DEFAULT_CONFLICTS_RESOLVED_MESSAGE
 
 
 def get_label_for_manual_resolution_option(entry: GitStatusEntry | None, branch: str | None = None) -> str:

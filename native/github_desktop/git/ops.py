@@ -13,6 +13,7 @@ from threading import Event
 from typing import Callable, Iterable, Mapping, Sequence
 
 from ..compare import case_insensitive_compare
+from ..format_commit_message import format_commit_message
 from ..errors import (
     GitError,
     NotARepositoryError,
@@ -818,33 +819,6 @@ def _parse_commit_sha(result: GitResult, repo: str | None = None) -> str:
     cwd = repo or os.getcwd()
     show = git(["rev-parse", "HEAD"], cwd, name="revParseHead")
     return show.stdout.strip()
-
-
-def format_commit_message(
-    summary: str,
-    description: str = "",
-    trailers: Sequence[tuple[str, str]] = (),
-    *,
-    repo: str | None = None,
-) -> str:
-    parts = [summary.strip()]
-    if description.strip():
-        parts.append("")
-        parts.append(description.strip())
-    message = "\n".join(parts) + "\n"
-    if trailers:
-        if repo:
-            try:
-                return merge_trailers(repo, message, trailers)
-            except GitError:
-                pass
-        if not message.endswith("\n"):
-            message += "\n"
-        if not message.endswith("\n\n"):
-            message += "\n"
-        extra = "\n".join(f"{token}: {value}" for token, value in trailers)
-        message = message.rstrip("\n") + "\n\n" + extra + "\n"
-    return message if message.endswith("\n") else message + "\n"
 
 
 def get_trailer_separator_characters(repo: str) -> str:

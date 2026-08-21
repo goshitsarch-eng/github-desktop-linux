@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from math import isnan
 from typing import Any, Iterable, Sequence
 
 from ..models import (
@@ -75,6 +76,33 @@ def format_long_precise_duration(ms: int | float) -> str:
             suffix = "" if qty == 1 else "s"
             parts.append(f"{qty} {name}{suffix}")
     return " ".join(parts)
+
+
+def get_check_duration_in_milliseconds(check: Any) -> float:
+    """Desktop `getCheckDurationInMilliseconds`. NaN when either timestamp fails to parse."""
+    if isinstance(check, dict):
+        started = check.get("started_at")
+        completed = check.get("completed_at")
+    else:
+        started = getattr(check, "started_at", None)
+        completed = getattr(check, "completed_at", None)
+    start = parse_iso(started)
+    end = parse_iso(completed)
+    if start is None or end is None:
+        return float("nan")
+    return (end - start).total_seconds() * 1000
+
+
+def get_formatted_check_run_duration(check: Any) -> str:
+    """Desktop `getFormattedCheckRunDuration` (``1h 1m 10s``)."""
+    duration = get_check_duration_in_milliseconds(check)
+    return "" if isnan(duration) else format_precise_duration(duration)
+
+
+def get_formatted_check_run_long_duration(check: Any) -> str:
+    """Desktop `getFormattedCheckRunLongDuration` (``1 hour 1 minute 10 seconds``)."""
+    duration = get_check_duration_in_milliseconds(check)
+    return "" if isnan(duration) else format_long_precise_duration(duration)
 
 
 def get_check_run_conclusion_adjective(conclusion: str | None) -> str:

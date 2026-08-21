@@ -62,6 +62,7 @@ REQUIRED_GIT_FUNCS = [
     "format_patch",
     "parse_trailers",
     "merge_trailers",
+    "format_commit_message",
     "get_global_config_path",
     "is_using_lfs",
     "is_tracked_by_lfs",
@@ -340,6 +341,9 @@ def test_window_actions_cover_menus() -> None:
         format_relative as format_relative_mod,
         generic_git_auth as generic_git_auth_mod,
         open_file as open_file_mod,
+        format_commit_message as format_commit_message_mod,
+        enum as enum_mod,
+        local_storage as local_storage_mod,
     )
     from github_desktop.git import delimiter as git_delimiter_mod
 
@@ -382,6 +386,9 @@ def test_window_actions_cover_menus() -> None:
     src += open(format_relative_mod.__file__, encoding="utf-8").read()
     src += open(generic_git_auth_mod.__file__, encoding="utf-8").read()
     src += open(open_file_mod.__file__, encoding="utf-8").read()
+    src += open(format_commit_message_mod.__file__, encoding="utf-8").read()
+    src += open(enum_mod.__file__, encoding="utf-8").read()
+    src += open(local_storage_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -1002,5 +1009,32 @@ def test_window_actions_cover_menus() -> None:
         "createLFSProgressFile",
         "getGenericUsername",
         "setGenericCredential",
+        "formatCommitMessage",
+        "mergeTrailers",
+        "hasConflictedFiles",
+        "getUnmergedFiles",
+        "getUntrackedFiles",
+        "getResolvedFiles",
+        "getUnmergedStatusEntryDescription",
+        "isConflictedFile",
+        "No conflicts remaining",
+        "tryGetAheadBehind",
+        "MaxConcurrent = 1",
+        "getFormattedCheckRunDuration",
+        "getFormattedCheckRunLongDuration",
+        "getCheckDurationInMilliseconds",
+        "getBoolean",
+        "setBoolean",
+        "getNumber",
+        "getFloatNumber",
+        "getStringArray",
+        "setStringArray",
+        "getNumberArray",
+        "getEnum",
+        "getObject",
+        "setObject",
+        "parseEnumValue",
+        "NumberArrayDelimiter",
+        "revealInFileManager",
     ]:
         assert phrase in src
