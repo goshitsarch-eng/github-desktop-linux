@@ -1130,6 +1130,8 @@ class Author:
     email: str
     username: str | None = None
     unknown: bool = False
+    # Desktop `UnknownAuthor.state`: searching | error
+    state: str | None = None
 
 
 @dataclass

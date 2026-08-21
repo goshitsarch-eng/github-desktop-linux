@@ -147,6 +147,9 @@ from .menus import (
     unpushed_tags_for_commit,
     view_on_github_label,
     widget_is_or_inside,
+    YOUR_ACCOUNT_EMAILS,
+    git_config_popover_copy,
+    open_git_settings_label,
 )
 from .multi_commit import MERGE_OPTIONS, _their_branch, merge_cta_message, show_confirm_abort, show_conflicts_dialog
 from .spellcheck import attach_spellcheck
@@ -4848,17 +4851,24 @@ class MainWindow(Adw.ApplicationWindow):
             )
             warn.add_css_class("warning")
             self._author_popover_box.append(warn)
+        self._author_popover_box.append(
+            Gtk.Label(label=git_config_popover_copy(local=False), wrap=True, xalign=0)
+        )
         emails = list(account.email_addresses) if account else []
         if account:
             preferred = lookup_preferred_email(account)
             if preferred not in emails:
                 emails.insert(0, preferred)
+        if emails:
+            emails_heading = Gtk.Label(label=YOUR_ACCOUNT_EMAILS, xalign=0)
+            emails_heading.add_css_class("heading")
+            self._author_popover_box.append(emails_heading)
         for item in emails:
             btn = Gtk.Button(label=item)
             btn.add_css_class("flat")
             btn.connect("clicked", lambda _b, addr=item: self._use_author_email(repo, addr))
             self._author_popover_box.append(btn)
-        git_btn = Gtk.Button(label="Open Git settings")
+        git_btn = Gtk.Button(label=open_git_settings_label())
         git_btn.connect("clicked", lambda *_: (self._author_popover.popdown(), show_preferences(self, self.store, PreferencesTab.GIT)))
         self._author_popover_box.append(git_btn)
         repo_btn = Gtk.Button(label="Open repository Git config")

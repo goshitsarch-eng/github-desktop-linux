@@ -135,6 +135,55 @@ def test_linux_no_repositories_and_toolbar_labels_match_desktop() -> None:
     assert repository_toolbar_title(cloning_name="desktop", cloning_percent=40) == "Cloning desktop… 40%"
 
 
+def test_author_input_and_diff_options_linux_copy() -> None:
+    from github_desktop.models import Author
+    from github_desktop.ui.author_input import (
+        AUTHOR_INPUT_PLACEHOLDER,
+        CO_AUTHORS_LABEL,
+        author_handle_aria_label,
+        author_handle_title,
+        get_display_text_for_author,
+        get_full_text_for_author,
+        is_known_author,
+    )
+    from github_desktop.ui.diff_view import diff_options_label
+    from github_desktop.ui.menus import (
+        UPDATE_EMAIL_LABEL,
+        YOUR_ACCOUNT_EMAILS,
+        git_config_popover_copy,
+        git_config_settings_name,
+        open_git_settings_label,
+    )
+
+    assert CO_AUTHORS_LABEL == "Co-Authors"
+    assert AUTHOR_INPUT_PLACEHOLDER == "@username"
+    assert diff_options_label() == "Diff Options"
+    assert open_git_settings_label() == "Open git settings"
+    assert git_config_settings_name() == "options"
+    assert YOUR_ACCOUNT_EMAILS == "Your Account Emails"
+    assert UPDATE_EMAIL_LABEL == "Update email"
+    assert git_config_popover_copy(local=False) == (
+        "You can update your global git configuration  in your git options."
+    )
+    assert git_config_popover_copy(local=True) == (
+        "You can update your local git configuration for your repository in your repository settings."
+    )
+    known = Author(name="The Octocat", email="octocat@github.com", username="octocat")
+    assert is_known_author(known)
+    assert get_display_text_for_author(known) == "@octocat"
+    assert get_full_text_for_author(known) == "@octocat (The Octocat)"
+    assert author_handle_title(known) is None
+    nameless = Author(name="Jane Doe", email="jane@example.com")
+    assert get_display_text_for_author(nameless) == "Jane Doe"
+    unknown = Author(name="nobody", email="", username="nobody", unknown=True, state="error")
+    assert get_display_text_for_author(unknown) == "@nobody"
+    assert author_handle_title(unknown) == "Could not find user with username nobody"
+    assert "user not found" in author_handle_aria_label(unknown)
+    searching = Author(name="hubot", email="", username="hubot", unknown=True, state="searching")
+    assert author_handle_title(searching) == "Searching for @hubot"
+    assert "press backspace or delete to remove" in author_handle_aria_label(searching)
+
+
 def test_clone_list_empty_copy() -> None:
     class Account:
         login = "hubot"

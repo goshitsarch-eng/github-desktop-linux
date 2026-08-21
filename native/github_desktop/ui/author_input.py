@@ -9,7 +9,59 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gdk, Gtk
 
-from ..models import Author, parse_co_authors, parse_name_email
+from ..models import Author, parse_co_authors
+
+# Desktop `AuthorInput` label is always "Co-Authors"; placeholder is "@username".
+CO_AUTHORS_LABEL = "Co-Authors"
+AUTHOR_INPUT_PLACEHOLDER = "@username"
+
+
+def is_known_author(author: Author) -> bool:
+    """Desktop `isKnownAuthor`."""
+    return not author.unknown
+
+
+isKnownAuthor = is_known_author
+
+
+def get_full_text_for_author(author: Author) -> str:
+    """Desktop `getFullTextForAuthor`."""
+    if is_known_author(author):
+        return author.name if author.username is None else f"@{author.username} ({author.name})"
+    return f"@{author.username}" if author.username else author.name
+
+
+getFullTextForAuthor = get_full_text_for_author
+
+
+def get_display_text_for_author(author: Author) -> str:
+    """Desktop `getDisplayTextForAuthor`."""
+    if is_known_author(author):
+        return author.name if author.username is None else f"@{author.username}"
+    return f"@{author.username}" if author.username else author.name
+
+
+getDisplayTextForAuthor = get_display_text_for_author
+
+
+def author_handle_title(author: Author) -> str | None:
+    """Desktop `AuthorHandle.getTitle`."""
+    if is_known_author(author):
+        return None
+    username = author.username or author.name
+    if author.state == "error" or author.state is None:
+        return f"Could not find user with username {username}"
+    return f"Searching for @{username}"
+
+
+def author_handle_aria_label(author: Author) -> str:
+    """Desktop `AuthorHandle.getAriaLabel`."""
+    suffix = "press backspace or delete to remove"
+    if is_known_author(author):
+        return f"{get_full_text_for_author(author)} {suffix}"
+    state_aria = "user not found" if author.state == "error" or author.state is None else "searching"
+    username = author.username or author.name
+    return f"{username}, {state_aria}, {suffix}"
 
 
 class AuthorInput(Gtk.Box):
@@ -17,6 +69,7 @@ class AuthorInput(Gtk.Box):
 
     def __init__(self, on_changed: Callable[[list[Author]], None] | None = None) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.add_css_class("author-input-component")
         self._on_changed = on_changed
         self._authors: list[Author] = []
         self._updating = False
@@ -25,8 +78,14 @@ class AuthorInput(Gtk.Box):
         self._chips.set_selection_mode(Gtk.SelectionMode.NONE)
         self._chips.set_max_children_per_line(6)
         self._chips.add_css_class("co-author-chips")
+        self._chips.add_css_class("added-author-container")
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self._label = Gtk.Label(label=CO_AUTHORS_LABEL)
+        self._label.set_xalign(0)
+        self._label.add_css_class("label")
+        self._label.add_css_class("author-input-label")
         self.entry = Gtk.Entry()
-        self.entry.set_placeholder_text("Co-Author")
+        self.entry.set_placeholder_text(AUTHOR_INPUT_PLACEHOLDER)
         self.entry.set_hexpand(True)
         completion = Gtk.EntryCompletion()
         completion.set_model(self.store)
@@ -40,8 +99,10 @@ class AuthorInput(Gtk.Box):
         controller = Gtk.EventControllerKey()
         controller.connect("key-pressed", self._on_key)
         self.entry.add_controller(controller)
+        row.append(self._label)
+        row.append(self.entry)
         self.append(self._chips)
-        self.append(self.entry)
+        self.append(row)
 
     def get_authors(self) -> list[Author]:
         return list(self._authors)
@@ -95,11 +156,22 @@ class AuthorInput(Gtk.Box):
         chip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         chip.add_css_class("co-author")
         chip.add_css_class("co-author-chip")
-        if author.unknown or not author.email:
+        chip.add_css_class("handle")
+        if not is_known_author(author) or not author.email:
             chip.add_css_class("unknown")
-        handle = f"@{author.username}" if author.username and not author.email else ""
-        label = handle or (f"{author.name} <{author.email}>" if author.email else author.name)
-        chip.append(Gtk.Label(label=label))
+            if author.state == "searching":
+                chip.add_css_class("progress")
+            else:
+                chip.add_css_class("error")
+        label = Gtk.Label(label=get_display_text_for_author(author))
+        chip.append(label)
+        title = author_handle_title(author)
+        chip.set_tooltip_text(title or get_full_text_for_author(author))
+        try:
+            chip.set_accessible_role(Gtk.AccessibleRole.LIST_ITEM)
+            chip.update_property([Gtk.AccessibleProperty.LABEL], [author_handle_aria_label(author)])
+        except Exception:
+            pass
         remove = Gtk.Button(icon_name="window-close-symbolic")
         remove.add_css_class("flat")
         remove.add_css_class("circular")
@@ -129,9 +201,5 @@ def author_from_mentionable(user: dict) -> Author:
 
 
 def display_author(author: Author) -> str:
-    name, email = parse_name_email(f"{author.name} <{author.email}>") if author.email else (author.name, "")
-    if author.username and not email:
-        return f"@{author.username}"
-    if email:
-        return f"{name} <{email}>"
-    return name
+    """Presentation helper used by tests; chip labels use `getDisplayTextForAuthor`."""
+    return get_display_text_for_author(author)

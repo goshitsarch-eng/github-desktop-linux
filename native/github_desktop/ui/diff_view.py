@@ -39,6 +39,14 @@ from ..settings import tabSizeDefault
 from .menus import MenuItem, attach_right_click, clear_box, copy_text, show_context_menu
 from .syntax import markup_for_diff_line
 
+# Desktop Linux `DiffOptions` button/header: `Diff ${__DARWIN__ ? 'Settings' : 'Options'}`.
+DIFF_OPTIONS_LABEL = "Diff Options"
+
+
+def diff_options_label() -> str:
+    """Desktop Linux `DiffOptions` aria-label / popover header."""
+    return DIFF_OPTIONS_LABEL
+
 try:
     import cairo
 except ImportError:
@@ -461,7 +469,7 @@ class DiffViewer(Gtk.Box):
         btn.add_css_class("flat")
         btn.add_css_class("diff-options-component")
         btn.set_icon_name("emblem-system-symbolic")
-        btn.set_tooltip_text("Diff options")
+        btn.set_tooltip_text(diff_options_label())
         popover = Gtk.Popover()
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         box.add_css_class("diff-options-popover")
@@ -469,7 +477,7 @@ class DiffViewer(Gtk.Box):
         box.set_margin_bottom(10)
         box.set_margin_start(12)
         box.set_margin_end(12)
-        heading = Gtk.Label(label="Diff options", xalign=0)
+        heading = Gtk.Label(label=diff_options_label(), xalign=0)
         heading.add_css_class("heading")
         box.append(heading)
         ws_legend = Gtk.Label(label="Whitespace", xalign=0)

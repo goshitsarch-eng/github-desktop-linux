@@ -97,6 +97,18 @@ APP_CSS = """
 .co-author-chips {
   min-height: 0;
 }
+.author-input-component {
+  min-width: 12em;
+}
+.author-input-label {
+  font-weight: 600;
+}
+.co-author-chip.handle.error {
+  background-color: alpha(@error_color, 0.22);
+}
+.co-author-chip.handle.progress {
+  background-color: alpha(@accent_bg_color, 0.18);
+}
 .checks-success { color: @success_color; }
 .checks-failure { color: @error_color; }
 .checks-pending { color: @warning_color; }

@@ -68,6 +68,29 @@ def add_remove_co_authors_label(*, showing: bool) -> str:
     return "Remove co-authors" if showing else "Add co-authors"
 
 
+def open_git_settings_label() -> str:
+    """Linux `CommitMessageAvatar` `buttonText` (`Open git settings`)."""
+    return "Open git settings"
+
+
+def git_config_settings_name() -> str:
+    """Linux `CommitMessageAvatar` `settingsName` (`options`, Darwin `settings`)."""
+    return "options"
+
+
+def git_config_popover_copy(*, local: bool) -> str:
+    """Linux `CommitMessageAvatar.renderGitConfigPopover` body."""
+    if local:
+        return (
+            "You can update your local git configuration for your repository in your repository settings."
+        )
+    return "You can update your global git configuration  in your git options."
+
+
+YOUR_ACCOUNT_EMAILS = "Your Account Emails"
+UPDATE_EMAIL_LABEL = "Update email"
+
+
 GENERATE_COMMIT_MESSAGE_WITH_COPILOT = "Generate commit message with Copilot"
 
 
