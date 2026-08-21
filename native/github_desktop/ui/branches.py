@@ -11,10 +11,11 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, GLib, Gtk
 
 from ..models import Branch, BranchType, PopupType, PullRequest
+from ..fuzzy_find import filter_items
 from ..push_pull import format_commit_relative_time
 from ..shells import open_external
 from .markdown import issue_base_from_html_url, sandboxed_markdown_label
-from .menus import attach_right_click, clear_box, copy_text, show_context_menu
+from .menus import attach_right_click, clear_box, copy_text, show_context_menu, view_on_github_label
 
 
 def group_branches(
@@ -161,6 +162,7 @@ class BranchesFoldout(Gtk.Popover):
         self._repository_name = ""
         self._on_default_branch = True
         self._prs_loading = False
+        self._enterprise = False
 
     def refresh(
         self,
@@ -175,6 +177,7 @@ class BranchesFoldout(Gtk.Popover):
         repository_name: str = "",
         is_on_default_branch: bool = True,
         prs_loading: bool = False,
+        enterprise: bool = False,
     ) -> None:
         self._branches = list(branches)
         self._prs = list(pull_requests)
@@ -186,6 +189,7 @@ class BranchesFoldout(Gtk.Popover):
         self._repository_name = repository_name
         self._on_default_branch = is_on_default_branch
         self._prs_loading = prs_loading
+        self._enterprise = enterprise
         self._search.set_placeholder_text("Find a branch or pull request…")
         self._refilter()
 
@@ -194,12 +198,12 @@ class BranchesFoldout(Gtk.Popover):
         self._search.grab_focus()
 
     def _needle(self) -> str:
-        return self._search.get_text().strip().lower()
+        return self._search.get_text().strip()
 
     def _refilter(self) -> None:
         needle = self._needle()
         clear_box(self._branch_list)
-        filtered = [b for b in self._branches if not needle or needle in b.name.lower()]
+        filtered = filter_items(needle, self._branches, lambda b: [b.name, b.upstream or ""])
         groups = group_branches(
             filtered,
             current=self._current_name,
@@ -221,11 +225,11 @@ class BranchesFoldout(Gtk.Popover):
         if not filtered:
             self._branch_list.append(self._no_branches_row())
         clear_box(self._pr_list)
-        prs = [
-            pr
-            for pr in self._prs
-            if not needle or needle in pr.title.lower() or needle in str(pr.number) or needle in pr.author.lower()
-        ]
+        prs = filter_items(
+            needle,
+            self._prs,
+            lambda pr: [f"#{pr.number} {pr.title}", f"{pr.author} {pr.head_ref}"],
+        )
         if not prs:
             self._pr_list.append(self._pr_empty_state(bool(needle)))
             return
@@ -374,7 +378,7 @@ class BranchesFoldout(Gtk.Popover):
         box.set_size_request(280, -1)
         header = Gtk.Box(spacing=8)
         header.append(Gtk.Label(label="Review requested" if not pr.draft else "Draft pull request", xalign=0, hexpand=True))
-        view = Gtk.Button(label="View on GitHub")
+        view = Gtk.Button(label=view_on_github_label(enterprise=self._enterprise))
         view.add_css_class("flat")
         view.connect("clicked", lambda *_: (self._hide_pr_quick(), open_external(pr.html_url)))
         header.append(view)
@@ -441,7 +445,11 @@ class BranchesFoldout(Gtk.Popover):
                 ("Delete…", lambda: self._on_delete(branch), branch.name != self._current_name),
                 None,
                 ("Copy branch name", lambda: copy_text(branch.name), True),
-                ("View on GitHub", lambda: self._on_view_github(branch), self._github),
+                (
+                    view_on_github_label(enterprise=self._enterprise),
+                    lambda: self._on_view_github(branch),
+                    self._github,
+                ),
             ],
         )
 

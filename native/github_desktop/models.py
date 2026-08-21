@@ -1076,15 +1076,19 @@ class Branch:
     upstream_without_remote: str | None = None
     ref: str = ""
 
+    def __post_init__(self) -> None:
+        if self.upstream_without_remote is None and self.upstream:
+            from .remove_remote_prefix import remove_remote_prefix
+
+            self.upstream_without_remote = remove_remote_prefix(self.upstream)
+
     @property
     def name_without_remote(self) -> str:
         if self.type == BranchType.LOCAL:
             return self.name
-        if self.remote and self.name.startswith(f"{self.remote}/"):
-            return self.name[len(self.remote) + 1 :]
-        if "/" in self.name:
-            return self.name.split("/", 1)[1]
-        return self.name
+        from .remove_remote_prefix import remove_remote_prefix
+
+        return remove_remote_prefix(self.name) or self.name
 
     @property
     def is_local(self) -> bool:

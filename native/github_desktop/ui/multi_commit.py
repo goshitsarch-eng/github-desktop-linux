@@ -14,6 +14,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib, Gtk
 
+from ..fuzzy_find import filter_items
 from ..git.ops import (
     determine_mergeability,
     get_ahead_behind_range,
@@ -254,8 +255,7 @@ def _show_choose_branch(parent: Gtk.Window, store: AppStore, kind: str, initial_
         return kind
 
     def grouped() -> list:
-        needle = search.get_text().strip().lower()
-        remaining = [b for b in branches if not needle or needle in b.name.lower()]
+        remaining = filter_items(search.get_text(), branches, lambda b: [b.name, b.upstream or ""])
         groups: list[tuple[str, list]] = []
         recent = [b for b in remaining if b.name in recent_names]
         if recent:

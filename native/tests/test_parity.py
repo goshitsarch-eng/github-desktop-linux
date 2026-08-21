@@ -312,6 +312,12 @@ def test_window_actions_cover_menus() -> None:
         get_file_hash as get_file_hash_mod,
         ssh_credentials as ssh_credentials_mod,
         enterprise as enterprise_mod,
+        fuzzy_find as fuzzy_find_mod,
+        remove_remote_prefix as remove_remote_prefix_mod,
+        find_default_remote as find_default_remote_mod,
+        find_default_branch as find_default_branch_mod,
+        find_branch_name as find_branch_name_mod,
+        tags_to_push as tags_to_push_mod,
     )
 
     src += open(parse_pac_mod.__file__, encoding="utf-8").read()
@@ -325,6 +331,12 @@ def test_window_actions_cover_menus() -> None:
     src += open(get_file_hash_mod.__file__, encoding="utf-8").read()
     src += open(ssh_credentials_mod.__file__, encoding="utf-8").read()
     src += open(enterprise_mod.__file__, encoding="utf-8").read()
+    src += open(fuzzy_find_mod.__file__, encoding="utf-8").read()
+    src += open(remove_remote_prefix_mod.__file__, encoding="utf-8").read()
+    src += open(find_default_remote_mod.__file__, encoding="utf-8").read()
+    src += open(find_default_branch_mod.__file__, encoding="utf-8").read()
+    src += open(find_branch_name_mod.__file__, encoding="utf-8").read()
+    src += open(tags_to_push_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -865,5 +877,15 @@ def test_window_actions_cover_menus() -> None:
         "InvalidProtocolErrorName",
         "InvalidURLErrorName",
         "Only https is supported",
+        "findDefaultBranch",
+        "findRemoteBranchName",
+        "removeRemotePrefix",
+        "storeTagsToPush",
+        "findDefaultRemote",
+        "githubAssetVideoRegex",
+        "isEmptyOrWhitespace",
+        "tags-to-push-",
+        "VideoLinkFilter",
+        "fuzzaldrin-plus",
     ]:
         assert phrase in src

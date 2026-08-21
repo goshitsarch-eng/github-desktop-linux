@@ -67,6 +67,7 @@ class Settings:
     last_thank_you_version: str = ""
     last_thank_you_users: list[str] = field(default_factory=list)
     recent_branches: dict[str, list[str]] = field(default_factory=dict)
+    tags_to_push: dict[str, list[str]] = field(default_factory=dict)
     last_prune_dates: dict[str, float] = field(default_factory=dict)
     tutorial_paused: bool = False
     pull_request_suggested_next_action: str = PullRequestSuggestedNextAction.PREVIEW_PULL_REQUEST.value

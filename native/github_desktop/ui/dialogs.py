@@ -1568,17 +1568,18 @@ def _render_grouped_clone_list(
     empty_title: str,
 ) -> None:
     from ..clone_groups import group_cloneable_repositories
+    from ..fuzzy_find import filter_items
 
     _clear_listbox(listbox)
     shown = 0
     any_shown = False
-    needle = needle.strip().lower()
+    query = needle.strip()
     for title, items in group_cloneable_repositories(list(repos), login):
-        filtered = [
-            gh
-            for gh in items
-            if not needle or needle in f"{gh.full_name} {gh.html_url} {gh.name}".lower()
-        ]
+        filtered = filter_items(
+            query,
+            items,
+            lambda gh: [gh.full_name, f"{gh.html_url} {gh.name}"],
+        )
         if not filtered:
             continue
         header = Adw.ActionRow(title=title)
@@ -3650,8 +3651,8 @@ def show_create_tag(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]
         closed["done"] = True
         dialog.close()
         create_tag(repo.path, name, sha)
-        state.local_tags_to_push.append(name)
         state.tags[name] = str(sha)
+        store.remember_tag_to_push(repo, name)
         store.refresh_repository(repo)
 
     def cancel_clicked(*_a: Any) -> None:
@@ -3673,7 +3674,18 @@ def show_delete_tag(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]
     if repo and name:
         from ..git.ops import delete_tag
 
-        _alert(parent, "Delete tag?", name, destructive=True, confirm="Delete", on_confirm=lambda: (delete_tag(repo.path, name), store.refresh_repository(repo)))
+        _alert(
+            parent,
+            "Delete tag?",
+            name,
+            destructive=True,
+            confirm="Delete",
+            on_confirm=lambda: (
+                delete_tag(repo.path, name),
+                store.forget_tag_to_push(repo, name),
+                store.refresh_repository(repo),
+            ),
+        )
 
 
 def show_stash_switch(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:

@@ -24,6 +24,13 @@ _FENCE_RE = re.compile(r"```[a-zA-Z0-9_+-]*\n([\s\S]*?)```")
 _INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _AUTOLINK_RE = re.compile(r"(?<!href=\")(?<!href=')https?://[^\s<]+")
+_VIDEO_TAG_RE = re.compile(r"</?video\b[^>]*>", re.I)
+# Desktop `githubAssetVideoRegex` / `video-url-regex.ts` / VideoLinkFilter
+_GITHUB_ASSET_VIDEO_RE = re.compile(
+    r"^https://user-images\.githubusercontent\.com/.+\.(?:mp4|webm|ogg|mov|qt|avi|wmv|3gp|mpg|mpeg)(?:\?.*)?$",
+    re.I,
+)
+githubAssetVideoRegex = _GITHUB_ASSET_VIDEO_RE
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*|__(.+?)__")
 _ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|(?<!_)_(?!_)(.+?)(?<!_)_(?!_)")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.M)
@@ -48,6 +55,11 @@ _ISSUE_MENTION_RE = re.compile(
     re.I,
 )
 CLOSE_KEYWORD_TOOLTIP = "This pull request closes #{0}."
+
+
+def is_github_asset_video_url(url: str) -> bool:
+    """Desktop `githubAssetVideoRegex` / VideoLinkFilter."""
+    return bool(_GITHUB_ASSET_VIDEO_RE.match((url or "").strip()))
 
 
 def _safe_url(url: str) -> str | None:
@@ -128,9 +140,11 @@ def markdown_to_pango(
         if safe is None:
             return match.group(0)
         href = html.escape(safe, quote=True)
-        return hold(f'<a href="{href}">{html.escape(label, quote=True)}</a>')
+        text = "Video" if is_github_asset_video_url(safe) else html.escape(label, quote=True)
+        return hold(f'<a href="{href}">{text}</a>')
 
     source = _MD_LINK_RE.sub(stash_link, source)
+    source = _VIDEO_TAG_RE.sub("", source)
     escaped = html.escape(source, quote=True)
 
     def bold(match: re.Match[str]) -> str:
@@ -213,7 +227,8 @@ def markdown_to_pango(
         if safe is None:
             return match.group(0)
         href = html.escape(safe, quote=True)
-        return f'<a href="{href}">{html.escape(safe, quote=True)}</a>'
+        label = "Video" if is_github_asset_video_url(safe) else html.escape(safe, quote=True)
+        return f'<a href="{href}">{label}</a>'
 
     escaped = _AUTOLINK_RE.sub(autolink, escaped)
     for index, chunk in reversed(list(enumerate(held))):

@@ -21,6 +21,7 @@ from ..errors import (
     parse_bad_config_value_error_info,
 )
 from ..logging import get_logger
+from ..remove_remote_prefix import remove_remote_prefix
 from ..models import (
     DESKTOP_STASH_MARKER,
     FORKED_REMOTE_PREFIX,
@@ -1188,7 +1189,7 @@ def get_branches(repo: str, *prefixes: str) -> list[Branch]:
                 tip_sha=sha,
                 type=btype,
                 remote=remote,
-                upstream_without_remote=upstream.split("/", 1)[-1] if upstream else None,
+                upstream_without_remote=remove_remote_prefix(upstream) if upstream else None,
                 ref=ref,
             )
         )

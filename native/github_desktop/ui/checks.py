@@ -22,9 +22,15 @@ from ..github.ci_checks import (
     group_check_runs_by_workflow,
     is_failure,
 )
-from ..models import CheckStep, PopupType, RefCheck
+from ..models import CheckStep, PopupType, RefCheck, is_dotcom_endpoint
 from ..shells import open_external
 from ..store import AppStore
+from .menus import view_on_github_label
+
+
+def _view_on_github_label(repo) -> str:
+    enterprise = bool(repo and getattr(repo, "github", None) and not is_dotcom_endpoint(repo.github.endpoint))
+    return view_on_github_label(enterprise=enterprise)
 
 
 DONUT_COLORS = {
@@ -390,7 +396,7 @@ def show_checks(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) ->
             child.append(Gtk.Label(label=run.description or run.conclusion or run.status, xalign=0, wrap=True))
             actions = Gtk.Box(spacing=6)
             if run.html_url:
-                view = Gtk.Button(label="View on GitHub")
+                view = Gtk.Button(label=_view_on_github_label(repo))
                 view.connect("clicked", lambda *_ , u=run.html_url: open_external(u))
                 actions.append(view)
             if repo:
@@ -618,7 +624,7 @@ def show_job_logs(parent: Gtk.Window | None, store: AppStore, repo, run: RefChec
         else:
             label.set_text("No logs are available for this job. They may have expired, or this check is not a GitHub Actions job.")
         if run.html_url:
-            open_btn = Gtk.Button(label="View on GitHub")
+            open_btn = Gtk.Button(label=_view_on_github_label(repo))
             open_btn.connect("clicked", lambda *_: open_external(run.html_url))
             header.pack_start(open_btn)
 

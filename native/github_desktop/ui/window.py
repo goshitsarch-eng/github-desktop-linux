@@ -48,6 +48,7 @@ from ..shells import open_external, open_in_default_program
 from ..store import AppStore
 from ..text_tokens import MaxSummaryLength
 from ..truncate import truncate_with_ellipsis
+from ..fuzzy_find import filter_items
 from ..version import APP_NAME
 from .avatar import Avatar, AvatarStack, users_from_commit
 from .author_input import AuthorInput
@@ -1092,7 +1093,7 @@ class MainWindow(Adw.ApplicationWindow):
         repo.append("Pull", "win.pull")
         repo.append("Fetch", "win.fetch")
         repo.append(self._remove_repository_label(), "win.remove-repository")
-        repo.append("View on GitHub", "win.view-on-github")
+        repo.append(self._view_on_github_menu_label(), "win.view-on-github")
         repo.append(self._open_in_shell_label(), "win.open-in-shell")
         repo.append(RevealInFileManagerLabel, "win.open-working-directory")
         repo.append(self._open_in_editor_label(), "win.open-external-editor")
@@ -1157,6 +1158,11 @@ class MainWindow(Adw.ApplicationWindow):
     def _changes_filter_menu_label(self) -> str:
         return "Hide changes filter" if self.store.settings.show_changes_filter else "Show changes filter"
 
+    def _view_on_github_menu_label(self) -> str:
+        repo = self.store.selected_repository
+        enterprise = bool(repo and repo.github and not is_dotcom_endpoint(repo.github.endpoint))
+        return view_on_github_label(enterprise=enterprise)
+
     def _update_from_default_label(self) -> str:
         repo = self.store.selected_repository
         name = self.store.default_branch_name(repo) if repo else None
@@ -1184,6 +1190,7 @@ class MainWindow(Adw.ApplicationWindow):
             self._open_in_editor_label(),
             self._open_in_shell_label(),
             self._remove_repository_label(),
+            self._view_on_github_menu_label(),
             bool(state and state.current_pull_request),
         )
         if getattr(self, "_menu_sig", None) == sig:
@@ -1624,7 +1631,8 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self._branch_btn.set_label(branch or "detached HEAD")
             self._branch_btn.set_sensitive(True)
-        default_name = self.store.default_branch_name(repo)
+        default_branch = self.store.find_default_branch_for(repo)
+        default_name = default_branch.name if default_branch else self.store.default_branch_name(repo)
         current_branch = state.status.current_branch if state.status else None
         self._branches_foldout.refresh(
             state.branches,
@@ -1635,9 +1643,19 @@ class MainWindow(Adw.ApplicationWindow):
             has_github=bool(repo.github),
             pr_checks=getattr(state, "pr_check_status", None) or {},
             repository_name=repo.display_name,
-            is_on_default_branch=bool(current_branch and default_name and current_branch == default_name),
+            is_on_default_branch=bool(
+                current_branch and default_name and (current_branch == default_name or current_branch == self.store.default_branch_name(repo))
+            ),
             prs_loading=bool(state.loading),
+            enterprise=bool(repo.github and not is_dotcom_endpoint(repo.github.endpoint)),
         )
+        github_label = view_on_github_label(
+            enterprise=bool(repo.github and not is_dotcom_endpoint(repo.github.endpoint))
+        )
+        if hasattr(self, "_diff_view"):
+            self._diff_view.view_github_label = github_label
+        if hasattr(self, "_hist_diff_view"):
+            self._hist_diff_view.view_github_label = github_label
         if hasattr(self, "_filter_box"):
             self._filter_box.set_visible(self.store.settings.show_changes_filter)
         self._update_push_label(state)
@@ -1922,7 +1940,7 @@ class MainWindow(Adw.ApplicationWindow):
         return menu
 
     def _refresh_repo_list(self) -> None:
-        needle = self._repo_filter.get_text().lower() if hasattr(self, "_repo_filter") else ""
+        needle = self._repo_filter.get_text() if hasattr(self, "_repo_filter") else ""
         while True:
             row = self._repo_list.get_first_child()
             if row is None:
@@ -1938,6 +1956,13 @@ class MainWindow(Adw.ApplicationWindow):
         }
         shown = 0
 
+        def _repo_keys(repo) -> list[str]:
+            return [
+                repo.display_name,
+                repo.path,
+                repo.github.full_name if repo.github else "",
+            ]
+
         def add_group(title: str, repos) -> None:
             nonlocal shown
             if not repos:
@@ -1951,15 +1976,6 @@ class MainWindow(Adw.ApplicationWindow):
             header.set_child(label)
             self._repo_list.append(header)
             for repo in repos:
-                haystack = " ".join(
-                    [
-                        repo.display_name,
-                        repo.path,
-                        repo.github.full_name if repo.github else "",
-                    ]
-                ).lower()
-                if needle and needle not in haystack:
-                    continue
                 title_text = repo.display_name
                 if disambiguation.get(repo.id) and repo.github:
                     title_text = repo.github.full_name
@@ -1994,19 +2010,8 @@ class MainWindow(Adw.ApplicationWindow):
                 self._repo_list.append(row)
 
         for group in groups:
-            visible = []
-            for item in group.items:
-                repo = item.repository
-                haystack = " ".join(
-                    [
-                        repo.display_name,
-                        repo.path,
-                        repo.github.full_name if repo.github else "",
-                    ]
-                ).lower()
-                if needle and needle not in haystack:
-                    continue
-                visible.append(repo)
+            repos = [item.repository for item in group.items]
+            visible = filter_items(needle, repos, _repo_keys)
             add_group(group.label, visible)
         for cloning in self.store.cloning:
             pct = int((cloning.progress or 0) * 100)
@@ -3484,7 +3489,7 @@ class MainWindow(Adw.ApplicationWindow):
             return
         if state is None:
             state = self.store.state_for(repo)
-        query = (self._compare_search.get_text() if hasattr(self, "_compare_search") else "").strip().lower()
+        query = (self._compare_search.get_text() if hasattr(self, "_compare_search") else "").strip()
         current_tip = state.status.current_tip if state.status else None
         current_name = state.status.current_branch if state.status else None
         while (child := self._compare_list.get_first_child()) is not None:
@@ -3501,10 +3506,9 @@ class MainWindow(Adw.ApplicationWindow):
                 self._compare_search.set_placeholder_text("Select Branch to Compare…")
             else:
                 self._compare_search.set_placeholder_text("Filter branches")
+        ranked = filter_items(query, comparable, lambda b: [b.name, b.upstream or ""])
         shown = 0
-        for branch in comparable:
-            if query and query not in branch.name.lower():
-                continue
+        for branch in ranked:
             if shown >= 40:
                 break
             row = Gtk.ListBoxRow()

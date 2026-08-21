@@ -141,6 +141,7 @@ class DiffViewer(Gtk.Box):
         self.on_open_binary = on_open_binary
         self.on_hide_whitespace_changed = on_hide_whitespace_changed
         self.on_side_by_side_changed = on_side_by_side_changed
+        self.view_github_label = "View on GitHub"
         self._toolbar = Gtk.Box(spacing=6)
         self._toolbar.add_css_class("diff-toolbar")
         self.append(self._toolbar)
@@ -786,7 +787,7 @@ class DiffViewer(Gtk.Box):
         if url:
             from ..shells import open_external
 
-            link = Gtk.Button(label="View on GitHub")
+            link = Gtk.Button(label=self.view_github_label)
             link.add_css_class("flat")
             link.connect("clicked", lambda *_ , u=url: open_external(u))
             box.append(link)

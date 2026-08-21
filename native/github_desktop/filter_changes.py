@@ -73,10 +73,13 @@ def apply_filter_options(file: WorkingDirectoryFileChange, filters: FileListFilt
 
 
 def apply_filters(file: WorkingDirectoryFileChange, filters: FileListFilterState) -> bool:
-    """Apply text plus option filters (Desktop `applyFilters` + filterText)."""
-    needle = filters.filter_text.strip().lower()
-    if needle and needle not in file.path.lower():
-        return False
+    """Apply text plus option filters (Desktop `applyFilters` + fuzzy `filterText`)."""
+    needle = filters.filter_text.strip()
+    if needle:
+        from .fuzzy_find import fuzzy_match_indices
+
+        if not fuzzy_match_indices(file.path, needle):
+            return False
     return apply_filter_options(file, filters)
 
 

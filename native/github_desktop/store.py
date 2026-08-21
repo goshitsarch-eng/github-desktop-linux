@@ -159,6 +159,10 @@ from .enterprise import (
     is_github_dotcom_address,
     validate_url,
 )
+from .find_branch_name import find_remote_branch_name
+from .find_default_branch import find_default_branch, is_forked_repository_contributing_to_parent
+from .find_default_remote import find_default_remote
+from .tags_to_push import clear_tags_to_push, get_tags_to_push, store_tags_to_push
 from .offset_from import offset_from_now
 from .logging import get_logger
 from .models import (
@@ -218,6 +222,7 @@ from .models import (
     UncommittedChangesStrategy,
     WelcomeStep,
     WorkingDirectoryFileChange,
+    UPSTREAM_REMOTE_NAME,
     fork_contribution_target,
     fork_pull_request_remote_name,
     INVALID_GIT_AUTHOR_NAME_MESSAGE,
@@ -500,6 +505,8 @@ class AppStore:
                 )
             )
             self.repo_state[repo_id] = RepositoryViewState()
+            loaded = self.repositories[-1]
+            self.repo_state[repo_id].local_tags_to_push = get_tags_to_push(self.settings, loaded)
         self._next_id = max_id + 1
 
     def _save_repositories(self) -> None:
@@ -738,6 +745,7 @@ class AppStore:
             self._associate_github(repo)
             self.repositories.append(repo)
             self.repo_state[repo.id] = RepositoryViewState()
+            self.repo_state[repo.id].local_tags_to_push = get_tags_to_push(self.settings, repo)
             added.append(repo)
         if added:
             self._save_repositories()
@@ -1345,8 +1353,14 @@ class AppStore:
                             payload["protected_branches"] = []
                         branch_name = status.current_branch if status else None
                         gh_repo = payload.get("github") or repo.github
-                        if branch_name and has_write_permission(gh_repo):
-                            control = api.fetch_push_control(repo.github.owner, repo.github.name, branch_name)
+                        current_branch = next(
+                            (item for item in branches if item.name == branch_name and item.is_local),
+                            None,
+                        )
+                        remote_for_protection = find_default_remote(remotes)
+                        protected_name = find_remote_branch_name(current_branch, remote_for_protection, gh_repo) or branch_name
+                        if protected_name and has_write_permission(gh_repo):
+                            control = api.fetch_push_control(repo.github.owner, repo.github.name, protected_name)
                             payload["current_branch_protected"] = not is_branch_pushable(control)
                         else:
                             payload["current_branch_protected"] = False
@@ -2311,13 +2325,50 @@ class AppStore:
         self.settings.recent_branches[repo.path] = recents[:5]
         self.persist_settings()
 
+    def find_default_branch_for(self, repo: Repository) -> Branch | None:
+        """Desktop `findDefaultBranch` using current remotes and `refs/remotes/*/HEAD`."""
+        state = self.state_for(repo)
+        remotes = list(state.remotes)
+        if not remotes:
+            try:
+                remotes = get_remotes(repo.path)
+            except GitError:
+                remotes = []
+        default_remote = find_default_remote(remotes)
+        remote_name = default_remote.name if default_remote else None
+        lookup = UPSTREAM_REMOTE_NAME if is_forked_repository_contributing_to_parent(repo) else remote_name
+        head = None
+        if lookup:
+            try:
+                head = get_remote_head(repo.path, lookup)
+            except GitError:
+                head = None
+        try:
+            init_default = get_default_branch()
+        except GitError:
+            init_default = self.settings.default_branch or "main"
+        found = find_default_branch(
+            repo,
+            state.branches,
+            remote_name,
+            remote_head=head,
+            init_default_branch=init_default,
+        )
+        if found is not None:
+            return found
+        name = (github_for_contribution(repo) or repo.github).default_branch if (github_for_contribution(repo) or repo.github) else init_default
+        return next((item for item in state.branches if item.name == name or item.name.endswith("/" + name)), None)
+
     def default_branch_name(self, repo: Repository) -> str | None:
+        found = self.find_default_branch_for(repo)
+        if found is not None:
+            return found.name_without_remote
         gh = github_for_contribution(repo) or repo.github
         if gh and gh.default_branch:
             return gh.default_branch
         try:
             remotes = get_remotes(repo.path)
-            origin = next((remote for remote in remotes if remote.name == "origin"), remotes[0] if remotes else None)
+            origin = find_default_remote(remotes)
             if origin:
                 head = get_remote_head(repo.path, origin.name)
                 if head:
@@ -3292,6 +3343,8 @@ class AppStore:
                 if force:
                     self.drop_current_branch_from_force_push_list(repo)
                 state.local_tags_to_push = []
+                clear_tags_to_push(self.settings, repo)
+                self.persist_settings()
                 self.refresh_repository(repo)
                 show_notification("Push complete", f"Pushed {status.current_branch}", enabled=self.settings.notifications_enabled)
                 if on_success:
@@ -3323,7 +3376,7 @@ class AppStore:
                 self._handle_remote_error(repo, exc)
             else:
                 if tags is not None:
-                    self.state_for(repo).local_tags_to_push = list(tags)
+                    self.set_local_tags_to_push(repo, tags)
                 self.refresh_repository(repo)
             self.emit()
 
@@ -3497,7 +3550,7 @@ class AppStore:
                     self._handle_remote_error(repo, exc)
             else:
                 if tags is not None:
-                    self.state_for(repo).local_tags_to_push = list(tags)
+                    self.set_local_tags_to_push(repo, tags)
                 self.refresh_repository(repo)
             self.emit()
 
@@ -3528,6 +3581,27 @@ class AppStore:
         except GitError as exc:
             log.debug("fetch tags to push failed: %s", exc)
             return list(self.state_for(repo).local_tags_to_push)
+
+    def remember_tag_to_push(self, repo: Repository, name: str) -> None:
+        """Desktop create-tag: append and `storeTagsToPush`."""
+        tags = list(self.state_for(repo).local_tags_to_push)
+        if name and name not in tags:
+            tags.append(name)
+        self.state_for(repo).local_tags_to_push = tags
+        store_tags_to_push(self.settings, repo, tags)
+        self.persist_settings()
+
+    def forget_tag_to_push(self, repo: Repository, name: str) -> None:
+        tags = [item for item in self.state_for(repo).local_tags_to_push if item != name]
+        self.state_for(repo).local_tags_to_push = tags
+        store_tags_to_push(self.settings, repo, tags)
+        self.persist_settings()
+
+    def set_local_tags_to_push(self, repo: Repository, tags: Sequence[str]) -> None:
+        names = list(tags)
+        self.state_for(repo).local_tags_to_push = names
+        store_tags_to_push(self.settings, repo, names)
+        self.persist_settings()
 
     def _prune_merged_branches(self, repo: Repository) -> None:
         if not repo.github:
