@@ -27,7 +27,11 @@ jobs:
             gir1.2-adw-1 gir1.2-secret-1 git xvfb xauth python3-pytest python3-packaging
       - name: Run unit and git integration tests
         working-directory: native
-        run: PYTHONPATH=. python3 -m pytest tests -q --ignore=tests/test_gtk_smoke.py
+        run:
+          PYTHONPATH=. python3 -m pytest tests -q
+          --ignore=tests/test_gtk_smoke.py
       - name: Run GTK smoke tests
         working-directory: native
-        run: xvfb-run -a env GTK_A11Y=none ADW_DISABLE_PORTAL=1 PYTHONPATH=. python3 -m pytest tests/test_gtk_smoke.py -q
+        run:
+          xvfb-run -a env GTK_A11Y=none ADW_DISABLE_PORTAL=1 PYTHONPATH=.
+          python3 -m pytest tests/test_gtk_smoke.py -q

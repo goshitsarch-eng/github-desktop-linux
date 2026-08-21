@@ -3,8 +3,8 @@ name: Linux Release
 on:
   push:
     tags:
-      - 'v*'           # Matches v1.0.0, v2.0.0-beta, etc.
-      - 'release-*'    # Matches release-3.5.4-linux1
+      - 'v*' # Matches v1.0.0, v2.0.0-beta, etc.
+      - 'release-*' # Matches release-3.5.4-linux1
 
 env:
   NODE_VERSION: 22.19.0
@@ -77,7 +77,9 @@ jobs:
 
       - name: Get version
         id: version
-        run: echo "version=$(node -p "require('./app/package.json').version")" >> $GITHUB_OUTPUT
+        run:
+          echo "version=$(node -p "require('./app/package.json').version")" >>
+          $GITHUB_OUTPUT
 
       - name: Bundle libcurl-gnutls for portable Git
         run: |

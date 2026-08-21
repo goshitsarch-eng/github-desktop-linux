@@ -8,7 +8,9 @@ on:
   workflow_call:
     inputs:
       repository:
-        description: Repository to check out; defaults to the repository running the workflow
+        description:
+          Repository to check out; defaults to the repository running the
+          workflow
         required: false
         type: string
       ref:
@@ -40,6 +42,9 @@ on:
 env:
   NODE_VERSION: 22.19.0
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Lint
@@ -63,6 +68,9 @@ jobs:
       - name: Ensure a clean working directory
         run: git diff --name-status --exit-code
   build:
+    # This fork ships native GTK 4 on Linux. Skip leftover upstream Electron
+    # Windows/macOS production builds on pull requests (they also need gemoji).
+    if: github.event_name != 'pull_request'
     name: ${{ matrix.friendlyName }} ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
     permissions:

@@ -1,6 +1,6 @@
 name: 🐛 Linux bug report
 description: Report a reproducible problem with this repository's Linux build
-title: "[Bug]: "
+title: '[Bug]: '
 labels:
   - bug
 body:
@@ -13,7 +13,7 @@ body:
     attributes:
       label: Release version
       description: Use Help > About GitHub Desktop or provide the release tag.
-      placeholder: "Example: 3.x.x or release tag"
+      placeholder: 'Example: 3.x.x or release tag'
     validations:
       required: true
   - type: dropdown
@@ -43,22 +43,25 @@ body:
     id: linux
     attributes:
       label: Linux distribution and version
-      placeholder: "Example: Ubuntu 24.04"
+      placeholder: 'Example: Ubuntu 24.04'
     validations:
       required: true
   - type: input
     id: desktop
     attributes:
       label: Desktop environment and session
-      description: Include desktop version and X11, XWayland, or Wayland when known.
-      placeholder: "Example: GNOME 46 on Wayland"
+      description:
+        Include desktop version and X11, XWayland, or Wayland when known.
+      placeholder: 'Example: GNOME 46 on Wayland'
     validations:
       required: true
   - type: textarea
     id: problem
     attributes:
       label: Problem
-      description: Explain what you expected and what happened instead. Include exact error messages.
+      description:
+        Explain what you expected and what happened instead. Include exact error
+        messages.
     validations:
       required: true
   - type: textarea
@@ -75,21 +78,28 @@ body:
     id: logs
     attributes:
       label: Sanitized logs or terminal output
-      description: Use Help > Show Logs. Remove tokens, private URLs, usernames, and sensitive paths before attaching files.
+      description:
+        Use Help > Show Logs. Remove tokens, private URLs, usernames, and
+        sensitive paths before attaching files.
       render: shell
   - type: textarea
     id: context
     attributes:
       label: Additional context
-      description: Add screenshots, asset filename, keyring provider, GPU, or other relevant details.
+      description:
+        Add screenshots, asset filename, keyring provider, GPU, or other
+        relevant details.
   - type: checkboxes
     id: checks
     attributes:
       label: Checklist
       options:
-        - label: I installed or built this repository's Linux version, not an unrelated package.
+        - label:
+            I installed or built this repository's Linux version, not an
+            unrelated package.
           required: true
         - label: I searched existing issues and reviewed the known-issues page.
           required: true
-        - label: I removed secrets and private information from logs and screenshots.
+        - label:
+            I removed secrets and private information from logs and screenshots.
           required: true
