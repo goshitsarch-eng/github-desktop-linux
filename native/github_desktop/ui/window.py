@@ -10,6 +10,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
+from ..features import should_render_application_menu
 from ..models import (
     AppFileStatusKind,
     BannerType,
@@ -908,6 +909,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         menu_btn = Gtk.MenuButton(icon_name="open-menu-symbolic")
         menu_btn.set_menu_model(self._app_menu())
+        menu_btn.set_visible(should_render_application_menu())
         self._menu_btn = menu_btn
         header.pack_end(menu_btn)
 
@@ -1196,6 +1198,7 @@ class MainWindow(Adw.ApplicationWindow):
         if getattr(self, "_menu_sig", None) == sig:
             return
         self._menu_sig = sig
+        self._menu_btn.set_visible(should_render_application_menu())
         self._menu_btn.set_menu_model(self._app_menu())
 
     def _build_repo_list(self) -> Gtk.Widget:

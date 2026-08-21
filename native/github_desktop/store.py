@@ -254,7 +254,7 @@ from .remote_parsing import (
     sanitize_remote_url,
     url_matches_remote,
 )
-from .settings import Settings, load_settings, save_settings
+from .settings import Settings, get_default_dir, load_settings, save_settings, set_default_dir
 from .shells import find_shell, get_available_shells, open_custom_shell, open_external, open_file_manager, open_shell
 from .thank_you import (
     current_app_version,
@@ -973,7 +973,7 @@ class AppStore:
         if update_default_directory:
             parent = os.path.dirname(os.path.abspath(path))
             if parent:
-                self.settings.clone_default_directory = parent
+                set_default_dir(self.settings, parent)
                 self.persist_settings()
         if repos:
             self.refresh_repository(repos[0])
@@ -1011,6 +1011,10 @@ class AppStore:
         cloning = CloningRepository(id=clone_id, path=path, url=url)
         self.cloning.append(cloning)
         self.select_cloning(clone_id)
+        parent = os.path.dirname(os.path.abspath(path))
+        if parent:
+            set_default_dir(self.settings, parent)
+            self.persist_settings()
         account = account or find_account_for_remote_url(url, self.accounts)
         holder: list = []
         cancel = threading.Event()
@@ -4510,7 +4514,7 @@ class AppStore:
                     # refresh is kicked off by select_repository; finish in _finish_pending_open
                     pass
                 return
-        default_dir = self.settings.clone_default_directory or str(Path.home() / "Documents" / "GitHub")
+        default_dir = get_default_dir(self.settings)
         name = parsed.name if parsed else "repository"
         self.show_popup(PopupType.CLONE_REPOSITORY, initial_url=url, path=os.path.join(default_dir, name), branch=action.branch)
 
@@ -5357,7 +5361,7 @@ class AppStore:
                 self.handle_url_action(arg)
         if clone_url:
             parsed = parse_remote(clone_url)
-            default_dir = self.settings.clone_default_directory or str(Path.home() / "Documents" / "GitHub")
+            default_dir = get_default_dir(self.settings)
             name = parsed.name if parsed else "repository"
             self.show_popup(
                 PopupType.CLONE_REPOSITORY,

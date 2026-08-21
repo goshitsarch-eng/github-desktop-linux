@@ -162,6 +162,7 @@ from .ops import (
     merge,
     merge_trailers,
     move_stash_entry,
+    parse_raw_log_with_numstat,
     parse_trailers,
     is_co_authored_by_trailer,
     get_trailer_separator_characters,
@@ -210,7 +211,7 @@ from .ops import (
     write_git_description,
     write_gitignore,
 )
-from .runner import abort_git_process, env_for_proxy, env_for_remote, find_git, git, git_path_is_repository, git_user_agent, resolve_git_proxy, resolve_repository_root
+from .runner import abort_git_process, env_for_proxy, env_for_remote, find_git, find_git_on_path, git, git_path_is_repository, git_user_agent, is_git_on_path, resolve_git_proxy, resolve_repository_root
 from .status import parse_porcelain_status
 
 __all__ = [

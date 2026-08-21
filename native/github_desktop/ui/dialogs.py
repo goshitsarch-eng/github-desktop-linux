@@ -56,6 +56,7 @@ from ..models import (
     default_publish_tab,
     uncommitted_changes_strategy_choices,
 )
+from ..settings import get_default_dir, set_default_dir
 from ..shells import get_available_shells, open_external
 from ..store import AppStore
 from ..text_tokens import MaxSummaryLength
@@ -1348,7 +1349,7 @@ def show_create_repository(parent: Gtk.Window, store: AppStore, initial: str) ->
     )
 
     submodule_docs_url = "https://gh.io/git-submodules"
-    default = store.settings.clone_default_directory or os.path.expanduser("~/Documents/GitHub")
+    default = get_default_dir(store.settings)
     initial_path = (initial or "").strip() or None
     if initial_path:
         parent_path = os.path.dirname(os.path.abspath(initial_path)) or default
@@ -1714,7 +1715,7 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
     header.set_title_widget(switcher)
     toolbar.add_top_bar(header)
 
-    default_dir = store.settings.clone_default_directory or os.path.expanduser("~/Documents/GitHub")
+    default_dir = get_default_dir(store.settings)
     url_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
     url_box.set_margin_top(18)
     url_box.set_margin_start(18)
@@ -3246,7 +3247,7 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
     other_email.connect("notify::text", lambda *_a: refresh_email_warning())
     git_group.add(branch_row)
     clone_row = Adw.EntryRow(title="Clone default directory")
-    clone_row.set_text(s.clone_default_directory or os.path.expanduser("~/Documents/GitHub"))
+    clone_row.set_text(get_default_dir(s))
     git_group.add(clone_row)
     edit_cfg = Gtk.Button(label="Edit global Git config")
     edit_cfg.connect("clicked", lambda *_: (store.edit_global_git_config(), dialog.close()))
@@ -3436,7 +3437,7 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
         s.underline_links = underline.get_active()
         s.show_diff_check_marks = checks.get_active()
         s.spellcheck_enabled = spell.get_active()
-        s.clone_default_directory = clone_row.get_text().strip()
+        set_default_dir(s, clone_row.get_text().strip())
         s.show_commit_length_warning = length_row.get_active()
         idx = strategy.get_selected()
         if 0 <= idx < len(uncommitted_changes_strategy_choices()):
@@ -4847,7 +4848,7 @@ def show_tutorial(parent: Gtk.Window, store: AppStore) -> None:
     if not account:
         store.begin_sign_in(False)
         return
-    default = store.settings.clone_default_directory or os.path.expanduser("~/Documents/GitHub")
+    default = get_default_dir(store.settings)
     path = os.path.join(default, "desktop-tutorial")
     dialog = Adw.Dialog()
     dialog.set_content_width(480)

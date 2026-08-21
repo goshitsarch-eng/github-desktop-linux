@@ -145,3 +145,31 @@ def test_partial_commit_still_works_with_changeset(git_repo) -> None:
     assert sha
     data = get_changeset_data(str(git_repo), sha)
     assert any(f.path == "a.txt" for f in data.files)
+
+
+def test_changeset_data_detects_rename(git_repo) -> None:
+    from github_desktop.git.ops import parse_raw_log_with_numstat
+    from github_desktop.models import AppFileStatusKind
+
+    run_git(git_repo, "mv", "README.md", "NOTES.md")
+    run_git(git_repo, "commit", "-m", "rename readme")
+    sha = get_commits(str(git_repo), limit=1)[0].sha
+    data = get_changeset_data(str(git_repo), sha)
+    renamed = next(f for f in data.files if f.path == "NOTES.md")
+    assert renamed.status.kind == AppFileStatusKind.RENAMED
+    assert renamed.status.old_path == "README.md"
+    parsed = parse_raw_log_with_numstat(
+        ":100644 100644 5716ca5 db3c77d R100\0"
+        "file_one_original_path\0"
+        "file_one_new_path\0"
+        "1\t0\t\0"
+        "file_one_original_path\0"
+        "file_one_new_path\0",
+        "abc",
+        "abc^",
+    )
+    assert parsed.files[0].path == "file_one_new_path"
+    assert parsed.files[0].status.kind == AppFileStatusKind.RENAMED
+    assert parsed.files[0].status.old_path == "file_one_original_path"
+    assert parsed.lines_added == 1
+    assert parsed.lines_deleted == 0

@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
 from .models import ApplicationTheme, PullRequestSuggestedNextAction, UncommittedChangesStrategy
 from .paths import settings_path
+
+
+# Desktop `last-clone-location` localStorage key (persisted here as clone_default_directory).
+LAST_CLONE_LOCATION_KEY = "last-clone-location"
 
 
 @dataclass
@@ -98,3 +103,16 @@ def save_settings(settings: Settings, path: Path | None = None) -> None:
     p = path or settings_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(settings.to_dict(), indent=2), encoding="utf-8")
+
+
+def get_default_dir(settings: Settings | None = None) -> str:
+    """Desktop `getDefaultDir`: last clone location or `~/Documents/GitHub`."""
+    stored = (settings.clone_default_directory if settings is not None else "") or ""
+    if stored.strip():
+        return stored
+    return str(Path.home() / "Documents" / "GitHub")
+
+
+def set_default_dir(settings: Settings, path: str) -> None:
+    """Desktop `setDefaultDir`."""
+    settings.clone_default_directory = os.path.expanduser(path)

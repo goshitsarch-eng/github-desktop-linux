@@ -6,7 +6,8 @@ markup: emphasis, inline/fenced code, https-only links, emoji shortcodes,
 ``IssueMentionFilter`` (``#123``, ``gh-123``, ``/issues/123``, ``owner/repo#123``),
 ``MentionFilter`` (@user), ``TeamMentionFilter`` (@org/team),
 ``CloseKeywordFilter`` (Closes/Fixes/Resolves with tooltip
-``This pull request closes #N.``), and ``CommitMentionFilter`` (7–40 hex SHAs).
+``This pull request closes #N.``), and ``CommitMentionFilter`` (7–40 hex SHAs,
+``SHA...SHA`` ranges, and ``owner/repo@SHA``).
 Raw HTML, ``javascript:``, and ``data:`` URLs are dropped.
 """
 
@@ -43,6 +44,12 @@ _MENTION_RE = re.compile(
     r"(^|[^A-Za-z0-9_`])@([A-Za-z0-9][A-Za-z0-9-]{0,38})(?![/\w-])"
 )
 _SHA_RE = re.compile(r"\b([0-9a-f]{7,40})\b")
+# CommitMentionFilter: SHA...SHA ranges before bare SHAs.
+_SHA_RANGE_RE = re.compile(r"(?<![0-9a-f])(?P<a>[0-9a-f]{7,40})\.\.\.(?P<b>[0-9a-f]{7,40})\b")
+# CommitMentionFilter: owner@SHA or owner/repo@SHA before bare SHAs.
+_OWNER_SHA_RE = re.compile(
+    r"(?<!\w)(?P<owner>[\w-]+)(?:/(?P<name>[\w.-]+))?@(?P<sha>[0-9a-f]{7,40})\b"
+)
 # CloseKeywordFilter: close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved
 _CLOSE_KEYWORD_RE = re.compile(
     r"\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(\s*:?\s+)(?=#|gh-|/(?:issues|pull|discussions)/)",
@@ -95,8 +102,24 @@ _COMMIT_ACTION_PREFIXES = {"_render_node", "checks"}
 
 
 def _trim_commit_sha(sha: str) -> str:
-    """Desktop CommitMentionLinkFilter `trimCommitSha`: 30+ chars → first 7."""
+    """Desktop CommitMentionFilter / CommitMentionLinkFilter `trimCommitSha`: 30+ chars → first 7."""
     return sha[:7] if len(sha) >= 30 else sha
+
+
+def resolve_owner_repo(owner_or_owner_repo: str | None, current: tuple[str, str] | None) -> list[str] | None:
+    """Desktop `resolveOwnerRepo` for `owner@sha` / `owner/repo@sha` mentions."""
+    if owner_or_owner_repo is None:
+        return []
+    parts = [part for part in owner_or_owner_repo.split("/") if part]
+    if len(parts) > 2:
+        return None
+    if current is None:
+        return parts if len(parts) == 2 else None
+    if len(parts) == 1 and parts[0] != current[0]:
+        return None
+    if len(parts) == 2 and (parts[0] != current[0] or parts[1] != current[1]):
+        return parts
+    return []
 
 
 def _repo_owner_name(repo_html_url: str | None) -> tuple[str, str] | None:
@@ -319,12 +342,40 @@ def markdown_to_pango(
 
     if repo_html_url:
         base = repo_html_url.rstrip("/")
+        current = _repo_owner_name(repo_html_url)
+        mention_host = host or _host_from_url(repo_html_url)
+
+        def stash_sha_range(match: re.Match[str]) -> str:
+            left = _trim_commit_sha(match.group("a"))
+            right = _trim_commit_sha(match.group("b"))
+            href = html.escape(f"{base}/compare/{left}...{right}", quote=True)
+            label = f"{html.escape(left, quote=True)}...{html.escape(right, quote=True)}"
+            return hold(f'<a href="{href}"><tt>{label}</tt></a>')
+
+        escaped = _SHA_RANGE_RE.sub(stash_sha_range, escaped)
+
+        def stash_owner_sha(match: re.Match[str]) -> str:
+            owner, name, sha = match.group("owner"), match.group("name"), match.group("sha")
+            spec = f"{owner}/{name}" if name else owner
+            resolved = resolve_owner_repo(spec, current)
+            if resolved is None:
+                return hold(match.group(0))
+            trimmed = _trim_commit_sha(sha)
+            if len(resolved) < 2:
+                href = html.escape(f"{base}/commit/{trimmed}", quote=True)
+                return hold(f'<a href="{href}"><tt>{html.escape(trimmed, quote=True)}</tt></a>')
+            repo_owner, repo_name = resolved[0], resolved[1]
+            href = html.escape(f"{mention_host}/{repo_owner}/{repo_name}/commit/{trimmed}", quote=True)
+            prefix = html.escape(f"{repo_owner}/{repo_name}@", quote=True)
+            return hold(f'<a href="{href}">{prefix}<tt>{html.escape(trimmed, quote=True)}</tt></a>')
+
+        escaped = _OWNER_SHA_RE.sub(stash_owner_sha, escaped)
 
         def stash_sha(match: re.Match[str]) -> str:
             sha = match.group(1)
-            href = html.escape(f"{base}/commit/{sha}", quote=True)
-            short = sha[:7]
-            return hold(f'<a href="{href}"><tt>{html.escape(short, quote=True)}</tt></a>')
+            trimmed = _trim_commit_sha(sha)
+            href = html.escape(f"{base}/commit/{trimmed}", quote=True)
+            return hold(f'<a href="{href}"><tt>{html.escape(trimmed, quote=True)}</tt></a>')
 
         escaped = _SHA_RE.sub(stash_sha, escaped)
 

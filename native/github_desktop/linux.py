@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import subprocess
 from collections.abc import Sequence
 from typing import Any
@@ -66,3 +67,8 @@ def spawn_editor(path: str, working_directory: str, **options: Any) -> subproces
         cwd = format_working_directory_for_flatpak(working_directory)
         return subprocess.Popen(["flatpak-spawn", "--host", actual, cwd], **options)
     return subprocess.Popen([path, working_directory], **options)
+
+
+def get_os() -> str:
+    """Desktop `getOS` on Linux: `{OS.type()} {OS.release()}`."""
+    return f"{platform.system()} {platform.release()}"

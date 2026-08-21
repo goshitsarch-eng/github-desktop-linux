@@ -11,15 +11,15 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib
 
-from ..errors import GitNotFoundError
 from ..git.ops import checkout_branch
-from ..git.runner import find_git
+from ..git.runner import is_git_on_path
+from ..linux import get_os
 from ..logging import get_logger
 from ..models import FetchType, PopupType
 from ..protocol import is_protocol_url, parse_app_url
 from ..store import AppStore, PULL_REQUEST_INTERVAL
 from ..theme import apply_theme
-from ..version import APP_ID, APP_NAME, PROTOCOL_SCHEMES
+from ..version import APP_ID, APP_NAME, PROTOCOL_SCHEMES, __version__
 from .css import load_css
 from .window import MainWindow
 
@@ -56,9 +56,8 @@ class DesktopApplication(Adw.Application):
         about = Gio.SimpleAction.new("about", None)
         about.connect("activate", lambda *_: self.store.show_popup(PopupType.ABOUT))
         self.add_action(about)
-        try:
-            find_git()
-        except GitNotFoundError:
+        log.info("launching: %s (%s)", __version__, get_os())
+        if not is_git_on_path():
             GLib.idle_add(lambda: self.store.show_popup(PopupType.INSTALL_GIT) or False)
 
     def _on_activate(self, *_args: object) -> None:

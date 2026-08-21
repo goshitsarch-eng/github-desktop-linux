@@ -990,14 +990,131 @@ def get_changed_files(repo: str, sha: str) -> list[CommittedFileChange]:
     return get_changeset_data(repo, sha).files
 
 
+SUBMODULE_FILE_MODE = "160000"
+
+
+def map_submodule_status_file_modes(status: str, src_mode: str, dst_mode: str) -> SubmoduleStatus | None:
+    """Desktop `mapSubmoduleStatusFileModes` for `git log --raw` file modes."""
+    if src_mode == SUBMODULE_FILE_MODE and dst_mode == SUBMODULE_FILE_MODE and status == "M":
+        return SubmoduleStatus(commit_changed=True, untracked_changes=False, modified_changes=False)
+    if (src_mode == SUBMODULE_FILE_MODE and status == "D") or (dst_mode == SUBMODULE_FILE_MODE and status == "A"):
+        return SubmoduleStatus(commit_changed=False, untracked_changes=False, modified_changes=False)
+    return None
+
+
+def map_raw_log_status(
+    raw_status: str,
+    old_path: str | None,
+    src_mode: str,
+    dst_mode: str,
+) -> FileStatus:
+    """Desktop `mapStatus` for `--raw` status letters plus R/C similarity scores."""
+    status = raw_status.strip()
+    sub = map_submodule_status_file_modes(status, src_mode, dst_mode)
+    if status == "M":
+        return FileStatus(AppFileStatusKind.MODIFIED, submodule_status=sub)
+    if status == "A":
+        return FileStatus(AppFileStatusKind.NEW, submodule_status=sub)
+    if status == "?":
+        return FileStatus(AppFileStatusKind.UNTRACKED, submodule_status=sub)
+    if status == "D":
+        return FileStatus(AppFileStatusKind.DELETED, submodule_status=sub)
+    if status == "R" and old_path is not None:
+        return FileStatus(
+            AppFileStatusKind.RENAMED,
+            old_path=old_path,
+            submodule_status=sub,
+            rename_includes_modifications=False,
+        )
+    if status == "C" and old_path is not None:
+        return FileStatus(
+            AppFileStatusKind.COPIED,
+            old_path=old_path,
+            submodule_status=sub,
+            rename_includes_modifications=False,
+        )
+    if re.fullmatch(r"R[0-9]+", status) and old_path is not None:
+        return FileStatus(
+            AppFileStatusKind.RENAMED,
+            old_path=old_path,
+            submodule_status=sub,
+            rename_includes_modifications=status != "R100",
+        )
+    if re.fullmatch(r"C[0-9]+", status) and old_path is not None:
+        return FileStatus(
+            AppFileStatusKind.COPIED,
+            old_path=old_path,
+            submodule_status=sub,
+            rename_includes_modifications=False,
+        )
+    return FileStatus(AppFileStatusKind.MODIFIED, submodule_status=sub)
+
+
+def parse_raw_log_with_numstat(stdout: str, sha: str, parent_commitish: str) -> ChangesetData:
+    """Desktop `parseRawLogWithNumstat` for `-z --raw --numstat`."""
+    files: list[CommittedFileChange] = []
+    lines_added = 0
+    lines_deleted = 0
+    num_stat_count = 0
+    lines = stdout.split("\0")
+    index = 0
+    while index < len(lines) - 1:
+        line = lines[index]
+        if line.startswith(":"):
+            parts = line.split(" ")
+            src_mode = (parts[0].replace(":", "") if parts else "") or ""
+            dst_mode = parts[1] if len(parts) > 1 else ""
+            status = parts[-1] if parts else ""
+            old_path = None
+            if status.startswith("R") or status.startswith("C"):
+                index += 1
+                old_path = lines[index] if index < len(lines) else None
+            index += 1
+            path = lines[index] if index < len(lines) else ""
+            files.append(
+                CommittedFileChange(
+                    path=path,
+                    status=map_raw_log_status(status, old_path, src_mode, dst_mode),
+                    commitish=sha,
+                    parent_commitish=parent_commitish,
+                )
+            )
+        elif line:
+            match = re.match(r"^(\d+|-)\t(\d+|-)\t", line)
+            if match is None:
+                index += 1
+                continue
+            added, deleted = match.group(1), match.group(2)
+            lines_added += 0 if added == "-" else int(added)
+            lines_deleted += 0 if deleted == "-" else int(deleted)
+            if num_stat_count < len(files) and files[num_stat_count].status.kind in {
+                AppFileStatusKind.COPIED,
+                AppFileStatusKind.RENAMED,
+            }:
+                index += 2
+            num_stat_count += 1
+        index += 1
+    return ChangesetData(files=files, lines_added=lines_added, lines_deleted=lines_deleted)
+
+
 def get_changeset_data(repo: str, sha: str) -> ChangesetData:
-    args = ["log", sha, "-C", "-M", "-m", "-1", "--first-parent", "--name-status", "--format=", "-z"]
-    result = git(args, repo, name="nameStatus")
-    parents = get_commit(repo, sha)
-    parent = parents.parent_shas[0] if parents and parents.parent_shas else None
-    files = _parse_name_status_z(result.stdout, sha, parent)
-    added, deleted = _numstat_totals_show(repo, sha)
-    return ChangesetData(files=files, lines_added=added, lines_deleted=deleted)
+    args = [
+        "log",
+        sha,
+        "-C",
+        "-M",
+        "-m",
+        "-1",
+        "--no-show-signature",
+        "--first-parent",
+        "--raw",
+        "--format=format:",
+        "--numstat",
+        "-z",
+        "--",
+    ]
+    result = git(args, repo, name="getChangesFiles")
+    return parse_raw_log_with_numstat(result.stdout, sha, f"{sha}^")
 
 
 def get_commit_range_changed_files(
@@ -1009,16 +1126,14 @@ def get_commit_range_changed_files(
 ) -> ChangesetData:
     parent = NULL_TREE_SHA if use_null_tree else f"{oldest_sha}^"
     result = git(
-        ["diff", "--name-status", "-M", "-C", "-z", parent, newest_sha, "--"],
+        ["diff", "-C", "-M", "-z", "--raw", "--numstat", parent, newest_sha, "--"],
         repo,
         success_exit_codes={0, 1, 128},
-        name="commitRangeFiles",
+        name="getCommitRangeChangedFiles",
     )
     if result.exit_code == 128 and not use_null_tree:
         return get_commit_range_changed_files(repo, oldest_sha, newest_sha, use_null_tree=True)
-    files = _parse_name_status_z(result.stdout, newest_sha, parent)
-    added, deleted = _numstat_totals(repo, [parent, newest_sha])
-    return ChangesetData(files=files, lines_added=added, lines_deleted=deleted)
+    return parse_raw_log_with_numstat(result.stdout, newest_sha, parent)
 
 
 def get_commit_range_diff(
@@ -2218,7 +2333,8 @@ def get_stashed_files(repo: str, stash_sha: str) -> list[CommittedFileChange]:
             "stash",
             "show",
             stash_sha,
-            "--name-status",
+            "--raw",
+            "--numstat",
             "-z",
             "--format=format:",
             "--no-show-signature",
@@ -2230,7 +2346,7 @@ def get_stashed_files(repo: str, stash_sha: str) -> list[CommittedFileChange]:
     )
     if result.exit_code == 128:
         return []
-    return _parse_name_status_z(result.stdout, stash_sha, f"{stash_sha}^")
+    return parse_raw_log_with_numstat(result.stdout, stash_sha, f"{stash_sha}^").files
 
 
 def get_last_desktop_stash_entry_for_branch(repo: str, branch: str) -> StashEntry | None:
@@ -2952,16 +3068,14 @@ def get_branch_merge_base_changed_files(
     if not merge_base:
         return None
     result = git(
-        ["diff", "--merge-base", base_branch, comparison_branch, "-C", "-M", "-z", "--name-status", "--"],
+        ["diff", "--merge-base", base_branch, comparison_branch, "-C", "-M", "-z", "--raw", "--numstat", "--"],
         repo,
         success_exit_codes={0, 1, 128},
         name="getBranchMergeBaseChangedFiles",
     )
     if result.exit_code == 128:
         return None
-    files = _parse_name_status_z(result.stdout, latest_sha, merge_base)
-    added, deleted = _numstat_totals(repo, ["--merge-base", base_branch, comparison_branch])
-    return ChangesetData(files=files, lines_added=added, lines_deleted=deleted)
+    return parse_raw_log_with_numstat(result.stdout, latest_sha, merge_base)
 
 
 def get_branch_merge_base_diff(

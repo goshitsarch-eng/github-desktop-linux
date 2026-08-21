@@ -209,3 +209,46 @@ def test_shorten_github_autolinks() -> None:
     )
     assert ">#42</a>" in markup
     assert "href=\"https://github.com/octo/hello/issues/42\"" in markup
+
+
+def test_commit_mention_owner_repo_and_range() -> None:
+    from github_desktop.ui.markdown import markdown_to_pango, resolve_owner_repo
+
+    repo = "https://github.com/octo/hello"
+    assert resolve_owner_repo("desktop/desktop", ("octo", "hello")) == ["desktop", "desktop"]
+    assert resolve_owner_repo("octo/hello", ("octo", "hello")) == []
+    assert resolve_owner_repo("octo", ("octo", "hello")) == []
+    assert resolve_owner_repo("other", ("octo", "hello")) is None
+    owned = markdown_to_pango("See desktop/desktop@1234567 for context", repo_html_url=repo)
+    assert "desktop/desktop@" in owned
+    assert "<tt>1234567</tt>" in owned
+    assert 'href="https://github.com/desktop/desktop/commit/1234567"' in owned
+    same = markdown_to_pango("See octo/hello@abcdef1 here", repo_html_url=repo)
+    assert "octo/hello@" not in same
+    assert 'href="https://github.com/octo/hello/commit/abcdef1"' in same
+    ranged = markdown_to_pango("Compare abcdef1...1234567", repo_html_url=repo)
+    assert "compare/abcdef1...1234567" in ranged
+    invalid = markdown_to_pango("See otheruser@abcdef1 please", repo_html_url=repo)
+    assert "commit/abcdef1" not in invalid
+
+
+def test_get_os_default_dir_and_git_on_path(tmp_path, monkeypatch) -> None:
+    import platform
+
+    from github_desktop.features import should_render_application_menu
+    from github_desktop.git.runner import find_git_on_path, is_git_on_path
+    from github_desktop.linux import get_os
+    from github_desktop.settings import LAST_CLONE_LOCATION_KEY, Settings, get_default_dir, set_default_dir
+
+    assert get_os() == f"{platform.system()} {platform.release()}"
+    assert is_git_on_path() is True
+    assert find_git_on_path()
+    assert LAST_CLONE_LOCATION_KEY == "last-clone-location"
+    settings = Settings()
+    assert get_default_dir(settings).endswith("Documents/GitHub")
+    set_default_dir(settings, str(tmp_path))
+    assert get_default_dir(settings) == str(tmp_path)
+    monkeypatch.delenv("GITHUB_DESKTOP_FEATURE_SHOULD_RENDER_APPLICATION_MENU", raising=False)
+    assert should_render_application_menu() is True
+    monkeypatch.setenv("GITHUB_DESKTOP_FEATURE_SHOULD_RENDER_APPLICATION_MENU", "0")
+    assert should_render_application_menu() is False

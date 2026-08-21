@@ -87,6 +87,21 @@ def find_git() -> str:
     return path
 
 
+def find_git_on_path() -> str | None:
+    """Desktop `findGitOnPath`: first `git` on PATH, or None."""
+    try:
+        return find_git()
+    except GitNotFoundError:
+        return None
+
+
+def is_git_on_path() -> bool:
+    """Desktop `isGitOnPath`. Darwin always true; Linux checks PATH."""
+    if sys.platform == "darwin":
+        return True
+    return find_git_on_path() is not None
+
+
 @functools.lru_cache(maxsize=1)
 def git_user_agent() -> str:
     """Desktop `GitUserAgent` for `GIT_USER_AGENT`."""

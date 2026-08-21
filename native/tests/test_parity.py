@@ -17,6 +17,7 @@ REQUIRED_GIT_FUNCS = [
     "get_commit_diff",
     "get_commits",
     "get_changeset_data",
+    "parse_raw_log_with_numstat",
     "get_commit_range_changed_files",
     "get_commit_range_diff",
     "get_branches",
@@ -323,6 +324,7 @@ def test_window_actions_cover_menus() -> None:
         endpoint_capabilities as endpoint_capabilities_mod,
         git_error_context as git_error_context_mod,
         get_account as get_account_mod,
+        features as features_mod,
     )
     from github_desktop.git import delimiter as git_delimiter_mod
 
@@ -349,6 +351,7 @@ def test_window_actions_cover_menus() -> None:
     src += open(git_delimiter_mod.__file__, encoding="utf-8").read()
     src += open(git_error_context_mod.__file__, encoding="utf-8").read()
     src += open(get_account_mod.__file__, encoding="utf-8").read()
+    src += open(features_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -920,5 +923,14 @@ def test_window_actions_cover_menus() -> None:
         "IssueLinkFilter",
         "CommitMentionLinkFilter",
         "subarray(0, 100 * 1024)",
+        "parseRawLogWithNumstat",
+        "getChangesFiles",
+        "isGitOnPath",
+        "findGitOnPath",
+        "getOS",
+        "getDefaultDir",
+        "last-clone-location",
+        "shouldRenderApplicationMenu",
+        "features/should-render-application-menu",
     ]:
         assert phrase in src
