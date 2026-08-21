@@ -172,6 +172,7 @@ from .find_default_branch import (
 )
 from .find_default_remote import find_default_remote
 from .tags_to_push import clear_tags_to_push, get_tags_to_push, store_tags_to_push
+from .api_cache import apply_github_api_cache, clear_github_api_cache, store_github_api_cache
 from .offset_from import offset_from_now
 from .logging import get_logger
 from .models import (
@@ -532,6 +533,7 @@ class AppStore:
             self.repo_state[repo_id] = RepositoryViewState()
             loaded = self.repositories[-1]
             self.repo_state[repo_id].local_tags_to_push = get_tags_to_push(self.settings, loaded)
+            self._hydrate_github_api_cache(loaded)
         self._next_id = max_id + 1
 
     def _save_repositories(self) -> None:
@@ -549,6 +551,29 @@ class AppStore:
                 }
             )
         repositories_path().write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _hydrate_github_api_cache(self, repo: Repository) -> None:
+        """Restore Issues / PRs / mentionables from Desktop-style durable cache."""
+        gh = github_for_contribution(repo) or repo.github
+        apply_github_api_cache(self.state_for(repo), gh)
+
+    def _persist_github_api_cache(
+        self, repo: Repository, state: RepositoryViewState | None = None
+    ) -> None:
+        gh = github_for_contribution(repo) or repo.github
+        if gh is None:
+            return
+        view = state or self.state_for(repo)
+        store_github_api_cache(
+            gh,
+            issues=list(view.issues),
+            issues_last_updated_at=view.issues_last_updated_at,
+            pull_requests=list(view.pull_requests),
+            last_pr_updated_at=view.last_pr_updated_at,
+            mentionables=list(view.mentionables),
+            mentionables_etag=view.mentionables_etag,
+            mentionables_fetched_at=view.mentionables_fetched_at,
+        )
 
     def subscribe(self, listener: Listener) -> Callable[[], None]:
         self._listeners.append(listener)
@@ -783,6 +808,7 @@ class AppStore:
             self.repositories.append(repo)
             self.repo_state[repo.id] = RepositoryViewState()
             self.repo_state[repo.id].local_tags_to_push = get_tags_to_push(self.settings, repo)
+            self._hydrate_github_api_cache(repo)
             added.append(repo)
         if added:
             self._save_repositories()
@@ -840,6 +866,7 @@ class AppStore:
             return
         self.repositories = [r for r in self.repositories if r.id != repo.id]
         self.repo_state.pop(repo.id, None)
+        clear_github_api_cache(github_for_contribution(repo) or repo.github)
         if self.selected_repository_id == repo.id:
             self.selected_repository_id = self.repositories[0].id if self.repositories else None
         self._save_repositories()
@@ -1521,6 +1548,7 @@ class AppStore:
                 self._load_working_diff(repo, state)
             self._advance_tutorial(repo, state)
             self._finish_pending_open(repo)
+            self._persist_github_api_cache(repo, state)
             self.emit()
 
         self._run(work, done)
@@ -4857,6 +4885,7 @@ class AppStore:
             state.issues = items
             if latest:
                 state.issues_last_updated_at = latest
+            self._persist_github_api_cache(repo, state)
 
         self._run(work, done)
 
@@ -5082,6 +5111,7 @@ class AppStore:
             view.last_pr_updated_at = result.get("last_pr_updated_at")
             view.last_pr_refresh = result.get("last_pr_refresh")
             view.current_pull_request = result.get("current_pull_request")
+            self._persist_github_api_cache(repo, view)
             self.emit()
 
         self._run(work, done)

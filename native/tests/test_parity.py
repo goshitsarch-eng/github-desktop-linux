@@ -246,6 +246,9 @@ def test_window_actions_cover_menus() -> None:
     src += open(git_cred_helper.__file__, encoding="utf-8").read()
     src += open(store_mod.__file__, encoding="utf-8").read()
     src += open(models_mod.__file__, encoding="utf-8").read()
+    from github_desktop import api_cache as api_cache_mod
+
+    src += open(api_cache_mod.__file__, encoding="utf-8").read()
     from github_desktop import push_pull, commit_dnd
     from github_desktop.ui import css as css_mod
 
@@ -1145,5 +1148,8 @@ def test_window_actions_cover_menus() -> None:
         "getPartialBlobContentsCatchPathNotInRef",
         "fetchTagsToPush",
         "getBranchesDifferingFromUpstream",
+        "github-api-cache.json",
+        "getLatestUpdatedAt",
+        "IssuesDatabase",
     ]:
         assert phrase in src
