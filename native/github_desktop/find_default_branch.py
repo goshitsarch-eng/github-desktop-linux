@@ -11,6 +11,7 @@ from .models import (
     ForkContributionTarget,
     Repository,
     fork_contribution_target,
+    is_repository_with_github_repository,
 )
 
 
@@ -49,3 +50,19 @@ def find_default_branch(
         elif remote_ref and branch.name == remote_ref:
             remote_hit = branch
     return local_tracking_hit or local_hit or remote_hit
+
+
+def find_contribution_target_default_branch(
+    repository: Repository,
+    default_branch: Branch | None,
+    upstream_default_branch: Branch | None = None,
+) -> Branch | None:
+    """Desktop `findContributionTargetDefaultBranch`.
+
+    Prefer ``upstream_default_branch`` when the repository is associated with
+    GitHub (that branch is only populated while contributing to a fork parent);
+    otherwise return ``default_branch``.
+    """
+    if is_repository_with_github_repository(repository):
+        return upstream_default_branch if upstream_default_branch is not None else default_branch
+    return default_branch

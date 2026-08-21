@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum, IntEnum, StrEnum
+from math import ceil
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 from uuid import uuid4
@@ -657,6 +658,11 @@ def get_unmerged_status_entry_description(entry: GitStatusEntry | None, branch: 
 
 
 DEFAULT_CONFLICTS_RESOLVED_MESSAGE = "No conflicts remaining"
+
+
+def calculate_conflicts(conflict_markers: int) -> int:
+    """Desktop `calculateConflicts`: marker count / 3, rounded up."""
+    return ceil(conflict_markers / 3)
 
 
 def get_resolved_file_status_summary(
@@ -1319,6 +1325,16 @@ class Repository:
     @property
     def is_fork(self) -> bool:
         return bool(self.github and self.github.fork and self.github.parent)
+
+
+def is_repository_with_github_repository(repository: Repository) -> bool:
+    """Desktop `isRepositoryWithGitHubRepository`."""
+    return repository.github is not None
+
+
+def is_repository_with_forked_github_repository(repository: Repository) -> bool:
+    """Desktop `isRepositoryWithForkedGitHubRepository`."""
+    return repository.github is not None and repository.github.parent is not None
 
 
 def fork_contribution_target(repo: Repository) -> ForkContributionTarget:

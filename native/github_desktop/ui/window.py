@@ -1175,7 +1175,11 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _update_from_default_label(self) -> str:
         repo = self.store.selected_repository
-        name = self.store.default_branch_name(repo) if repo else None
+        if repo:
+            target = self.store.contribution_target_default_branch(repo)
+            name = target.name_without_remote if target else self.store.default_branch_name(repo)
+        else:
+            name = None
         return f"Update from {name or self.store.settings.default_branch or 'default branch'}"
 
     def _open_in_editor_label(self) -> str:

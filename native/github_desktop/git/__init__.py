@@ -116,6 +116,7 @@ from .ops import (
     git_rebase_arguments,
     env_for_authentication,
     env_for_remote_operation,
+    AUTHENTICATION_ERRORS,
     parse_commit_sha,
     classify_git_error,
     get_description_for_error,
@@ -144,6 +145,8 @@ from .ops import (
     get_submodules,
     get_upstream_ref_for_ref,
     get_upstream_remote_name_for_ref,
+    get_current_upstream_ref,
+    get_current_upstream_remote_name,
     get_working_directory_diff,
     get_working_directory_lines,
     init_repository,
@@ -173,6 +176,7 @@ from .ops import (
     push,
     read_description,
     read_gitignore,
+    read_gitignore_at_root,
     rebase,
     remove_config_value,
     remove_conflicted_file,
@@ -211,6 +215,8 @@ from .ops import (
     write_description,
     write_git_description,
     write_gitignore,
+    save_gitignore,
+    format_gitignore_contents,
 )
 from .runner import abort_git_process, env_for_proxy, env_for_remote, find_git, find_git_on_path, git, git_path_is_repository, git_user_agent, is_git_on_path, resolve_git_proxy, resolve_repository_root
 from .status import parse_porcelain_status

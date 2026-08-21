@@ -164,7 +164,12 @@ from .commit_url import create_commit_url
 from .find_account import find_account_for_remote_url
 from .get_account import get_account_for_repository
 from .find_branch_name import find_remote_branch_name
-from .find_default_branch import find_default_branch, is_forked_repository_contributing_to_parent
+from .create_branch import upstream_default_branch_for
+from .find_default_branch import (
+    find_contribution_target_default_branch,
+    find_default_branch,
+    is_forked_repository_contributing_to_parent,
+)
 from .find_default_remote import find_default_remote
 from .tags_to_push import clear_tags_to_push, get_tags_to_push, store_tags_to_push
 from .offset_from import offset_from_now
@@ -2380,6 +2385,13 @@ class AppStore:
             return found
         name = (github_for_contribution(repo) or repo.github).default_branch if (github_for_contribution(repo) or repo.github) else init_default
         return next((item for item in state.branches if item.name == name or item.name.endswith("/" + name)), None)
+
+    def contribution_target_default_branch(self, repo: Repository) -> Branch | None:
+        """Desktop `findContributionTargetDefaultBranch` for the selected repository."""
+        default = self.find_default_branch_for(repo)
+        default_name = default.name_without_remote if default else self.default_branch_name(repo)
+        upstream = upstream_default_branch_for(repo, list(self.state_for(repo).branches), default_name)
+        return find_contribution_target_default_branch(repo, default, upstream)
 
     def default_branch_name(self, repo: Repository) -> str | None:
         found = self.find_default_branch_for(repo)

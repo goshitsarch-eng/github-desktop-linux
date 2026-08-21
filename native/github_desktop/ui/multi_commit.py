@@ -34,6 +34,7 @@ from ..models import (
     get_conflicted_files,
     get_resolved_file_status_summary,
     get_resolved_files,
+    calculate_conflicts,
     is_conflict_with_markers,
     is_manual_conflict,
 )
@@ -1019,8 +1020,8 @@ def _conflict_row(
     elif is_manual_conflict(file.status):
         subtitle = file.status.unmerged_action.value if file.status.unmerged_action else "Manual conflict"
     elif is_conflict_with_markers(file.status):
-        count = file.status.conflict_marker_count or 0
-        subtitle = f"{count} leftover conflict marker{'s' if count != 1 else ''}"
+        human = calculate_conflicts(file.status.conflict_marker_count or 0)
+        subtitle = "1 conflict" if human == 1 else f"{human} conflicts"
     else:
         subtitle = file.status.kind.value
     row = Adw.ActionRow(title=file.path, subtitle=subtitle)

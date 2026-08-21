@@ -1295,11 +1295,24 @@ def git_rebase_arguments() -> list[str]:
 
 def env_for_authentication() -> dict[str, str]:
     """Desktop `envForAuthentication`."""
+    from ..local_storage import get_item
+
     return {
         "GIT_TERMINAL_PROMPT": "0",
-        "GIT_TRACE": os.environ.get("GIT_TRACE") or "0",
+        "GIT_TRACE": get_item("git-trace") or os.environ.get("GIT_TRACE") or "0",
         "GIT_USER_AGENT": git_user_agent(),
     }
+
+
+# Desktop `AuthenticationErrors` (expectedErrors for checkout / network ops).
+AUTHENTICATION_ERRORS = frozenset(
+    {
+        "HTTPSAuthenticationFailed",
+        "SSHAuthenticationFailed",
+        "HTTPSRepositoryNotFound",
+        "SSHRepositoryNotFound",
+    }
+)
 
 
 def env_for_remote_operation(remote_url: str) -> dict[str, str]:
@@ -2482,26 +2495,60 @@ def remove_config_value(repo: str | None, key: str, global_only: bool = False) -
     git(args, cwd, success_exit_codes={0, 5}, name="unsetConfig")
 
 
-def read_gitignore(repo: str) -> str:
+def read_gitignore_at_root(repo: str) -> str | None:
+    """Desktop `readGitIgnoreAtRoot`: ``None`` when `.gitignore` is missing."""
     path = os.path.join(repo, ".gitignore")
     try:
         return Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
     except OSError:
-        return ""
+        return None
+
+
+def read_gitignore(repo: str) -> str:
+    return read_gitignore_at_root(repo) or ""
+
+
+def format_gitignore_contents(text: str, repo: str) -> str:
+    """Desktop `formatGitIgnoreContents` (`core.autocrlf` / `core.safecrlf`)."""
+    autocrlf = get_config_value(repo, "core.autocrlf")
+    safecrlf = get_config_value(repo, "core.safecrlf")
+    if autocrlf == "true" and safecrlf == "true":
+        normalized = re.sub(r"\r\n|\n\r|\n|\r", "\r\n", text)
+        return normalized + "\r\n"
+    if text == "" or text.endswith("\n"):
+        return text
+    if autocrlf is None:
+        return f"{text}\n"
+    if autocrlf == "true":
+        return f"{text}\n"
+    return f"{text}\r\n"
 
 
 def write_gitignore(repo: str, text: str) -> None:
-    Path(os.path.join(repo, ".gitignore")).write_text(text, encoding="utf-8")
+    """Desktop `saveGitIgnore`: empty text removes `.gitignore`."""
+    save_gitignore(repo, text)
+
+
+def save_gitignore(repo: str, text: str) -> None:
+    """Desktop `saveGitIgnore`."""
+    ignore_path = os.path.join(repo, ".gitignore")
+    if text == "":
+        try:
+            os.unlink(ignore_path)
+        except FileNotFoundError:
+            pass
+        return
+    Path(ignore_path).write_text(format_gitignore_contents(text, repo), encoding="utf-8")
 
 
 def append_ignore_rule(repo: str, pattern: str | Sequence[str]) -> None:
-    if not isinstance(pattern, str):
-        pattern = "\n".join(pattern)
-    current = read_gitignore(repo)
-    if not current.endswith("\n") and current:
-        current += "\n"
-    current += pattern.rstrip("\n") + "\n"
-    write_gitignore(repo, current)
+    """Desktop `appendIgnoreRule`."""
+    text = read_gitignore_at_root(repo) or ""
+    current = format_gitignore_contents(text, repo)
+    new_pattern = "\n".join(pattern) if not isinstance(pattern, str) else pattern
+    save_gitignore(repo, format_gitignore_contents(f"{current}{new_pattern}", repo))
 
 
 _GITIGNORE_SPECIAL_RE = re.compile(r"[\[\]!*#?]")
@@ -3446,6 +3493,16 @@ def get_upstream_remote_name_for_ref(path: str, ref: str | None = None) -> str |
         return None
     match = re.match(r"^refs/remotes/([^/]+)/", remote_ref)
     return match.group(1) if match else None
+
+
+def get_current_upstream_ref(path: str) -> str | None:
+    """Desktop `getCurrentUpstreamRef`."""
+    return get_upstream_ref_for_ref(path)
+
+
+def get_current_upstream_remote_name(path: str) -> str | None:
+    """Desktop `getCurrentUpstreamRemoteName`."""
+    return get_upstream_remote_name_for_ref(path)
 
 
 def add_global_config_value(name: str, value: str) -> None:
