@@ -94,15 +94,55 @@ def get_api_endpoint(url: str) -> str:
     return f"https://{netloc}/api/v3"
 
 
+def endpoint_version_key(endpoint: str) -> str:
+    """Desktop `endpointVersionKey`: `endpoint-version:${ep}`."""
+    return f"endpoint-version:{endpoint.rstrip('/')}"
+
+
 def update_endpoint_version(endpoint: str, version: str) -> None:
     """Desktop `updateEndpointVersion` from `x-github-enterprise-version`."""
-    if version:
-        _endpoint_versions[endpoint.rstrip("/")] = version
+    if not version:
+        return
+    key_ep = endpoint.rstrip("/")
+    if _endpoint_versions.get(key_ep) == version:
+        return
+    _endpoint_versions[key_ep] = version
+    try:
+        from .local_storage import set_item
+
+        set_item(endpoint_version_key(key_ep), version)
+    except Exception:
+        pass
 
 
 def get_endpoint_version(endpoint: str) -> str | None:
-    """Desktop `getEndpointVersion`."""
-    return _endpoint_versions.get(endpoint.rstrip("/"))
+    """Desktop `getEndpointVersion`: memory, then localStorage."""
+    key_ep = endpoint.rstrip("/")
+    cached = _endpoint_versions.get(key_ep)
+    if cached:
+        return cached
+    try:
+        from .local_storage import get_item
+
+        raw = get_item(endpoint_version_key(key_ep))
+    except Exception:
+        raw = None
+    if raw:
+        _endpoint_versions[key_ep] = raw
+        return raw
+    return None
+
+
+def try_update_endpoint_version_from_response(endpoint: str, headers: object | None) -> None:
+    """Desktop `tryUpdateEndpointVersionFromResponse`."""
+    if headers is None:
+        return
+    getter = getattr(headers, "get", None)
+    version = None
+    if callable(getter):
+        version = getter("x-github-enterprise-version") or getter("X-GitHub-Enterprise-Version")
+    if version:
+        update_endpoint_version(endpoint, str(version))
 
 
 def _should_probe_github_host() -> bool:

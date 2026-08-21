@@ -1151,5 +1151,9 @@ def test_window_actions_cover_menus() -> None:
         "github-api-cache.json",
         "getLatestUpdatedAt",
         "IssuesDatabase",
+        "tryUpdateEndpointVersionFromResponse",
+        "rejectOnError",
+        "--unset-all",
+        "removeRemote",
     ]:
         assert phrase in src

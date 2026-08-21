@@ -147,16 +147,24 @@ def _progress_adapter(cb: ProgressCb) -> Callable[[GitProgress], None]:
     return on_event
 
 
-def get_status(repo_path: str, include_untracked: bool = True) -> IStatusResult | None:
+def get_status(
+    repo_path: str,
+    include_untracked: bool = True,
+    reject_on_error: bool = False,
+) -> IStatusResult | None:
+    """Desktop `getStatus`. `rejectOnError` uses successExitCodes `{0}` only."""
     if not os.path.isdir(repo_path):
         return IStatusResult(exists=False)
     args = ["--no-optional-locks", "status"]
     if include_untracked:
         args += ["--untracked-files=all"]
     args += ["--branch", "--porcelain=2", "-z"]
+    success = {0} if reject_on_error else {0, 128}
     try:
-        result = git(args, repo_path, success_exit_codes={0, 128}, name="getStatus", binary=True)
+        result = git(args, repo_path, success_exit_codes=success, name="getStatus", binary=True)
     except GitError:
+        if reject_on_error:
+            raise
         return None
     if result.exit_code == 128:
         return None
@@ -1503,7 +1511,8 @@ def add_remote(repo: str, name: str, url: str) -> None:
 
 
 def remove_remote(repo: str, name: str) -> None:
-    git(["remote", "remove", name], repo, name="removeRemote")
+    """Desktop `removeRemote`: missing remotes are success (exit 2 or 128)."""
+    git(["remote", "remove", name], repo, success_exit_codes={0, 2, 128}, name="removeRemote")
 
 
 def set_remote_url(repo: str, name: str, url: str) -> None:
@@ -2609,7 +2618,7 @@ def remove_config_value(repo: str | None, key: str, global_only: bool = False) -
     args = ["config"]
     if global_only or not repo:
         args.append("--global")
-    args += ["--unset", key]
+    args += ["--unset-all", key]
     cwd = repo or os.path.expanduser("~")
     git(args, cwd, success_exit_codes={0, 5}, name="unsetConfig")
 

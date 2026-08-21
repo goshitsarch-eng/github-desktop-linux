@@ -1022,7 +1022,11 @@ class AppStore:
             write_git_attributes(path)
         except OSError as exc:
             log.debug("createRepository: unable to write .gitattributes at %s: %s", path, exc)
-        status = get_status(path)
+        try:
+            status = get_status(path, reject_on_error=True)
+        except GitError as exc:
+            log.debug("createRepository: git status failed at %s: %s", path, exc)
+            raise
         files = list(status.working_directory.files) if status else []
         if files:
             try:

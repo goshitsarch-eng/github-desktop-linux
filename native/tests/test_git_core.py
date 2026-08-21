@@ -18,10 +18,15 @@ from github_desktop.git.ops import (
     get_commit_range_changed_files,
     get_commits,
     get_commits_in_range,
+    get_config_value,
     get_partial_blob_contents,
     get_partial_blob_contents_catch_path_not_in_ref,
     get_remotes,
+    get_status,
     parse_config_lock_file_path_from_error,
+    remove_config_value,
+    remove_remote,
+    set_config_value,
 )
 from github_desktop.git.runner import GitResult, git, is_git_error
 from tests.conftest import run_git
@@ -216,3 +221,27 @@ def test_create_tag_uses_empty_annotated_message(git_repo: Path) -> None:
 def test_fetch_tags_to_push_missing_remote_raises(git_repo: Path) -> None:
     with pytest.raises(GitError):
         fetch_tags_to_push(str(git_repo), "no-such-remote", "main")
+
+
+def test_remove_remote_missing_is_success(git_repo: Path) -> None:
+    remove_remote(str(git_repo), "does-not-exist")
+
+
+def test_remove_config_value_unsets_all(git_repo: Path) -> None:
+    run_git(git_repo, "config", "--add", "user.name", "Second")
+    names = run_git(git_repo, "config", "--get-all", "user.name").stdout.splitlines()
+    assert len(names) >= 2
+    remove_config_value(str(git_repo), "user.name")
+    assert get_config_value(str(git_repo), "user.name", local_only=True) is None
+    set_config_value(str(git_repo), "user.name", "Test User")
+
+
+def test_get_status_reject_on_error_throws_outside_repo(tmp_path: Path) -> None:
+    empty = Path.home() / f"not-a-repo-status-{tmp_path.name}"
+    empty.mkdir()
+    try:
+        assert get_status(str(empty)) is None
+        with pytest.raises(GitError):
+            get_status(str(empty), reject_on_error=True)
+    finally:
+        empty.rmdir()

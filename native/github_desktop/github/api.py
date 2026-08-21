@@ -239,6 +239,9 @@ class GitHubAPI:
                 header_map = {
                     str(key).lower(): str(value) for key, value in (resp.headers.items() if resp.headers else [])
                 }
+                from ..remote_parsing import try_update_endpoint_version_from_response
+
+                try_update_endpoint_version_from_response(self.endpoint, header_map)
                 raw = resp.read()
                 if not raw:
                     parsed: Any = None
@@ -260,6 +263,9 @@ class GitHubAPI:
                 }
             except Exception:
                 header_map = {}
+            from ..remote_parsing import try_update_endpoint_version_from_response
+
+            try_update_endpoint_version_from_response(self.endpoint, header_map)
             # Desktop ghRequest: 401 + X-GitHub-Request-Id and no OTP => emitTokenInvalidated.
             if (
                 exc.code == HttpStatusCode.Unauthorized
@@ -390,14 +396,22 @@ class GitHubAPI:
 
     def fetch_repos(self, affiliation: str = "owner,collaborator,organization_member") -> list[GitHubRepository]:
         items = self._paginate("/user/repos", {"affiliation": affiliation, "sort": "updated"})
-        return [self._to_repo(item) for item in items]
+        return [
+            self._to_repo(item)
+            for item in items
+            if isinstance(item, dict) and item.get("owner") is not None
+        ]
 
     def fetch_orgs(self) -> list[dict[str, Any]]:
         return self._paginate("/user/orgs")
 
     def fetch_org_repos(self, org: str) -> list[GitHubRepository]:
         items = self._paginate(f"/orgs/{org}/repos", {"sort": "updated"})
-        return [self._to_repo(item) for item in items]
+        return [
+            self._to_repo(item)
+            for item in items
+            if isinstance(item, dict) and item.get("owner") is not None
+        ]
 
     def fetch_repository(self, owner: str, name: str) -> GitHubRepository:
         data = self.get(f"/repos/{owner}/{name}")
@@ -566,6 +580,9 @@ class GitHubAPI:
             return None
         if headers is None:
             return None
+        from ..remote_parsing import try_update_endpoint_version_from_response
+
+        try_update_endpoint_version_from_response(self.endpoint, headers)
         raw = headers.get("X-Poll-Interval") or headers.get("x-poll-interval")
         if not raw:
             return None
@@ -1297,6 +1314,12 @@ def request_oauth_token(html_base: str, client_id: str, client_secret: str, code
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
+            header_map = {
+                str(key).lower(): str(value) for key, value in (resp.headers.items() if resp.headers else [])
+            }
+            from ..remote_parsing import get_api_endpoint, try_update_endpoint_version_from_response
+
+            try_update_endpoint_version_from_response(get_api_endpoint(html_base), header_map)
             payload = json.loads(resp.read().decode("utf-8"))
         return payload.get("access_token")
     except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as exc:
