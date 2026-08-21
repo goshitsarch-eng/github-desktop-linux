@@ -15,6 +15,7 @@ REQUIRED_GIT_FUNCS = [
     "get_working_directory_lines",
     "get_blob_lines",
     "get_commit_diff",
+    "ensure_relative_path",
     "get_commits",
     "get_changeset_data",
     "parse_raw_log_with_numstat",
@@ -1130,5 +1131,8 @@ def test_window_actions_cover_menus() -> None:
         "BranchDeletionFailed",
         "ConflictModifyDeletedInBranch",
         "ConfigLockFileAlreadyExists",
+        "ensureRelativePath",
+        ":(top,literal)",
+        "getCommitDiff",
     ]:
         assert phrase in src

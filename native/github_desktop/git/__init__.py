@@ -97,6 +97,7 @@ from .ops import (
     get_commit_range_changed_files,
     get_commit_range_diff,
     get_commits,
+    ensure_relative_path,
     get_commits_between,
     get_commits_in_range,
     get_config_value,

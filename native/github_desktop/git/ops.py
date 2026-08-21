@@ -387,7 +387,12 @@ def _diff_flags(hide_whitespace: bool = False, context_lines: int | None = None)
 def _append_old_path(args: list[str], path: str, status: FileStatus | None) -> None:
     old = get_old_path_or_default(path=path, status=status)
     if old and old != path:
-        args.append(old)
+        args.append(ensure_relative_path(old))
+
+
+def ensure_relative_path(path: str) -> str:
+    """Desktop `ensureRelativePath`: prefix absolute paths with `:(top,literal)`."""
+    return f":(top,literal){path}" if os.path.isabs(path) else path
 
 
 def get_working_directory_diff(
@@ -405,10 +410,19 @@ def get_working_directory_diff(
         args += ["--", "/dev/null", file.path]
         result = git(args, repo, success_exit_codes={0, 1, 2}, name="diffNew")
     elif file.status.kind == AppFileStatusKind.RENAMED and file.status.old_path:
-        args = _diff_flags(hide_whitespace, context_lines) + ["HEAD", "--", file.status.old_path, file.path]
+        args = _diff_flags(hide_whitespace, context_lines) + [
+            "HEAD",
+            "--",
+            ensure_relative_path(file.status.old_path),
+            ensure_relative_path(file.path),
+        ]
         result = git(args, repo, success_exit_codes={0, 1}, name="diffRename")
     else:
-        args = _diff_flags(hide_whitespace, context_lines) + ["HEAD", "--", file.path]
+        args = _diff_flags(hide_whitespace, context_lines) + [
+            "HEAD",
+            "--",
+            ensure_relative_path(file.path),
+        ]
         result = git(args, repo, success_exit_codes={0, 1}, name="diffWd")
     return _diff_from_result(repo, file.path, file.status, result, commitish=None)
 
@@ -569,18 +583,16 @@ def get_commit_diff(
     hide_whitespace: bool = False,
     context_lines: int | None = None,
 ) -> FileDiff:
-    args = _diff_flags(hide_whitespace, context_lines)
-    args += [f"{commitish}^", commitish, "--", path]
+    """Desktop `getCommitDiff`: `git log -m -1 --first-parent --patch-with-raw`."""
+    args = ["log", commitish]
+    if hide_whitespace:
+        args.append("-w")
+    args += ["-m", "-1", "--first-parent", "--patch-with-raw", "--format=", "-z", "--no-color"]
+    if context_lines is not None:
+        args.append(f"-U{int(context_lines)}")
+    args += ["--", ensure_relative_path(path)]
     _append_old_path(args, path, status)
-    result = git(args, repo, success_exit_codes={0, 1, 128}, name="commitDiff")
-    if result.exit_code == 128:
-        # root commit
-        result = git(
-            ["show", "--no-ext-diff", "--patch", "--no-color", "--format=", commitish, "--", path],
-            repo,
-            success_exit_codes={0, 1},
-            name="rootCommitDiff",
-        )
+    result = git(args, repo, success_exit_codes={0, 1}, name="getCommitDiff")
     return _diff_from_result(repo, path, status or FileStatus(AppFileStatusKind.MODIFIED), result, commitish)
 
 
@@ -1167,7 +1179,12 @@ def get_commit_range_diff(
     use_null_tree: bool = False,
 ) -> FileDiff:
     parent = NULL_TREE_SHA if use_null_tree else f"{oldest_sha}^"
-    args = _diff_flags(hide_whitespace, context_lines) + [parent, newest_sha, "--", path]
+    args = _diff_flags(hide_whitespace, context_lines) + [
+        parent,
+        newest_sha,
+        "--",
+        ensure_relative_path(path),
+    ]
     _append_old_path(args, path, status)
     result = git(
         args,
@@ -3259,9 +3276,9 @@ def get_branch_merge_base_diff(
     args += ["--patch", "--no-color", "--no-ext-diff"]
     if context_lines is not None:
         args.append(f"-U{int(context_lines)}")
-    args += ["--", path]
+    args += ["--", ensure_relative_path(path)]
     _append_old_path(args, path, status)
-    result = git(args, repo, success_exit_codes={0, 1, 128}, name="getBranchMergeBaseDiff")
+    result = git(args, repo, success_exit_codes={0, 1}, name="getBranchMergeBaseDiff")
     commitish = latest_sha or comparison_branch
     return _diff_from_result(repo, path, status or FileStatus(AppFileStatusKind.MODIFIED), result, commitish)
 

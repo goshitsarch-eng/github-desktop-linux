@@ -142,3 +142,29 @@ def test_parse_config_lock_file_path_normalizes_absolute() -> None:
         path="/",
     )
     assert parse_config_lock_file_path_from_error(result) == "/Users/markus/.gitconfig.lock"
+
+
+def test_ensure_relative_path_matches_desktop() -> None:
+    from github_desktop.git.ops import ensure_relative_path
+
+    assert ensure_relative_path("README.md") == "README.md"
+    assert ensure_relative_path("/tmp/abs.txt") == ":(top,literal)/tmp/abs.txt"
+
+
+def test_get_commit_diff_root_and_later_commits(git_repo: Path) -> None:
+    from github_desktop.git.ops import get_commit_diff
+    from github_desktop.models import TextDiff
+
+    commits = get_commits(str(git_repo), limit=5)
+    root = commits[-1]
+    diff = get_commit_diff(str(git_repo), "README.md", root.sha)
+    assert isinstance(diff, TextDiff)
+    assert any(line.text.endswith("hello") or "hello" in line.text for hunk in diff.hunks for line in hunk.lines)
+
+    (git_repo / "README.md").write_text("hello\nworld\n", encoding="utf-8")
+    run_git(git_repo, "add", "README.md")
+    run_git(git_repo, "commit", "-m", "second")
+    head = get_commits(str(git_repo), limit=1)[0]
+    later = get_commit_diff(str(git_repo), "README.md", head.sha)
+    assert isinstance(later, TextDiff)
+    assert any("world" in line.text for hunk in later.hunks for line in hunk.lines)
