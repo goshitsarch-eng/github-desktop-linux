@@ -170,6 +170,13 @@ APP_CSS = """
   font-style: italic;
   opacity: 0.7;
 }
+.toolbar-resizable .resize-handle {
+  min-width: 6px;
+  min-height: 1px;
+}
+.toolbar-resizable .resize-handle:hover {
+  background-color: alpha(@accent_bg_color, 0.35);
+}
 .push-pull-button .push-pull-label {
   font-weight: 600;
 }

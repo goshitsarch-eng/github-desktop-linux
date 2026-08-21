@@ -876,6 +876,22 @@ class AppStore:
         self.settings.pull_request_file_list_width = width
         self.persist_settings()
 
+    def set_branch_dropdown_width(self, width: int) -> None:
+        """Desktop `_setBranchDropdownWidth`."""
+        width = max(160, int(width))
+        if self.settings.branch_dropdown_width == width:
+            return
+        self.settings.branch_dropdown_width = width
+        self.persist_settings()
+
+    def set_push_pull_button_width(self, width: int) -> None:
+        """Desktop `_setPushPullButtonWidth`."""
+        width = max(160, int(width))
+        if self.settings.push_pull_button_width == width:
+            return
+        self.settings.push_pull_button_width = width
+        self.persist_settings()
+
     def load_git_description(self, repo: Repository, on_done: Callable[..., None]) -> None:
         """Desktop Publish `componentDidMount` / `getGitDescription`."""
 
@@ -3487,7 +3503,11 @@ class AppStore:
         self._run_ui(work, done)
 
     def ahead_behind_between(self, repo: Repository, from_sha: str | None, to_sha: str | None) -> AheadBehind | None:
-        """Desktop `aheadBehindStore` synchronous cache fill for callers that need an immediate result."""
+        """Desktop `aheadBehindStore` synchronous cache fill for callers that need an immediate result.
+
+        On the GTK thread this is cache-only; UI uses `try_get_ahead_behind` /
+        `request_ahead_behind`. Tests and worker threads still fill from git.
+        """
         if not from_sha or not to_sha:
             return None
         if from_sha == to_sha:
@@ -3497,6 +3517,15 @@ class AppStore:
         if key in cache:
             cache.move_to_end(key)
             return cache[key]
+        # Live git is GTK-unsafe. The UI uses try_get_ahead_behind / request_ahead_behind.
+        if self._gtk_app_running():
+            try:
+                from gi.repository import GLib
+
+                if GLib.main_context_default().is_owner():
+                    return None
+            except Exception:
+                return None
         result = get_ahead_behind_range(repo.path, f"{from_sha}...{to_sha}")
         cache[key] = result
         cache.move_to_end(key)

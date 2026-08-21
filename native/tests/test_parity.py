@@ -1303,5 +1303,12 @@ def test_window_actions_cover_menus() -> None:
         "_setPullRequestFileListWidth",
         "GitDescriptionPath",
         "Couldn't get the repository's description",
+        "_setBranchDropdownWidth",
+        "_setPushPullButtonWidth",
+        "Current branch dropdown button",
+        "Push pull button",
+        "minWidth: 365",
+        "enableResizingToolbarButtons",
+        "onMouseEnter",
     ]:
         assert phrase in src

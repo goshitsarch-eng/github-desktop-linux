@@ -89,7 +89,7 @@ class BranchesFoldout(Gtk.Popover):
         self._github = False
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        root.set_size_request(360, 420)
+        root.set_size_request(max(365, 360), 420)
         root.set_margin_top(8)
         root.set_margin_bottom(8)
         root.set_margin_start(8)
@@ -214,6 +214,12 @@ class BranchesFoldout(Gtk.Popover):
     def popup_and_focus(self) -> None:
         self.popup()
         self._search.grab_focus()
+
+    def set_foldout_width(self, width: int) -> None:
+        """Desktop branch foldout `minWidth: 365` and `width: branchDropdownWidth`."""
+        child = self.get_child()
+        if child is not None:
+            child.set_size_request(max(365, int(width)), 420)
 
     def _needle(self) -> str:
         return self._search.get_text().strip()

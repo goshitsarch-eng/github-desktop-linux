@@ -142,3 +142,59 @@ def attach_paned_reset(paned: Gtk.Paned, on_reset: Callable[[], None], *, handle
 
     click.connect("pressed", pressed)
     paned.add_controller(click)
+
+
+def wrap_toolbar_resizable(
+    widget: Gtk.Widget,
+    on_resize: Callable[[int], None],
+    on_reset: Callable[[], None],
+    *,
+    width: int,
+    min_width: int = 160,
+    max_width: int = 720,
+    description: str = "",
+) -> Gtk.Box:
+    """Desktop `Resizable` for toolbar branch / push-pull buttons (`enableResizingToolbarButtons`)."""
+    box = Gtk.Box()
+    box.add_css_class("toolbar-resizable")
+    box.set_hexpand(False)
+    width = max(min_width, int(width))
+    widget.set_size_request(width, -1)
+    widget.set_hexpand(True)
+    handle = Gtk.Box()
+    handle.add_css_class("resize-handle")
+    handle.set_size_request(6, -1)
+    if description:
+        handle.set_tooltip_text(description)
+    try:
+        handle.set_cursor_from_name("col-resize")
+    except Exception:
+        pass
+    box.append(widget)
+    box.append(handle)
+    drag = Gtk.GestureDrag()
+    drag.set_button(1)
+    start = {"width": width}
+
+    def begin(_gesture, _x: float, _y: float) -> None:
+        start["width"] = max(min_width, widget.get_allocated_width() or widget.get_width() or start["width"])
+
+    def update(_gesture, dx: float, _dy: float) -> None:
+        new = max(min_width, min(max_width, int(start["width"] + dx)))
+        widget.set_size_request(new, -1)
+        on_resize(new)
+
+    drag.connect("drag-begin", begin)
+    drag.connect("drag-update", update)
+    handle.add_controller(drag)
+
+    click = Gtk.GestureClick()
+    click.set_button(1)
+
+    def pressed(_gesture, n_press: int, _x: float, _y: float) -> None:
+        if n_press == 2:
+            on_reset()
+
+    click.connect("pressed", pressed)
+    handle.add_controller(click)
+    return box

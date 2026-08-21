@@ -51,7 +51,14 @@ from ..models import (
     is_valid_tutorial_step,
 )
 from ..push_pull import describe_push_pull, format_commit_relative_time, format_last_fetched
-from ..settings import defaultCommitSummaryWidth, defaultSidebarWidth, defaultStashedFilesWidth
+from ..settings import (
+    defaultBranchDropdownWidth,
+    defaultCommitSummaryWidth,
+    defaultPushPullButtonWidth,
+    defaultSidebarWidth,
+    defaultStashedFilesWidth,
+)
+from ..feature_flag import enable_resizing_toolbar_buttons
 from ..shells import open_external, open_in_default_program
 from ..store import AppStore
 from ..text_tokens import MaxSummaryLength
@@ -91,6 +98,7 @@ from .menus import (
     alias_verb,
     attach_paned_reset,
     attach_right_click,
+    wrap_toolbar_resizable,
     clear_box,
     committed_file_context_items,
     copy_text,
@@ -289,11 +297,11 @@ class MainWindow(Adw.ApplicationWindow):
             if hasattr(self, "_branch_btn"):
                 width = self._branch_btn.get_allocated_width()
                 if width > 0:
-                    self.store.settings.branch_dropdown_width = width
-            if hasattr(self, "_push_btn"):
-                width = self._push_btn.get_allocated_width()
+                    self.store.set_branch_dropdown_width(width)
+            if hasattr(self, "_push_box"):
+                width = self._push_box.get_allocated_width()
                 if width > 0:
-                    self.store.settings.push_pull_button_width = width
+                    self.store.set_push_pull_button_width(width)
             self.store.persist_settings()
         self._flush_commit_form()
         if getattr(self, "_window_info_source", 0):
@@ -355,7 +363,7 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self._stack.set_visible_child_name("repo")
             self._refresh_repo()
-        self._sync_repository_foldout()
+        self._sync_foldouts()
         if self.store.banner:
             kind = self.store.banner.type
             self._banner.set_title(format_banner_text(kind, self.store.banner))
@@ -441,7 +449,7 @@ class MainWindow(Adw.ApplicationWindow):
         add("show-changes", lambda: self.store.set_section(RepositorySectionTab.CHANGES))
         add("show-history", lambda: self.store.set_section(RepositorySectionTab.HISTORY))
         add("choose-repository", self._toggle_repo_sidebar)
-        add("show-branches", lambda: self._branches_foldout.popup_and_focus() if hasattr(self, "_branches_foldout") else None)
+        add("show-branches", self._show_branches_foldout)
         add("go-to-commit-message", lambda: self._summary.grab_focus() if hasattr(self, "_summary") else None)
         add("push", lambda: self._repo_op(lambda r: self.store.push_repo(r)))
         add("force-push", lambda: self.store.show_popup(PopupType.CONFIRM_FORCE_PUSH))
@@ -778,6 +786,74 @@ class MainWindow(Adw.ApplicationWindow):
         if repo:
             self.store.undo_last_commit(repo)
 
+    def _show_branches_foldout(self) -> None:
+        self.store.show_foldout(FoldoutType.BRANCH)
+
+    def _sync_foldouts(self) -> None:
+        if getattr(self, "_syncing_foldouts", False):
+            return
+        self._syncing_foldouts = True
+        try:
+            self._sync_repository_foldout()
+            if hasattr(self, "_branches_foldout"):
+                want_branch = self.store.foldout == FoldoutType.BRANCH
+                if bool(self._branches_foldout.get_visible()) != want_branch:
+                    if want_branch:
+                        self._branches_foldout.popup_and_focus()
+                    else:
+                        self._branches_foldout.popdown()
+            if hasattr(self, "_push_menu_btn") and self._push_menu_btn.get_visible():
+                want_push = self.store.foldout == FoldoutType.PUSH_PULL
+                active = bool(self._push_menu_btn.get_active())
+                if active != want_push:
+                    self._push_menu_btn.set_active(want_push)
+        finally:
+            self._syncing_foldouts = False
+
+    def _on_branch_foldout_visible(self, popover, *_args: object) -> None:
+        if getattr(self, "_syncing_foldouts", False):
+            return
+        if popover.get_visible():
+            if self.store.foldout != FoldoutType.BRANCH:
+                self.store.show_foldout(FoldoutType.BRANCH)
+        elif self.store.foldout == FoldoutType.BRANCH:
+            self.store.close_foldout(FoldoutType.BRANCH)
+
+    def _on_push_menu_active(self, button, *_args: object) -> None:
+        if getattr(self, "_syncing_foldouts", False) or getattr(self, "_updating_push_menu", False):
+            return
+        if button.get_active():
+            if self.store.foldout != FoldoutType.PUSH_PULL:
+                self.store.show_foldout(FoldoutType.PUSH_PULL)
+        elif self.store.foldout == FoldoutType.PUSH_PULL:
+            self.store.close_foldout(FoldoutType.PUSH_PULL)
+
+    def _on_branch_button_drag_enter(self, *_args: object) -> None:
+        """Desktop branch dropdown `onMouseEnter` during commit drag."""
+        self.store.show_foldout(FoldoutType.BRANCH)
+
+    def _on_branch_dropdown_resized(self, width: int) -> None:
+        self.store.set_branch_dropdown_width(width)
+        self._sync_branch_foldout_width()
+
+    def _sync_branch_foldout_width(self) -> None:
+        if hasattr(self, "_branches_foldout"):
+            self._branches_foldout.set_foldout_width(
+                int(self.store.settings.branch_dropdown_width or defaultBranchDropdownWidth)
+            )
+
+    def _reset_branch_dropdown_width(self) -> None:
+        self.store.reset_branch_dropdown_width()
+        if hasattr(self, "_branch_btn"):
+            self._branch_btn.set_size_request(max(160, defaultBranchDropdownWidth), -1)
+        self._sync_branch_foldout_width()
+
+    def _reset_push_pull_button_width(self) -> None:
+        self.store.reset_push_pull_button_width()
+        target = getattr(self, "_push_box", None) or getattr(self, "_push_btn", None)
+        if target is not None:
+            target.set_size_request(max(160, defaultPushPullButtonWidth), -1)
+
     def _toggle_repo_sidebar(self) -> None:
         """Desktop `onRepositoryDropdownStateChanged` — toggle FoldoutType.Repository."""
         if self.store.foldout == FoldoutType.REPOSITORY:
@@ -1072,13 +1148,31 @@ class MainWindow(Adw.ApplicationWindow):
             on_tab=lambda tab: self.store.change_branches_tab(tab),
         )
         self._branch_btn.set_popover(self._branches_foldout)
-        header.pack_start(self._branch_btn)
+        self._branches_foldout.connect("notify::visible", self._on_branch_foldout_visible)
+        try:
+            drag_hover = Gtk.DropControllerMotion()
+            drag_hover.connect("enter", self._on_branch_button_drag_enter)
+            self._branch_btn.add_controller(drag_hover)
+        except Exception:
+            pass
+        self._sync_branch_foldout_width()
+        if enable_resizing_toolbar_buttons():
+            header.pack_start(
+                wrap_toolbar_resizable(
+                    self._branch_btn,
+                    self._on_branch_dropdown_resized,
+                    self._reset_branch_dropdown_width,
+                    width=int(self.store.settings.branch_dropdown_width or defaultBranchDropdownWidth),
+                    description="Current branch dropdown button",
+                )
+            )
+        else:
+            header.pack_start(self._branch_btn)
 
         self._push_box = Gtk.Box()
         self._push_box.add_css_class("linked")
         self._push_btn = Gtk.Button()
         self._push_btn.add_css_class("push-pull-button")
-        self._push_btn.set_size_request(max(160, int(self.store.settings.push_pull_button_width or 230)), -1)
         push_inner = Gtk.Box(spacing=8)
         push_inner.set_valign(Gtk.Align.CENTER)
         self._push_icon = Gtk.Image.new_from_icon_name("view-refresh-symbolic")
@@ -1104,7 +1198,19 @@ class MainWindow(Adw.ApplicationWindow):
         self._push_menu_btn.set_visible(False)
         self._push_box.append(self._push_btn)
         self._push_box.append(self._push_menu_btn)
-        header.pack_end(self._push_box)
+        self._push_menu_btn.connect("notify::active", self._on_push_menu_active)
+        if enable_resizing_toolbar_buttons():
+            header.pack_end(
+                wrap_toolbar_resizable(
+                    self._push_box,
+                    self.store.set_push_pull_button_width,
+                    self._reset_push_pull_button_width,
+                    width=int(self.store.settings.push_pull_button_width or defaultPushPullButtonWidth),
+                    description="Push pull button",
+                )
+            )
+        else:
+            header.pack_end(self._push_box)
 
         self._ahead_label = Gtk.Label()
         self._ahead_label.add_css_class("ahead-behind")
@@ -2049,15 +2155,25 @@ class MainWindow(Adw.ApplicationWindow):
     def _set_push_menu(self, items: tuple[str, ...] | list[str], remote: str | None) -> None:
         if not hasattr(self, "_push_menu_btn"):
             return
-        menu = Gio.Menu()
         name = remote or "origin"
-        for item in items:
+        items_t = tuple(items)
+        if getattr(self, "_push_menu_items", None) == items_t and getattr(self, "_push_menu_remote", None) == name:
+            self._push_menu_btn.set_visible(bool(items_t))
+            return
+        self._push_menu_items = items_t
+        self._push_menu_remote = name
+        menu = Gio.Menu()
+        for item in items_t:
             if item == "fetch":
                 menu.append(f"Fetch {name}", "win.fetch")
             elif item == "force-push":
                 menu.append(f"Force push {name}", "win.force-push")
-        self._push_menu_btn.set_menu_model(menu)
-        self._push_menu_btn.set_visible(bool(items))
+        self._updating_push_menu = True
+        try:
+            self._push_menu_btn.set_menu_model(menu)
+            self._push_menu_btn.set_visible(bool(items_t))
+        finally:
+            self._updating_push_menu = False
 
     def _set_push_chrome(
         self,
@@ -4442,7 +4558,7 @@ class MainWindow(Adw.ApplicationWindow):
             return True
         if uri == "switch":
             if hasattr(self, "_branches_foldout"):
-                self._branches_foldout.popup_and_focus()
+                self.store.show_foldout(FoldoutType.BRANCH)
             return True
         if uri == "stop-amend":
             repo = self.store.selected_repository

@@ -376,6 +376,17 @@ def test_reset_sidebar_width_matches_desktop(isolated_config) -> None:
     assert store.settings.pull_request_file_list_width == 400
     store.set_pull_request_file_list_width(50)
     assert store.settings.pull_request_file_list_width == 100
+    store.set_branch_dropdown_width(400)
+    assert store.settings.branch_dropdown_width == 400
+    store.set_branch_dropdown_width(100)
+    assert store.settings.branch_dropdown_width == 160
+    store.set_push_pull_button_width(400)
+    assert store.settings.push_pull_button_width == 400
+    store.set_push_pull_button_width(100)
+    assert store.settings.push_pull_button_width == 160
+    from github_desktop.feature_flag import enable_resizing_toolbar_buttons
+
+    assert enable_resizing_toolbar_buttons() is True
     store.settings.commit_summary_width = 500
     store.reset_commit_summary_width()
     assert store.settings.commit_summary_width == 250
@@ -967,6 +978,12 @@ def test_show_foldout_matches_desktop(isolated_config, git_repo: Path, monkeypat
     store.close_foldout(FoldoutType.BRANCH)
     assert store.foldout == FoldoutType.REPOSITORY
     store.close_foldout(FoldoutType.REPOSITORY)
+    assert store.foldout is None
+    store.show_foldout(FoldoutType.BRANCH)
+    assert store.foldout == FoldoutType.BRANCH
+    store.show_foldout(FoldoutType.PUSH_PULL)
+    assert store.foldout == FoldoutType.PUSH_PULL
+    store.close_current_foldout()
     assert store.foldout is None
     store.show_foldout(FoldoutType.REPOSITORY)
     repo = store.selected_repository
