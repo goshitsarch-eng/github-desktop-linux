@@ -445,6 +445,7 @@ def get_partial_blob_contents(
     )
     chunks: list[bytes] = []
     total = 0
+    stderr_bytes = b""
     try:
         stdout = proc.stdout
         assert stdout is not None
@@ -464,7 +465,7 @@ def get_partial_blob_contents(
     finally:
         if proc.stderr is not None:
             try:
-                proc.stderr.read()
+                stderr_bytes = proc.stderr.read()
             except Exception:
                 pass
         if proc.poll() is None:
@@ -481,9 +482,53 @@ def get_partial_blob_contents_catch_path_not_in_ref(
     commitish: str,
     path: str,
     length: int = MAX_PARTIAL_BLOB_BYTES,
-) -> bytes:
-    """Desktop `getPartialBlobContentsCatchPathNotInRef`."""
-    return get_partial_blob_contents(repo, commitish, path, length)
+) -> bytes | None:
+    """Desktop `getPartialBlobContentsCatchPathNotInRef`: None when the path is not in the ref."""
+    from ..errors import classify_git_error
+
+    cmd = [find_git(), "show", f"{commitish}:{path}"]
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(repo),
+        env=_prepare_env(None),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    chunks: list[bytes] = []
+    total = 0
+    stderr_bytes = b""
+    try:
+        stdout = proc.stdout
+        assert stdout is not None
+        while total < length:
+            chunk = stdout.read(min(65536, length - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        if proc.poll() is None:
+            abort_git_process(proc)
+        else:
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                abort_git_process(proc)
+    finally:
+        if proc.stderr is not None:
+            try:
+                stderr_bytes = proc.stderr.read()
+            except Exception:
+                pass
+        if proc.poll() is None:
+            abort_git_process(proc)
+    if classify_git_error(stderr_bytes.decode("utf-8", errors="replace")) == "PathExistsButNotInRef":
+        return None
+    data = b"".join(chunks)[:length]
+    code = proc.returncode
+    if not data and code not in {0, None, -signal.SIGTERM, -signal.SIGKILL, 1}:
+        return b""
+    return data
 
 
 def get_working_directory_lines(repo: str, path: str) -> list[str]:
@@ -1101,10 +1146,11 @@ def get_commit_range_changed_files(
     result = git(
         ["diff", "-C", "-M", "-z", "--raw", "--numstat", parent, newest_sha, "--"],
         repo,
-        success_exit_codes={0, 1, 128},
+        success_exit_codes={0, 1},
+        expected_errors={"BadRevision"},
         name="getCommitRangeChangedFiles",
     )
-    if result.exit_code == 128 and not use_null_tree:
+    if result.git_error == "BadRevision" and not use_null_tree:
         return get_commit_range_changed_files(repo, oldest_sha, newest_sha, use_null_tree=True)
     return parse_raw_log_with_numstat(result.stdout, newest_sha, parent)
 
@@ -1123,8 +1169,14 @@ def get_commit_range_diff(
     parent = NULL_TREE_SHA if use_null_tree else f"{oldest_sha}^"
     args = _diff_flags(hide_whitespace, context_lines) + [parent, newest_sha, "--", path]
     _append_old_path(args, path, status)
-    result = git(args, repo, success_exit_codes={0, 1, 128}, name="commitRangeDiff")
-    if result.exit_code == 128 and not use_null_tree:
+    result = git(
+        args,
+        repo,
+        success_exit_codes={0, 1},
+        expected_errors={"BadRevision"},
+        name="commitRangeDiff",
+    )
+    if result.git_error == "BadRevision" and not use_null_tree:
         return get_commit_range_diff(
             repo, path, oldest_sha, newest_sha, status, hide_whitespace, context_lines, use_null_tree=True
         )
@@ -1250,10 +1302,10 @@ def get_branches(repo: str, *prefixes: str) -> list[Branch]:
     result = git(
         ["for-each-ref", *parser.format_args, *prefixes],
         repo,
-        success_exit_codes={0, 128},
+        expected_errors={"NotAGitRepository"},
         name="getBranches",
     )
-    if result.exit_code == 128:
+    if result.git_error == "NotAGitRepository":
         return []
     branches: list[Branch] = []
     for entry in parser.parse(result.stdout):
@@ -1355,7 +1407,20 @@ def delete_local_branch(repo: str, name: str) -> None:
 
 
 def delete_remote_branch(repo: str, remote: str, name: str, env: dict[str, str] | None = None) -> None:
-    git(["push", remote, "--delete", name], repo, env=env, name="deleteRemoteBranch")
+    """Desktop `deleteRemoteBranch`: `git push <remote> :<branch>`.
+
+    If the remote ref is already gone (`BranchDeletionFailed`), drop the local
+    remote-tracking ref the way a successful delete would have.
+    """
+    result = git(
+        ["push", remote, f":{name}"],
+        repo,
+        env=env,
+        expected_errors={"BranchDeletionFailed"},
+        name="deleteRemoteBranch",
+    )
+    if result.git_error == "BranchDeletionFailed":
+        delete_ref(repo, f"refs/remotes/{remote}/{name}")
 
 
 def checkout_branch(
@@ -1385,6 +1450,7 @@ def checkout_branch(
     if recurse_submodules:
         args.append("--recurse-submodules")
     args.append("--")
+    kwargs["expected_errors"] = AUTHENTICATION_ERRORS
     git(args, repo, **kwargs)
 
 
@@ -1403,6 +1469,7 @@ def checkout_commit(
         kwargs["progress_parser"] = GitProgressParser(CHECKOUT_STEPS)
         progress(f"Checking out commit {sha[:7]}", 0.0)
     args.append(sha)
+    kwargs["expected_errors"] = AUTHENTICATION_ERRORS
     git(args, repo, **kwargs)
 
 
@@ -1413,7 +1480,14 @@ def checkout_paths(repo: str, paths: Sequence[str]) -> None:
 
 
 def get_remotes(repo: str) -> list[Remote]:
-    result = git(["remote", "-v"], repo, name="getRemotes")
+    result = git(
+        ["remote", "-v"],
+        repo,
+        name="getRemotes",
+        expected_errors={"NotAGitRepository"},
+    )
+    if result.git_error == "NotAGitRepository":
+        return []
     remotes: dict[str, Remote] = {}
     for line in result.stdout.splitlines():
         parts = line.split()
@@ -1720,7 +1794,9 @@ def merge(
         args.append("--no-commit")
     args += ["--no-edit", branch]
     try:
-        result = git(args, repo, name="merge")
+        result = git(args, repo, name="merge", expected_errors={"MergeConflicts"})
+        if result.exit_code != 0:
+            return MergeResult.FAILED
         if "Already up to date" in result.stdout:
             return MergeResult.ALREADY_UP_TO_DATE
         if squash:
@@ -1776,8 +1852,17 @@ def rebase(
                 progress(event)
 
         kwargs["on_stderr_line"] = on_line
+    kwargs["expected_errors"] = {"RebaseConflicts"}
     try:
-        result = git([*GIT_REBASE_ARGUMENTS, "rebase", base_branch], repo, **kwargs)
+        result = git(
+            [*GIT_REBASE_ARGUMENTS, "rebase", base_branch],
+            repo,
+            **kwargs,
+        )
+        if result.exit_code != 0:
+            if get_rebase_internal_state(repo) is not None:
+                return RebaseResult.CONFLICTS_ENCOUNTERED
+            return RebaseResult.ERROR
         if "is up to date" in result.stdout.lower() or "up to date" in result.stderr.lower():
             return RebaseResult.ALREADY_UP_TO_DATE
         return RebaseResult.COMPLETED_WITHOUT_ERROR
@@ -1808,8 +1893,13 @@ def continue_rebase(
                 progress(event)
 
         kwargs["on_stderr_line"] = on_line
+    kwargs["expected_errors"] = {"RebaseConflicts", "UnresolvedConflicts"}
     try:
-        git(["-c", "core.editor=true", "rebase", "--continue"], repo, **kwargs)
+        result = git(["-c", "core.editor=true", "rebase", "--continue"], repo, **kwargs)
+        if result.exit_code != 0:
+            if get_rebase_internal_state(repo) is not None:
+                return RebaseResult.CONFLICTS_ENCOUNTERED
+            return RebaseResult.ERROR
         return RebaseResult.COMPLETED_WITHOUT_ERROR
     except GitError:
         if get_rebase_internal_state(repo) is not None:
@@ -1840,9 +1930,10 @@ def cherry_pick(
                 progress(event)
 
         kwargs["on_stdout_line"] = on_line
+    kwargs["expected_errors"] = {"MergeConflicts", "ConflictModifyDeletedInBranch"}
     try:
-        git(["cherry-pick", *shas], repo, **kwargs)
-        return CherryPickResult.COMPLETED_WITHOUT_ERROR
+        result = git(["cherry-pick", *shas], repo, **kwargs)
+        return _parse_cherry_pick_result(repo, result)
     except GitError:
         if _path_exists(repo, ".git/CHERRY_PICK_HEAD"):
             return CherryPickResult.CONFLICTS_ENCOUNTERED
@@ -1865,13 +1956,31 @@ def continue_cherry_pick(
                 progress(event)
 
         kwargs["on_stdout_line"] = on_line
+    kwargs["expected_errors"] = {
+        "MergeConflicts",
+        "ConflictModifyDeletedInBranch",
+        "UnresolvedConflicts",
+    }
     try:
-        git(["-c", "core.editor=true", "cherry-pick", "--continue"], repo, **kwargs)
-        return CherryPickResult.COMPLETED_WITHOUT_ERROR
+        result = git(["-c", "core.editor=true", "cherry-pick", "--continue"], repo, **kwargs)
+        return _parse_cherry_pick_result(repo, result)
     except GitError:
         if _path_exists(repo, ".git/CHERRY_PICK_HEAD"):
             return CherryPickResult.CONFLICTS_ENCOUNTERED
         return CherryPickResult.ERROR
+
+
+def _parse_cherry_pick_result(repo: str, result: GitResult) -> CherryPickResult:
+    """Desktop `parseCherryPickResult`."""
+    if result.exit_code == 0:
+        return CherryPickResult.COMPLETED_WITHOUT_ERROR
+    if result.git_error in {"MergeConflicts", "ConflictModifyDeletedInBranch"}:
+        return CherryPickResult.CONFLICTS_ENCOUNTERED
+    if result.git_error == "UnresolvedConflicts":
+        return CherryPickResult.OUTSTANDING_FILES_NOT_STAGED
+    if _path_exists(repo, ".git/CHERRY_PICK_HEAD"):
+        return CherryPickResult.CONFLICTS_ENCOUNTERED
+    return CherryPickResult.ERROR
 
 
 def abort_cherry_pick(repo: str) -> None:
@@ -2060,6 +2169,7 @@ def check_patch(repo: str, patch: str) -> bool:
         repo,
         stdin=patch,
         success_exit_codes={0, 1},
+        expected_errors={"PatchDoesNotApply"},
         name="checkPatch",
     )
     return result.exit_code == 0
@@ -2464,17 +2574,24 @@ def is_config_file_lock_error(error: BaseException) -> bool:
     return bool(_CONFIG_LOCK_RE.search(blob))
 
 
-def parse_config_lock_file_path_from_error(error: GitError, cwd: str | None = None) -> str | None:
+def parse_config_lock_file_path_from_error(
+    error: GitError | GitResult, cwd: str | None = None
+) -> str | None:
     """Desktop `parseConfigLockFilePathFromError`.
 
     Git prints the config path without the ``.lock`` suffix; the lock file is
-    ``{normalized}.lock`` resolved against the command cwd.
+    ``{normalized}.lock`` resolved against the command cwd (`IGitResult.path`).
     """
-    match = _CONFIG_LOCK_RE.search(error.stderr or str(error))
+    stderr = getattr(error, "stderr", "") or ""
+    if not stderr and isinstance(error, BaseException):
+        stderr = str(error)
+    match = _CONFIG_LOCK_RE.search(stderr)
     if not match:
         return None
     normalized = match.group(1)
-    base = cwd or error.path or os.path.expanduser("~")
+    if os.name == "nt":
+        normalized = normalized.replace("/", "\\")
+    base = cwd or getattr(error, "path", None) or os.path.expanduser("~")
     return os.path.abspath(os.path.join(base, f"{normalized}.lock"))
 
 
@@ -2720,8 +2837,13 @@ def interactive_rebase_todo(
                 progress(event)
 
         kwargs["on_stderr_line"] = on_line
+    kwargs["expected_errors"] = {"RebaseConflicts"}
     try:
-        git(args, repo, **kwargs)
+        result = git(args, repo, **kwargs)
+        if result.exit_code != 0:
+            if get_rebase_internal_state(repo) is not None:
+                return RebaseResult.CONFLICTS_ENCOUNTERED
+            return RebaseResult.ERROR
         return RebaseResult.COMPLETED_WITHOUT_ERROR
     except GitError:
         if get_rebase_internal_state(repo) is not None:
@@ -2838,10 +2960,10 @@ def get_ahead_behind_range(repo: str, range_spec: str, *, swap: bool = False) ->
     result = git(
         ["rev-list", "--left-right", "--count", range_spec, "--"],
         repo,
-        success_exit_codes={0, 128},
-        name="aheadBehind",
+        expected_errors={"BadRevision"},
+        name="getAheadBehind",
     )
-    if result.exit_code != 0:
+    if result.git_error == "BadRevision" or result.exit_code != 0:
         return None
     parts = result.stdout.strip().replace("\t", " ").split()
     if len(parts) != 2:
@@ -2864,10 +2986,10 @@ def get_commits_in_range(repo: str, range_spec: str) -> list[CommitOneLine] | No
     result = git(
         ["rev-list", range_spec, "--reverse", "--oneline", "--no-abbrev-commit", "--"],
         repo,
-        success_exit_codes={0, 128},
+        expected_errors={"BadRevision"},
         name="getCommitsInRange",
     )
-    if result.exit_code != 0:
+    if result.git_error == "BadRevision" or result.exit_code != 0:
         return None
     commits: list[CommitOneLine] = []
     for line in result.stdout.splitlines():
@@ -3076,9 +3198,12 @@ def determine_mergeability(repo: str, ours_sha: str, theirs_sha: str) -> MergeTr
             theirs_sha,
         ],
         repo,
-        success_exit_codes={0, 1, 128},
+        success_exit_codes={0, 1},
+        expected_errors={"CannotMergeUnrelatedHistories"},
         name="determineMergeability",
     )
+    if result.git_error == "CannotMergeUnrelatedHistories":
+        return MergeTreeResult(kind=ComputedAction.INVALID)
     blob = f"{result.stderr}\n{result.stdout}".lower()
     if "unrelated histories" in blob:
         return MergeTreeResult(kind=ComputedAction.INVALID)

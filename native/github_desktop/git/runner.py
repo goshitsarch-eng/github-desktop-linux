@@ -11,8 +11,9 @@ import shutil
 import subprocess
 import sys
 import threading
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Callable, Mapping, Sequence
+from typing import Callable
 from urllib.parse import urlsplit
 
 from ..errors import GitError, GitNotFoundError
@@ -139,6 +140,9 @@ class GitResult:
     exit_code: int
     args: list[str]
     stdout_bytes: bytes = b""
+    git_error: str | None = None
+    git_error_description: str | None = None
+    path: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -166,6 +170,23 @@ def coerce_to_buffer(value: str | bytes, encoding: str = "utf8") -> bytes:
 def is_max_buffer_exceeded_error(error: object) -> bool:
     """Desktop `isMaxBufferExceededError` (`ERR_CHILD_PROCESS_STDIO_MAXBUFFER`)."""
     return isinstance(error, Exception) and getattr(error, "code", None) == "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
+
+
+def is_git_error(error: object, parsed: str | None = None) -> bool:
+    """Desktop `isGitError(e, parsedError?)`."""
+    if not isinstance(error, GitError):
+        return False
+    return parsed is None or error.git_error == parsed
+
+
+def _expected_error_names(expected_errors: bool | Collection[str]) -> set[str]:
+    """Desktop `expectedErrors`. A bool is accepted but unused (legacy signature)."""
+    if expected_errors is True or expected_errors is False:
+        return set()
+    # `str` is a Collection of characters — treat a single name as one error.
+    if isinstance(expected_errors, str):
+        return {expected_errors}
+    return {str(item) for item in expected_errors}
 
 
 def _prepare_env(env: Mapping[str, str] | None) -> dict[str, str]:
@@ -252,7 +273,7 @@ def git(
     env: Mapping[str, str] | None = None,
     stdin: str | bytes | None = None,
     success_exit_codes: set[int] | None = None,
-    expected_errors: bool = False,
+    expected_errors: bool | Collection[str] = False,
     name: str = "git",
     timeout: float | None = None,
     binary: bool = False,
@@ -263,10 +284,16 @@ def git(
     process_holder: list | None = None,
     cancel_event: threading.Event | None = None,
 ) -> GitResult:
-    """Run a git command. Raises GitError unless the exit code is allowed."""
+    """Run a git command.
+
+    Raises GitError unless the exit code is in `success_exit_codes` or the
+    classified dugite error is in `expected_errors` (Desktop `expectedErrors`).
+    A boolean `expected_errors` is accepted but unused (legacy signature).
+    """
     git_bin = find_git()
     cmd = [git_bin, *args]
-    success = success_exit_codes or {0}
+    # Desktop: default `{0}`. An explicit empty set must not fall back to `{0}`.
+    success = {0} if success_exit_codes is None else set(success_exit_codes)
     merged_env = _prepare_env(env)
     stdin_bytes = _stdin_bytes(stdin)
     stream = progress is not None or on_stdout_line is not None or on_stderr_line is not None
@@ -401,51 +428,62 @@ def git(
         exit_code=exit_code,
         args=list(args),
         stdout_bytes=stdout_bytes,
+        path=str(cwd),
     )
-    if result.exit_code not in success:
+    expected_set = _expected_error_names(expected_errors)
+    acceptable_exit = result.exit_code in success
+    git_error = None
+    git_error_description = None
+    if not acceptable_exit:
         from ..errors import classify_git_error, get_description_for_error
-        from .askpass import delete_most_recent_ssh_credential, remove_most_recent_ssh_credential
 
-        terminal_output = create_terminal_output(result.stdout, result.stderr)
         git_error = classify_git_error(result.stderr, result.stdout)
-        if git_error in {"SSHAuthenticationFailed", "SSHPermissionDenied"}:
-            delete_most_recent_ssh_credential()
-        else:
-            remove_most_recent_ssh_credential()
-        friendly = get_description_for_error(git_error, result.stderr)
-        is_raw_message = True
-        if friendly:
-            message = friendly
-            is_raw_message = False
-        elif terminal_output.strip():
-            message = terminal_output
-        elif result.stderr.strip():
-            message = result.stderr.strip()
-        elif result.stdout.strip():
-            message = result.stdout.strip()
-        else:
-            message = f"Unknown error (exit code {result.exit_code})"
-            is_raw_message = False
-        log.error("`git %s` exited with an unexpected code: %s.", " ".join(args), result.exit_code)
-        if terminal_output:
-            log.error("%s", terminal_output[-1024:])
-        if git_error:
-            log.error("(The error was parsed as %s: %s)", git_error, friendly)
-        raise GitError(
-            message,
-            args=list(args),
-            exit_code=result.exit_code,
-            stdout=result.stdout,
-            stderr=result.stderr,
-            git_error=git_error,
-            path=str(cwd),
-            is_raw_message=is_raw_message,
-            terminal_output=terminal_output,
-        )
-    from .askpass import remove_most_recent_ssh_credential
+        git_error_description = get_description_for_error(git_error, result.stderr)
+        result.git_error = git_error
+        result.git_error_description = git_error_description
+    if acceptable_exit or (git_error is not None and git_error in expected_set):
+        from .askpass import remove_most_recent_ssh_credential
 
-    remove_most_recent_ssh_credential()
-    return result
+        remove_most_recent_ssh_credential()
+        return result
+
+    from .askpass import delete_most_recent_ssh_credential, remove_most_recent_ssh_credential
+
+    terminal_output = create_terminal_output(result.stdout, result.stderr)
+    if git_error in {"SSHAuthenticationFailed", "SSHPermissionDenied"}:
+        delete_most_recent_ssh_credential()
+    else:
+        remove_most_recent_ssh_credential()
+    friendly = git_error_description
+    is_raw_message = True
+    if friendly:
+        message = friendly
+        is_raw_message = False
+    elif terminal_output.strip():
+        message = terminal_output
+    elif result.stderr.strip():
+        message = result.stderr.strip()
+    elif result.stdout.strip():
+        message = result.stdout.strip()
+    else:
+        message = f"Unknown error (exit code {result.exit_code})"
+        is_raw_message = False
+    log.error("`git %s` exited with an unexpected code: %s.", " ".join(args), result.exit_code)
+    if terminal_output:
+        log.error("%s", terminal_output[-1024:])
+    if git_error:
+        log.error("(The error was parsed as %s: %s)", git_error, friendly)
+    raise GitError(
+        message,
+        args=list(args),
+        exit_code=result.exit_code,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        git_error=git_error,
+        path=str(cwd),
+        is_raw_message=is_raw_message,
+        terminal_output=terminal_output,
+    )
 
 
 def git_path_is_repository(path: str) -> bool:

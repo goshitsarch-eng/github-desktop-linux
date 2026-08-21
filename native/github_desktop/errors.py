@@ -318,6 +318,12 @@ def classify_git_error(stderr: str, stdout: str = "") -> str | None:
         return "RemoteDisconnection"
     if "not a git repository" in lower:
         return "NotAGitRepository"
+    if "bad revision" in lower or "unknown revision" in lower:
+        return "BadRevision"
+    if "unable to delete" in lower and "remote ref does not exist" in lower:
+        return "BranchDeletionFailed"
+    if "conflict (modify/delete)" in lower:
+        return "ConflictModifyDeletedInBranch"
     if "unrelated histories" in lower:
         return "CannotMergeUnrelatedHistories"
     if "your local changes to the following files would be overwritten" in lower:
@@ -354,9 +360,9 @@ def classify_git_error(stderr: str, stdout: str = "") -> str | None:
         return "TagAlreadyExists"
     if "filter.lfs" in lower and "match" in lower:
         return "LFSAttributeDoesNotMatch"
-    if "is owned by" in lower and "safe.directory" in lower:
+    if "dubious ownership" in lower or ("is owned by" in lower and "safe.directory" in lower):
         return "UnsafeDirectory"
-    if "path exists but not in" in lower:
+    if "path exists but not in" in lower or "exists on disk, but not in" in lower:
         return "PathExistsButNotInRef"
     if "repository not found" in lower:
         if "ssh://" in lower or "git@" in lower:

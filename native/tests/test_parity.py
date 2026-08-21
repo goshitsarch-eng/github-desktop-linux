@@ -1123,5 +1123,12 @@ def test_window_actions_cover_menus() -> None:
         "coerceToBuffer",
         "isMaxBufferExceededError",
         "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+        "expectedErrors",
+        "isGitError",
+        "BadRevision",
+        "parseCherryPickResult",
+        "BranchDeletionFailed",
+        "ConflictModifyDeletedInBranch",
+        "ConfigLockFileAlreadyExists",
     ]:
         assert phrase in src

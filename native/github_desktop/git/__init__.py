@@ -220,6 +220,7 @@ from .ops import (
     format_gitignore_contents,
 )
 from .runner import (
+    GitResult,
     abort_git_process,
     coerce_to_buffer,
     coerce_to_string,
@@ -230,6 +231,7 @@ from .runner import (
     git,
     git_path_is_repository,
     git_user_agent,
+    is_git_error,
     is_git_on_path,
     is_max_buffer_exceeded_error,
     resolve_git_proxy,
