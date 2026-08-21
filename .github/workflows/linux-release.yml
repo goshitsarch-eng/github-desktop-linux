@@ -6,127 +6,46 @@ on:
       - 'v*' # Matches v1.0.0, v2.0.0-beta, etc.
       - 'release-*' # Matches release-3.5.4-linux1
 
-env:
-  NODE_VERSION: 22.19.0
+permissions:
+  contents: write
 
 jobs:
   build:
-    name: Build ${{ matrix.arch }}
-    runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [x64, arm64]
+    name: Native GTK meson tarball
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Setup Node.js ${{ env.NODE_VERSION }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: yarn
-
-      - name: Install system dependencies
+      - name: Install meson and ninja
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            libsecret-1-dev \
-            libxss-dev \
-            libfuse2
+          sudo apt-get install -y meson ninja-build python3 python3-gi
 
-      - name: Install ARM64 cross-compilation dependencies
-        if: matrix.arch == 'arm64'
+      - name: Configure and install into DESTDIR
+        working-directory: native
         run: |
-          sudo dpkg --add-architecture arm64
-          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ jammy main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
-          sudo apt-get update
-          sudo apt-get install -y \
-            gcc-aarch64-linux-gnu \
-            g++-aarch64-linux-gnu \
-            libsecret-1-dev:arm64 \
-            libxss-dev:arm64 \
-            libcurl3-gnutls:arm64
-
-      - name: Install dependencies
-        run: yarn install
-        env:
-          npm_config_arch: ${{ matrix.arch }}
-          TARGET_ARCH: ${{ matrix.arch }}
-          CC: ${{ matrix.arch == 'arm64' && 'aarch64-linux-gnu-gcc' || 'gcc' }}
-          CXX: ${{ matrix.arch == 'arm64' && 'aarch64-linux-gnu-g++' || 'g++' }}
-
-      - name: Build production app
-        run: yarn build:prod
-        env:
-          npm_config_arch: ${{ matrix.arch }}
-          TARGET_ARCH: ${{ matrix.arch }}
-          CC: ${{ matrix.arch == 'arm64' && 'aarch64-linux-gnu-gcc' || 'gcc' }}
-          CXX: ${{ matrix.arch == 'arm64' && 'aarch64-linux-gnu-g++' || 'g++' }}
+          meson setup build --prefix=/usr
+          meson compile -C build
+          DESTDIR="${GITHUB_WORKSPACE}/dist/staging" meson install -C build
 
       - name: Get version
         id: version
-        run:
-          echo "version=$(node -p "require('./app/package.json').version")" >>
-          $GITHUB_OUTPUT
-
-      - name: Bundle libcurl-gnutls for portable Git
         run: |
-          DIST_DIR="dist/desktop-linux-${{ matrix.arch }}"
-          GIT_LIB_DIR="${DIST_DIR}/resources/app/git/lib"
-          mkdir -p "$GIT_LIB_DIR"
+          echo "version=$(PYTHONPATH=native python3 -c 'from github_desktop.version import __version__; print(__version__)')" >> "$GITHUB_OUTPUT"
 
-          if [ "${{ matrix.arch }}" = "arm64" ]; then
-            LIBCURL_PATH="/usr/lib/aarch64-linux-gnu/libcurl-gnutls.so.4"
-          else
-            LIBCURL_PATH="/usr/lib/x86_64-linux-gnu/libcurl-gnutls.so.4"
-          fi
-
-          # Copy the actual library (follow symlinks)
-          cp -L "$LIBCURL_PATH" "$GIT_LIB_DIR/"
-          echo "Bundled libcurl-gnutls:"
-          ls -la "$GIT_LIB_DIR/"
-
-      - name: Create tarball
+      - name: Create prefix tarball
         run: |
-          cd dist
-          tar -czvf GitHubDesktop-linux-${{ matrix.arch }}-${{ steps.version.outputs.version }}.tar.gz \
-            desktop-linux-${{ matrix.arch }}/
+          cd dist/staging
+          tar -czvf "../GitHubDesktop-linux-native-${{ steps.version.outputs.version }}.tar.gz" usr
+          ls -la ../
 
-      - name: Package AppImage
-        run: yarn package
-        env:
-          npm_config_arch: ${{ matrix.arch }}
-          TARGET_ARCH: ${{ matrix.arch }}
-          PACKAGE_FORMAT: AppImage
-
-      - name: List dist contents
-        run: ls -la dist/
-        if: always()
-
-      - name: Upload tarball artifact
+      - name: Upload native tarball
         uses: actions/upload-artifact@v4
         with:
-          name: tarball-${{ matrix.arch }}
-          path: dist/GitHubDesktop-linux-${{ matrix.arch }}-*.tar.gz
-          if-no-files-found: error
-
-      - name: Upload AppImage artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: appimage-${{ matrix.arch }}
-          path: dist/GitHubDesktop-linux-*.AppImage
+          name: native-linux
+          path: dist/GitHubDesktop-linux-native-*.tar.gz
           if-no-files-found: error
 
   release:
@@ -152,4 +71,3 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/**/*.tar.gz
-            artifacts/**/*.AppImage

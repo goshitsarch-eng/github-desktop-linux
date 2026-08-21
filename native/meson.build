@@ -24,3 +24,9 @@ install_data(
 
 install_data('scripts/github-desktop', install_dir: get_option('bindir'), install_mode: 'rwxr-xr-x')
 install_data('scripts/github', install_dir: get_option('bindir'), install_mode: 'rwxr-xr-x')
+
+gnome = import('gnome')
+gnome.post_install(
+  gtk_update_icon_cache: true,
+  update_desktop_database: true,
+)

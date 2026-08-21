@@ -363,6 +363,9 @@ def test_window_actions_cover_menus() -> None:
         tutorial_assessor as tutorial_assessor_mod,
         regex as regex_mod,
         errno_exception as errno_exception_mod,
+        stats as stats_mod,
+        changelog as changelog_mod,
+        exception_reporting as exception_reporting_mod,
     )
     from github_desktop.git import delimiter as git_delimiter_mod
 
@@ -414,6 +417,9 @@ def test_window_actions_cover_menus() -> None:
     src += open(tutorial_assessor_mod.__file__, encoding="utf-8").read()
     src += open(regex_mod.__file__, encoding="utf-8").read()
     src += open(errno_exception_mod.__file__, encoding="utf-8").read()
+    src += open(stats_mod.__file__, encoding="utf-8").read()
+    src += open(changelog_mod.__file__, encoding="utf-8").read()
+    src += open(exception_reporting_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -1157,5 +1163,20 @@ def test_window_actions_cover_menus() -> None:
         "removeRemote",
         "Loading repositories…",
         "streamUserRepositories",
+        "last-daily-stats-report",
+        "stats-opt-out",
+        "has-sent-stats-opt-in-ping",
+        "StatsEndpoint",
+        "SamplesURL",
+        "reportStats",
+        "getHasOptedOutOfStats",
+        "getRendererGUID",
+        "stats-guid",
+        "getChangeLog",
+        "getThankYouByUser",
+        "ErrorEndpoint",
+        "unrecoverable error",
+        "getArchitecture",
+        "SendStatsInterval",
     ]:
         assert phrase in src

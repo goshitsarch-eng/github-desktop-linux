@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from .changelog import CURRENT_NOTES, load_release_notes
+from .changelog import CURRENT_NOTES, load_release_notes, notes_from_changelog
 from .version import __version__
 
 # Desktop: /\.\sThanks\s@.+!/i then slice(10, -1) to drop ". Thanks @" and trailing "!".
@@ -22,11 +22,17 @@ def has_user_already_been_checked_or_thanked(
     return login in checked_users and version == current_version
 
 
+def _thank_you_notes() -> list[str]:
+    """Desktop `getThankYouByUser` — remote changelog (limit 250) with bundled fallback."""
+    remote = notes_from_changelog()
+    if remote:
+        return remote
+    _version, bundled = load_release_notes()
+    return list(bundled) or list(CURRENT_NOTES)
+
+
 def contributions_by_user(notes: list[str] | None = None) -> dict[str, list[str]]:
-    lines = list(notes) if notes is not None else []
-    if notes is None:
-        _version, bundled = load_release_notes()
-        lines = list(bundled) or list(CURRENT_NOTES)
+    lines = list(notes) if notes is not None else _thank_you_notes()
     by_login: dict[str, list[str]] = {}
     for line in lines:
         match = _THANKS_RE.search(line)

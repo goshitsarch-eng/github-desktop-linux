@@ -4,9 +4,16 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
+from typing import Any
 
-from .version import __version__
+from .version import APP_NAME, __version__
+
+# Desktop `getChangeLog` in `lib/release-notes.ts`.
+CHANGELOG_URL = "https://central.github.com/deployments/desktop/desktop/changelog.json"
 
 # Mirrors changelog.json["releases"]["3.5.4"] so notes work without the Electron tree.
 CURRENT_NOTES = [
@@ -59,3 +66,46 @@ def load_release_notes(version: str | None = None) -> tuple[str, list[str]]:
     if wanted == __version__ or version is None:
         return __version__, list(CURRENT_NOTES)
     return wanted, list(CURRENT_NOTES)
+
+
+def get_change_log(limit: int | None = 250) -> list[dict[str, Any]]:
+    """Desktop `getChangeLog` — remote changelog.json, empty on failure or offline."""
+    if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("GITHUB_DESKTOP_OFFLINE"):
+        return []
+    parsed = urllib.parse.urlparse(CHANGELOG_URL)
+    query = dict(urllib.parse.parse_qsl(parsed.query))
+    if limit is not None:
+        query["limit"] = str(limit)
+    url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
+    req = urllib.request.Request(
+        url,
+        method="GET",
+        headers={"User-Agent": f"{APP_NAME}/{__version__}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, UnicodeDecodeError):
+        return []
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    if isinstance(data, dict):
+        releases = data.get("releases")
+        if isinstance(releases, dict):
+            return [
+                {"version": str(ver), "notes": list(notes or [])}
+                for ver, notes in releases.items()
+                if isinstance(notes, list)
+            ]
+    return []
+
+
+def notes_from_changelog(releases: list[dict[str, Any]] | None = None) -> list[str]:
+    """Flatten `notes` arrays from Desktop `ReleaseMetadata` entries."""
+    items = releases if releases is not None else get_change_log(250)
+    notes: list[str] = []
+    for item in items:
+        for line in item.get("notes") or []:
+            if isinstance(line, str):
+                notes.append(line)
+    return notes

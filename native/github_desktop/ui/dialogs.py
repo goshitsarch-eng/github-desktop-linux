@@ -15,6 +15,7 @@ from gi.repository import Adw, Gio, Gtk
 from ..changelog import load_release_notes
 from ..thank_you import thank_you_note
 from ..custom_integration import TARGET_PATH_ARGUMENT
+from ..stats import SamplesURL
 from ..editors import SUGGESTED_EXTERNAL_EDITOR, SUGGESTED_EXTERNAL_EDITOR_URL, get_available_editors
 from ..errors import GitError, ValidationError
 from ..git.ops import (
@@ -3415,7 +3416,7 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
         title="Help GitHub Desktop improve by submitting usage stats",
         active=not s.opt_out_of_usage_tracking,
     )
-    usage_link = Gtk.LinkButton(uri="https://desktop.github.com/usage-data/", label="usage stats")
+    usage_link = Gtk.LinkButton(uri=SamplesURL, label="usage stats")
     usage_link.set_valign(Gtk.Align.CENTER)
     tracking.add_suffix(usage_link)
     usage_group.add(tracking)
@@ -3524,6 +3525,7 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
                     _handle_config_lock(parent, exc, save_user)
         except ValidationError:
             pass
+        store.set_stats_opt_out(s.opt_out_of_usage_tracking, False)
         store.persist_settings()
         store.apply_theme()
         store.set_zoom(s.zoom_factor)

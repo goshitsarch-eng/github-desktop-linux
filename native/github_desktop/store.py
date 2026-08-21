@@ -263,6 +263,7 @@ from .remote_parsing import (
     url_matches_remote,
 )
 from .settings import Settings, get_default_dir, load_settings, save_settings, set_default_dir
+from .stats import StatsStore, SamplesURL, get_has_opted_out_of_stats
 from .welcome import has_shown_welcome_flow, mark_welcome_flow_complete
 from .tutorial_assessor import OnboardingTutorialAssessor
 from .shells import find_shell, get_available_shells, open_custom_shell, open_external, open_file_manager, open_shell, reveal_in_file_manager as reveal_path_in_file_manager
@@ -423,6 +424,12 @@ class AppStore:
         self._lock = threading.RLock()
         self._pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="desktop")
         self._next_id = 1
+        stored_opt_out = get_has_opted_out_of_stats()
+        if stored_opt_out is not None:
+            self.settings.opt_out_of_usage_tracking = stored_opt_out
+        self.stats = StatsStore(default_opt_out=self.settings.opt_out_of_usage_tracking)
+        if self.welcome_step is not None:
+            self.stats.record_welcome_wizard_initiated()
         self._background_fetch_interval = BACKGROUND_FETCH_DEFAULT_INTERVAL
         self._background_fetch_in_flight = False
         self._ahead_behind_cache: OrderedDict[tuple[str, str, str], AheadBehind | None] = OrderedDict()
@@ -644,6 +651,28 @@ class AppStore:
         self.settings.repository_section = self.section.value
         save_settings(self.settings)
 
+    def set_stats_opt_out(self, opt_out: bool, user_viewed_prompt: bool = False) -> None:
+        """Desktop `setStatsOptOut`."""
+        self.stats.set_opt_out(opt_out, user_viewed_prompt)
+        self.settings.opt_out_of_usage_tracking = opt_out
+        self.persist_settings()
+        self.emit()
+
+    def report_stats(self) -> None:
+        """Desktop `_reportStats` / `reportStats`."""
+        accounts = list(self.accounts)
+        repositories = list(self.repositories)
+        settings = self.settings
+
+        def work() -> None:
+            self.stats.report_stats(accounts, repositories, settings)
+
+        def done(exc: BaseException | None) -> None:
+            if exc:
+                log.debug("reportStats failed: %s", exc)
+
+        self._run(work, done)
+
     def _remember_recent_repository(self, previous_id: int | None, current_id: int) -> None:
         """Desktop `_updateRecentRepositories`: keep the last 3 previously selected ids."""
         if previous_id == current_id:
@@ -779,8 +808,9 @@ class AppStore:
             else:
                 self.emit()
 
-    def add_repositories(self, paths: Sequence[str]) -> list[Repository]:
+    def add_repositories(self, paths: Sequence[str], *, onboarding: str | None = "add") -> list[Repository]:
         added: list[Repository] = []
+        created: list[Repository] = []
         for raw in paths:
             path = os.path.abspath(os.path.expanduser(raw))
             if not git_path_is_repository(path):
@@ -810,6 +840,14 @@ class AppStore:
             self.repo_state[repo.id].local_tags_to_push = get_tags_to_push(self.settings, repo)
             self._hydrate_github_api_cache(repo)
             added.append(repo)
+            created.append(repo)
+        if created:
+            if onboarding == "add":
+                self.stats.record_add_existing_repository()
+            elif onboarding == "clone":
+                self.stats.record_clone_repository()
+            elif onboarding == "create":
+                self.stats.record_create_repository()
         if added:
             self._save_repositories()
             self.select_repository(added[-1].id)
@@ -985,7 +1023,7 @@ class AppStore:
         display_name = name or folder_name
         branch = default_branch or get_default_branch()
         init_repository(path, branch)
-        repos = self.add_repositories([path])
+        repos = self.add_repositories([path], onboarding="create")
         if create_readme:
             try:
                 write_default_readme(path, display_name, description)
@@ -1127,7 +1165,7 @@ class AppStore:
             if exc:
                 self._show_clone_error(exc, url, path, branch=branch, tutorial=tutorial)
             else:
-                repos = self.add_repositories([path])
+                repos = self.add_repositories([path], onboarding="clone")
                 for item in repos:
                     item.is_missing = False
                     item.unsafe = False
@@ -1824,7 +1862,7 @@ class AppStore:
             if exc:
                 self.show_popup(PopupType.ERROR, error=str(exc))
             else:
-                repos = self.add_repositories([path])
+                repos = self.add_repositories([path], onboarding="create")
                 for item in repos:
                     item.tutorial = True
                     item.is_missing = False
@@ -2226,6 +2264,20 @@ class AppStore:
                 state.commit_to_amend = None
                 if amended_sha:
                     state.pending_force_push_before = amended_sha
+                self.stats.record_commit()
+                if files and state.status and len(files) < len(state.status.working_directory.files):
+                    self.stats.increment("partialCommits")
+                if co_authors:
+                    self.stats.increment("coAuthoredCommits")
+                if amend:
+                    self.stats.record_amend_commit_successful(bool(files))
+                gh = github_for_contribution(repo) or repo.github
+                if gh is not None and not has_write_permission(gh) and gh.db_id is not None:
+                    self.stats.record_repository_committed_in_without_write_access(int(gh.db_id))
+                if repo.github and repo.github.endpoint and "api.github.com" in repo.github.endpoint:
+                    self.stats.increment("dotcomCommits")
+                elif repo.github:
+                    self.stats.increment("enterpriseCommits")
                 self.refresh_repository(repo)
             self.emit()
 
@@ -3197,6 +3249,7 @@ class AppStore:
             return
         self.set_section(RepositorySectionTab.CHANGES)
         undo_commit(repo.path, commit.parent_shas)
+        self.stats.record_commit_undone(not dirty)
         self._restore_commit_form(repo, commit)
         self.refresh_repository(repo)
 
@@ -3554,6 +3607,7 @@ class AppStore:
                 self.persist_settings()
                 self.refresh_repository(repo)
                 show_notification("Push complete", f"Pushed {status.current_branch}", enabled=self.settings.notifications_enabled)
+                self.stats.record_push(self.account_for_repo(repo), force_with_lease=force)
                 if on_success:
                     on_success()
             self.emit()
@@ -3939,6 +3993,10 @@ class AppStore:
                 return
             self.remember_branch(repo, name)
             self.refresh_repository(repo)
+            gh = github_for_contribution(repo) or repo.github
+            default_name = gh.default_branch if gh is not None else self.settings.default_branch
+            if name != default_name:
+                self.stats.record_non_default_branch_checkout()
 
         self._run(work, done)
 
@@ -4665,6 +4723,7 @@ class AppStore:
     def finish_welcome(self) -> None:
         self.settings.welcome_shown = True
         mark_welcome_flow_complete()
+        self.stats.record_welcome_wizard_terminated()
         self.welcome_step = None
         self.persist_settings()
         self._maybe_show_accessibility_banner()
@@ -4786,6 +4845,7 @@ class AppStore:
             )
             try:
                 open_custom_shell(argv[0], argv[1:], repo.path)
+                self.stats.increment("openShellCount")
             except OSError as exc:
                 self.show_popup(PopupType.OPEN_SHELL_FAILED, message=str(exc))
             return
@@ -4799,6 +4859,7 @@ class AppStore:
             return
         try:
             open_shell(shell, repo.path)
+            self.stats.increment("openShellCount")
         except OSError as exc:
             self.show_popup(PopupType.OPEN_SHELL_FAILED, message=str(exc), open_preferences=True)
 

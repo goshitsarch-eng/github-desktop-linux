@@ -72,3 +72,11 @@ def spawn_editor(path: str, working_directory: str, **options: Any) -> subproces
 def get_os() -> str:
     """Desktop `getOS` on Linux: `{OS.type()} {OS.release()}`."""
     return f"{platform.system()} {platform.release()}"
+
+
+def get_architecture() -> str:
+    """Desktop `getArchitecture` on Linux: `arm64` or `x64`."""
+    machine = platform.machine().lower()
+    if machine in {"aarch64", "arm64"}:
+        return "arm64"
+    return "x64"
