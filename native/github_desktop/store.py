@@ -229,6 +229,7 @@ from .models import (
     SelectionType,
     SignInStep,
     StashEntry,
+    StashedChangesLoadStates,
     TextDiff,
     TutorialStep,
     UncommittedChangesStrategy,
@@ -378,6 +379,8 @@ class RepositoryViewState:
     pull_with_rebase: bool = False
     last_fetched: float | None = None
     manual_resolutions: dict[str, ManualConflictResolution] = field(default_factory=dict)
+    stash_load_state: StashedChangesLoadStates = StashedChangesLoadStates.NOT_LOADED
+    pr_preview_loading: bool = False
     changed_files_count: int = 0
     is_committing: bool = False  # Desktop isCommitting
     is_generating_commit_message: bool = False  # Desktop isGeneratingCommitMessage
@@ -444,6 +447,10 @@ class AppStore:
         self._ahead_behind_inflight = 0
         self._ahead_behind_lock = threading.Lock()
         self._compare_merge_token: dict[str, int] = {}
+        self._diff_load_token: dict[str, int] = {}
+        self._stash_load_token: dict[str, int] = {}
+        self._pr_preview_token: dict[str, int] = {}
+        self._history_batch_token: dict[str, int] = {}
         self._credential_sign_in_finish: list[Callable[[Account | None], None]] = []
         self._issue_refresh_at: dict[int, float] = {}
         self.api_repositories = ApiRepositoriesStore()
@@ -1571,8 +1578,14 @@ class AppStore:
             state.branches = data.get("branches") or []
             state.remotes = data.get("remotes") or []
             state.tags = data.get("tags") or {}
+            prev_stash_sha = state.stashes[0].stash_sha if state.stashes else None
             state.stashes = data.get("stashes") or []
             state.stash_count = data.get("stash_count") or 0
+            new_stash_sha = state.stashes[0].stash_sha if state.stashes else None
+            if prev_stash_sha != new_stash_sha:
+                state.stash_load_state = StashedChangesLoadStates.NOT_LOADED
+                state.stashed_files = []
+                state.selected_stashed_file = None
             state.recent_branches = list(data.get("recent_branches") or [])
             if state.recent_branches:
                 self.settings.recent_branches[repo.path] = list(state.recent_branches)
@@ -1644,25 +1657,49 @@ class AppStore:
         if not file:
             state.current_diff = None
             return
-        try:
-            diff = get_working_directory_diff(repo.path, file, self._hide_ws_changes(state), state.diff_context)
-            diff = self._prepare_text_diff(repo, file.path, diff, file=file)
-            state.current_diff = diff
-            if isinstance(diff, TextDiff):
+        path = file.path
+        hide_ws = self._hide_ws_changes(state)
+        context = state.diff_context
+        snapshot = file
+        token = self._diff_load_token.get(repo.path, 0) + 1
+        self._diff_load_token[repo.path] = token
+
+        def work() -> tuple:
+            diff = get_working_directory_diff(repo.path, snapshot, hide_ws, context)
+            return self._compute_text_diff(repo, path, diff, file=snapshot)
+
+        def done(exc: BaseException | None, result: tuple | None = None) -> None:
+            current = self.state_for(repo)
+            if self._diff_load_token.get(repo.path) != token:
+                return
+            if current.selected_file is None or current.selected_file.path != path:
+                return
+            if exc:
+                current.error = str(exc)
+                current.current_diff = None
+                self.emit()
+                return
+            prepared, new_lines = result if result else (None, None)
+            current.diff_new_content = new_lines
+            current.original_diff = None
+            current.current_diff = prepared
+            if isinstance(prepared, TextDiff):
                 from .git.diff import selectable_line_indices
+                from .models import WorkingDirectoryStatus
 
-                selectable = set(selectable_line_indices(diff))
-                updated = file.with_selection(file.selection.with_selectable_lines(selectable))
-                if state.status:
-                    files = [updated if f.path == file.path else f for f in state.status.working_directory.files]
-                    from .models import WorkingDirectoryStatus
+                selectable = set(selectable_line_indices(prepared))
+                updated = current.selected_file.with_selection(
+                    current.selected_file.selection.with_selectable_lines(selectable)
+                )
+                if current.status:
+                    files = [updated if f.path == path else f for f in current.status.working_directory.files]
+                    current.status.working_directory = WorkingDirectoryStatus.from_files(files)
+                current.selected_file = updated
+            self.emit()
 
-                    state.status.working_directory = WorkingDirectoryStatus.from_files(files)
-                state.selected_file = updated
-        except GitError as exc:
-            state.error = str(exc)
+        self._run_ui(work, done)
 
-    def _prepare_text_diff(
+    def _compute_text_diff(
         self,
         repo: Repository,
         path: str,
@@ -1671,12 +1708,11 @@ class AppStore:
         *,
         file: object | None = None,
         status: FileStatus | None = None,
-    ) -> FileDiff:
+    ) -> tuple[FileDiff, list[str] | None]:
         if not isinstance(diff, TextDiff) or not diff.hunks:
-            return diff
+            return diff, None
         from .git.expansion import apply_expansion_metadata
 
-        state = self.state_for(repo)
         old_path = get_old_path_or_default(file, path=path, status=status)
         if commitish:
             new_lines = get_partial_blob_lines(repo.path, commitish, path)
@@ -1684,8 +1720,6 @@ class AppStore:
         else:
             new_lines = get_working_directory_lines(repo.path, path)
             old_lines = get_partial_blob_lines(repo.path, "HEAD", old_path)
-        state.diff_new_content = new_lines
-        state.original_diff = None
         prepared = apply_expansion_metadata(diff, old_line_count=len(old_lines), new_line_count=len(new_lines))
         if isinstance(prepared, TextDiff):
             from .ui.syntax import MAX_HIGHLIGHT_CONTENT, highlight_file
@@ -1697,6 +1731,25 @@ class AppStore:
                 prepared.old_line_markup = highlight_file(old_lines, old_path, tab_size=tab)
             if new_bytes <= MAX_HIGHLIGHT_CONTENT:
                 prepared.new_line_markup = highlight_file(new_lines, path, tab_size=tab)
+        return prepared, new_lines
+
+    def _prepare_text_diff(
+        self,
+        repo: Repository,
+        path: str,
+        diff: FileDiff,
+        commitish: str | None = None,
+        *,
+        file: object | None = None,
+        status: FileStatus | None = None,
+    ) -> FileDiff:
+        prepared, new_lines = self._compute_text_diff(
+            repo, path, diff, commitish, file=file, status=status
+        )
+        if isinstance(diff, TextDiff) and diff.hunks:
+            state = self.state_for(repo)
+            state.diff_new_content = new_lines
+            state.original_diff = None
         return prepared
 
     def expand_hunk(self, repo: Repository, hunk_index: int, kind: str) -> None:
@@ -2923,16 +2976,35 @@ class AppStore:
             else:
                 revision = f"{state.compare_branch.name}..HEAD"
                 skip = len(state.compare_ahead)
-        batch = get_commits(repo.path, revision, limit=COMMIT_BATCH_SIZE, skip=skip, extra=extra)
-        if target == "behind":
-            state.compare_behind.extend(batch)
-            state.commits = state.compare_behind
-        else:
-            state.commits.extend(batch)
-            if state.history_mode == HistoryTabMode.COMPARE:
-                state.compare_ahead = state.commits
-        state.has_more_commits = len(batch) == COMMIT_BATCH_SIZE
-        self.emit()
+        token = self._history_batch_token.get(repo.path, 0) + 1
+        self._history_batch_token[repo.path] = token
+        filter_text = state.history_filter
+
+        def work() -> list:
+            return get_commits(repo.path, revision, limit=COMMIT_BATCH_SIZE, skip=skip, extra=extra)
+
+        def done(exc: BaseException | None, batch: list | None = None) -> None:
+            if self._history_batch_token.get(repo.path) != token:
+                return
+            current = self.state_for(repo)
+            if current.history_filter != filter_text:
+                return
+            if exc:
+                current.error = str(exc)
+                self.emit()
+                return
+            rows = list(batch or [])
+            if target == "behind":
+                current.compare_behind.extend(rows)
+                current.commits = current.compare_behind
+            else:
+                current.commits.extend(rows)
+                if current.history_mode == HistoryTabMode.COMPARE:
+                    current.compare_ahead = current.commits
+            current.has_more_commits = len(rows) == COMMIT_BATCH_SIZE
+            self.emit()
+
+        self._run_ui(work, done)
 
     def set_history_filter(self, repo: Repository, text: str) -> None:
         state = self.state_for(repo)
@@ -2943,9 +3015,27 @@ class AppStore:
         revision = None
         if state.history_mode == HistoryTabMode.COMPARE and state.compare_branch:
             revision = f"{state.compare_branch.name}..HEAD"
-        state.commits = get_commits(repo.path, revision, limit=COMMIT_BATCH_SIZE, extra=extra)
-        state.has_more_commits = len(state.commits) == COMMIT_BATCH_SIZE
-        self.emit()
+        token = self._history_batch_token.get(repo.path, 0) + 1
+        self._history_batch_token[repo.path] = token
+
+        def work() -> list:
+            return get_commits(repo.path, revision, limit=COMMIT_BATCH_SIZE, extra=extra)
+
+        def done(exc: BaseException | None, commits: list | None = None) -> None:
+            if self._history_batch_token.get(repo.path) != token:
+                return
+            current = self.state_for(repo)
+            if current.history_filter != text:
+                return
+            if exc:
+                current.error = str(exc)
+                self.emit()
+                return
+            current.commits = list(commits or [])
+            current.has_more_commits = len(current.commits) == COMMIT_BATCH_SIZE
+            self.emit()
+
+        self._run_ui(work, done)
 
     def toggle_stash(self, repo: Repository) -> None:
         state = self.state_for(repo)
@@ -2958,66 +3048,121 @@ class AppStore:
             self.emit()
 
     def load_stash_files(self, repo: Repository) -> None:
+        """Desktop `loadFilesForCurrentStashEntry`: NotLoaded → Loading → Loaded."""
         state = self.state_for(repo)
         if not state.stashes:
             state.stashed_files = []
             state.selected_stashed_file = None
             state.stashed_visible = False
+            state.stash_load_state = StashedChangesLoadStates.NOT_LOADED
             self.emit()
             return
+        if state.stash_load_state != StashedChangesLoadStates.NOT_LOADED:
+            if state.stash_load_state == StashedChangesLoadStates.LOADED:
+                target = state.selected_stashed_file or (state.stashed_files[0] if state.stashed_files else None)
+                if target:
+                    self.select_stashed_file(repo, target)
+                else:
+                    self.emit()
+            return
         stash = state.stashes[0]
-        try:
-            files = get_stashed_files(repo.path, stash.stash_sha)
-        except GitError:
-            files = []
-        state.stashed_files = files
-        stash.files = files
-        if state.selected_stashed_file:
-            state.selected_stashed_file = next(
-                (f for f in files if f.path == state.selected_stashed_file.path),
-                files[0] if files else None,
-            )
-        else:
-            state.selected_stashed_file = files[0] if files else None
-        if state.selected_stashed_file:
-            self.select_stashed_file(repo, state.selected_stashed_file)
-        else:
-            state.current_diff = None
-            self.emit()
+        sha = stash.stash_sha
+        token = self._stash_load_token.get(repo.path, 0) + 1
+        self._stash_load_token[repo.path] = token
+        state.stash_load_state = StashedChangesLoadStates.LOADING
+        self.emit()
+
+        def work() -> list:
+            return get_stashed_files(repo.path, sha)
+
+        def done(exc: BaseException | None, files: list | None = None) -> None:
+            if self._stash_load_token.get(repo.path) != token:
+                return
+            current = self.state_for(repo)
+            rows = list(files or []) if exc is None else []
+            current.stashed_files = rows
+            if current.stashes:
+                current.stashes[0].files = rows
+            current.stash_load_state = StashedChangesLoadStates.LOADED
+            if current.selected_stashed_file:
+                current.selected_stashed_file = next(
+                    (f for f in rows if f.path == current.selected_stashed_file.path),
+                    rows[0] if rows else None,
+                )
+            else:
+                current.selected_stashed_file = rows[0] if rows else None
+            if current.selected_stashed_file:
+                self.select_stashed_file(repo, current.selected_stashed_file)
+            else:
+                current.current_diff = None
+                self.emit()
+
+        self._run_ui(work, done)
 
     def select_stashed_file(self, repo: Repository, file: CommittedFileChange | None) -> None:
         state = self.state_for(repo)
         state.selected_stashed_file = file
-        if file and state.stashes:
-            try:
-                state.current_diff = self._prepare_text_diff(
-                    repo,
-                    file.path,
-                    get_commit_diff(
-                        repo.path,
-                        file.path,
-                        file.commitish,
-                        file.status,
-                        self._hide_ws_changes(state),
-                        state.diff_context,
-                        parent_commitish=file.parent_commitish,
-                    ),
-                    commitish=file.commitish,
-                    file=file,
-                )
-            except GitError:
-                state.current_diff = None
-        else:
+        if not file or not state.stashes:
             state.current_diff = None
-        self.emit()
+            self.emit()
+            return
+        hide_ws = self._hide_ws_changes(state)
+        context = state.diff_context
+        token = self._diff_load_token.get(repo.path, 0) + 1
+        self._diff_load_token[repo.path] = token
+        path = file.path
+        commitish = file.commitish
+        parent = file.parent_commitish
+        status = file.status
+        snapshot = file
+
+        def work() -> tuple:
+            diff = get_commit_diff(
+                repo.path,
+                path,
+                commitish,
+                status,
+                hide_ws,
+                context,
+                parent_commitish=parent,
+            )
+            return self._compute_text_diff(repo, path, diff, commitish=commitish, file=snapshot)
+
+        def done(exc: BaseException | None, result: tuple | None = None) -> None:
+            if self._diff_load_token.get(repo.path) != token:
+                return
+            current = self.state_for(repo)
+            selected = current.selected_stashed_file
+            if selected is None or selected.path != path:
+                return
+            if exc:
+                current.current_diff = None
+            else:
+                prepared, new_lines = result if result else (None, None)
+                current.diff_new_content = new_lines
+                current.original_diff = None
+                current.current_diff = prepared
+            self.emit()
+
+        self._run_ui(work, done)
 
     def restore_stash(self, repo: Repository) -> None:
         state = self.state_for(repo)
         if not state.stashes:
             return
-        stash_pop(repo.path, state.stashes[0].name)
-        state.stashed_visible = False
-        self.refresh_repository(repo)
+        name = state.stashes[0].name
+
+        def work() -> None:
+            stash_pop(repo.path, name)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.state_for(repo).stashed_visible = False
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
 
     def discard_stash(self, repo: Repository, confirmed: bool = False) -> None:
         state = self.state_for(repo)
@@ -3026,66 +3171,147 @@ class AppStore:
         if self.settings.confirm_discard_stash and not confirmed:
             self.show_popup(PopupType.CONFIRM_DISCARD_STASH, stash=state.stashes[0].name)
             return
-        stash_drop(repo.path, state.stashes[0].name)
-        state.stashed_visible = False
-        self.refresh_repository(repo)
+        name = state.stashes[0].name
 
-    def load_pr_preview(self, repo: Repository, base: str | None = None) -> None:
+        def work() -> None:
+            stash_drop(repo.path, name)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.state_for(repo).stashed_visible = False
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
+
+    def load_pr_preview(
+        self,
+        repo: Repository,
+        base: str | None = None,
+        on_done: Callable[[], None] | None = None,
+    ) -> None:
         state = self.state_for(repo)
         base_name = base or state.pr_base_branch or self.default_branch_name(repo) or "main"
         state.pr_base_branch = base_name
         current = state.status.current_branch if state.status else None
+        latest_hint = state.status.current_tip if state.status else "HEAD"
         if not current or current == base_name:
             state.pr_commits = []
             state.pr_files = []
             state.pr_changeset = ChangesetData()
+            state.pr_preview_loading = False
             self.emit()
+            if on_done:
+                on_done()
             return
-        state.pr_commits = get_commits(repo.path, f"{base_name}..HEAD", limit=200)
-        latest = state.pr_commits[0].sha if state.pr_commits else (state.status.current_tip if state.status else "HEAD")
-        try:
-            changeset = get_branch_merge_base_changed_files(repo.path, base_name, current, latest)
-        except GitError:
-            changeset = None
-        if changeset is None and state.pr_commits:
-            oldest = state.pr_commits[-1].sha
-            newest = state.pr_commits[0].sha
-            try:
-                changeset = get_commit_range_changed_files(repo.path, oldest, newest)
-            except GitError:
-                changeset = ChangesetData()
-        state.pr_changeset = changeset or ChangesetData()
-        state.pr_files = list(state.pr_changeset.files)
+        token = self._pr_preview_token.get(repo.path, 0) + 1
+        self._pr_preview_token[repo.path] = token
+        state.pr_preview_loading = True
         self.emit()
 
-    def load_pr_preview_diff(self, repo: Repository, file: CommittedFileChange) -> FileDiff | None:
+        def work() -> tuple:
+            commits = get_commits(repo.path, f"{base_name}..HEAD", limit=200)
+            latest = commits[0].sha if commits else latest_hint
+            changeset = None
+            try:
+                changeset = get_branch_merge_base_changed_files(repo.path, base_name, current, latest)
+            except GitError:
+                changeset = None
+            if changeset is None and commits:
+                oldest = commits[-1].sha
+                newest = commits[0].sha
+                try:
+                    changeset = get_commit_range_changed_files(repo.path, oldest, newest)
+                except GitError:
+                    changeset = ChangesetData()
+            return commits, changeset or ChangesetData()
+
+        def done(exc: BaseException | None, result: tuple | None = None) -> None:
+            if self._pr_preview_token.get(repo.path) != token:
+                return
+            current_state = self.state_for(repo)
+            if current_state.pr_base_branch != base_name:
+                return
+            current_state.pr_preview_loading = False
+            if exc:
+                current_state.error = str(exc)
+                current_state.pr_commits = []
+                current_state.pr_files = []
+                current_state.pr_changeset = ChangesetData()
+                self.emit()
+                if on_done:
+                    on_done()
+                return
+            commits, changeset = result if result else ([], ChangesetData())
+            current_state.pr_commits = list(commits or [])
+            current_state.pr_changeset = changeset
+            current_state.pr_files = list(changeset.files)
+            self.emit()
+            if on_done:
+                on_done()
+
+        self._run_ui(work, done)
+
+    def load_pr_preview_diff(
+        self,
+        repo: Repository,
+        file: CommittedFileChange,
+        on_done: Callable[[FileDiff | None], None] | None = None,
+    ) -> FileDiff | None:
         state = self.state_for(repo)
         base_name = state.pr_base_branch or self.default_branch_name(repo) or "main"
         current = state.status.current_branch if state.status else None
         latest = state.pr_commits[0].sha if state.pr_commits else (state.status.current_tip if state.status else "HEAD")
-        try:
-            if current:
-                diff = get_branch_merge_base_diff(
-                    repo.path,
-                    file.path,
-                    base_name,
-                    current,
-                    file.status,
-                    self._hide_ws_pr(),
-                    state.diff_context,
-                    latest,
-                )
-            elif state.pr_commits:
-                oldest = state.pr_commits[-1].sha
-                newest = state.pr_commits[0].sha
-                diff = get_commit_range_diff(
-                    repo.path, file.path, oldest, newest, file.status, self._hide_ws_pr(), state.diff_context
-                )
-            else:
+        hide_ws = self._hide_ws_pr()
+        context = state.diff_context
+        oldest = state.pr_commits[-1].sha if state.pr_commits else None
+        newest = state.pr_commits[0].sha if state.pr_commits else None
+        path = file.path
+        status = file.status
+        snapshot = file
+        token = self._diff_load_token.get(repo.path, 0) + 1
+        self._diff_load_token[repo.path] = token
+        holder: list[FileDiff | None] = [None]
+
+        def work() -> tuple | None:
+            try:
+                if current:
+                    diff = get_branch_merge_base_diff(
+                        repo.path,
+                        path,
+                        base_name,
+                        current,
+                        status,
+                        hide_ws,
+                        context,
+                        latest,
+                    )
+                elif oldest and newest:
+                    diff = get_commit_range_diff(
+                        repo.path, path, oldest, newest, status, hide_ws, context
+                    )
+                else:
+                    return None
+                return self._compute_text_diff(repo, path, diff, commitish=latest, file=snapshot)
+            except GitError:
                 return None
-        except GitError:
-            return None
-        return self._prepare_text_diff(repo, file.path, diff, commitish=latest, file=file)
+
+        def done(exc: BaseException | None, result: tuple | None = None) -> None:
+            if self._diff_load_token.get(repo.path) != token:
+                return
+            prepared: FileDiff | None = None
+            if not exc and result:
+                prepared, new_lines = result
+                current_state = self.state_for(repo)
+                current_state.diff_new_content = new_lines
+                current_state.original_diff = None
+            holder[0] = prepared
+            if on_done:
+                on_done(prepared)
+
+        self._run_ui(work, done)
+        return holder[0]
 
     def add_dropped_paths(self, paths: Sequence[str]) -> None:
         dirs = []
@@ -3120,26 +3346,7 @@ class AppStore:
         ordered_newest_first = [c for c in history if c.sha in sha_set]
         contiguous = _commits_are_contiguous(ordered_newest_first, history)
         state.selected_commit = ordered_newest_first[0] if ordered_newest_first else commits[0]
-        if contiguous and len(ordered_newest_first) >= 2:
-            newest = ordered_newest_first[0]
-            oldest = ordered_newest_first[-1]
-            state.non_contiguous_selection = False
-            state.shas_in_diff = [c.sha for c in ordered_newest_first]
-            try:
-                state.changeset = get_commit_range_changed_files(repo.path, oldest.sha, newest.sha)
-            except GitError:
-                state.changeset = ChangesetData()
-            state.selected_commit_files = list(state.changeset.files)
-            if state.selected_commit_files:
-                f = state.selected_commit_files[0]
-                try:
-                    diff = get_commit_range_diff(
-                        repo.path, f.path, oldest.sha, newest.sha, f.status, self._hide_ws_history(), state.diff_context
-                    )
-                    state.current_diff = self._prepare_text_diff(repo, f.path, diff, commitish=newest.sha, file=f)
-                except GitError:
-                    state.current_diff = None
-        else:
+        if not (contiguous and len(ordered_newest_first) >= 2):
             # Desktop `SelectedCommits`: blank slate, keep the multi-selection.
             state.non_contiguous_selection = True
             state.selected_commit_files = []
@@ -3148,7 +3355,58 @@ class AppStore:
             state.shas_in_diff = []
             self.emit()
             return
-        self.emit()
+        newest = ordered_newest_first[0]
+        oldest = ordered_newest_first[-1]
+        state.non_contiguous_selection = False
+        state.shas_in_diff = [c.sha for c in ordered_newest_first]
+        state.current_diff = None
+        hide_ws = self._hide_ws_history()
+        context = state.diff_context
+        token = self._diff_load_token.get(repo.path, 0) + 1
+        self._diff_load_token[repo.path] = token
+        expected = frozenset(state.shas_in_diff)
+
+        def work() -> tuple:
+            try:
+                changeset = get_commit_range_changed_files(repo.path, oldest.sha, newest.sha)
+            except GitError:
+                changeset = ChangesetData()
+            files = list(changeset.files)
+            prepared: FileDiff | None = None
+            new_lines: list[str] | None = None
+            if files:
+                f = files[0]
+                try:
+                    diff = get_commit_range_diff(
+                        repo.path, f.path, oldest.sha, newest.sha, f.status, hide_ws, context
+                    )
+                    prepared, new_lines = self._compute_text_diff(
+                        repo, f.path, diff, commitish=newest.sha, file=f
+                    )
+                except GitError:
+                    prepared = None
+            return changeset, files, prepared, new_lines
+
+        def done(exc: BaseException | None, result: tuple | None = None) -> None:
+            if self._diff_load_token.get(repo.path) != token:
+                return
+            current = self.state_for(repo)
+            if frozenset(c.sha for c in current.selected_commits) != expected:
+                return
+            if exc:
+                current.error = str(exc)
+                current.current_diff = None
+                self.emit()
+                return
+            changeset, files, prepared, new_lines = result if result else (ChangesetData(), [], None, None)
+            current.changeset = changeset
+            current.selected_commit_files = files
+            current.diff_new_content = new_lines
+            current.original_diff = None
+            current.current_diff = prepared
+            self.emit()
+
+        self._run_ui(work, done)
 
     def squash_onto(
         self,
@@ -3318,8 +3576,17 @@ class AppStore:
             self.show_popup(PopupType.WARNING_BEFORE_RESET, commit=commit, sha=commit.sha)
             return
         self.set_section(RepositorySectionTab.CHANGES)
-        reset(repo.path, commit.sha, "mixed")
-        self.refresh_repository(repo)
+
+        def work() -> None:
+            reset(repo.path, commit.sha, "mixed")
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
 
     def undo_last_commit(self, repo: Repository, *, show_confirmation: bool = True) -> None:
         state = self.state_for(repo)
@@ -3335,10 +3602,20 @@ class AppStore:
             )
             return
         self.set_section(RepositorySectionTab.CHANGES)
-        undo_commit(repo.path, commit.parent_shas)
-        self.stats.record_commit_undone(not dirty)
-        self._restore_commit_form(repo, commit)
-        self.refresh_repository(repo)
+        parents = list(commit.parent_shas)
+
+        def work() -> None:
+            undo_commit(repo.path, parents)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.stats.record_commit_undone(not dirty)
+            self._restore_commit_form(repo, commit)
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
 
     def _restore_commit_form(self, repo: Repository, commit: Commit) -> None:
         """Put the undone commit's summary/body/co-authors back in the commit box."""
@@ -3548,12 +3825,19 @@ class AppStore:
 
         state = self.state_for(repo)
         file = next((f for f in (state.status.working_directory.files if state.status else []) if f.path == path), None)
-        if file is not None:
-            stage_manual_resolution(repo.path, file, resolution)
-        else:
-            stage_manual_resolution(repo.path, path, resolution)
-        state.manual_resolutions[path] = resolution
-        self.refresh_repository(repo)
+        target = file if file is not None else path
+
+        def work() -> None:
+            stage_manual_resolution(repo.path, target, resolution)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.state_for(repo).manual_resolutions[path] = resolution
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
 
     def set_include_all(self, repo: Repository, included: bool) -> None:
         state = self.state_for(repo)
@@ -3565,10 +3849,11 @@ class AppStore:
     def select_file(self, repo: Repository, file: WorkingDirectoryFileChange | None) -> None:
         state = self.state_for(repo)
         state.selected_file = file
+        state.current_diff = None
         if file:
+            self.emit()
             self._load_working_diff(repo, state)
-        else:
-            state.current_diff = None
+            return
         self.emit()
 
     def select_commit(self, repo: Repository, commit: Commit | None) -> None:
@@ -3577,72 +3862,130 @@ class AppStore:
         state.non_contiguous_selection = False
         if commit and commit not in state.selected_commits:
             state.selected_commits = [commit]
-        if commit:
-            state.shas_in_diff = [commit.sha]
-            try:
-                state.changeset = get_changeset_data(repo.path, commit.sha)
-            except GitError:
-                state.changeset = ChangesetData()
-            state.selected_commit_files = list(state.changeset.files)
-            if state.selected_commit_files:
-                f = state.selected_commit_files[0]
-                state.current_diff = self._prepare_text_diff(
-                    repo,
-                    f.path,
-                    get_commit_diff(
-                        repo.path,
-                        f.path,
-                        commit.sha,
-                        f.status,
-                        self._hide_ws_history(),
-                        state.diff_context,
-                        parent_commitish=f.parent_commitish,
-                    ),
-                    commitish=commit.sha,
-                    file=f,
-                )
-            else:
-                state.current_diff = None
-        else:
+        if not commit:
             state.changeset = None
             state.selected_commit_files = []
             state.current_diff = None
             state.shas_in_diff = []
-        self.emit()
+            self.emit()
+            return
+        sha = commit.sha
+        state.shas_in_diff = [sha]
+        state.current_diff = None
+        hide_ws = self._hide_ws_history()
+        context = state.diff_context
+        token = self._diff_load_token.get(repo.path, 0) + 1
+        self._diff_load_token[repo.path] = token
 
-    def load_history_diff(self, repo: Repository, path: str, sha: str, status) -> FileDiff:
+        def work() -> tuple:
+            try:
+                changeset = get_changeset_data(repo.path, sha)
+            except GitError:
+                changeset = ChangesetData()
+            files = list(changeset.files)
+            prepared: FileDiff | None = None
+            new_lines: list[str] | None = None
+            if files:
+                f = files[0]
+                try:
+                    diff = get_commit_diff(
+                        repo.path,
+                        f.path,
+                        sha,
+                        f.status,
+                        hide_ws,
+                        context,
+                        parent_commitish=f.parent_commitish,
+                    )
+                    prepared, new_lines = self._compute_text_diff(
+                        repo, f.path, diff, commitish=sha, file=f
+                    )
+                except GitError:
+                    prepared = None
+            return changeset, files, prepared, new_lines
+
+        def done(exc: BaseException | None, result: tuple | None = None) -> None:
+            if self._diff_load_token.get(repo.path) != token:
+                return
+            current = self.state_for(repo)
+            if current.selected_commit is None or current.selected_commit.sha != sha:
+                return
+            if exc:
+                current.error = str(exc)
+                current.current_diff = None
+                self.emit()
+                return
+            changeset, files, prepared, new_lines = result if result else (ChangesetData(), [], None, None)
+            current.changeset = changeset
+            current.selected_commit_files = files
+            current.diff_new_content = new_lines
+            current.original_diff = None
+            current.current_diff = prepared
+            self.emit()
+
+        self._run_ui(work, done)
+
+    def load_history_diff(self, repo: Repository, path: str, sha: str, status) -> FileDiff | None:
         state = self.state_for(repo)
         selected = list(state.selected_commits)
         history = state.compare_ahead if state.history_mode == HistoryTabMode.COMPARE and state.compare_ahead else state.commits
         sha_set = {c.sha for c in selected}
         ordered = [c for c in history if c.sha in sha_set]
         parent = next((item.parent_commitish for item in state.selected_commit_files if item.path == path), None)
-        if len(ordered) >= 2 and _commits_are_contiguous(ordered, history):
-            newest, oldest = ordered[0], ordered[-1]
-            diff = get_commit_range_diff(
-                repo.path,
-                path,
-                oldest.sha,
-                newest.sha,
-                status,
-                self._hide_ws_history(),
-                state.diff_context,
-                parent_commitish=parent,
-            )
-            prepared = self._prepare_text_diff(repo, path, diff, commitish=newest.sha, status=status)
-        else:
-            diff = get_commit_diff(
-                repo.path,
-                path,
-                sha,
-                status,
-                self._hide_ws_history(),
-                state.diff_context,
-                parent_commitish=parent,
-            )
-            prepared = self._prepare_text_diff(repo, path, diff, commitish=sha, status=status)
-        state.current_diff = prepared
-        return prepared
+        hide_ws = self._hide_ws_history()
+        context = state.diff_context
+        range_diff = len(ordered) >= 2 and _commits_are_contiguous(ordered, history)
+        newest = ordered[0] if ordered else None
+        oldest = ordered[-1] if ordered else None
+        token = self._diff_load_token.get(repo.path, 0) + 1
+        self._diff_load_token[repo.path] = token
+        state.current_diff = None
+        holder: list[FileDiff | None] = [None]
+
+        def work() -> tuple:
+            if range_diff and newest and oldest:
+                diff = get_commit_range_diff(
+                    repo.path,
+                    path,
+                    oldest.sha,
+                    newest.sha,
+                    status,
+                    hide_ws,
+                    context,
+                    parent_commitish=parent,
+                )
+                commitish = newest.sha
+            else:
+                diff = get_commit_diff(
+                    repo.path,
+                    path,
+                    sha,
+                    status,
+                    hide_ws,
+                    context,
+                    parent_commitish=parent,
+                )
+                commitish = sha
+            return self._compute_text_diff(repo, path, diff, commitish=commitish, status=status)
+
+        def done(exc: BaseException | None, result: tuple | None = None) -> None:
+            if self._diff_load_token.get(repo.path) != token:
+                return
+            current = self.state_for(repo)
+            if exc:
+                current.current_diff = None
+                holder[0] = None
+                self.emit()
+                return
+            prepared, new_lines = result if result else (None, None)
+            current.diff_new_content = new_lines
+            current.original_diff = None
+            current.current_diff = prepared
+            holder[0] = prepared
+            self.emit()
+
+        self._run_ui(work, done)
+        return holder[0]
 
     def discard_files(
         self,
@@ -3651,21 +3994,31 @@ class AppStore:
         *,
         move_to_trash: bool = True,
     ) -> None:
-        try:
+        snapshot = list(files)
+        ask_permanent = self.settings.confirm_discard_changes_permanently
+
+        def work() -> None:
             discard_working_files(
                 repo.path,
-                files,
+                snapshot,
                 move_to_trash=move_to_trash,
-                ask_permanent=self.settings.confirm_discard_changes_permanently,
+                ask_permanent=ask_permanent,
             )
-        except DiscardChangesError:
-            self.show_popup(
-                PopupType.DISCARD_CHANGES_RETRY,
-                files=list(files),
-                retry=lambda: self.discard_files(repo, files, move_to_trash=False),
-            )
-            return
-        self.refresh_repository(repo)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if isinstance(exc, DiscardChangesError):
+                self.show_popup(
+                    PopupType.DISCARD_CHANGES_RETRY,
+                    files=snapshot,
+                    retry=lambda: self.discard_files(repo, snapshot, move_to_trash=False),
+                )
+                return
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
 
     def _network_remote(self, repo: Repository, remotes: Sequence[Remote] | None = None, *, prefer_upstream: bool = False) -> Remote | None:
         remotes = list(remotes) if remotes is not None else get_remotes(repo.path)
@@ -4150,12 +4503,21 @@ class AppStore:
 
     def rename_current_branch(self, repo: Repository, old: str, new: str) -> None:
         new = sanitize_ref_name(new)
-        rename_branch(repo.path, old, new)
-        entry = get_last_desktop_stash_entry_for_branch(repo.path, old)
-        if entry:
-            move_stash_entry(repo.path, entry, new)
-        self.remember_branch(repo, new)
-        self.refresh_repository(repo)
+
+        def work() -> None:
+            rename_branch(repo.path, old, new)
+            entry = get_last_desktop_stash_entry_for_branch(repo.path, old)
+            if entry:
+                move_stash_entry(repo.path, entry, new)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.remember_branch(repo, new)
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
 
     def create_branch_and_checkout(
         self,
@@ -4165,10 +4527,19 @@ class AppStore:
         no_track: bool = False,
     ) -> None:
         name = sanitize_ref_name(name)
-        create_branch(repo.path, name, start_point, no_track=no_track)
-        checkout_branch(repo.path, name)
-        self.remember_branch(repo, name)
-        self.refresh_repository(repo)
+
+        def work() -> None:
+            create_branch(repo.path, name, start_point, no_track=no_track)
+            checkout_branch(repo.path, name)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.remember_branch(repo, name)
+            self.refresh_repository(repo)
+
+        self._run_ui(work, done)
 
     def cherry_pick_to_new_branch(
         self,
@@ -4187,8 +4558,20 @@ class AppStore:
         )
         if self.check_for_uncommitted_changes(repo, retry):
             return
-        self.create_branch_and_checkout(repo, name)
-        self.cherry_pick_commits(repo, shas, target_branch=None, on_done=on_done, on_progress=on_progress)
+        name = sanitize_ref_name(name)
+
+        def work() -> None:
+            create_branch(repo.path, name, None)
+            checkout_branch(repo.path, name)
+
+        def done(exc: BaseException | None, result: object = None) -> None:
+            if exc:
+                self.show_popup(PopupType.ERROR, error=str(exc))
+                return
+            self.remember_branch(repo, name)
+            self.cherry_pick_commits(repo, shas, target_branch=None, on_done=on_done, on_progress=on_progress)
+
+        self._run_ui(work, done)
 
     def _capture_undo(self, repo: Repository) -> str | None:
         status = self.state_for(repo).status
@@ -5445,6 +5828,30 @@ class AppStore:
                 finish()
 
         self._pool.submit(runner)
+
+    def _gtk_app_running(self) -> bool:
+        try:
+            from gi.repository import Gio
+
+            return Gio.Application.get_default() is not None
+        except Exception:
+            return False
+
+    def _run_ui(self, work: Callable[[], Any], done: Callable[..., None]) -> None:
+        """Run `work` off the GTK thread when an application is live; otherwise inline (tests)."""
+        if self._gtk_app_running():
+            self._run(work, done)
+            return
+        err: BaseException | None = None
+        result: Any = None
+        try:
+            result = work()
+        except BaseException as exc:
+            err = exc
+        try:
+            done(err, result)
+        except TypeError:
+            done(err)
 
     def rerun_failed_checks(self, repo: Repository) -> None:
         self.rerun_checks(repo, failed_only=True)

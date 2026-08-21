@@ -1242,5 +1242,8 @@ def test_window_actions_cover_menus() -> None:
         "couldn't find file",
         "pre-wrap",
         "break-all",
+        "loadFilesForCurrentStashEntry",
+        "_run_ui",
+        "CreateBranchForCherryPick",
     ]:
         assert phrase in src

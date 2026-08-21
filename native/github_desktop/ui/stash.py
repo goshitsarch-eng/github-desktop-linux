@@ -93,8 +93,19 @@ class StashDiffViewer(Gtk.Box):
         hide_whitespace: bool = False,
         can_collapse: bool = False,
         tab_size: int = tabSizeDefault,
+        loading: bool = False,
     ) -> None:
         clear_box(self._file_list)
+        if loading and not files:
+            row = Gtk.ListBoxRow()
+            row.set_selectable(False)
+            row.set_activatable(False)
+            label = Gtk.Label(label="Loading…", xalign=0)
+            label.add_css_class("dim-label")
+            row.set_child(label)
+            self._file_list.append(row)
+            self.diff_view.render(None)
+            return
         for file in files:
             row = Gtk.ListBoxRow()
             box = Gtk.Box(spacing=8)

@@ -3868,7 +3868,6 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     if not repo or not repo.github:
         store.show_popup(PopupType.ERROR, error="This repository isn't on GitHub.")
         return
-    store.load_pr_preview(repo)
     state = store.state_for(repo)
     current = state.status.current_branch if state.status else "?"
     from ..models import ForkContributionTarget, github_for_contribution, fork_contribution_target, UPSTREAM_REMOTE_NAME
@@ -4040,7 +4039,11 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
         base_name = selected["name"] or default
         commit_word = "commit" if n == 1 else "commits"
         merge_into.set_text(f"Merge {n} {commit_word} into {base_name} from {current}.")
-        if n == 0:
+        if getattr(st, "pr_preview_loading", False):
+            selected["merge_token"] = int(selected["merge_token"]) + 1
+            stats.set_text("Loading preview…")
+            merge_info.set_text("")
+        elif n == 0:
             selected["merge_token"] = int(selected["merge_token"]) + 1
             stats.set_text("No commits to merge into the base branch")
             merge_info.set_text("")
@@ -4094,10 +4097,13 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
             row._file = file  # type: ignore[attr-defined]
             attach_right_click(row, lambda *_ , f=file, widget=row: _pr_file_menu(f, widget))
             file_list.append(row)
-        kwargs = _preview_kwargs()
         if st.pr_files:
-            diff = store.load_pr_preview_diff(repo, st.pr_files[0])
-            viewer.render(diff, path=st.pr_files[0].path, **kwargs)
+            file = st.pr_files[0]
+            store.load_pr_preview_diff(
+                repo,
+                file,
+                on_done=lambda diff, path=file.path: viewer.render(diff, path=path, **_preview_kwargs()),
+            )
         else:
             viewer.render(None)
         if st.current_pull_request:
@@ -4110,8 +4116,11 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     def on_file(_l, row) -> None:
         file = getattr(row, "_file", None)
         if file:
-            diff = store.load_pr_preview_diff(repo, file)
-            viewer.render(diff, path=file.path, **_preview_kwargs())
+            store.load_pr_preview_diff(
+                repo,
+                file,
+                on_done=lambda diff, path=file.path: viewer.render(diff, path=path, **_preview_kwargs()),
+            )
 
     file_list.connect("row-activated", on_file)
 
@@ -4121,9 +4130,9 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
             return
         selected["name"] = name
         base_label.set_text(name)
-        store.load_pr_preview(repo, name)
         header.set_title_widget(Adw.WindowTitle(title="Open a pull request", subtitle=f"{current} → {name}"))
         popover.popdown()
+        store.load_pr_preview(repo, name, on_done=render_preview)
         render_preview()
 
     base_list.connect("row-activated", on_base)
@@ -4152,6 +4161,7 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     viewer.on_hide_whitespace_changed = on_pr_hide_ws
     viewer.on_side_by_side_changed = on_pr_side
     _fill_base_list()
+    store.load_pr_preview(repo, selected["name"] or None, on_done=render_preview)
     render_preview()
     toolbar.set_content(root)
     dialog.set_child(toolbar)

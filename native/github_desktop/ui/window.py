@@ -29,6 +29,7 @@ from ..models import (
     PullRequestSuggestedNextAction,
     RepositorySectionTab,
     RepositorySettingsTab,
+    StashedChangesLoadStates,
     TutorialStep,
     WelcomeStep,
     WorkingDirectoryFileChange,
@@ -3014,6 +3015,7 @@ class MainWindow(Adw.ApplicationWindow):
             hide_whitespace=self.store._hide_ws_changes(state),
             can_collapse=state.original_diff is not None,
             tab_size=self.store.settings.tab_size,
+            loading=state.stash_load_state == StashedChangesLoadStates.LOADING,
         )
 
     def _render_working_diff(self, state) -> None:

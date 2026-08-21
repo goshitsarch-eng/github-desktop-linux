@@ -89,9 +89,33 @@ def test_stash_viewer_store(isolated_config, git_repo) -> None:
     store.load_stash_files(repo)
     assert state.stashed_files
     assert state.selected_stashed_file is not None
+    assert state.stash_load_state.value == "Loaded"
     state.stashed_visible = True
     store.toggle_stash(repo)
     assert state.stashed_visible is False
+
+
+def test_select_commit_loads_changeset(isolated_config, git_repo) -> None:
+    store = AppStore()
+    repos = store.add_repositories([str(git_repo)])
+    repo = repos[0]
+    commits = get_commits(str(git_repo), limit=5)
+    store.state_for(repo).commits = commits
+    store.select_commit(repo, commits[0])
+    state = store.state_for(repo)
+    assert state.selected_commit is not None
+    assert state.selected_commit.sha == commits[0].sha
+    assert any(f.path == "README.md" for f in state.selected_commit_files)
+
+
+def test_create_branch_and_checkout_switches_branch(isolated_config, git_repo) -> None:
+    store = AppStore()
+    repos = store.add_repositories([str(git_repo)])
+    repo = repos[0]
+    store.create_branch_and_checkout(repo, "feature")
+    status = get_status(str(git_repo))
+    assert status is not None
+    assert status.current_branch == "feature"
 
 
 def test_get_stashed_files(git_repo) -> None:
