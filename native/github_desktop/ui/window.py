@@ -75,7 +75,7 @@ from .autocompletion import (
     summary_length_hint,
     token_before_cursor,
 )
-from .branches import BranchesFoldout
+from .branches import BranchesFoldout, generate_branch_context_menu_items
 from .checks import present_checks_popover
 from .dialogs import (
     present_popup,
@@ -789,6 +789,37 @@ class MainWindow(Adw.ApplicationWindow):
     def _show_branches_foldout(self) -> None:
         self.store.show_foldout(FoldoutType.BRANCH)
 
+    def _on_branch_toolbar_context_menu(self, widget: Gtk.Widget) -> None:
+        """Desktop branch dropdown `onBranchToolbarButtonContextMenu`."""
+        repo = self.store.selected_repository
+        if repo is None:
+            return
+        state = self.store.state_for(repo)
+        name = state.status.current_branch if state.status else None
+        if not name:
+            return
+        branch = next((item for item in state.branches if item.name == name), None)
+        is_local = branch is None or branch.type == BranchType.LOCAL
+        pr = state.current_pull_request
+
+        def rename(_name: str) -> None:
+            self.store.show_popup(PopupType.RENAME_BRANCH, branch=name)
+
+        def delete(_name: str) -> None:
+            if branch is not None:
+                self._delete_named_branch(branch)
+            else:
+                self.store.show_popup(PopupType.DELETE_BRANCH)
+
+        items = generate_branch_context_menu_items(
+            name,
+            is_local=is_local,
+            on_rename=rename,
+            on_delete=delete,
+            on_view_pull_request=(lambda: self.store.show_pull_request_by_pr(pr)) if pr else None,
+        )
+        show_context_menu(widget, items)
+
     def _sync_foldouts(self) -> None:
         if getattr(self, "_syncing_foldouts", False):
             return
@@ -1149,6 +1180,7 @@ class MainWindow(Adw.ApplicationWindow):
         )
         self._branch_btn.set_popover(self._branches_foldout)
         self._branches_foldout.connect("notify::visible", self._on_branch_foldout_visible)
+        attach_right_click(self._branch_btn, self._on_branch_toolbar_context_menu)
         try:
             drag_hover = Gtk.DropControllerMotion()
             drag_hover.connect("enter", self._on_branch_button_drag_enter)

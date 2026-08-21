@@ -6681,6 +6681,12 @@ class AppStore:
             return
         self._create_pull_request_flow(repo, preview=False)
 
+    def show_pull_request_by_pr(self, pr: PullRequest) -> None:
+        """Desktop `_showPullRequestByPR`."""
+        url = (pr.html_url or "").strip()
+        if url:
+            open_external(url)
+
     def preview_pull_request(self, repo: Repository) -> None:
         self._create_pull_request_flow(repo, preview=True)
 

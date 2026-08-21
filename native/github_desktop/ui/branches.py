@@ -18,6 +18,27 @@ from .markdown import issue_base_from_html_url, sandboxed_markdown_label
 from .menus import attach_right_click, clear_box, copy_text, show_context_menu, view_on_github_label
 
 
+def generate_branch_context_menu_items(
+    name: str,
+    *,
+    is_local: bool,
+    on_rename: Callable[[str], None] | None = None,
+    on_delete: Callable[[str], None] | None = None,
+    on_view_pull_request: Callable[[], None] | None = None,
+) -> list:
+    """Desktop `generateBranchContextMenuItems` (toolbar + branch list)."""
+    items: list = []
+    if on_rename is not None:
+        items.append(("Rename…", lambda: on_rename(name), is_local))
+    items.append(("Copy branch name", lambda: copy_text(name), True))
+    if on_view_pull_request is not None:
+        items.append(("View Pull Request on GitHub", on_view_pull_request, True))
+    items.append(None)
+    if on_delete is not None:
+        items.append(("Delete…", lambda: on_delete(name), True))
+    return items
+
+
 def group_branches(
     branches: list[Branch],
     *,
@@ -466,18 +487,12 @@ class BranchesFoldout(Gtk.Popover):
     def _branch_menu(self, row: Gtk.Widget, branch: Branch) -> None:
         show_context_menu(
             row,
-            [
-                ("Checkout", lambda: self._on_checkout(branch), branch.name != self._current_name),
-                ("Rename…", lambda: self._on_rename(branch), branch.type == BranchType.LOCAL),
-                ("Delete…", lambda: self._on_delete(branch), branch.name != self._current_name),
-                None,
-                ("Copy branch name", lambda: copy_text(branch.name), True),
-                (
-                    view_on_github_label(enterprise=self._enterprise),
-                    lambda: self._on_view_github(branch),
-                    self._github,
-                ),
-            ],
+            generate_branch_context_menu_items(
+                branch.name,
+                is_local=branch.type == BranchType.LOCAL,
+                on_rename=lambda _name: self._on_rename(branch),
+                on_delete=lambda _name: self._on_delete(branch),
+            ),
         )
 
     def _on_branch_row(self, _list: Gtk.ListBox, row: Gtk.ListBoxRow) -> None:

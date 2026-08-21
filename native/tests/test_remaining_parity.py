@@ -995,6 +995,67 @@ def test_show_foldout_matches_desktop(isolated_config, git_repo: Path, monkeypat
     assert called == [True, True]
 
 
+def test_generate_branch_context_menu_items_matches_desktop() -> None:
+    from github_desktop.ui.branches import generate_branch_context_menu_items
+
+    renamed: list[str] = []
+    deleted: list[str] = []
+    viewed: list[bool] = []
+    items = generate_branch_context_menu_items(
+        "topic",
+        is_local=True,
+        on_rename=renamed.append,
+        on_delete=deleted.append,
+    )
+    labels = [item[0] if item else None for item in items]
+    assert labels == ["Rename…", "Copy branch name", None, "Delete…"]
+    assert items[0][2] is True
+    items[0][1]()
+    items[-1][1]()
+    assert renamed == ["topic"]
+    assert deleted == ["topic"]
+    remote_items = generate_branch_context_menu_items(
+        "origin/topic",
+        is_local=False,
+        on_rename=renamed.append,
+        on_delete=deleted.append,
+        on_view_pull_request=lambda: viewed.append(True),
+    )
+    remote_labels = [item[0] if item else None for item in remote_items]
+    assert remote_labels == [
+        "Rename…",
+        "Copy branch name",
+        "View Pull Request on GitHub",
+        None,
+        "Delete…",
+    ]
+    assert remote_items[0][2] is False
+    remote_items[2][1]()
+    assert viewed == [True]
+
+
+def test_show_pull_request_by_pr_opens_html_url(isolated_config, monkeypatch) -> None:
+    from github_desktop.models import PullRequest
+
+    opened: list[str] = []
+    monkeypatch.setattr("github_desktop.store.open_external", lambda url: opened.append(url))
+    store = AppStore()
+    pr = PullRequest(
+        number=42,
+        title="Hi",
+        body="",
+        created_at="",
+        author="octocat",
+        draft=False,
+        head_ref="topic",
+        head_sha="abc",
+        base_ref="main",
+        html_url="https://github.com/octocat/hello/pull/42",
+    )
+    store.show_pull_request_by_pr(pr)
+    assert opened == ["https://github.com/octocat/hello/pull/42"]
+
+
 def test_set_repository_filter_text_matches_desktop(isolated_config) -> None:
     store = AppStore()
     assert store.repository_filter_text == ""

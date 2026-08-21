@@ -1310,5 +1310,10 @@ def test_window_actions_cover_menus() -> None:
         "minWidth: 365",
         "enableResizingToolbarButtons",
         "onMouseEnter",
+        "generateBranchContextMenuItems",
+        "onBranchToolbarButtonContextMenu",
+        "View Pull Request on GitHub",
+        "_showPullRequestByPR",
+        "Copy branch name",
     ]:
         assert phrase in src
