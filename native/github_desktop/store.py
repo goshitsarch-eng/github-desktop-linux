@@ -489,6 +489,40 @@ class AppStore:
                     features=list(item.get("features") or []),
                 )
             )
+        self.refresh_accounts()
+
+    def refresh_accounts(self) -> None:
+        """Desktop `AccountsStore.refresh` / `tryUpdateAccount`."""
+        if (
+            os.environ.get("PYTEST_CURRENT_TEST")
+            or os.environ.get("GITHUB_DESKTOP_OFFLINE")
+            or os.environ.get("TEST_ENV")
+        ):
+            return
+        snapshot = [account for account in self.accounts if account.token]
+        if not snapshot:
+            return
+
+        def work() -> list[Account]:
+            updated: list[Account] = []
+            for account in snapshot:
+                try:
+                    updated.append(GitHubAPI.from_account(account).fetch_account())
+                except Exception as exc:
+                    log.warn("Error refreshing account '%s'", account.login, exc_info=exc)
+                    updated.append(account)
+            return updated
+
+        def done(exc: BaseException | None, refreshed: list[Account] | None = None) -> None:
+            if exc or not refreshed:
+                return
+            mapping = {(old.endpoint, old.login): new for old, new in zip(snapshot, refreshed)}
+            self.accounts = [mapping.get((account.endpoint, account.login), account) for account in self.accounts]
+            self._save_accounts()
+            self.api_repositories.on_accounts_changed(self.accounts)
+            self.emit()
+
+        self._run(work, done)
 
     def _save_accounts(self) -> None:
         payload = []
@@ -1367,7 +1401,7 @@ class AppStore:
                         api = GitHubAPI.from_account(account)
                         try:
                             fetched = api.fetch_repository(repo.github.owner, repo.github.name)
-                            payload["github"] = fetched
+                            payload["github"] = fetched or repo.github
                         except APIError as exc:
                             log.debug("repository metadata fetch failed: %s", exc)
                             fetched = repo.github
@@ -5362,9 +5396,7 @@ class AppStore:
 
         def work() -> None:
             if len(runs) == 1 and runs[0].actions_workflow is not None:
-                try:
-                    api.rerun_job(owner, name, runs[0].id)
-                except APIError:
+                if not api.rerun_job(owner, name, runs[0].id):
                     api.rerequest_check_run(owner, name, runs[0].id)
                 return
             workflow_ids: set[int] = set()
@@ -5376,15 +5408,9 @@ class AppStore:
                 if run.check_suite_id:
                     suite_ids.add(run.check_suite_id)
             for workflow_id in workflow_ids:
-                try:
-                    api.rerun_failed_jobs(owner, name, workflow_id)
-                except APIError:
-                    continue
+                api.rerun_failed_jobs(owner, name, workflow_id)
             for suite_id in suite_ids:
-                try:
-                    api.rerequest_check_suite(owner, name, suite_id)
-                except APIError:
-                    continue
+                api.rerequest_check_suite(owner, name, suite_id)
 
         def done(exc: BaseException | None) -> None:
             if exc:

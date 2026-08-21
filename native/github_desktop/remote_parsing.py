@@ -185,7 +185,10 @@ def probe_github_host(url: str, timeout: float = 2.0) -> bool | None:
             headers = resp.headers
     except urllib.error.HTTPError as exc:
         headers = exc.headers
-    except Exception:
+    except Exception as err:
+        from .logging import get_logger
+
+        get_logger().debug("isGitHubHost: failed with endpoint %s", endpoint, exc_info=err)
         return None
     if headers is None:
         return None

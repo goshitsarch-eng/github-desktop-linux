@@ -2361,6 +2361,12 @@ def create_desktop_stash_entry(
         raise
     if result.exit_code == 1 and re.search(r"^error: ", result.stderr, re.M):
         raise GitError(result.stderr or "stash failed", args=args, exit_code=1, stderr=result.stderr, stdout=result.stdout)
+    if result.exit_code == 1:
+        log.info(
+            "[createDesktopStashEntry] a stash was created successfully but exit code %s reported. stderr: %s",
+            result.exit_code,
+            result.stderr,
+        )
     if result.stdout.strip() == "No local changes to save":
         return False
     return True
@@ -2385,6 +2391,10 @@ def stash_pop(repo: str, stash_ref: str = "stash@{0}") -> None:
         if "stash entry is kept" in blob:
             return
         if exc.exit_code == 1 and not (exc.stderr or "").strip():
+            log.info(
+                "[popStashEntry] a stash was popped successfully but exit code %s reported.",
+                exc.exit_code,
+            )
             drop_desktop_stash_entry(repo, match.stash_sha)
             return
         raise

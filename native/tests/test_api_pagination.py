@@ -453,3 +453,133 @@ def test_fork_repository_logs_and_reraises(caplog) -> None:
         with pytest.raises(APIError, match="nope"):
             api.fork_repository("o", "r")
     assert "forkRepository: failed to fork o/r at endpoint: https://api.github.com" in caplog.text
+
+
+def test_fetch_repository_404_and_errors_return_none(caplog) -> None:
+    import logging
+
+    from github_desktop.http_status import HttpStatusCode
+
+    api = GitHubAPI("https://api.github.com", "tok")
+
+    def not_found(*_a, **_k):
+        raise APIError("gone", status=HttpStatusCode.NotFound)
+
+    api.get = not_found  # type: ignore[method-assign]
+    with caplog.at_level(logging.WARNING, logger="github_desktop"):
+        assert api.fetch_repository("o", "r") is None
+    assert "fetchRepository: 'o/r' returned a 404" in caplog.text
+
+    def fail(*_a, **_k):
+        raise APIError("boom", status=500)
+
+    api.get = fail  # type: ignore[method-assign]
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="github_desktop"):
+        assert api.fetch_repository("o", "r") is None
+    assert "fetchRepository: an error occurred for 'o/r'" in caplog.text
+
+
+def test_get_permissions_string_matches_desktop() -> None:
+    from github_desktop.github.api import get_permissions_string
+    from github_desktop.models import has_write_permission
+
+    assert get_permissions_string({"name": "r"}) is None
+    assert get_permissions_string({"permissions": {"admin": True, "push": True, "pull": True}}) == "admin"
+    assert get_permissions_string({"permissions": {"admin": False, "push": True, "pull": True}}) == "write"
+    assert get_permissions_string({"permissions": {"admin": False, "push": False, "pull": True}}) == "read"
+    assert get_permissions_string({"permissions": {}}) is None
+    api = GitHubAPI("https://api.github.com", "tok")
+    unknown = api._to_repo({"name": "r", "owner": {"login": "o"}, "html_url": "", "clone_url": ""})
+    assert unknown.permissions is None
+    assert has_write_permission(unknown) is True
+    admin = api._to_repo(
+        {
+            "name": "r",
+            "owner": {"login": "o"},
+            "html_url": "",
+            "clone_url": "",
+            "permissions": {"admin": True, "push": True, "pull": True},
+        }
+    )
+    assert admin.permissions == "admin"
+    assert has_write_permission(admin) is True
+    read = api._to_repo(
+        {
+            "name": "r",
+            "owner": {"login": "o"},
+            "html_url": "",
+            "clone_url": "",
+            "permissions": {"admin": False, "push": False, "pull": True},
+        }
+    )
+    assert read.permissions == "read"
+    assert has_write_permission(read) is False
+
+
+def test_fetch_emails_returns_empty_on_error(caplog) -> None:
+    import logging
+
+    api = GitHubAPI("https://api.github.com", "tok")
+
+    def boom(*_a, **_k):
+        raise APIError("nope", status=500)
+
+    api.get = boom  # type: ignore[method-assign]
+    with caplog.at_level(logging.WARNING, logger="github_desktop"):
+        assert api.fetch_emails() == []
+    assert "fetchEmails: failed with endpoint https://api.github.com" in caplog.text
+
+
+def test_rerequest_check_suite_returns_false_on_failure(caplog) -> None:
+    import logging
+
+    api = GitHubAPI("https://api.github.com", "tok")
+
+    def boom(*_a, **_k):
+        raise APIError("nope", status=500)
+
+    api.post = boom  # type: ignore[method-assign]
+    with caplog.at_level(logging.DEBUG, logger="github_desktop"):
+        assert api.rerequest_check_suite("o", "r", 9) is False
+        assert api.rerun_failed_jobs("o", "r", 3) is False
+        assert api.rerun_job("o", "r", 4) is False
+    assert "Failed retry check suite id 9 (o/r)" in caplog.text
+    assert "Failed to rerun failed workflow jobs for (o/r): 3" in caplog.text
+    assert "Failed to rerun workflow job (o/r): 4" in caplog.text
+
+
+def test_refresh_accounts_replaces_stale_profile(isolated_config, monkeypatch) -> None:
+    from github_desktop.models import Account
+    from github_desktop.store import AppStore
+
+    store = AppStore()
+    store.accounts = [
+        Account(login="octocat", endpoint="https://api.github.com", token="t", name="old")
+    ]
+
+    def fake_fetch(self):
+        return Account(
+            login="octocat",
+            endpoint="https://api.github.com",
+            token="t",
+            name="The Octocat",
+            id=1,
+        )
+
+    def sync_run(self, work, done):
+        try:
+            result = work()
+        except BaseException as exc:
+            done(exc)
+            return
+        done(None, result)
+
+    monkeypatch.setattr("github_desktop.github.api.GitHubAPI.fetch_account", fake_fetch)
+    monkeypatch.setattr(AppStore, "_run", sync_run)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("GITHUB_DESKTOP_OFFLINE", raising=False)
+    monkeypatch.delenv("TEST_ENV", raising=False)
+    store.refresh_accounts()
+    assert store.accounts[0].name == "The Octocat"
+    assert store.accounts[0].id == 1

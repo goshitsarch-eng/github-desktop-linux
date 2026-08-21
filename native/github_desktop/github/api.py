@@ -9,7 +9,7 @@ import urllib.parse
 import urllib.request
 import re
 from concurrent.futures import ThreadPoolExecutor, wait
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from ..errors import APIError, CopilotError, MaxResultsError
 from ..http_status import HttpStatusCode
@@ -156,6 +156,22 @@ def is_rulesets_not_enabled_error(error: Any) -> bool:
 def is_not_found_api_error(error: Any) -> bool:
     """Desktop `isNotFoundApiError`."""
     return isinstance(error, APIError) and error.status == HttpStatusCode.NotFound
+
+
+def get_permissions_string(data: Mapping[str, Any] | None) -> str | None:
+    """Desktop `getPermissionsString`: `admin` | `write` | `read` | None."""
+    if not isinstance(data, dict) or "permissions" not in data:
+        return None
+    permissions = data.get("permissions")
+    if not isinstance(permissions, dict):
+        return None
+    if permissions.get("admin"):
+        return "admin"
+    if permissions.get("push"):
+        return "write"
+    if permissions.get("pull"):
+        return "read"
+    return None
 
 
 def get_dotcom_api_endpoint() -> str:
@@ -323,10 +339,23 @@ class GitHubAPI:
         return self.request("DELETE", path, **kwargs)
 
     def fetch_user(self) -> dict[str, Any]:
-        return self.get("/user")
+        """Desktop `fetchAccount` (`GET /user`)."""
+        try:
+            data = self.get("/user")
+        except Exception as exc:
+            log.warn("fetchAccount: failed with endpoint %s", self.endpoint, exc_info=exc)
+            raise
+        if not isinstance(data, dict):
+            raise APIError("fetchAccount: invalid response")
+        return data
 
     def fetch_emails(self) -> list[dict[str, Any]]:
-        data = self.get("/user/emails")
+        """Desktop `fetchEmails`: `GET /user/emails`; errors return []."""
+        try:
+            data = self.get("/user/emails")
+        except Exception as exc:
+            log.warn("fetchEmails: failed with endpoint %s", self.endpoint, exc_info=exc)
+            return []
         return data if isinstance(data, list) else []
 
     def fetch_copilot_info(self) -> dict[str, Any] | None:
@@ -336,37 +365,39 @@ class GitHubAPI:
             return None
 
     def fetch_account(self, token: str | None = None) -> Account:
+        """Desktop module-level `fetchUser`: account + emails + Copilot + features."""
         if token:
             self.token = token
-        user = self.fetch_user()
-        emails: list[AccountEmail] = []
         try:
+            user = self.fetch_user()
             emails = [AccountEmail.coerce(item) for item in self.fetch_emails() if item.get("email")]
-        except APIError:
-            if user.get("email"):
+            if not emails and user.get("email"):
                 emails = [AccountEmail(email=user["email"], primary=True, verified=True, visibility="public")]
-        copilot_endpoint = None
-        is_copilot_desktop_enabled = False
-        try:
-            copilot = self.fetch_user_copilot_info()
-            copilot_endpoint = copilot.get("copilot_endpoint")
-            is_copilot_desktop_enabled = bool(copilot.get("is_copilot_desktop_enabled"))
-        except APIError:
-            pass
-        features = self.fetch_feature_flags()
-        return Account(
-            login=user.get("login", ""),
-            endpoint=self.endpoint,
-            token=self.token or "",
-            emails=emails,
-            avatar_url=user.get("avatar_url", ""),
-            name=user.get("name") or user.get("login", ""),
-            id=int(user.get("id") or 0),
-            plan=(user.get("plan") or {}).get("name") if isinstance(user.get("plan"), dict) else None,
-            copilot_endpoint=copilot_endpoint,
-            is_copilot_desktop_enabled=is_copilot_desktop_enabled,
-            features=features,
-        )
+            copilot_endpoint = None
+            is_copilot_desktop_enabled = False
+            try:
+                copilot = self.fetch_user_copilot_info()
+                copilot_endpoint = copilot.get("copilot_endpoint")
+                is_copilot_desktop_enabled = bool(copilot.get("is_copilot_desktop_enabled"))
+            except APIError:
+                pass
+            features = self.fetch_feature_flags()
+            return Account(
+                login=user.get("login", ""),
+                endpoint=self.endpoint,
+                token=self.token or "",
+                emails=emails,
+                avatar_url=user.get("avatar_url", ""),
+                name=user.get("name") or user.get("login", ""),
+                id=int(user.get("id") or 0),
+                plan=(user.get("plan") or {}).get("name") if isinstance(user.get("plan"), dict) else None,
+                copilot_endpoint=copilot_endpoint,
+                is_copilot_desktop_enabled=is_copilot_desktop_enabled,
+                features=features,
+            )
+        except Exception as exc:
+            log.warn("fetchUser: failed with endpoint %s", self.endpoint, exc_info=exc)
+            raise
 
     def fetch_all(
         self,
@@ -482,8 +513,21 @@ class GitHubAPI:
             if isinstance(item, dict) and item.get("owner") is not None
         ]
 
-    def fetch_repository(self, owner: str, name: str) -> GitHubRepository:
-        data = self.get(f"/repos/{owner}/{name}")
+    def fetch_repository(self, owner: str, name: str) -> GitHubRepository | None:
+        """Desktop `fetchRepository`: 404 and other errors return null."""
+        try:
+            data = self.get(f"/repos/{owner}/{name}")
+        except APIError as exc:
+            if is_not_found_api_error(exc):
+                log.warn("fetchRepository: '%s/%s' returned a 404", owner, name)
+                return None
+            log.warn("fetchRepository: an error occurred for '%s/%s'", owner, name, exc_info=exc)
+            return None
+        except Exception as exc:
+            log.warn("fetchRepository: an error occurred for '%s/%s'", owner, name, exc_info=exc)
+            return None
+        if not isinstance(data, dict):
+            return None
         return self._to_repo(data)
 
     def fetch_repository_clone_info(
@@ -621,7 +665,12 @@ class GitHubAPI:
         ]
 
     def fetch_pull_request(self, owner: str, name: str, number: int) -> PullRequest:
-        return self._to_pr(self.get(f"/repos/{owner}/{name}/pulls/{number}"))
+        """Desktop `fetchPullRequest`."""
+        try:
+            return self._to_pr(self.get(f"/repos/{owner}/{name}/pulls/{number}"))
+        except Exception as exc:
+            log.warn("failed fetching PR for %s/%s/pulls/%s", owner, name, number, exc_info=exc)
+            raise
 
     def create_pull_request(
         self,
@@ -688,7 +737,7 @@ class GitHubAPI:
         except urllib.error.HTTPError as exc:
             headers = exc.headers
         except Exception as exc:
-            log.debug("get_fetch_poll_interval failed: %s", exc)
+            log.warn("getFetchPollInterval: failed for %s/%s", owner, name, exc_info=exc)
             return None
         if headers is None:
             return None
@@ -728,7 +777,14 @@ class GitHubAPI:
                     f"/repos/{owner}/{name}/commits/{quoted}/check-runs",
                     query={"per_page": "100", "page": str(page)},
                 )
-            except APIError:
+            except APIError as err:
+                log.debug(
+                    "Failed fetching check runs for ref %s (%s/%s)",
+                    ref,
+                    owner,
+                    name,
+                    exc_info=err,
+                )
                 break
             runs = data.get("check_runs", []) if isinstance(data, dict) else []
             for r in runs:
@@ -773,7 +829,14 @@ class GitHubAPI:
                 f"/repos/{owner}/{name}/commits/{quoted}/status",
                 query={"per_page": "100"},
             )
-        except APIError:
+        except Exception as err:
+            log.debug(
+                "Failed fetching check runs for ref %s (%s/%s)",
+                ref,
+                owner,
+                name,
+                exc_info=err,
+            )
             return []
         if not isinstance(data, dict):
             return []
@@ -964,17 +1027,58 @@ class GitHubAPI:
             text += "\n… truncated …\n"
         return text
 
-    def rerequest_check_suite(self, owner: str, name: str, suite_id: int) -> None:
-        self.post(f"/repos/{owner}/{name}/check-suites/{suite_id}/rerequest")
+    def rerequest_check_suite(self, owner: str, name: str, suite_id: int) -> bool:
+        """Desktop `rerequestCheckSuite`: POST rerequest, return whether it succeeded."""
+        try:
+            self.post(f"/repos/{owner}/{name}/check-suites/{suite_id}/rerequest")
+            return True
+        except Exception as err:
+            log.debug(
+                "Failed retry check suite id %s (%s/%s)",
+                suite_id,
+                owner,
+                name,
+                exc_info=err,
+            )
+            return False
 
-    def rerequest_check_run(self, owner: str, name: str, run_id: int) -> None:
-        self.post(f"/repos/{owner}/{name}/check-runs/{run_id}/rerequest")
+    def rerequest_check_run(self, owner: str, name: str, run_id: int) -> bool:
+        try:
+            self.post(f"/repos/{owner}/{name}/check-runs/{run_id}/rerequest")
+            return True
+        except Exception as err:
+            log.debug("Failed retry check run id %s (%s/%s)", run_id, owner, name, exc_info=err)
+            return False
 
-    def rerun_failed_jobs(self, owner: str, name: str, workflow_run_id: int) -> None:
-        self.post(f"/repos/{owner}/{name}/actions/runs/{workflow_run_id}/rerun-failed-jobs")
+    def rerun_failed_jobs(self, owner: str, name: str, workflow_run_id: int) -> bool:
+        """Desktop `rerunFailedJobs`."""
+        try:
+            self.post(f"/repos/{owner}/{name}/actions/runs/{workflow_run_id}/rerun-failed-jobs")
+            return True
+        except Exception as err:
+            log.debug(
+                "Failed to rerun failed workflow jobs for (%s/%s): %s",
+                owner,
+                name,
+                workflow_run_id,
+                exc_info=err,
+            )
+            return False
 
-    def rerun_job(self, owner: str, name: str, job_id: int) -> None:
-        self.post(f"/repos/{owner}/{name}/actions/jobs/{job_id}/rerun")
+    def rerun_job(self, owner: str, name: str, job_id: int) -> bool:
+        """Desktop `rerunJob`."""
+        try:
+            self.post(f"/repos/{owner}/{name}/actions/jobs/{job_id}/rerun")
+            return True
+        except Exception as err:
+            log.debug(
+                "Failed to rerun workflow job (%s/%s): %s",
+                owner,
+                name,
+                job_id,
+                exc_info=err,
+            )
+            return False
 
     def fetch_protected_branches(self, owner: str, name: str) -> list[str]:
         """Desktop `fetchProtectedBranches`: one `GET .../branches?protected=true`."""
@@ -994,7 +1098,7 @@ class GitHubAPI:
         try:
             data = self.get(path, extra_headers=extra)
         except APIError:
-            log.info("fetchPushControl unable to check if branch is potentially pushable")
+            log.info("[fetchPushControl] unable to check if branch is potentially pushable")
             return default_push_control()
         if not isinstance(data, dict):
             return default_push_control()
@@ -1280,6 +1384,11 @@ class GitHubAPI:
         except APIError as exc:
             if exc.status in {404, 405}:
                 return self._generate_commit_message_chat(diff, files)
+            log.warn(
+                "getDiffChangesCommitMessage: failed with endpoint %s",
+                self.endpoint,
+                exc_info=exc,
+            )
             raise CopilotError(self._copilot_error_message(exc), exc.status) from exc
         return self._commit_message_from_payload(payload)
 
@@ -1371,7 +1480,7 @@ class GitHubAPI:
             fork=bool(data.get("fork")),
             parent=parent,
             endpoint=self.endpoint,
-            permissions=(data.get("permissions") or {}).get("push") and "write" or "read",
+            permissions=get_permissions_string(data),
             has_issues=bool(data.get("has_issues", True)),
             archived=bool(data.get("archived")),
         )
@@ -1490,5 +1599,5 @@ def request_oauth_token(html_base: str, client_id: str, client_secret: str, code
             payload = json.loads(resp.read().decode("utf-8"))
         return payload.get("access_token")
     except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as exc:
-        log.warning("request_oauth_token failed: %s", exc)
+        log.warning("requestOAuthToken: failed with endpoint %s", html_base, exc_info=exc)
         return None

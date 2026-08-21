@@ -35,8 +35,7 @@ def can_access_repository_using_api(account: Account, owner: str, name: str) -> 
     try:
         from .github.api import GitHubAPI
 
-        GitHubAPI.from_account(account).fetch_repository(owner, name)
-        return True
+        return GitHubAPI.from_account(account).fetch_repository(owner, name) is not None
     except APIError:
         return False
 
