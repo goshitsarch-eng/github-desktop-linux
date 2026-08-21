@@ -342,6 +342,54 @@ def test_change_branches_tab_persists(isolated_config) -> None:
     assert store.settings.stashed_files_width == 250
 
 
+def test_change_clone_repositories_tab_persists(isolated_config) -> None:
+    from github_desktop.models import CloneRepositoryTab
+    from github_desktop.settings import defaultPullRequestFileListWidth, pullRequestFileListConfigKey
+
+    store = AppStore()
+    assert store.selected_clone_repository_tab == CloneRepositoryTab.DOTCOM.value
+    assert CloneRepositoryTab.GENERIC is CloneRepositoryTab.URL
+    store.change_clone_repositories_tab(CloneRepositoryTab.ENTERPRISE.value)
+    assert store.selected_clone_repository_tab == CloneRepositoryTab.ENTERPRISE.value
+    assert store.settings.selected_clone_repository_tab == CloneRepositoryTab.ENTERPRISE.value
+    store.change_clone_repositories_tab("Generic")
+    assert store.selected_clone_repository_tab == CloneRepositoryTab.URL.value
+    assert pullRequestFileListConfigKey == "pull-request-files-width"
+    assert defaultPullRequestFileListWidth == 250
+    assert store.settings.pull_request_file_list_width == 250
+
+
+def test_desktop_stash_for_branch_uses_refresh_cache(isolated_config, git_repo: Path, monkeypatch) -> None:
+    from github_desktop.git.ops import get_status
+    from github_desktop.models import StashEntry
+    import github_desktop.store as store_module
+
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    status = get_status(str(git_repo))
+    state = store.state_for(repo)
+    state.status = status
+    entry = StashEntry(
+        name="stash@{0}",
+        stash_sha="abc",
+        branch_name=status.current_branch or "main",
+        tree="t",
+        parents=[],
+    )
+    state.stashes = [entry]
+
+    def boom(*_a, **_k):
+        raise AssertionError("live git stash list on GTK thread")
+
+    monkeypatch.setattr(store_module, "get_last_desktop_stash_entry_for_branch", boom)
+    monkeypatch.setattr(store_module, "get_stashes", boom)
+    assert store.desktop_stash_for_branch(repo, status.current_branch) is entry
+    assert store._has_existing_desktop_stash(repo) is True
+    assert store.desktop_stash_for_branch(repo, "missing") is None
+
+
 def test_handle_cli_clone_seeds_default_directory(isolated_config) -> None:
     store = AppStore()
     store.settings.clone_default_directory = "/tmp/desktop-clones"
@@ -349,6 +397,7 @@ def test_handle_cli_clone_seeds_default_directory(isolated_config) -> None:
     assert store.popup and store.popup.type == PopupType.CLONE_REPOSITORY
     assert store.popup.payload.get("path") == "/tmp/desktop-clones/desktop"
     assert store.popup.payload.get("branch") == "dev"
+    assert store.selected_clone_repository_tab == "URL"
 
 
 def test_pause_and_resume_tutorial(isolated_config, git_repo: Path) -> None:

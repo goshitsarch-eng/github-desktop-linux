@@ -24,6 +24,8 @@ stashedFilesWidthConfigKey = "stashed-files-width"
 defaultBranchDropdownWidth = 230
 defaultPushPullButtonWidth = 230
 defaultStashedFilesWidth = 250
+pullRequestFileListConfigKey = "pull-request-files-width"
+defaultPullRequestFileListWidth = 250
 useCustomEditorKey = "use-custom-editor"
 useCustomShellKey = "use-custom-shell"
 underlineLinksKey = "underline-links"
@@ -89,6 +91,8 @@ class Settings:
     push_pull_button_width: int = defaultPushPullButtonWidth
     stashed_files_width: int = defaultStashedFilesWidth
     selected_branches_tab: str = "Branches"
+    selected_clone_repository_tab: str = "DotCom"
+    pull_request_file_list_width: int = defaultPullRequestFileListWidth
     selected_repository_id: int | None = None
     recent_repository_ids: list[int] = field(default_factory=list)
     repository_section: str = "Changes"

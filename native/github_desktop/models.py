@@ -297,9 +297,12 @@ class RepositorySettingsTab(StrEnum):
 
 
 class CloneRepositoryTab(StrEnum):
+    """Desktop `CloneRepositoryTab`: DotCom, Enterprise, Generic (URL)."""
+
     DOTCOM = "DotCom"
     ENTERPRISE = "Enterprise"
     URL = "URL"
+    GENERIC = "URL"
 
 
 class PublishTab(StrEnum):

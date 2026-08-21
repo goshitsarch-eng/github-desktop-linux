@@ -1269,5 +1269,10 @@ def test_window_actions_cover_menus() -> None:
         "push-pull-button-width",
         "stashed-files-width",
         "author_identity",
+        "filesNotTrackedByLFS",
+        "changeCloneRepositoriesTab",
+        "selectedCloneRepositoryTab",
+        "pull-request-files-width",
+        "Generic",
     ]:
         assert phrase in src

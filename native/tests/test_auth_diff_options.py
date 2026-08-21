@@ -143,7 +143,7 @@ def test_token_invalidated_matches_account_by_token(isolated_config) -> None:
 
 def test_stash_overwrite_prompts_before_dropping(isolated_config, git_repo: Path, monkeypatch) -> None:
     from github_desktop.git.ops import get_status
-    from github_desktop.models import Branch, BranchType
+    from github_desktop.models import Branch, BranchType, StashEntry
 
     store = AppStore()
     store.settings.uncommitted_changes_strategy = "StashOnCurrentBranch"
@@ -151,11 +151,23 @@ def test_stash_overwrite_prompts_before_dropping(isolated_config, git_repo: Path
     repo = store.selected_repository
     assert repo is not None
     (git_repo / "dirty.txt").write_text("x\n", encoding="utf-8")
-    store.state_for(repo).status = get_status(str(git_repo))
-    monkeypatch.setattr(
-        "github_desktop.store.get_last_desktop_stash_entry_for_branch",
-        lambda *_a, **_k: type("S", (), {"stash_sha": "abc", "name": "stash@{0}"})(),
-    )
+    status = get_status(str(git_repo))
+    state = store.state_for(repo)
+    state.status = status
+    state.stashes = [
+        StashEntry(
+            name="stash@{0}",
+            stash_sha="abc",
+            branch_name=status.current_branch or "main",
+            tree="t",
+            parents=[],
+        )
+    ]
+
+    def boom(*_a, **_k):
+        raise AssertionError("live git stash list on GTK thread")
+
+    monkeypatch.setattr("github_desktop.store.get_last_desktop_stash_entry_for_branch", boom)
     store.checkout(repo, Branch("topic", None, "deadbeef", BranchType.LOCAL))
     assert store.popup is not None
     assert store.popup.type == PopupType.CONFIRM_OVERWRITE_STASH

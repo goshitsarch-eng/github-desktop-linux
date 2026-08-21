@@ -39,6 +39,7 @@ from ..models import (
     PopupType,
     PreferencesTab,
     PublishTab,
+    CloneRepositoryTab,
     RepositorySettingsTab,
     SignInStep,
     UncommittedChangesStrategy,
@@ -1774,7 +1775,6 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
     clone_btn = Gtk.Button(label="Clone")
     clone_btn.add_css_class("suggested-action")
     url_box.append(clone_btn)
-    stack.add_titled(url_box, "url", "URL")
 
     list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     list_box.set_margin_top(8)
@@ -1850,6 +1850,7 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
     ent_clone.add_css_class("suggested-action")
     ent_box.append(ent_clone)
     stack.add_titled(ent_box, "enterprise", "GitHub Enterprise")
+    stack.add_titled(url_box, "url", "URL")
     ent_filter_row.set_visible(bool(ent_accounts))
     ent_scroller.set_visible(bool(ent_accounts))
     ent_clone.set_visible(bool(ent_accounts))
@@ -1992,6 +1993,30 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
     ent_clone.connect("clicked", do_clone)
     toolbar.set_content(stack)
     dialog.set_child(toolbar)
+
+    updating_tab = {"on": True}
+    has_url = bool(str(payload.get("initial_url") or payload.get("url") or "").strip())
+    wanted = CloneRepositoryTab.GENERIC.value if has_url else store.selected_clone_repository_tab
+    stack_name = {
+        CloneRepositoryTab.DOTCOM.value: "github",
+        CloneRepositoryTab.ENTERPRISE.value: "enterprise",
+    }.get(wanted, "url")
+    stack.set_visible_child_name(stack_name)
+
+    def on_clone_tab(*_a: Any) -> None:
+        if updating_tab["on"]:
+            return
+        name = stack.get_visible_child_name() or "github"
+        tab = {
+            "github": CloneRepositoryTab.DOTCOM.value,
+            "enterprise": CloneRepositoryTab.ENTERPRISE.value,
+            "url": CloneRepositoryTab.URL.value,
+        }.get(name)
+        if tab:
+            store.change_clone_repositories_tab(tab)
+
+    stack.connect("notify::visible-child", on_clone_tab)
+    updating_tab["on"] = False
     dialog.present(parent)
 
 
@@ -2865,7 +2890,9 @@ def show_repository_settings(
     ignore_page = Adw.PreferencesPage(title="Ignored files", icon_name="folder-symbolic")
     git_page = Adw.PreferencesPage(title="Git Config", icon_name="utilities-terminal-symbolic")
     fork_page = Adw.PreferencesPage(title="Fork", icon_name="system-users-symbolic")
-    remotes = get_remotes(repo.path)
+    remotes = list(store.state_for(repo).remotes)
+    if not remotes:
+        remotes = get_remotes(repo.path)
     remote_group = Adw.PreferencesGroup(title="Remote")
     url_row = Adw.EntryRow(title="Primary remote URL (origin)")
     url_row.set_text(remotes[0].url if remotes else "")
@@ -2933,7 +2960,9 @@ def show_repository_settings(
     local_check.set_group(global_check)
     local_n = get_config_value(repo.path, "user.name", local_only=True)
     local_e = get_config_value(repo.path, "user.email", local_only=True)
-    global_n, global_e = get_author_identity(None)
+    global_n, global_e = store.author_identity()
+    if global_n is None and global_e is None:
+        global_n, global_e = get_author_identity(None)
     use_local = bool(local_n or local_e)
     (local_check if use_local else global_check).set_active(True)
     git_group.add(global_check)
@@ -3246,7 +3275,9 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
     git_page = Adw.PreferencesPage(title="Git", icon_name="utilities-terminal-symbolic")
     git_group = Adw.PreferencesGroup(title="Git author")
     name_row = Adw.EntryRow(title="Name")
-    n, e = get_author_identity(None)
+    n, e = store.author_identity()
+    if n is None and e is None:
+        n, e = get_author_identity(None)
     name_row.set_text(n or "")
     from ..models import account_email_choices
 
@@ -3273,7 +3304,7 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
     email_row.connect("notify::selected", sync_other)
     sync_other()
     branch_row = Adw.EntryRow(title="Default branch name")
-    branch_row.set_text(get_default_branch())
+    branch_row.set_text(store.settings.default_branch or get_default_branch())
     git_group.add(name_row)
     git_group.add(_author_name_error_row(name_row))
     git_group.add(email_row)
@@ -3929,7 +3960,7 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
     paned.set_resize_start_child(False)
     files_scroll = Gtk.ScrolledWindow()
-    files_scroll.set_size_request(240, -1)
+    files_scroll.set_size_request(180, -1)
     file_list = Gtk.ListBox()
     file_list.add_css_class("boxed-list")
     files_scroll.set_child(file_list)
@@ -3938,6 +3969,7 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
 
     viewer = DiffViewer(interactive=False)
     paned.set_end_child(viewer)
+    paned.set_position(max(180, int(store.settings.pull_request_file_list_width or 250)))
     root.append(paned)
 
     # GitHub's /pull/new form includes "Create as draft"; Desktop preview only opens that page.
@@ -4157,6 +4189,17 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     render_preview()
     toolbar.set_content(root)
     dialog.set_child(toolbar)
+
+    def persist_pr_files(*_a: Any) -> None:
+        pos = paned.get_position()
+        if pos > 0:
+            store.settings.pull_request_file_list_width = pos
+            store.persist_settings()
+
+    try:
+        dialog.connect("closed", persist_pr_files)
+    except TypeError:
+        dialog.connect("destroy", persist_pr_files)
     dialog.present(parent)
 
 

@@ -196,6 +196,7 @@ from .models import (
     Branch,
     BranchesTab,
     BranchType,
+    CloneRepositoryTab,
     ChangesListFilter,
     ChangesetData,
     CherryPickResult,
@@ -409,6 +410,13 @@ class AppStore:
         self.section = RepositorySectionTab(self.settings.repository_section) if self.settings.repository_section in RepositorySectionTab._value2member_map_ else RepositorySectionTab.CHANGES
         tab = self.settings.selected_branches_tab
         self.selected_branches_tab = tab if tab in {item.value for item in BranchesTab} else BranchesTab.BRANCHES.value
+        clone_tab = self.settings.selected_clone_repository_tab
+        if clone_tab == "Generic":
+            clone_tab = CloneRepositoryTab.GENERIC.value
+        allowed_clone = {item.value for item in CloneRepositoryTab}
+        self.selected_clone_repository_tab = (
+            clone_tab if clone_tab in allowed_clone else CloneRepositoryTab.DOTCOM.value
+        )
         self.author_name: str | None = None
         self.author_email: str | None = None
         self._global_author_loading = False
@@ -719,6 +727,7 @@ class AppStore:
         self.settings.selected_repository_id = self.selected_repository_id
         self.settings.repository_section = self.section.value
         self.settings.selected_branches_tab = self.selected_branches_tab
+        self.settings.selected_clone_repository_tab = self.selected_clone_repository_tab
         save_settings(self.settings)
 
     def change_branches_tab(self, tab: str) -> None:
@@ -730,6 +739,24 @@ class AppStore:
         self.settings.selected_branches_tab = tab
         self.persist_settings()
         self.emit()
+
+    def change_clone_repositories_tab(self, tab: str) -> None:
+        """Desktop `_changeCloneRepositoriesTab` / `selectedCloneRepositoryTab`."""
+        if tab == "Generic":
+            tab = CloneRepositoryTab.GENERIC.value
+        allowed = {item.value for item in CloneRepositoryTab}
+        if tab not in allowed:
+            return
+        self.selected_clone_repository_tab = tab
+        self.settings.selected_clone_repository_tab = tab
+        self.persist_settings()
+        self.emit()
+
+    def desktop_stash_for_branch(self, repo: Repository, branch: str | None) -> StashEntry | None:
+        """Refresh-cached Desktop stash for a branch (no live `git stash list`)."""
+        if not branch:
+            return None
+        return next((entry for entry in self.state_for(repo).stashes if entry.branch_name == branch), None)
 
     def author_identity(self, repo: Repository | None = None) -> tuple[str | None, str | None]:
         """Cached Desktop `getAuthorIdentity` for UI (no live `git var`)."""
@@ -845,6 +872,11 @@ class AppStore:
         return self._popups.all_popups
 
     def show_popup(self, popup_type: PopupType, **payload: Any) -> None:
+        if popup_type == PopupType.CLONE_REPOSITORY:
+            url = str(payload.get("initial_url") or payload.get("url") or "").strip()
+            if url:
+                # Desktop dispatcher `changeCloneRepositoriesTab(Generic)` before CloneRepository.
+                self.change_clone_repositories_tab(CloneRepositoryTab.GENERIC.value)
         popup = Popup(popup_type, payload)
         added = self._popups.add_popup(popup)
         if added is popup:
@@ -4808,11 +4840,13 @@ class AppStore:
                 return
             if exc.is_auth_failure:
                 url = ""
-                try:
-                    remotes = get_remotes(repo.path)
-                    url = remotes[0].url if remotes else ""
-                except GitError:
-                    pass
+                remotes = list(self.state_for(repo).remotes)
+                if not remotes:
+                    try:
+                        remotes = get_remotes(repo.path)
+                    except GitError:
+                        remotes = []
+                url = remotes[0].url if remotes else ""
                 github_remote = bool(repo.github) or (bool(url) and is_github_host(url, self.accounts))
                 retry = self._retry_action
                 retry_type = retry.type if isinstance(retry, RetryAction) else (retry or {}).get("kind")
@@ -4853,7 +4887,7 @@ class AppStore:
         name = branch.name_without_remote if branch.type == BranchType.REMOTE else branch.name
         if has_changes and strategy == UncommittedChangesStrategy.STASH_ON_CURRENT_BRANCH:
             current = status.current_branch if status else "unknown"
-            if get_last_desktop_stash_entry_for_branch(repo.path, current or "unknown"):
+            if self.desktop_stash_for_branch(repo, current or "unknown"):
                 self.show_popup(PopupType.CONFIRM_OVERWRITE_STASH, branch=name)
                 return
         if has_changes and (state.current_branch_protected or strategy == UncommittedChangesStrategy.MOVE_TO_NEW_BRANCH):
@@ -4925,9 +4959,7 @@ class AppStore:
     def _has_existing_desktop_stash(self, repo: Repository) -> bool:
         state = self.state_for(repo)
         branch = state.status.current_branch if state.status else None
-        if not branch:
-            return False
-        return get_last_desktop_stash_entry_for_branch(repo.path, branch) is not None
+        return self.desktop_stash_for_branch(repo, branch) is not None
 
     def checkout_and_bring_changes(self, repo: Repository, branch: Branch) -> None:
         name = branch.name_without_remote if branch.type == BranchType.REMOTE else branch.name
