@@ -74,6 +74,92 @@ def _safe_url(url: str) -> str | None:
     return raw
 
 
+_ISSUE_LINK_RE = re.compile(
+    r"https?://[^/\s]+/(?P<owner>[\w.-]+)/(?P<name>[\w.-]+)/(?:issues|pull|discussions)/(?P<num>\d+)(?P<anchor>#[\w-]+)?",
+    re.I,
+)
+_COMMIT_LINK_RE = re.compile(
+    r"https?://[^/\s]+/(?P<owner>[\w.-]+)/(?P<name>[\w.-]+)/commit/(?P<sha>[0-9a-f]{7,40})(?P<path>/[^?\s]*)?",
+    re.I,
+)
+_COMPARE_LINK_RE = re.compile(
+    r"https?://[^/\s]+/(?P<owner>[\w.-]+)/(?P<name>[\w.-]+)/compare/(?P<a>[0-9a-f]{7,40})\.\.\.(?P<b>[0-9a-f]{7,40})",
+    re.I,
+)
+_PR_COMMIT_LINK_RE = re.compile(
+    r"https?://[^/\s]+/(?P<owner>[\w.-]+)/(?P<name>[\w.-]+)/pull/\d+/commits/(?P<sha>[0-9a-f]{7,40})",
+    re.I,
+)
+_COMMIT_ACTION_PATHS = {"checks_state_summary", "hovercard", "rollup", "show_partial"}
+_COMMIT_ACTION_PREFIXES = {"_render_node", "checks"}
+
+
+def _trim_commit_sha(sha: str) -> str:
+    """Desktop CommitMentionLinkFilter `trimCommitSha`: 30+ chars → first 7."""
+    return sha[:7] if len(sha) >= 30 else sha
+
+
+def _repo_owner_name(repo_html_url: str | None) -> tuple[str, str] | None:
+    if not repo_html_url:
+        return None
+    parsed = urlparse(repo_html_url)
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 2:
+        return parts[0], parts[1]
+    return None
+
+
+def _issue_anchor_description(anchor: str | None) -> str:
+    """Desktop IssueLinkFilter `getAnchorDescription`."""
+    if not anchor:
+        return ""
+    if re.search(r"discussion-diff-", anchor, re.I):
+        return "(diff)"
+    if re.search(r"commits-pushed-", anchor, re.I):
+        return "(commits)"
+    if re.search(r"ref-", anchor, re.I):
+        return "(reference)"
+    if re.search(r"pullrequestreview", anchor, re.I):
+        return "(review)"
+    return "(comment)"
+
+
+def shorten_github_autolink(url: str, repo_html_url: str | None = None) -> str | None:
+    """Desktop `IssueLinkFilter` / `CommitMentionLinkFilter` display text for raw URLs."""
+    raw = (url or "").strip()
+    issue = _ISSUE_LINK_RE.match(raw)
+    if issue:
+        label = f"#{issue.group('num')}"
+        extra = _issue_anchor_description(issue.group("anchor"))
+        return f"{label} {extra}".strip()
+    current = _repo_owner_name(repo_html_url)
+
+    def prefix(owner: str, name: str) -> str:
+        if current is None or current != (owner, name):
+            return f"{owner}/{name}@"
+        return ""
+
+    pr_commit = _PR_COMMIT_LINK_RE.match(raw)
+    if pr_commit:
+        sha = _trim_commit_sha(pr_commit.group("sha"))
+        return f"{prefix(pr_commit.group('owner'), pr_commit.group('name'))}<tt>{sha}</tt>"
+    compare = _COMPARE_LINK_RE.match(raw)
+    if compare:
+        left = _trim_commit_sha(compare.group("a"))
+        right = _trim_commit_sha(compare.group("b"))
+        return f"{prefix(compare.group('owner'), compare.group('name'))}<tt>{left}...{right}</tt>"
+    commit = _COMMIT_LINK_RE.match(raw)
+    if commit:
+        rest = (commit.group("path") or "").lstrip("/")
+        first = rest.split("/", 1)[0] if rest else ""
+        if rest in _COMMIT_ACTION_PATHS or first in _COMMIT_ACTION_PREFIXES:
+            return None
+        sha = _trim_commit_sha(commit.group("sha"))
+        path = commit.group("path") or ""
+        return f"{prefix(commit.group('owner'), commit.group('name'))}<tt>{sha}</tt>{path}"
+    return None
+
+
 def issue_base_from_html_url(html_url: str | None) -> str | None:
     """``https://github.com/owner/repo/pull/12`` → ``https://github.com/owner/repo/issues``."""
     if not html_url:
@@ -140,11 +226,32 @@ def markdown_to_pango(
         if safe is None:
             return match.group(0)
         href = html.escape(safe, quote=True)
-        text = "Video" if is_github_asset_video_url(safe) else html.escape(label, quote=True)
+        if is_github_asset_video_url(safe):
+            text = "Video"
+        elif label.strip() == url.strip():
+            shortened = shorten_github_autolink(safe, repo_html_url)
+            text = shortened if shortened is not None else html.escape(label, quote=True)
+        else:
+            text = html.escape(label, quote=True)
         return hold(f'<a href="{href}">{text}</a>')
 
     source = _MD_LINK_RE.sub(stash_link, source)
     source = _VIDEO_TAG_RE.sub("", source)
+
+    def stash_autolink(match: re.Match[str]) -> str:
+        raw = match.group(0).rstrip(").,;")
+        safe = _safe_url(raw)
+        if safe is None:
+            return match.group(0)
+        href = html.escape(safe, quote=True)
+        if is_github_asset_video_url(safe):
+            label = "Video"
+        else:
+            shortened = shorten_github_autolink(safe, repo_html_url)
+            label = shortened if shortened is not None else html.escape(safe, quote=True)
+        return hold(f'<a href="{href}">{label}</a>')
+
+    source = _AUTOLINK_RE.sub(stash_autolink, source)
     escaped = html.escape(source, quote=True)
 
     def bold(match: re.Match[str]) -> str:
@@ -221,16 +328,6 @@ def markdown_to_pango(
 
         escaped = _SHA_RE.sub(stash_sha, escaped)
 
-    def autolink(match: re.Match[str]) -> str:
-        raw = html.unescape(match.group(0)).rstrip(").,;")
-        safe = _safe_url(raw)
-        if safe is None:
-            return match.group(0)
-        href = html.escape(safe, quote=True)
-        label = "Video" if is_github_asset_video_url(safe) else html.escape(safe, quote=True)
-        return f'<a href="{href}">{label}</a>'
-
-    escaped = _AUTOLINK_RE.sub(autolink, escaped)
     for index, chunk in reversed(list(enumerate(held))):
         escaped = escaped.replace(_PLACEHOLDER.format(index), chunk)
     return escaped

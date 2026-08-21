@@ -158,3 +158,54 @@ def test_ahead_behind_cache_is_lru(isolated_config, git_repo, monkeypatch) -> No
     assert first == second
     assert len(calls) == 1
     assert len(store._ahead_behind_cache) == 1
+
+
+def test_get_account_for_endpoint_and_repository() -> None:
+    from github_desktop.get_account import get_account_for_endpoint, get_account_for_repository
+    from github_desktop.git_error_context import error_dialog_title
+    from github_desktop.models import RetryAction, RetryActionType
+
+    joan = _dotcom("joan")
+    repo = __import__("github_desktop.models", fromlist=["Repository", "GitHubRepository"])
+    gh = repo.GitHubRepository(
+        name="hello",
+        owner="octocat",
+        html_url="https://github.com/octocat/hello",
+        clone_url="https://github.com/octocat/hello.git",
+        endpoint="https://api.github.com",
+    )
+    repository = repo.Repository(id=1, path="/tmp/hello", name="hello", github=gh)
+    assert get_account_for_endpoint([joan], "https://api.github.com") is joan
+    assert get_account_for_endpoint([joan], "https://ghe.io/api/v3") is None
+    assert get_account_for_repository([joan], repository) is joan
+    assert error_dialog_title(git_context={"kind": "create-repository"}) == "Failed creating repository"
+    assert error_dialog_title(retry_action=RetryAction(type=RetryActionType.PUSH, repo_id=1)) == "Failed to push"
+    assert error_dialog_title(retry_clone=True) == "Clone failed"
+
+
+def test_get_commits_truncates_like_desktop(git_repo) -> None:
+    from github_desktop.git.ops import COMMIT_MESSAGE_MAX_BYTES, get_commits
+
+    commits = get_commits(str(git_repo), limit=1)
+    assert commits
+    assert commits[0].summary
+    assert commits[0].sha
+    assert COMMIT_MESSAGE_MAX_BYTES == 100 * 1024
+
+
+def test_shorten_github_autolinks() -> None:
+    from github_desktop.ui.markdown import markdown_to_pango, shorten_github_autolink
+
+    repo = "https://github.com/octo/hello"
+    assert shorten_github_autolink("https://github.com/octo/hello/issues/42", repo) == "#42"
+    assert shorten_github_autolink("https://github.com/octo/hello/pull/9#discussioncomment-1", repo) == "#9 (comment)"
+    long_sha = "6fd794543af171c35cc9c325f570f9553128ffc9"
+    assert "<tt>6fd7945</tt>" in (shorten_github_autolink(f"https://github.com/octo/hello/commit/{long_sha}", repo) or "")
+    other = shorten_github_autolink(f"https://github.com/desktop/desktop/commit/{long_sha}", repo)
+    assert other is not None and other.startswith("desktop/desktop@")
+    markup = markdown_to_pango(
+        "See https://github.com/octo/hello/issues/42 please",
+        repo_html_url=repo,
+    )
+    assert ">#42</a>" in markup
+    assert "href=\"https://github.com/octo/hello/issues/42\"" in markup

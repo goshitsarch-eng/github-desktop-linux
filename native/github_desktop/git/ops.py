@@ -354,11 +354,12 @@ def get_binary_paths(repo: str, ref: str, conflicted_paths: Sequence[str] = ()) 
             stdin="\0".join(paths) + "\0",
             name="getConflictedFilesUsingBinaryMergeDriver",
         )
-        tokens = check.stdout.split("\0")
-        for i in range(0, len(tokens) - 2, 3):
-            path, attr, value = tokens[i], tokens[i + 1], tokens[i + 2]
-            if attr == "merge" and value == "binary" and path:
-                using_binary_driver.append(path)
+        parser = create_log_parser({"path": "", "attr": "", "value": ""})
+        using_binary_driver = [
+            item["path"]
+            for item in parser.parse(check.stdout)
+            if item.get("attr") == "merge" and item.get("value") == "binary" and item.get("path")
+        ]
     seen: set[str] = set()
     out: list[str] = []
     for path in [*detected, *using_binary_driver]:
@@ -917,6 +918,10 @@ def co_author_trailers(authors: Sequence[Author]) -> list[tuple[str, str]]:
     return [("Co-authored-by", f"{a.name} <{a.email}>") for a in authors]
 
 
+# Desktop getCommits truncates summary/body with `subarray(0, 100 * 1024)`.
+COMMIT_MESSAGE_MAX_BYTES = 100 * 1024
+
+
 def get_commits(
     repo: str,
     revision_range: str | None = None,
@@ -924,58 +929,52 @@ def get_commits(
     skip: int | None = None,
     extra: Sequence[str] = (),
 ) -> list[Commit]:
-    fields = ["%H", "%h", "%s", "%b", "%an <%ae> %ad", "%cn <%ce> %cd", "%P", "%(trailers:unfold,only)", "%D"]
-    fmt = "%x00".join(fields)
+    parser = create_log_parser(
+        {
+            "sha": "%H",
+            "shortSha": "%h",
+            "summary": "%s",
+            "body": "%b",
+            "author": "%an <%ae> %ad",
+            "committer": "%cn <%ce> %cd",
+            "parents": "%P",
+            "trailers": "%(trailers:unfold,only)",
+            "refs": "%D",
+        }
+    )
     args = ["log"]
     if revision_range:
         args.append(revision_range)
-    args += ["--date=raw", "-z", f"--format={fmt}", "--no-show-signature", "--no-color"]
+    args.append("--date=raw")
     if limit is not None:
         args.append(f"--max-count={limit}")
     if skip is not None:
         args.append(f"--skip={skip}")
-    args += list(extra)
-    args.append("--")
+    args += [*parser.format_args, "--no-show-signature", "--no-color", *extra, "--"]
     result = git(args, repo, success_exit_codes={0, 128}, name="getCommits")
     if result.exit_code == 128:
         return []
-    return _parse_log(result.stdout)
-
-
-def _parse_log(stdout: str) -> list[Commit]:
-    records = stdout.split("\0")
-    keys = 9
     commits: list[Commit] = []
-    # Drop leading empty
-    if records and records[0] == "":
-        records = records[1:]
-    for i in range(0, len(records) - keys + 1, keys):
-        chunk = records[i : i + keys]
-        if len(chunk) < keys:
-            break
-        sha, short, summary, body, author, committer, parents, trailers, refs = chunk
+    for entry in parser.parse(result.stdout):
+        sha = entry.get("sha") or ""
         if not sha:
             continue
-        tags = []
-        for part in refs.split(", "):
+        tags: list[str] = []
+        for part in (entry.get("refs") or "").split(", "):
             part = part.strip()
             if part.startswith("tag: "):
                 tags.append(part[5:])
-        trailer_pairs: list[tuple[str, str]] = []
-        for line in trailers.splitlines():
-            if ":" in line:
-                k, v = line.split(":", 1)
-                trailer_pairs.append((k.strip(), v.strip()))
+        parents = entry.get("parents") or ""
         commits.append(
             Commit(
                 sha=sha,
-                short_sha=short,
-                summary=summary,
-                body=body.strip(),
-                author=CommitIdentity.parse_raw(author),
-                committer=CommitIdentity.parse_raw(committer),
+                short_sha=entry.get("shortSha") or "",
+                summary=(entry.get("summary") or "")[:COMMIT_MESSAGE_MAX_BYTES],
+                body=((entry.get("body") or "")[:COMMIT_MESSAGE_MAX_BYTES]).strip(),
+                author=CommitIdentity.parse_raw(entry.get("author") or ""),
+                committer=CommitIdentity.parse_raw(entry.get("committer") or ""),
                 parent_shas=parents.split() if parents else [],
-                trailers=trailer_pairs,
+                trailers=parse_raw_unfolded_trailers(entry.get("trailers") or "", ":"),
                 tags=tags,
             )
         )

@@ -162,6 +162,7 @@ from .enterprise import (
 )
 from .commit_url import create_commit_url
 from .find_account import find_account_for_remote_url
+from .get_account import get_account_for_repository
 from .find_branch_name import find_remote_branch_name
 from .find_default_branch import find_default_branch, is_forked_repository_contributing_to_parent
 from .find_default_remote import find_default_remote
@@ -1761,10 +1762,9 @@ class AppStore:
         self._run(work, done)
 
     def account_for_repo(self, repo: Repository) -> Account | None:
-        if repo.github:
-            for account in self.accounts:
-                if account.endpoint == repo.github.endpoint:
-                    return account
+        found = get_account_for_repository(self.accounts, repo)
+        if found is not None:
+            return found
         try:
             remotes = get_remotes(repo.path)
         except GitError:
@@ -3694,7 +3694,10 @@ class AppStore:
             if exc.is_force_needed:
                 self.show_popup(PopupType.CONFIRM_FORCE_PUSH)
                 return
-        self.show_popup(PopupType.ERROR, error=str(exc))
+        retry = self._retry_action
+        retry_type = retry.type if isinstance(retry, RetryAction) else (retry or {}).get("kind")
+        title = "Failed to push" if retry_type in {RetryActionType.PUSH, "push", "Push"} else "Error"
+        self.show_popup(PopupType.ERROR, error=str(exc), title=title)
 
     def checkout(self, repo: Repository, branch: Branch) -> None:
         state = self.state_for(repo)

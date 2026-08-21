@@ -495,8 +495,14 @@ def present_popup(parent: Gtk.Window, store: AppStore, popup_type: PopupType, pa
 
 def show_error_dialog(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
     from ..errors import is_auth_failure_error
+    from ..git_error_context import error_dialog_title
 
-    heading = str(payload.get("title") or "Error")
+    heading = error_dialog_title(
+        git_context=payload.get("git_context"),
+        retry_action=payload.get("retry_action"),
+        title=payload.get("title"),
+        retry_clone=bool(payload.get("retry_clone")),
+    )
     body = str(payload.get("error") or "Something went wrong")
     retry = payload.get("retry")
     if payload.get("retry_clone"):
@@ -1508,7 +1514,11 @@ def show_create_repository(parent: Gtk.Window, store: AppStore, initial: str) ->
             )
             dialog.close()
         except Exception as exc:
-            store.show_popup(PopupType.ERROR, error=str(exc))
+            store.show_popup(
+                PopupType.ERROR,
+                error=str(exc),
+                git_context={"kind": "create-repository"},
+            )
 
     name_row.connect("changed", refresh_hints)
     path_row.connect("changed", refresh_hints)

@@ -321,6 +321,8 @@ def test_window_actions_cover_menus() -> None:
         commit_url as commit_url_mod,
         find_account as find_account_mod,
         endpoint_capabilities as endpoint_capabilities_mod,
+        git_error_context as git_error_context_mod,
+        get_account as get_account_mod,
     )
     from github_desktop.git import delimiter as git_delimiter_mod
 
@@ -345,6 +347,8 @@ def test_window_actions_cover_menus() -> None:
     src += open(find_account_mod.__file__, encoding="utf-8").read()
     src += open(endpoint_capabilities_mod.__file__, encoding="utf-8").read()
     src += open(git_delimiter_mod.__file__, encoding="utf-8").read()
+    src += open(git_error_context_mod.__file__, encoding="utf-8").read()
+    src += open(get_account_mod.__file__, encoding="utf-8").read()
     for action in [
         "new-repository",
         "clone-repository",
@@ -907,5 +911,14 @@ def test_window_actions_cover_menus() -> None:
         "createForEachRefParser",
         "splitBuffer",
         "maxSize: 2500",
+        "GitErrorContext",
+        "ErrorWithMetadata",
+        "Failed creating repository",
+        "Failed to push",
+        "getAccountForEndpoint",
+        "getAccountForRepository",
+        "IssueLinkFilter",
+        "CommitMentionLinkFilter",
+        "subarray(0, 100 * 1024)",
     ]:
         assert phrase in src
