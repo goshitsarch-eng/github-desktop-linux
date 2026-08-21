@@ -1338,5 +1338,10 @@ def test_window_actions_cover_menus() -> None:
         "initializeCompare",
         "_updateCompareForm",
         "showBranchList",
+        "changeTab",
+        "onGlobalKeyDown",
+        "onSelectAll",
+        "selectAllWindowContents",
+        "selectAllChildren",
     ]:
         assert phrase in src

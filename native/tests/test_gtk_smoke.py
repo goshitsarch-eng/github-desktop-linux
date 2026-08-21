@@ -17,7 +17,7 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
 
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
-    from gi.repository import Adw, GLib
+    from gi.repository import Adw, Gdk, GLib
 
     from github_desktop.models import ApplicationTheme, TutorialStep
     from github_desktop.store import AppStore
@@ -115,6 +115,19 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             assert win._view_stack.get_visible_child_name() == "changes"
             assert win.store.foldout is None
             assert win.store.focus_commit_message is False
+            win.store.close_current_foldout()
+            win.store.set_section(RepositorySectionTab.CHANGES)
+            win._view_stack.set_visible_child_name("changes")
+            win._change_tab()
+            assert win.store.section == RepositorySectionTab.HISTORY
+            assert win._view_stack.get_visible_child_name() == "history"
+            win._change_tab()
+            assert win.store.section == RepositorySectionTab.CHANGES
+            win.store.show_foldout(FoldoutType.BRANCH)
+            assert win._on_global_key(None, Gdk.KEY_Tab, 0, Gdk.ModifierType.CONTROL_MASK) is False
+            win.store.close_current_foldout()
+            win._select_all_list_box(win._commit_list)
+            win._select_all_list_box(win._file_list)
             child = win._stack.get_visible_child_name()
             assert child in {"welcome", "empty", "repo"}
             win._refresh_files()

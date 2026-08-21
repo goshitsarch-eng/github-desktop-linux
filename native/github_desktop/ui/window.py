@@ -293,6 +293,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._stack.add_named(self._repo_page, "repo")
         self._install_actions()
         self._install_shortcuts()
+        self._install_global_keys()
         self._install_file_drop()
         self.store.subscribe(self._on_store)
         self.store.api_repositories.subscribe(self._on_api_repositories)
@@ -667,6 +668,41 @@ class MainWindow(Adw.ApplicationWindow):
         self.get_application().set_accels_for_action("win.edit-redo", ["<Ctrl><Shift>z", "<Ctrl>y"])
         self.get_application().set_accels_for_action("win.zoom-in", ["<Ctrl>equal", "<Ctrl>plus"])
         self.get_application().set_accels_for_action("win.toggle-fullscreen", ["F11"])
+
+    def _install_global_keys(self) -> None:
+        """Desktop repository `onGlobalKeyDown` (Ctrl+Tab toggles Changes/History)."""
+        keys = Gtk.EventControllerKey()
+        keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", self._on_global_key)
+        self.add_controller(keys)
+
+    def _on_global_key(self, _controller, keyval: int, _keycode: int, state) -> bool:
+        """Desktop `onGlobalKeyDown`."""
+        if keyval not in (Gdk.KEY_Tab, Gdk.KEY_ISO_Left_Tab):
+            return False
+        if not (int(state) & int(Gdk.ModifierType.CONTROL_MASK)):
+            return False
+        if self.store.popup or self.store.all_popups:
+            return False
+        if self.store.foldout is not None:
+            return False
+        if hasattr(self, "_stack") and self._stack.get_visible_child_name() != "repo":
+            return False
+        self._change_tab()
+        return True
+
+    def _change_tab(self) -> None:
+        """Desktop `changeTab`: toggle Changes/History (Ctrl+Tab)."""
+        if self.store.selected_repository is None:
+            return
+        if self.store.section == RepositorySectionTab.HISTORY:
+            self.store.set_section(RepositorySectionTab.CHANGES)
+            if hasattr(self, "_view_stack"):
+                self._view_stack.set_visible_child_name("changes")
+        else:
+            self.store.set_section(RepositorySectionTab.HISTORY)
+            if hasattr(self, "_view_stack"):
+                self._view_stack.set_visible_child_name("history")
 
     def _repo_op(self, fn) -> None:
         repo = self.store.selected_repository
@@ -4861,6 +4897,64 @@ class MainWindow(Adw.ApplicationWindow):
         if repo:
             self.store.select_stashed_file(repo, file)
 
+    def _select_all_from_focus(self, widget) -> bool:
+        """Desktop `selectAll` / `selectAllWindowContents` custom event: list rows, then diff text."""
+        current = widget
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if isinstance(current, Gtk.ListBox) and current.get_selection_mode() == Gtk.SelectionMode.MULTIPLE:
+                self._select_all_list_box(current)
+                return True
+            try:
+                if current.has_css_class("diff-view"):
+                    self._select_all_diff_text(current)
+                    return True
+            except Exception:
+                pass
+            current = current.get_parent() if hasattr(current, "get_parent") else None
+        if isinstance(widget, Gtk.Label):
+            try:
+                if widget.get_selectable():
+                    widget.select_region(0, -1)
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _select_all_list_box(self, box: Gtk.ListBox) -> None:
+        """Desktop list `onSelectAll` for a multi-select `Gtk.ListBox`."""
+        was_building = self._building
+        self._building = True
+        try:
+            box.select_all()
+        finally:
+            self._building = was_building
+        row = box.get_selected_row()
+        if box is getattr(self, "_commit_list", None):
+            self._on_commit_selected(box, row)
+        elif box is getattr(self, "_file_list", None) and row is not None:
+            self._on_file_selected(box, row)
+
+    def _select_all_diff_text(self, viewer: Gtk.Widget) -> None:
+        """Desktop diff `onSelectAll` / `selectAllChildren` of the diff container."""
+        def walk(node: Gtk.Widget) -> None:
+            if isinstance(node, Gtk.Label):
+                try:
+                    if node.get_selectable():
+                        node.select_region(0, -1)
+                except Exception:
+                    pass
+            elif isinstance(node, Gtk.TextView):
+                buf = node.get_buffer()
+                buf.select_range(buf.get_start_iter(), buf.get_end_iter())
+            child = node.get_first_child() if hasattr(node, "get_first_child") else None
+            while child is not None:
+                walk(child)
+                child = child.get_next_sibling()
+
+        walk(viewer)
+
     def _edit_action(self, action: str) -> None:
         widget = self.get_focus()
         if widget is None:
@@ -4905,6 +4999,9 @@ class MainWindow(Adw.ApplicationWindow):
                 clipboard.read_text_async(None, _paste)
             elif action == "select-all":
                 buf.select_range(buf.get_start_iter(), buf.get_end_iter())
+            return
+        if action == "select-all":
+            self._select_all_from_focus(widget)
 
     def _edit_undo_redo(self, widget, *, redo: bool) -> None:
         """Undo/redo the focused text field. Never undoes a Git commit (Desktop Edit → Undo)."""
