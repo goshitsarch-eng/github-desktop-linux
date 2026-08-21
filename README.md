@@ -33,24 +33,23 @@ PYTHONPATH=. python3 -m pytest tests -q
 xvfb-run -a env GTK_A11Y=none PYTHONPATH=. python3 -m pytest tests/test_gtk_smoke.py -q
 ```
 
-## Download and install (legacy Electron packages)
+## Download and install
 
-The Linux release workflow still publishes Electron AppImages and portable tarballs for:
-
-- **x64**: most Intel and AMD computers
-- **arm64**: 64-bit ARM systems
-
-Download the appropriate file from the [latest release](https://github.com/goshitsarch-eng/github-desktop-linux/releases/latest). AppImage is the easiest option for most users.
+Tagged releases publish a native meson prefix tarball (`GitHubDesktop-linux-native-<version>.tar.gz`). Install GTK 4, libadwaita, PyGObject, and Git, then:
 
 ```bash
-chmod +x GitHubDesktop-linux-<architecture>-<version>.AppImage
-./GitHubDesktop-linux-<architecture>-<version>.AppImage
+sudo tar -C / -xzf GitHubDesktop-linux-native-<version>.tar.gz
+github-desktop
 ```
 
-Replace `<architecture>` with `x64` or `arm64` and `<version>` with the downloaded release version. See the [complete installation guide](docs/installation.md) for tarball installation, desktop menus, browser sign-in, upgrades, dependencies, and uninstalling.
+See the [complete installation guide](docs/installation.md) for meson from source, desktop menus, browser sign-in, the `github` CLI, upgrades, and uninstalling.
 
-> [!NOTE]
-> DEB and RPM packaging code is available for local builds, but the current Linux release workflow does **not** publish `.deb` or `.rpm` files. Only install assets attached to this repository's releases or artifacts you build and verify yourself.
+You can also run from a checkout without installing:
+
+```bash
+cd native
+PYTHONPATH=. python3 -m github_desktop
+```
 
 ## What is included
 
@@ -58,21 +57,21 @@ Replace `<architecture>` with `x64` or `arm64` and `<version>` with the download
 - Repository cloning, creation, publishing, and branch management
 - Commit history, diffs, stashing, rebasing, and conflict resolution
 - Pull request and issue integrations
-- A bundled Git distribution and credential helper
-- Linux x64 and arm64 packages
+- System Git plus a desktop credential helper
+- Linux native GTK 4 packages (meson prefix tarball)
 - A `github` command-line helper in packaged builds
 
 Feature behavior primarily follows the [upstream GitHub Desktop project](https://github.com/desktop/desktop). Linux packaging and integration issues belong in this repository.
 
 ## Requirements
 
-A modern 64-bit Linux distribution with a graphical desktop is required. Credential storage uses Secret Service (`libsecret`) and normally requires a keyring such as GNOME Keyring. AppImage may require FUSE 2 on some distributions; if unavailable, use the tarball.
+A modern 64-bit Linux distribution with a graphical desktop is required. The native GTK 4 app needs PyGObject, GTK 4, libadwaita, and Git. Credential storage uses Secret Service (`libsecret`) and normally requires a keyring such as GNOME Keyring.
 
 See [installation requirements](docs/installation.md#runtime-requirements) and [known issues](docs/known-issues.md).
 
 ## Command line
 
-When the packaged `github` helper is on `PATH`:
+When the packaged `github` helper is on `PATH` (after a meson or tarball install):
 
 ```bash
 github                         # Open the current directory
@@ -82,7 +81,7 @@ github clone --branch topic owner/repository
 github --help
 ```
 
-AppImage and tarball users must create their own launcher or symlink before `github` is available globally. Details are in the [installation guide](docs/installation.md#optional-command-line-helper).
+After a prefix install, `github` is next to `github-desktop` on `PATH`. Details are in the [installation guide](docs/installation.md#command-line-helper).
 
 ## Documentation
 
