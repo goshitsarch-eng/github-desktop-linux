@@ -3756,15 +3756,20 @@ class MainWindow(Adw.ApplicationWindow):
         if kind == MultiCommitOperationKind.REBASE:
             commit_count = ahead
             action = ComputedAction.CLEAN
-            if merge_tree is None:
-                action = ComputedAction.LOADING
-            elif merge_tree.kind == ComputedAction.INVALID:
-                action = ComputedAction.INVALID
+            if merge_tree is not None:
+                if merge_tree.kind == ComputedAction.LOADING:
+                    action = ComputedAction.LOADING
+                elif merge_tree.kind == ComputedAction.INVALID:
+                    action = ComputedAction.INVALID
             conflicted = 0
         else:
             commit_count = behind
-            action = merge_tree.kind if merge_tree else ComputedAction.LOADING
-            conflicted = merge_tree.conflicted_files if merge_tree else 0
+            if merge_tree is None:
+                action = ComputedAction.CLEAN if behind == 0 else ComputedAction.LOADING
+                conflicted = 0
+            else:
+                action = merge_tree.kind
+                conflicted = merge_tree.conflicted_files
         message, can_proceed = merge_cta_message(
             kind,
             current,

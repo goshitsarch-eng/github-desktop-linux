@@ -841,11 +841,38 @@ def create_commit(
     return _parse_commit_sha(result, repo)
 
 
-def create_merge_commit(repo: str, files: Sequence[WorkingDirectoryFileChange], resolutions: dict[str, ManualConflictResolution] | None = None) -> str:
-    resolutions = resolutions or {}
+def _tracked_working_files(
+    files: Sequence[WorkingDirectoryFileChange],
+) -> list[WorkingDirectoryFileChange]:
+    return [file for file in files if file.status.kind != AppFileStatusKind.UNTRACKED]
+
+
+def _apply_manual_resolutions(
+    repo: str,
+    files: Sequence[WorkingDirectoryFileChange],
+    resolutions: Mapping[str, ManualConflictResolution],
+    *,
+    context: str = "",
+) -> None:
+    by_path = {file.path: file for file in files}
     for path, resolution in resolutions.items():
-        stage_manual_resolution(repo, path, resolution)
-    remaining = [f for f in files if f.path not in resolutions]
+        file = by_path.get(path)
+        if file is not None:
+            stage_manual_resolution(repo, file, resolution)
+            continue
+        prefix = f"[{context}] " if context else ""
+        log.error(
+            "%scouldn't find file %s even though there's a manual resolution for it",
+            prefix,
+            path,
+        )
+
+
+def create_merge_commit(repo: str, files: Sequence[WorkingDirectoryFileChange], resolutions: dict[str, ManualConflictResolution] | None = None) -> str:
+    """Desktop `createMergeCommit`: stage resolutions, then remaining files."""
+    resolutions = resolutions or {}
+    _apply_manual_resolutions(repo, files, resolutions)
+    remaining = [file for file in files if file.path not in resolutions]
     stage_files(repo, remaining)
     result = git(["commit", "--no-edit", "--cleanup=strip"], repo, name="mergeCommit")
     return _parse_commit_sha(result, repo)
@@ -1951,18 +1978,73 @@ def rebase(
         return RebaseResult.ERROR
 
 
+def parse_rebase_result(result: GitResult) -> RebaseResult:
+    """Desktop `parseRebaseResult`."""
+    if result.exit_code == 0:
+        if re.match(r"^Current branch [^ ]+ is up to date\.$", result.stdout.strip(), re.I):
+            return RebaseResult.ALREADY_UP_TO_DATE
+        return RebaseResult.COMPLETED_WITHOUT_ERROR
+    if result.git_error == "RebaseConflicts":
+        return RebaseResult.CONFLICTS_ENCOUNTERED
+    if result.git_error == "UnresolvedConflicts":
+        return RebaseResult.OUTSTANDING_FILES_NOT_STAGED
+    log.error("Unhandled result found: '%s'", result)
+    return RebaseResult.ERROR
+
+
+def read_rebase_head(repo: str) -> str | None:
+    """Desktop `readRebaseHead`."""
+    try:
+        path = os.path.join(repo, ".git", "REBASE_HEAD")
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        log.warn(
+            "[rebase] a problem was encountered reading .git/REBASE_HEAD, so it is unsafe to continue rebasing",
+            exc_info=exc,
+        )
+        return None
+
+
 def continue_rebase(
     repo: str,
+    files: Sequence[WorkingDirectoryFileChange] | None = None,
+    manual_resolutions: Mapping[str, ManualConflictResolution] | None = None,
     *,
     progress: Callable[[MultiCommitProgress], None] | None = None,
     commits: Sequence[object] = (),
+    git_editor: str = ":",
 ) -> RebaseResult:
-    status = get_status(repo)
-    if status and any(f.status.kind == AppFileStatusKind.CONFLICTED for f in status.working_directory.files):
-        return RebaseResult.CONFLICTS_ENCOUNTERED
-    kwargs: dict = {"name": "rebaseContinue"}
+    """Desktop `continueRebase`: stage resolutions, skip empty, then `--continue`."""
+    if files is None:
+        current = get_status(repo)
+        files = list(current.working_directory.files) if current else []
+    resolutions = dict(manual_resolutions or {})
+    tracked = _tracked_working_files(files)
+    _apply_manual_resolutions(repo, files, resolutions, context="continueRebase")
+    other = [file for file in tracked if file.path not in resolutions]
+    stage_files(repo, other)
+    status = get_status(repo, include_untracked=False)
+    if status is None:
+        log.warn(
+            "[continueRebase] unable to get status after staging changes, skipping any other steps"
+        )
+        return RebaseResult.ABORTED
+    rebase_current = read_rebase_head(repo)
+    if not rebase_current:
+        return RebaseResult.ABORTED
+    tracked_after = _tracked_working_files(status.working_directory.files)
+    kwargs: dict = {
+        "expected_errors": {"RebaseConflicts", "UnresolvedConflicts"},
+        "env": {"GIT_EDITOR": git_editor},
+    }
     if progress is not None:
-        parser = GitRebaseParser(commits)
+        snapshot = get_rebase_snapshot(repo)
+        if snapshot is None:
+            log.warn(
+                "[continueRebase] unable to get rebase status, skipping any other steps"
+            )
+            return RebaseResult.ABORTED
+        parser = GitRebaseParser(snapshot.get("commits") or commits)
 
         def on_line(line: str) -> None:
             event = parser.parse(line)
@@ -1970,14 +2052,29 @@ def continue_rebase(
                 progress(event)
 
         kwargs["on_stderr_line"] = on_line
-    kwargs["expected_errors"] = {"RebaseConflicts", "UnresolvedConflicts"}
     try:
-        result = git(["-c", "core.editor=true", "rebase", "--continue"], repo, **kwargs)
-        if result.exit_code != 0:
-            if get_rebase_internal_state(repo) is not None:
-                return RebaseResult.CONFLICTS_ENCOUNTERED
-            return RebaseResult.ERROR
-        return RebaseResult.COMPLETED_WITHOUT_ERROR
+        if not tracked_after:
+            log.warn(
+                "[rebase] no tracked changes to commit for %s, continuing rebase but skipping this commit",
+                rebase_current,
+            )
+            result = git(
+                ["rebase", "--skip"],
+                repo,
+                name="continueRebaseSkipCurrentCommit",
+                **kwargs,
+            )
+        else:
+            result = git(
+                ["rebase", "--continue"],
+                repo,
+                name="continueRebase",
+                **kwargs,
+            )
+        parsed = parse_rebase_result(result)
+        if parsed == RebaseResult.ERROR and get_rebase_internal_state(repo) is not None:
+            return RebaseResult.CONFLICTS_ENCOUNTERED
+        return parsed
     except GitError:
         if get_rebase_internal_state(repo) is not None:
             return RebaseResult.CONFLICTS_ENCOUNTERED
@@ -2019,13 +2116,47 @@ def cherry_pick(
 
 def continue_cherry_pick(
     repo: str,
+    files: Sequence[WorkingDirectoryFileChange] | None = None,
+    manual_resolutions: Mapping[str, ManualConflictResolution] | None = None,
     *,
     progress: Callable[[MultiCommitProgress], None] | None = None,
     commits: Sequence[object] = (),
+    git_editor: str = ":",
 ) -> CherryPickResult:
-    kwargs: dict = {"name": "cherryContinue"}
+    """Desktop `continueCherryPick`: stage, allow-empty skip, then `--continue`."""
+    if files is None:
+        current = get_status(repo)
+        files = list(current.working_directory.files) if current else []
+    resolutions = dict(manual_resolutions or {})
+    tracked = _tracked_working_files(files)
+    _apply_manual_resolutions(repo, files, resolutions, context="continueCherryPick")
+    other = [file for file in tracked if file.path not in resolutions]
+    stage_files(repo, other)
+    status = get_status(repo, include_untracked=False)
+    if status is None:
+        log.warn(
+            "[continueCherryPick] unable to get status after staging changes,\n        skipping any other steps"
+        )
+        return CherryPickResult.UNABLE_TO_START
+    if not is_cherry_pick_head_found(repo):
+        return CherryPickResult.UNABLE_TO_START
+    kwargs: dict = {
+        "expected_errors": {
+            "MergeConflicts",
+            "ConflictModifyDeletedInBranch",
+            "UnresolvedConflicts",
+        },
+        "env": {"GIT_EDITOR": git_editor},
+    }
     if progress is not None:
-        parser = GitCherryPickParser(commits)
+        snapshot = get_cherry_pick_snapshot(repo)
+        if snapshot is None:
+            log.warn(
+                "[continueCherryPick] unable to get cherry-pick status, skipping other steps"
+            )
+            return CherryPickResult.UNABLE_TO_START
+        picked = max(0, int(snapshot.get("position") or 1) - 1)
+        parser = GitCherryPickParser(snapshot.get("commits") or commits, count=picked)
 
         def on_line(line: str) -> None:
             event = parser.parse(line)
@@ -2033,16 +2164,28 @@ def continue_cherry_pick(
                 progress(event)
 
         kwargs["on_stdout_line"] = on_line
-    kwargs["expected_errors"] = {
-        "MergeConflicts",
-        "ConflictModifyDeletedInBranch",
-        "UnresolvedConflicts",
-    }
+    tracked_after = _tracked_working_files(status.working_directory.files)
     try:
-        result = git(["-c", "core.editor=true", "cherry-pick", "--continue"], repo, **kwargs)
+        if not tracked_after:
+            log.warn(
+                "[cherryPick] no tracked changes to commit, continuing cherry-pick but skipping this commit"
+            )
+            result = git(
+                ["commit", "--allow-empty"],
+                repo,
+                name="continueCherryPickSkipCurrentCommit",
+                **kwargs,
+            )
+        else:
+            result = git(
+                ["cherry-pick", "--continue"],
+                repo,
+                name="continueCherryPick",
+                **kwargs,
+            )
         return _parse_cherry_pick_result(repo, result)
     except GitError:
-        if _path_exists(repo, ".git/CHERRY_PICK_HEAD"):
+        if is_cherry_pick_head_found(repo):
             return CherryPickResult.CONFLICTS_ENCOUNTERED
         return CherryPickResult.ERROR
 
@@ -2220,22 +2363,15 @@ def discard_changes_from_selection(
     diff: TextDiff,
     selection: DiffSelection,
 ) -> None:
-    kind = selection.get_selection_type()
-    if kind == DiffSelectionType.NONE:
-        return
-    if kind == DiffSelectionType.ALL:
-        discard_paths(repo, [file_path])
-        return
+    """Desktop `discardChangesFromSelection`: reverse-patch selected WD lines."""
     patch = format_discard_patch(file_path, diff, selection.is_selected)
     if not patch:
         return
-    if not check_patch(repo, patch):
-        raise GitError("Patch does not apply", args=["apply", "--check"], git_error="PatchDoesNotApply")
     git(
         ["apply", "--unidiff-zero", "--whitespace=nowarn", "-"],
         repo,
         stdin=patch,
-        name="discardSelection",
+        name="discardChangesFromSelection",
     )
 
 

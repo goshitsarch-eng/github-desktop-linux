@@ -377,6 +377,7 @@ class RepositoryViewState:
     pending_force_push_before: str | None = None
     pull_with_rebase: bool = False
     last_fetched: float | None = None
+    manual_resolutions: dict[str, ManualConflictResolution] = field(default_factory=dict)
     changed_files_count: int = 0
     is_committing: bool = False  # Desktop isCommitting
     is_generating_commit_message: bool = False  # Desktop isGeneratingCommitMessage
@@ -442,6 +443,7 @@ class AppStore:
         self._ahead_behind_pending: list[tuple[str, str, str]] = []
         self._ahead_behind_inflight = 0
         self._ahead_behind_lock = threading.Lock()
+        self._compare_merge_token: dict[str, int] = {}
         self._credential_sign_in_finish: list[Callable[[Account | None], None]] = []
         self._issue_refresh_at: dict[int, float] = {}
         self.api_repositories = ApiRepositoriesStore()
@@ -2738,15 +2740,46 @@ class AppStore:
         state.compare_behind = get_commits(repo.path, f"HEAD..{branch_name}", limit=max(COMMIT_BATCH_SIZE, 100))
         state.compare_mode = ComparisonMode.AHEAD
         state.commits = state.compare_ahead
-        state.merge_tree = None
         ours = state.status.current_tip if state.status else None
         theirs = branch.tip_sha if branch else None
-        if ours and theirs:
-            try:
-                state.merge_tree = determine_mergeability(repo.path, ours, theirs)
-            except GitError:
-                state.merge_tree = MergeTreeResult(kind=ComputedAction.INVALID)
+        behind = len(state.compare_behind)
+        # Desktop `_compare`: Loading then async `determineMergeability` when behind > 0.
+        token = self._compare_merge_token.get(repo.path, 0) + 1
+        self._compare_merge_token[repo.path] = token
+        if ours and theirs and behind > 0:
+            state.merge_tree = MergeTreeResult(kind=ComputedAction.LOADING)
+        else:
+            state.merge_tree = None
         self.emit()
+        if not (ours and theirs and behind > 0):
+            return
+        compare_name = branch.name if branch else branch_name
+        compare_sha = theirs
+
+        def work() -> MergeTreeResult:
+            return determine_mergeability(repo.path, ours, theirs)
+
+        def done(exc: BaseException | None, result: MergeTreeResult | None = None) -> None:
+            if self._compare_merge_token.get(repo.path) != token:
+                return
+            current = self.state_for(repo)
+            if current.compare_branch is None or current.compare_branch.name != compare_name:
+                return
+            if exc:
+                log.warn(
+                    "Error occurred while trying to merge %s (%s) and %s (%s)",
+                    current.status.current_branch if current.status else "HEAD",
+                    ours,
+                    compare_name,
+                    compare_sha,
+                    exc_info=exc,
+                )
+                current.merge_tree = None
+            else:
+                current.merge_tree = result
+            self.emit()
+
+        self._run(work, done)
 
     def ahead_behind_between(self, repo: Repository, from_sha: str | None, to_sha: str | None) -> AheadBehind | None:
         """Desktop `aheadBehindStore` synchronous cache fill for callers that need an immediate result."""
@@ -3519,6 +3552,7 @@ class AppStore:
             stage_manual_resolution(repo.path, file, resolution)
         else:
             stage_manual_resolution(repo.path, path, resolution)
+        state.manual_resolutions[path] = resolution
         self.refresh_repository(repo)
 
     def set_include_all(self, repo: Repository, included: bool) -> None:
@@ -4281,10 +4315,15 @@ class AppStore:
 
         def work() -> tuple:
             progress = self._multi_progress(on_progress)
+            view = self.state_for(repo)
+            files = list(view.status.working_directory.files) if view.status else []
+            resolutions = dict(view.manual_resolutions)
             if backend == "cherry":
                 snapshot = get_cherry_pick_snapshot(repo.path)
                 commits = list(snapshot["commits"]) if snapshot else []
-                return continue_cherry_pick(repo.path, progress=progress, commits=commits), get_status(repo.path)
+                return continue_cherry_pick(
+                    repo.path, files, resolutions, progress=progress, commits=commits
+                ), get_status(repo.path)
             if backend == "rebase":
                 state = get_rebase_snapshot(repo.path) or {}
                 commits = list(state.get("commits") or [])
@@ -4292,9 +4331,13 @@ class AppStore:
                     internal = get_rebase_internal_state(repo.path)
                     if internal:
                         commits = get_commits_between(repo.path, internal.base_branch_tip, internal.original_branch_tip) or []
-                return continue_rebase(repo.path, progress=progress, commits=commits), get_status(repo.path)
-            files = self.state_for(repo).status.working_directory.files if self.state_for(repo).status else []
-            create_merge_commit(repo.path, files)
+                return continue_rebase(
+                    repo.path, files, resolutions, progress=progress, commits=commits
+                ), get_status(repo.path)
+            # Desktop `_finishConflictedMerge`: only stage conflicted files. Git already
+            # staged the rest of the merge; unrelated dirty files stay out of the commit.
+            conflicted = [file for file in files if file.status.kind == AppFileStatusKind.CONFLICTED]
+            create_merge_commit(repo.path, conflicted, resolutions)
             return None, get_status(repo.path)
 
         def done(exc: BaseException | None, result: tuple | None = None) -> None:
@@ -4309,6 +4352,8 @@ class AppStore:
                 self.state_for(repo).status = result[1]
                 if kind in {MultiCommitOperationKind.REBASE, MultiCommitOperationKind.SQUASH, MultiCommitOperationKind.REORDER}:
                     self.state_for(repo).pending_force_push_before = self.state_for(repo).undo_sha
+            if not exc:
+                self.state_for(repo).manual_resolutions.clear()
             self.refresh_repository(repo)
 
         self._run(work, done)
@@ -4323,6 +4368,7 @@ class AppStore:
             abort_squash_merge(repo.path)
         else:
             abort_merge(repo.path)
+        self.state_for(repo).manual_resolutions.clear()
         self.refresh_repository(repo)
 
     def _conflict_backend(self, repo: Repository, kind: MultiCommitOperationKind | str | None = None) -> str:

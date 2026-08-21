@@ -39,7 +39,9 @@ from ..models import (
     INVALID_GIT_AUTHOR_NAME_MESSAGE,
     ApplicationTheme,
     BypassReason,
+    ComputedAction,
     ForkContributionTarget,
+    MergeTreeResult,
     GitHubRepository,
     PopupType,
     PreferencesTab,
@@ -3888,7 +3890,7 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     # prRecentBaseBranches: recent checkouts first, then the remaining remote-capable names.
     if default and default not in recent_bases and default not in other_bases and default != current:
         other_bases.insert(0, default)
-    selected = {"name": default or (recent_bases[0] if recent_bases else (other_bases[0] if other_bases else ""))}
+    selected = {"name": default or (recent_bases[0] if recent_bases else (other_bases[0] if other_bases else "")), "merge_token": 0}
 
     dialog = Adw.Dialog()
     dialog.set_content_width(900)
@@ -4039,6 +4041,7 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
         commit_word = "commit" if n == 1 else "commits"
         merge_into.set_text(f"Merge {n} {commit_word} into {base_name} from {current}.")
         if n == 0:
+            selected["merge_token"] = int(selected["merge_token"]) + 1
             stats.set_text("No commits to merge into the base branch")
             merge_info.set_text("")
         else:
@@ -4047,15 +4050,37 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
 
             ours = next((b.tip_sha for b in st.branches if b.name == (st.pr_base_branch or default)), None)
             theirs = st.status.current_tip if st.status else None
+            token = int(selected["merge_token"]) + 1
+            selected["merge_token"] = token
             if ours and theirs:
-                status = determine_mergeability(repo.path, ours, theirs)
-                if status.kind.value == "conflicts":
-                    noun = "file" if status.conflicted_files == 1 else "files"
-                    merge_info.set_text(f"Can't automatically merge. {status.conflicted_files} conflicted {noun}.")
-                elif status.kind.value == "invalid":
-                    merge_info.set_text("Unable to merge unrelated histories into this base branch.")
-                else:
-                    merge_info.set_text("Able to merge automatically.")
+                merge_info.set_text(
+                    "Checking mergeability… Don’t worry, you can still create the pull request."
+                )
+
+                def work() -> MergeTreeResult:
+                    try:
+                        return determine_mergeability(repo.path, ours, theirs)
+                    except Exception:
+                        return MergeTreeResult(kind=ComputedAction.INVALID)
+
+                def done(exc: BaseException | None, result: MergeTreeResult | None = None) -> None:
+                    if selected["merge_token"] != token:
+                        return
+                    status = result
+                    if exc or status is None:
+                        merge_info.set_text("Unable to merge unrelated histories into this base branch.")
+                        return
+                    if status.kind == ComputedAction.CONFLICTS:
+                        noun = "file" if status.conflicted_files == 1 else "files"
+                        merge_info.set_text(
+                            f"Can't automatically merge. {status.conflicted_files} conflicted {noun}."
+                        )
+                    elif status.kind == ComputedAction.INVALID:
+                        merge_info.set_text("Unable to merge unrelated histories into this base branch.")
+                    else:
+                        merge_info.set_text("Able to merge automatically.")
+
+                store._run(work, done)
             else:
                 merge_info.set_text("")
         while True:

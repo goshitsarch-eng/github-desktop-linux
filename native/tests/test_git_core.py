@@ -57,6 +57,12 @@ def test_classify_bad_revision() -> None:
         == "MergeConflicts"
     )
     assert classify_git_error("CONFLICT (content): Merge conflict in README.md") == "MergeConflicts"
+    assert (
+        classify_git_error(
+            "README.md: needs merge\nYou must edit all merge conflicts and then\nmark them as resolved using git add\n"
+        )
+        == "UnresolvedConflicts"
+    )
 
 
 def test_is_git_error_matches_desktop() -> None:

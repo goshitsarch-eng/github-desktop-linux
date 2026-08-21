@@ -156,10 +156,12 @@ def test_compare_to_branch(isolated_config, git_repo: Path) -> None:
     checkout_branch(str(git_repo), "main")
     from github_desktop.git.ops import get_branches
 
+    store.state_for(repo).status = get_status(str(git_repo))
     store.state_for(repo).branches = get_branches(str(git_repo))
     store.compare_to_branch(repo, "topic")
     state = store.state_for(repo)
     assert state.history_mode.value == "Compare"
     assert state.compare_behind
+    assert state.merge_tree is not None
     store.compare_to_branch(repo, None)
     assert store.state_for(repo).history_mode.value == "History"

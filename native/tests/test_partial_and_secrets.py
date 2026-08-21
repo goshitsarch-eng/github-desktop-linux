@@ -59,6 +59,37 @@ def test_discard_selected_lines_restores_unselected(git_repo: Path) -> None:
     assert "hello" in text
 
 
+def test_discard_all_selection_restores_file(git_repo: Path) -> None:
+    from github_desktop.git.ops import discard_changes_from_selection
+    from github_desktop.models import DiffSelection, DiffSelectionType
+
+    (git_repo / "README.md").write_text("hello\nchanged\n", encoding="utf-8")
+    status = get_status(str(git_repo))
+    file = next(f for f in status.working_directory.files if f.path == "README.md")
+    diff = get_working_directory_diff(str(git_repo), file)
+    assert isinstance(diff, TextDiff)
+    selection = DiffSelection.from_initial_selection(DiffSelectionType.ALL)
+    discard_changes_from_selection(str(git_repo), "README.md", diff, selection)
+    text = (git_repo / "README.md").read_text(encoding="utf-8")
+    assert "changed" not in text
+    assert "hello" in text
+
+
+def test_discard_none_selection_is_noop(git_repo: Path) -> None:
+    from github_desktop.git.ops import discard_changes_from_selection
+    from github_desktop.models import DiffSelection, DiffSelectionType
+
+    (git_repo / "README.md").write_text("hello\nkeep\n", encoding="utf-8")
+    status = get_status(str(git_repo))
+    file = next(f for f in status.working_directory.files if f.path == "README.md")
+    diff = get_working_directory_diff(str(git_repo), file)
+    assert isinstance(diff, TextDiff)
+    selection = DiffSelection.from_initial_selection(DiffSelectionType.NONE)
+    discard_changes_from_selection(str(git_repo), "README.md", diff, selection)
+    text = (git_repo / "README.md").read_text(encoding="utf-8")
+    assert "keep" in text
+
+
 def test_co_author_trailer_in_message() -> None:
     text = format_commit_message(
         "summary",

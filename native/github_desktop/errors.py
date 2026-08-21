@@ -348,6 +348,15 @@ def classify_git_error(stderr: str, stdout: str = "") -> str | None:
         return "ForcePushRejected"
     if "non-fast-forward" in lower or "failed to push some refs" in lower:
         return "PushNotFastForward"
+    if "could not apply" in lower and "rebase" in lower:
+        return "RebaseConflicts"
+    if (
+        "you must edit all merge conflicts" in lower
+        or "unmerged files" in lower
+        or "unresolved conflict" in lower
+        or "needs merge" in lower
+    ):
+        return "UnresolvedConflicts"
     if (
         "fix conflicts and then commit" in lower
         or "merge conflict" in lower
@@ -356,8 +365,6 @@ def classify_git_error(stderr: str, stdout: str = "") -> str | None:
         or "the stash entry is kept in case you need it again" in lower
     ):
         return "MergeConflicts"
-    if "could not apply" in lower and "rebase" in lower:
-        return "RebaseConflicts"
     if "nothing to commit" in lower:
         return "NothingToCommit"
     if "already exists" in lower and "branch" in lower:
@@ -376,8 +383,6 @@ def classify_git_error(stderr: str, stdout: str = "") -> str | None:
         return "HTTPSRepositoryNotFound"
     if "there is no merge to abort" in lower:
         return "NoMergeToAbort"
-    if "unmerged files" in lower or "unresolved conflict" in lower:
-        return "UnresolvedConflicts"
     if "lock file already exists" in lower:
         return "LockFileAlreadyExists"
     if "patch does not apply" in lower or "patch failed" in lower:

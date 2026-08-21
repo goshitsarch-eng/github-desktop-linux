@@ -1229,5 +1229,16 @@ def test_window_actions_cover_menus() -> None:
         "getImageDiff",
         "installGlobalLFSFilters",
         "parentCommitish",
+        "continueRebase",
+        "continueCherryPick",
+        "continueRebaseSkipCurrentCommit",
+        "continueCherryPickSkipCurrentCommit",
+        "Checking mergeability",
+        "discardChangesFromSelection",
+        "_finishConflictedMerge",
+        "no tracked changes to commit",
+        "readRebaseHead",
+        "parseRebaseResult",
+        "couldn't find file",
     ]:
         assert phrase in src
