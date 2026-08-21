@@ -86,8 +86,8 @@ def test_lfs_progress_formats_iec_bytes(tmp_path: Path) -> None:
     assert "Downloading foo.bin" in event.text
     path = create_lfs_progress_file()
     assert Path(path).is_file()
+    assert Path(path).name.startswith("GitHubDesktop-lfs-progress-")
     Path(path).unlink()
-    Path(path).parent.rmdir()
     assert format_bytes(1024, 1) == "1.0 KiB"
 
 
