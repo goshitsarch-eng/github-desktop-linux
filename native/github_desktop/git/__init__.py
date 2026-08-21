@@ -143,6 +143,7 @@ from .ops import (
     get_stashed_files,
     get_status,
     get_submodules,
+    get_upstream_ref_for_local_branch_ref,
     get_upstream_ref_for_ref,
     get_upstream_remote_name_for_ref,
     get_current_upstream_ref,

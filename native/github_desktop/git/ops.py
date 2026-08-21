@@ -16,6 +16,7 @@ from ..compare import case_insensitive_compare
 from ..format_commit_message import format_commit_message
 from ..errors import (
     GitError,
+    GitNotFoundError,
     NotARepositoryError,
     classify_git_error,
     get_description_for_error,
@@ -3272,6 +3273,17 @@ def prune_forked_remotes(
     return removed
 
 
+def get_upstream_ref_for_local_branch_ref(
+    ref: str,
+    all_branches: Sequence[Branch],
+) -> str | None:
+    """Desktop `getUpstreamRefForLocalBranchRef`."""
+    branch = next((b for b in all_branches if format_as_local_ref(b.name) == ref), None)
+    if branch is None or not branch.upstream:
+        return None
+    return format_as_local_ref(branch.upstream)
+
+
 def prune_merged_branches(
     repo: str,
     default_branch: str,
@@ -3295,10 +3307,8 @@ def prune_merged_branches(
     for ref in merged:
         if ref in RESERVED_BRANCH_REFS or ref in recent:
             continue
-        branch = next((b for b in branches if format_as_local_ref(b.name) == ref), None)
-        if branch is None or not branch.upstream:
-            continue
-        if format_as_local_ref(branch.upstream) in remote_local_refs:
+        upstream_ref = get_upstream_ref_for_local_branch_ref(ref, branches)
+        if upstream_ref is None or upstream_ref in remote_local_refs:
             continue
         ready.append(ref)
     deleted: list[str] = []
@@ -3341,23 +3351,28 @@ def set_default_branch(name: str) -> None:
 
 
 def get_author_identity(repo: str | None = None) -> tuple[str | None, str | None]:
-    if repo:
-        try:
-            result = git(
-                ["var", "GIT_AUTHOR_IDENT"],
-                repo,
-                success_exit_codes={0, 128},
-                name="getAuthorIdentity",
-            )
-            if result.exit_code == 0 and result.stdout.strip():
-                ident = CommitIdentity.parse_raw(result.stdout.strip())
-                if ident.name:
-                    return ident.name, ident.email
-        except GitError:
-            pass
-    name = get_config_value(repo, "user.name")
-    email = get_config_value(repo, "user.email")
-    return name, email
+    """Desktop `getAuthorIdentity` via `git var GIT_AUTHOR_IDENT`.
+
+    Exit 128 (`user.useConfigOnly` with missing name/email) or a parse failure
+    returns ``(None, None)``. There is no ``user.name`` / ``user.email`` fallback.
+    """
+    cwd = repo or os.path.expanduser("~")
+    try:
+        result = git(
+            ["var", "GIT_AUTHOR_IDENT"],
+            cwd,
+            success_exit_codes={0, 128},
+            name="getAuthorIdentity",
+        )
+    except (GitError, GitNotFoundError, OSError):
+        return None, None
+    if result.exit_code == 128:
+        return None, None
+    try:
+        ident = CommitIdentity.parse_identity(result.stdout)
+    except ValueError:
+        return None, None
+    return ident.name, ident.email
 
 
 def get_global_config_path() -> str:

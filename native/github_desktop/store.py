@@ -239,6 +239,7 @@ from .models import (
     github_for_contribution,
     github_from_dict,
     github_to_dict,
+    get_github_html_url,
     get_old_path_or_default,
     get_untracked_files,
     has_write_permission,
@@ -4787,9 +4788,9 @@ class AppStore:
         open_external("https://github.com/explore")
 
     def view_on_github(self, repo: Repository) -> None:
-        gh = github_for_contribution(repo) or repo.github
-        if gh:
-            open_external(gh.html_url)
+        url = get_github_html_url(repo)
+        if url:
+            open_external(url)
 
     def create_issue(self, repo: Repository) -> None:
         gh = github_for_contribution(repo) or repo.github

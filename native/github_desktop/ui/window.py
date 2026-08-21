@@ -41,6 +41,7 @@ from ..models import (
     is_partially_committable_submodule,
     is_uncommittable_submodule,
     map_status,
+    name_of,
     path_label,
     commit_summary_placeholder,
     submodule_include_tooltip,
@@ -3675,7 +3676,7 @@ class MainWindow(Adw.ApplicationWindow):
             items.append(("Remove alias", lambda: self.store.remove_repository_alias(repo), True))
         items.extend(
             [
-                ("Copy repo name", lambda: copy_text(repo.name), True),
+                ("Copy repo name", lambda: copy_text(name_of(repo)), True),
                 ("Copy repo path", lambda: copy_text(repo.path), True),
                 None,
                 (view_on_github_label(enterprise=bool(repo.github and not is_dotcom_endpoint(repo.github.endpoint))), lambda: self.store.view_on_github(repo), bool(repo.github)),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum, IntEnum, StrEnum
@@ -9,6 +10,8 @@ from math import ceil
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 from uuid import uuid4
+
+from .fatal_error import fatal_error
 
 
 class AppFileStatusKind(StrEnum):
@@ -982,6 +985,11 @@ class UnrenderableDiff:
 FileDiff = TextDiff | ImageDiff | BinaryDiff | SubmoduleDiff | LargeTextDiff | UnrenderableDiff
 
 
+# Desktop `CommitIdentity.parseIdentity` / git ident.c fmt_ident:
+# "NAME <EMAIL> UNIX_TS TZ" e.g. Markus Olsson <j.markus.olsson@gmail.com> 1475670580 +0200
+_GIT_IDENT_RE = re.compile(r"^(.*?) <(.*?)> (\d+) (\+|-)?(\d{2})(\d{2})")
+
+
 @dataclass
 class CommitIdentity:
     name: str
@@ -990,23 +998,27 @@ class CommitIdentity:
     tz_offset: int = 0
 
     @classmethod
+    def parse_identity(cls, identity: str) -> "CommitIdentity":
+        """Desktop `CommitIdentity.parseIdentity`. Raises if the ident string is invalid."""
+        match = _GIT_IDENT_RE.match(identity.strip())
+        if not match:
+            raise ValueError(f"Couldn't parse identity {identity}")
+        name, email, ts_raw, tz_sign, tz_hh, tz_mm = match.groups()
+        try:
+            ts = int(ts_raw)
+        except ValueError as exc:
+            raise ValueError(f"Couldn't parse identity {identity}, invalid date") from exc
+        sign = -1 if tz_sign == "-" else 1
+        offset = sign * (int(tz_hh) * 60 + int(tz_mm))
+        return cls(name, email, datetime.fromtimestamp(ts, tz=timezone.utc), offset)
+
+    @classmethod
     def parse_raw(cls, raw: str) -> "CommitIdentity":
         # "Name <email> unix timestamp tz"
         # author: '%an <%ae> %ad' with --date=raw -> "Name <email> 1234567890 +0000"
         try:
-            left, rest = raw.rsplit(">", 1)
-            name_email = left + ">"
-            name, email = name_email.rsplit("<", 1)
-            email = email.rstrip(">")
-            parts = rest.strip().split()
-            ts = int(parts[0]) if parts else 0
-            tz = parts[1] if len(parts) > 1 else "+0000"
-            sign = 1 if tz.startswith("+") else -1
-            hours = int(tz[1:3] or 0)
-            minutes = int(tz[3:5] or 0)
-            offset = sign * (hours * 60 + minutes)
-            return cls(name.strip(), email.strip(), datetime.fromtimestamp(ts, tz=timezone.utc), offset)
-        except (ValueError, IndexError):
+            return cls.parse_identity(raw)
+        except ValueError:
             return cls(raw, "", datetime.fromtimestamp(0, tz=timezone.utc), 0)
 
 
@@ -1337,6 +1349,19 @@ def is_repository_with_forked_github_repository(repository: Repository) -> bool:
     return repository.github is not None and repository.github.parent is not None
 
 
+def assert_is_repository_with_github_repository(repository: Repository) -> None:
+    """Desktop `assertIsRepositoryWithGitHubRepository`."""
+    if not is_repository_with_github_repository(repository):
+        fatal_error("Repository must be GitHub repository")
+
+
+def name_of(repository: Repository) -> str:
+    """Desktop `nameOf`: owner/name when GitHub-associated, otherwise the folder name."""
+    if repository.github is not None:
+        return repository.github.full_name
+    return repository.name
+
+
 def fork_contribution_target(repo: Repository) -> ForkContributionTarget:
     raw = (repo.workflow_preferences or {}).get("fork_target")
     if raw in (ForkContributionTarget.SELF, ForkContributionTarget.SELF.value):
@@ -1344,13 +1369,50 @@ def fork_contribution_target(repo: Repository) -> ForkContributionTarget:
     return ForkContributionTarget.PARENT
 
 
-def github_for_contribution(repo: Repository) -> GitHubRepository | None:
-    gh = repo.github
-    if gh is None:
+def get_fork_contribution_target(repository: Repository) -> ForkContributionTarget:
+    """Desktop `getForkContributionTarget`."""
+    return fork_contribution_target(repository)
+
+
+def is_forked_repository_contributing_to_parent(repository: Repository) -> bool:
+    """Desktop `isForkedRepositoryContributingToParent`."""
+    return (
+        is_repository_with_forked_github_repository(repository)
+        and fork_contribution_target(repository) == ForkContributionTarget.PARENT
+    )
+
+
+def get_non_fork_github_repository(repository: Repository) -> GitHubRepository:
+    """Desktop `getNonForkGitHubRepository`: honor fork contribution target."""
+    assert_is_repository_with_github_repository(repository)
+    github = repository.github
+    if github is None:
+        return fatal_error("Repository must be GitHub repository")
+    if not is_repository_with_forked_github_repository(repository):
+        return github
+    target = fork_contribution_target(repository)
+    if target == ForkContributionTarget.SELF:
+        return github
+    if target == ForkContributionTarget.PARENT:
+        parent = github.parent
+        if parent is None:
+            return fatal_error("Invalid fork contribution target")
+        return parent
+    return fatal_error("Invalid fork contribution target")
+
+
+def get_github_html_url(repository: Repository) -> str | None:
+    """Desktop `getGitHubHtmlUrl`: parent HTML URL when contributing to the upstream."""
+    if not is_repository_with_github_repository(repository):
         return None
-    if repo.is_fork and fork_contribution_target(repo) == ForkContributionTarget.PARENT and gh.parent:
-        return gh.parent
-    return gh
+    url = get_non_fork_github_repository(repository).html_url
+    return url or None
+
+
+def github_for_contribution(repo: Repository) -> GitHubRepository | None:
+    if not is_repository_with_github_repository(repo):
+        return None
+    return get_non_fork_github_repository(repo)
 
 
 def github_to_dict(gh: GitHubRepository | None) -> dict[str, Any] | None:
@@ -1952,28 +2014,24 @@ def create_tag_error(name: str, local_tags: Mapping[str, str] | None = None) -> 
     return None
 
 
+# Desktop `sanitize-ref-name.ts` / git-check-ref-format: ASCII control and space,
+# DEL, ~ ^ : ? * [ \ | " < >, the magic sequence @{, consecutive dots, leading
+# and trailing dot, ref ending in .lock, trailing slash.
+_INVALID_REF_NAME_RE = re.compile(
+    r"[\x00-\x20\x7F~^:?*\[\\|\"<>]+|@\{|\.\.+|^\.|\.$|\.lock$|/$"
+)
+
+
 def sanitize_ref_name(name: str) -> str:
-    cleaned = []
-    for ch in name.strip().replace(" ", "-"):
-        if ch in '~^:?*[\\ ':
-            continue
-        if ord(ch) < 32 or ch == "\x7f":
-            continue
-        cleaned.append(ch)
-    result = "".join(cleaned)
-    while ".." in result:
-        result = result.replace("..", ".")
-    result = result.strip(".")
-    result = result.replace("@{", "").replace("//", "/")
-    return result.strip("/")
+    """Desktop `sanitizedRefName`: replace illegal characters with hyphens."""
+    return _INVALID_REF_NAME_RE.sub("-", name).lstrip("-+")
+
+
+def sanitized_ref_name(name: str) -> str:
+    """Desktop `sanitizedRefName` alias."""
+    return sanitize_ref_name(name)
 
 
 def test_for_invalid_chars(name: str) -> bool:
-    if not name:
-        return True
-    forbidden = set("~^:?*[\\ ")
-    if any(c in forbidden or ord(c) < 32 for c in name):
-        return True
-    if ".." in name or name.endswith(".") or name.endswith("/") or "@{" in name:
-        return True
-    return False
+    """Desktop `testForInvalidChars`."""
+    return _INVALID_REF_NAME_RE.search(name) is not None

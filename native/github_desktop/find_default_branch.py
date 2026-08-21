@@ -8,16 +8,16 @@ from .models import (
     UPSTREAM_REMOTE_NAME,
     Branch,
     BranchType,
-    ForkContributionTarget,
     Repository,
-    fork_contribution_target,
+    is_forked_repository_contributing_to_parent,
     is_repository_with_github_repository,
 )
 
-
-def is_forked_repository_contributing_to_parent(repo: Repository) -> bool:
-    """Desktop `isForkedRepositoryContributingToParent`."""
-    return bool(repo.is_fork and fork_contribution_target(repo) == ForkContributionTarget.PARENT)
+__all__ = [
+    "find_contribution_target_default_branch",
+    "find_default_branch",
+    "is_forked_repository_contributing_to_parent",
+]
 
 
 def find_default_branch(

@@ -2080,7 +2080,6 @@ def show_create_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, A
         StartPoint,
         TipState,
         sanitize_ref_name,
-        test_for_invalid_chars,
     )
 
     state = store.state_for(repo)
@@ -2231,12 +2230,13 @@ def show_create_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, A
             warn.set_visible(False)
             remote_warn.set_visible(False)
             return
-        if test_for_invalid_chars(raw) and name != raw:
-            warn.set_text("Branch names can't contain spaces or Git special characters.")
+        if not name:
+            warn.set_text(f"{raw} is not a valid name.")
             warn.set_visible(True)
             create.set_sensitive(False)
             remote_warn.set_visible(False)
             return
+        sanitized_hint = name != raw
         exists = any(b.name == name and b.type == BranchType.LOCAL for b in state.branches)
         if exists:
             warn.set_text(f"A branch named {name} already exists.")
@@ -2267,7 +2267,13 @@ def show_create_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, A
                 warn.set_visible(True)
                 create.set_sensitive(True)
                 return
-        warn.set_visible(False)
+        if sanitized_hint:
+            warn.set_text(
+                f"Will be created as {name}. Spaces and invalid characters have been replaced by hyphens."
+            )
+            warn.set_visible(True)
+        else:
+            warn.set_visible(False)
         create.set_sensitive(True)
 
     def submit(*_a: object) -> None:
@@ -3626,17 +3632,23 @@ def show_create_tag(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]
         return [item for item in keys if needle in item]
 
     def refresh(*_a: Any) -> None:
-        if closed["updating"]:
-            return
         name = current_name()
-        if name_row.get_text() != name:
-            closed["updating"] = True
-            name_row.set_text(name)
-            closed["updating"] = False
+        raw = name_row.get_text()
         err = create_tag_error(name, local_tags)
+        if not name and raw.strip():
+            err = f"{raw} is not a valid name."
+        elif raw != name and name and not err:
+            err = (
+                f"Will be created as {name}. Spaces and invalid characters have been replaced by hyphens."
+            )
+            error.remove_css_class("error")
+            error.add_css_class("warning")
+        else:
+            error.remove_css_class("warning")
+            error.add_css_class("error")
         error.set_text(err or "")
         error.set_visible(bool(err))
-        ok.set_sensitive(bool(name) and err is None)
+        ok.set_sensitive(bool(name) and (create_tag_error(name, local_tags) is None))
         matches = filtered_tags(name)
         child = previous_box.get_first_child()
         while child is not None:
@@ -4646,13 +4658,29 @@ def show_alias(parent: Gtk.Window, store: AppStore) -> None:
     repo = store.selected_repository
     if not repo:
         return
+    from ..models import name_of
+
+    verb = "Change" if repo.alias else "Create"
+    github_note = (
+        " This will not affect the original repository name on GitHub." if repo.github else ""
+    )
 
     def submit(values: dict[str, str]) -> None:
-        repo.alias = values.get("alias") or None
+        alias = (values.get("alias") or "").strip()
+        if not alias:
+            return
+        repo.alias = alias
         store._save_repositories()
         store.emit()
 
-    _text_dialog(parent, "Repository alias", "Shown in the repository list.", [("alias", "Alias", repo.alias or "")], submit, "Save")
+    _text_dialog(
+        parent,
+        f"{verb} repository alias",
+        f'Choose a new alias for the repository "{name_of(repo)}".{github_note}',
+        [("alias", "Alias", repo.alias or repo.name)],
+        submit,
+        f"{verb} alias",
+    )
 
 
 def show_ssh_passphrase(parent: Gtk.Window, payload: dict[str, Any]) -> None:
