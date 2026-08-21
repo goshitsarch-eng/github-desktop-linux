@@ -421,9 +421,14 @@ MAX_PARTIAL_BLOB_BYTES = 256 * 1024
 
 
 def get_blob_contents(repo: str, commitish: str, path: str) -> bytes:
-    result = git(["show", f"{commitish}:{path}"], repo, success_exit_codes={0, 128}, name="getBlobContents", binary=True)
-    if result.exit_code != 0:
-        return b""
+    """Desktop `getBlobContents`: successExitCodes {0, 1}; exit 128 throws."""
+    result = git(
+        ["show", f"{commitish}:{path}"],
+        repo,
+        success_exit_codes={0, 1},
+        name="getBlobContents",
+        binary=True,
+    )
     return result.stdout_bytes or result.stdout.encode("utf-8", errors="replace")
 
 
@@ -432,53 +437,9 @@ def get_partial_blob_contents(
     commitish: str,
     path: str,
     length: int = MAX_PARTIAL_BLOB_BYTES,
-) -> bytes:
-    """Read at most `length` bytes of a blob. Desktop `getPartialBlobContents`.
-
-    Stops the git process after `length` bytes so huge blobs are never fully
-    materialized for syntax highlighting.
-    """
-    cmd = [find_git(), "show", f"{commitish}:{path}"]
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(repo),
-        env=_prepare_env(None),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-    )
-    chunks: list[bytes] = []
-    total = 0
-    stderr_bytes = b""
-    try:
-        stdout = proc.stdout
-        assert stdout is not None
-        while total < length:
-            chunk = stdout.read(min(65536, length - total))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            total += len(chunk)
-        if proc.poll() is None:
-            abort_git_process(proc)
-        else:
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                abort_git_process(proc)
-    finally:
-        if proc.stderr is not None:
-            try:
-                stderr_bytes = proc.stderr.read()
-            except Exception:
-                pass
-        if proc.poll() is None:
-            abort_git_process(proc)
-    data = b"".join(chunks)[:length]
-    code = proc.returncode
-    if not data and code not in {0, None, -signal.SIGTERM, -signal.SIGKILL, 1}:
-        return b""
-    return data
+) -> bytes | None:
+    """Desktop `getPartialBlobContents` always uses CatchPathNotInRef."""
+    return get_partial_blob_contents_catch_path_not_in_ref(repo, commitish, path, length)
 
 
 def get_partial_blob_contents_catch_path_not_in_ref(
@@ -526,13 +487,22 @@ def get_partial_blob_contents_catch_path_not_in_ref(
                 pass
         if proc.poll() is None:
             abort_git_process(proc)
-    if classify_git_error(stderr_bytes.decode("utf-8", errors="replace")) == "PathExistsButNotInRef":
+    stderr_text = stderr_bytes.decode("utf-8", errors="replace")
+    if classify_git_error(stderr_text) == "PathExistsButNotInRef":
         return None
     data = b"".join(chunks)[:length]
     code = proc.returncode
-    if not data and code not in {0, None, -signal.SIGTERM, -signal.SIGKILL, 1}:
-        return b""
-    return data
+    # Truncation aborts the process (Desktop maxBuffer); keep the bytes we have.
+    if code in {0, None, -signal.SIGTERM, -signal.SIGKILL, 1}:
+        return data
+    raise GitError(
+        stderr_text or "getPartialBlobContents failed",
+        args=cmd[1:],
+        exit_code=code,
+        stderr=stderr_text,
+        git_error=classify_git_error(stderr_text),
+        path=str(repo),
+    )
 
 
 def get_working_directory_lines(repo: str, path: str) -> list[str]:
@@ -547,7 +517,10 @@ def get_working_directory_lines(repo: str, path: str) -> list[str]:
 
 
 def get_blob_lines(repo: str, commitish: str, path: str) -> list[str]:
-    data = get_blob_contents(repo, commitish, path)
+    try:
+        data = get_blob_contents(repo, commitish, path)
+    except GitError:
+        return []
     if not data:
         return []
     return data.decode("utf-8", errors="replace").splitlines()
@@ -559,7 +532,10 @@ def get_partial_blob_lines(
     path: str,
     length: int = MAX_PARTIAL_BLOB_BYTES,
 ) -> list[str]:
-    data = get_partial_blob_contents(repo, commitish, path, length)
+    try:
+        data = get_partial_blob_contents(repo, commitish, path, length)
+    except GitError:
+        return []
     if not data:
         return []
     return data.decode("utf-8", errors="replace").splitlines()
@@ -637,13 +613,9 @@ def _diff_from_result(
 
 
 def _show_blob(repo: str, spec: str, name: str) -> bytes | None:
-    try:
-        result = git(["show", spec], repo, name=name, success_exit_codes={0, 128})
-        if result.exit_code != 0:
-            return None
-        return result.stdout_bytes or result.stdout.encode("utf-8", errors="replace")
-    except GitError:
-        return None
+    """Desktop `getBlobImage` uses `getBlobContents` ({0, 1}; 128 throws)."""
+    result = git(["show", spec], repo, name=name, success_exit_codes={0, 1}, binary=True)
+    return result.stdout_bytes or result.stdout.encode("utf-8", errors="replace")
 
 
 def _image_diff(repo: str, path: str, status: FileStatus, commitish: str | None) -> ImageDiff:
@@ -687,7 +659,8 @@ def _submodule_diff(repo: str, path: str, status: SubmoduleStatus) -> SubmoduleD
 
 
 def unstage_all(repo: str) -> None:
-    git(["reset", "--mixed", "HEAD"], repo, success_exit_codes={0, 128}, name="unstageAll")
+    """Desktop `unstageAll`: `git reset -- .`. Accept 128 for unborn HEAD."""
+    git(["reset", "--", "."], repo, success_exit_codes={0, 128}, name="unstageAll")
 
 
 def unstage_all_files(repo: str) -> None:
@@ -1684,10 +1657,10 @@ def get_branches_differing_from_upstream(repo: str) -> list[TrackingBranch]:
     result = git(
         ["for-each-ref", *parser.format_args, "refs/heads", "refs/remotes"],
         repo,
-        success_exit_codes={0, 128},
+        expected_errors={"NotAGitRepository"},
         name="getBranchesDifferingFromUpstream",
     )
-    if result.exit_code != 0:
+    if result.git_error == "NotAGitRepository":
         return []
     local: list[tuple[str, str, str]] = []
     remote_shas: dict[str, str] = {}
@@ -1731,12 +1704,10 @@ def fetch_tags_to_push(repo: str, remote: str, branch_name: str, *, env: dict[st
         ["push", remote, branch_name, "--follow-tags", "--dry-run", "--no-verify", "--porcelain"],
         repo,
         env=env,
-        success_exit_codes={0, 1, 128},
+        success_exit_codes={0, 1},
         timeout=45,
         name="fetchTagsToPush",
     )
-    if result.exit_code not in {0, 1}:
-        return []
     tags: list[str] = []
     lines = result.stdout.splitlines()
     for line in lines[1:]:
@@ -2503,7 +2474,8 @@ def move_stash_entry(repo: str, entry: StashEntry, branch_name: str) -> None:
 
 
 def create_tag(repo: str, name: str, sha: str) -> None:
-    git(["tag", "-a", name, "-m", name, sha], repo, name="createTag")
+    """Desktop `createTag`: annotated tag with an empty message."""
+    git(["tag", "-a", "-m", "", name, sha], repo, name="createTag")
 
 
 def delete_tag(repo: str, name: str) -> None:
@@ -2754,11 +2726,11 @@ def _lfs_missing(exc: GitError) -> bool:
 
 
 def is_using_lfs(repo: str) -> bool:
+    """Desktop `isUsingLFS`; callers catch GitError (AppStore returns false)."""
     result = git(
         ["lfs", "track"],
         repo,
         env={"GIT_LFS_TRACK_NO_INSTALL_HOOKS": "1"},
-        success_exit_codes={0, 1, 128},
         name="isUsingLFS",
     )
     return bool(result.stdout.strip())
@@ -3549,12 +3521,13 @@ def write_description(repo: str, description: str) -> None:
 
 
 def read_description(repo: str) -> str:
+    """Desktop `getGitDescription`: empty only when the file is the default text."""
     git_dir = _git_dir(repo)
     try:
         text = Path(os.path.join(git_dir, "description")).read_text(encoding="utf-8")
-        if text == DEFAULT_GIT_DESCRIPTION or text.strip().startswith("Unnamed repository"):
+        if text == DEFAULT_GIT_DESCRIPTION:
             return ""
-        return text.strip()
+        return text
     except OSError:
         return ""
 

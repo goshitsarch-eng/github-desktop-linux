@@ -14,6 +14,7 @@ REQUIRED_GIT_FUNCS = [
     "get_working_directory_diff",
     "get_working_directory_lines",
     "get_blob_lines",
+    "get_blob_contents",
     "get_commit_diff",
     "ensure_relative_path",
     "diff_from_raw_diff_output",
@@ -1140,5 +1141,9 @@ def test_window_actions_cover_menus() -> None:
         "Can't create partial commit",
         "VideoTagFilter",
         "the stash entry is kept in case you need it again",
+        "getBlobContents",
+        "getPartialBlobContentsCatchPathNotInRef",
+        "fetchTagsToPush",
+        "getBranchesDifferingFromUpstream",
     ]:
         assert phrase in src

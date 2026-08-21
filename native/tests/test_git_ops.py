@@ -184,6 +184,8 @@ def test_tag_and_log_files(git_repo: Path) -> None:
 
     tags = get_all_tags(str(git_repo))
     assert "v1.0.0" in tags
+    message = run_git(git_repo, "tag", "-l", "--format=%(contents)", "v1.0.0").stdout
+    assert message.strip() == ""
     files = get_changed_files(str(git_repo), commits[0].sha)
     assert any(f.path == "README.md" for f in files)
 

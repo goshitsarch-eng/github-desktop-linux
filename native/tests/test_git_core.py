@@ -9,11 +9,16 @@ import pytest
 
 from github_desktop.errors import GitError, classify_git_error
 from github_desktop.git.ops import (
+    create_tag,
+    fetch_tags_to_push,
     get_ahead_behind_range,
+    get_blob_contents,
     get_branches,
+    get_branches_differing_from_upstream,
     get_commit_range_changed_files,
     get_commits,
     get_commits_in_range,
+    get_partial_blob_contents,
     get_partial_blob_contents_catch_path_not_in_ref,
     get_remotes,
     parse_config_lock_file_path_from_error,
@@ -102,6 +107,7 @@ def test_branches_and_remotes_outside_a_repository(tmp_path: Path) -> None:
     try:
         assert get_branches(str(empty)) == []
         assert get_remotes(str(empty)) == []
+        assert get_branches_differing_from_upstream(str(empty)) == []
     finally:
         empty.rmdir()
 
@@ -181,3 +187,32 @@ def test_get_commit_diff_root_and_later_commits(git_repo: Path) -> None:
     later = get_commit_diff(str(git_repo), "README.md", head.sha)
     assert isinstance(later, TextDiff)
     assert any("world" in line.text for hunk in later.hunks for line in hunk.lines)
+
+
+def test_get_blob_contents_throws_on_missing_path(git_repo: Path) -> None:
+    data = get_blob_contents(str(git_repo), "HEAD", "README.md")
+    assert b"hello" in data
+    with pytest.raises(GitError) as caught:
+        get_blob_contents(str(git_repo), "HEAD", "missing-file.txt")
+    assert caught.value.exit_code == 128
+
+
+def test_get_partial_blob_contents_delegates_to_catch_path_not_in_ref(git_repo: Path) -> None:
+    (git_repo / "untracked.txt").write_text("hello\n", encoding="utf-8")
+    assert get_partial_blob_contents(str(git_repo), "HEAD", "untracked.txt") is None
+    with pytest.raises(GitError):
+        get_partial_blob_contents(str(git_repo), "HEAD", "does-not-exist-anywhere.txt")
+
+
+def test_create_tag_uses_empty_annotated_message(git_repo: Path) -> None:
+    sha = run_git(git_repo, "rev-parse", "HEAD").stdout.strip()
+    create_tag(str(git_repo), "v-empty", sha)
+    cat = run_git(git_repo, "cat-file", "-p", "v-empty").stdout
+    # Annotated payload is object/type/tag/tagger, then a blank line, then the message.
+    _, _, body = cat.partition("\n\n")
+    assert body.strip() == ""
+
+
+def test_fetch_tags_to_push_missing_remote_raises(git_repo: Path) -> None:
+    with pytest.raises(GitError):
+        fetch_tags_to_push(str(git_repo), "no-such-remote", "main")
