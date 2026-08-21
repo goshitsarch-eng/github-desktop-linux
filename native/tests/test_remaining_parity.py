@@ -1125,6 +1125,20 @@ def test_generate_branch_context_menu_items_matches_desktop() -> None:
     assert viewed == [True]
 
 
+def test_generate_pull_request_context_menu_items_matches_desktop() -> None:
+    from github_desktop.ui.branches import generate_pull_request_context_menu_items
+
+    viewed: list[bool] = []
+    items = generate_pull_request_context_menu_items(lambda: viewed.append(True))
+    labels = [item[0] if item else None for item in items]
+    assert labels == ["View Pull Request on GitHub"]
+    assert items[0][2] is True
+    items[0][1]()
+    assert viewed == [True]
+    assert generate_pull_request_context_menu_items(None) == []
+    assert generate_pull_request_context_menu_items() == []
+
+
 def test_show_pull_request_by_pr_opens_html_url(isolated_config, monkeypatch) -> None:
     from github_desktop.models import PullRequest
 

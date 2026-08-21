@@ -39,6 +39,16 @@ def generate_branch_context_menu_items(
     return items
 
 
+def generate_pull_request_context_menu_items(
+    on_view_pull_request: Callable[[], None] | None = None,
+) -> list:
+    """Desktop `generatePullRequestContextMenuItems`."""
+    items: list = []
+    if on_view_pull_request is not None:
+        items.append(("View Pull Request on GitHub", on_view_pull_request, True))
+    return items
+
+
 def group_branches(
     branches: list[Branch],
     *,
@@ -84,6 +94,7 @@ class BranchesFoldout(Gtk.Popover):
         on_merge: Callable[[Branch], None],
         on_pr: Callable[[PullRequest], None],
         on_view_github: Callable[[Branch], None],
+        on_view_pr_github: Callable[[PullRequest], None] | None = None,
         on_cherry_pick: Callable[[Branch, str], None] | None = None,
         on_cherry_pick_pr: Callable[[PullRequest, str], None] | None = None,
         on_cherry_pick_new_branch: Callable[[str], None] | None = None,
@@ -101,6 +112,7 @@ class BranchesFoldout(Gtk.Popover):
         self._on_merge = on_merge
         self._on_pr = on_pr
         self._on_view_github = on_view_github
+        self._on_view_pr_github = on_view_pr_github
         self._on_cherry_pick = on_cherry_pick
         self._on_cherry_pick_pr = on_cherry_pick_pr
         self._on_cherry_pick_new_branch = on_cherry_pick_new_branch
@@ -304,6 +316,10 @@ class BranchesFoldout(Gtk.Popover):
             motion.connect("enter", lambda *_a, r=row, p=pr: self._schedule_pr_quick(r, p))
             motion.connect("leave", lambda *_a: self._schedule_hide_pr_quick())
             row.add_controller(motion)
+            attach_right_click(
+                row,
+                lambda _w, r=row, p=pr: self._on_pull_request_item_context_menu(r, p),
+            )
             if self._on_cherry_pick_pr and pr.head_ref != self._current_name:
                 try:
                     drop = Gtk.DropTarget.new(str, Gdk.DragAction.MOVE)
@@ -483,6 +499,23 @@ class BranchesFoldout(Gtk.Popover):
             except Exception:
                 pass
         return row
+
+    def _on_pull_request_item_context_menu(self, row: Gtk.Widget, pr: PullRequest) -> None:
+        """Desktop `onPullRequestItemContextMenu`."""
+        self._hide_pr_quick()
+        try:
+            self._pr_quick.unparent()
+        except Exception:
+            pass
+        view = self._on_view_pr_github
+        if view is None:
+            return
+        show_context_menu(
+            row,
+            generate_pull_request_context_menu_items(
+                on_view_pull_request=lambda: view(pr),
+            ),
+        )
 
     def _branch_menu(self, row: Gtk.Widget, branch: Branch) -> None:
         show_context_menu(

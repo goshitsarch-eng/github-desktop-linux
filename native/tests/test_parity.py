@@ -1315,6 +1315,8 @@ def test_window_actions_cover_menus() -> None:
         "generateBranchContextMenuItems",
         "onBranchToolbarButtonContextMenu",
         "View Pull Request on GitHub",
+        "generatePullRequestContextMenuItems",
+        "onPullRequestItemContextMenu",
         "_showPullRequestByPR",
         "Copy branch name",
         "updateResizableConstraints",

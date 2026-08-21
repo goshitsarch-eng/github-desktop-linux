@@ -1464,6 +1464,7 @@ class MainWindow(Adw.ApplicationWindow):
             on_merge=lambda b: self._repo_op(lambda r: self.store.merge_branch(r, b.name)),
             on_pr=lambda pr: self._repo_op(lambda r: self.store.checkout_pull_request(r, pr)),
             on_view_github=lambda b: self._repo_op(lambda r: self.store.view_branch_on_github(r, b.name)),
+            on_view_pr_github=lambda pr: self.store.show_pull_request_by_pr(pr),
             on_cherry_pick=lambda b, sha: self._repo_op(
                 lambda r: self.store.cherry_pick_commits(r, [s for s in str(sha).split(",") if s], target_branch=b.name)
             ),
