@@ -2329,23 +2329,23 @@ class AppStore:
         """Desktop `findDefaultBranch` using current remotes and `refs/remotes/*/HEAD`."""
         state = self.state_for(repo)
         remotes = list(state.remotes)
-        if not remotes:
+        if not remotes and os.path.isdir(repo.path):
             try:
                 remotes = get_remotes(repo.path)
-            except GitError:
+            except (GitError, GitNotFoundError, OSError):
                 remotes = []
         default_remote = find_default_remote(remotes)
         remote_name = default_remote.name if default_remote else None
         lookup = UPSTREAM_REMOTE_NAME if is_forked_repository_contributing_to_parent(repo) else remote_name
         head = None
-        if lookup:
+        if lookup and os.path.isdir(repo.path):
             try:
                 head = get_remote_head(repo.path, lookup)
-            except GitError:
+            except (GitError, GitNotFoundError, OSError):
                 head = None
         try:
             init_default = get_default_branch()
-        except GitError:
+        except (GitError, GitNotFoundError):
             init_default = self.settings.default_branch or "main"
         found = find_default_branch(
             repo,
@@ -2373,11 +2373,11 @@ class AppStore:
                 head = get_remote_head(repo.path, origin.name)
                 if head:
                     return head
-        except GitError:
+        except (GitError, GitNotFoundError, OSError):
             pass
         try:
             return get_default_branch()
-        except GitError:
+        except (GitError, GitNotFoundError):
             return "main"
 
     def update_from_default_branch(self, repo: Repository) -> None:
