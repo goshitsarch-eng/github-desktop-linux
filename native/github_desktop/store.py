@@ -344,6 +344,8 @@ class RepositoryViewState:
     co_authors: list[Author] = field(default_factory=list)
     compare_branch: Branch | None = None
     history_mode: HistoryTabMode = HistoryTabMode.HISTORY
+    show_branch_list: bool = False  # Desktop compareState.showBranchList
+    compare_filter_text: str = ""  # Desktop compareState.filterText
     stashed_visible: bool = False
     local_tags_to_push: list[str] = field(default_factory=list)
     loading: bool = False
@@ -437,6 +439,8 @@ class AppStore:
         self._global_author_loading = False
         self.foldout: FoldoutType | None = None
         self.repository_filter_text: str = ""  # Desktop `repositoryFilterText`
+        self.focus_commit_message = False  # Desktop `focusCommitMessage`
+        self.resizable_pane_active = False  # Desktop `resizablePaneActive`
         self._popups = PopupManager()
         self.banner: Banner | None = None
         self.cached_repo_rulesets: dict[int, dict] = {}
@@ -859,6 +863,48 @@ class AppStore:
     def close_current_foldout(self) -> None:
         """Desktop `_closeCurrentFoldout`."""
         self.close_foldout(None)
+
+    def set_commit_message_focus(self, focus: bool) -> None:
+        """Desktop `_setCommitMessageFocus`."""
+        if self.focus_commit_message == focus:
+            return
+        self.focus_commit_message = bool(focus)
+        self.emit()
+
+    def app_focused_element_changed(self, active: bool) -> None:
+        """Desktop `_appFocusedElementChanged`."""
+        if self.resizable_pane_active == active:
+            return
+        self.resizable_pane_active = bool(active)
+        self.emit()
+
+    def initialize_compare(self, repo: Repository, initial_action: HistoryTabMode | None = None) -> None:
+        """Desktop `_initializeCompare`."""
+        state = self.state_for(repo)
+        action = initial_action if initial_action is not None else HistoryTabMode.HISTORY
+        if action == HistoryTabMode.HISTORY and (
+            state.history_mode != HistoryTabMode.HISTORY or state.compare_branch is not None
+        ):
+            self.compare_to_branch(repo, None)
+
+    def update_compare_form(
+        self,
+        repo: Repository,
+        *,
+        filter_text: str | None = None,
+        show_branch_list: bool | None = None,
+    ) -> None:
+        """Desktop `_updateCompareForm`."""
+        state = self.state_for(repo)
+        changed = False
+        if filter_text is not None and state.compare_filter_text != filter_text:
+            state.compare_filter_text = filter_text
+            changed = True
+        if show_branch_list is not None and state.show_branch_list != show_branch_list:
+            state.show_branch_list = show_branch_list
+            changed = True
+        if changed:
+            self.emit()
 
     def set_repository_filter_text(self, text: str) -> None:
         """Desktop `_setRepositoryFilterText`."""

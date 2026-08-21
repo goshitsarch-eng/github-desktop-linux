@@ -1050,6 +1050,41 @@ def test_show_foldout_matches_desktop(isolated_config, git_repo: Path, monkeypat
     assert called == [True, True]
 
 
+def test_commit_message_focus_and_resizable_pane_active(isolated_config) -> None:
+    store = AppStore()
+    assert store.focus_commit_message is False
+    assert store.resizable_pane_active is False
+    store.set_commit_message_focus(True)
+    assert store.focus_commit_message is True
+    store.set_commit_message_focus(True)
+    store.set_commit_message_focus(False)
+    assert store.focus_commit_message is False
+    store.app_focused_element_changed(True)
+    assert store.resizable_pane_active is True
+    store.app_focused_element_changed(True)
+    store.app_focused_element_changed(False)
+    assert store.resizable_pane_active is False
+
+
+def test_initialize_compare_resets_history_mode(isolated_config, git_repo) -> None:
+    from github_desktop.models import HistoryTabMode
+
+    store = AppStore()
+    repos = store.add_repositories([str(git_repo)])
+    repo = repos[0]
+    state = store.state_for(repo)
+    state.history_mode = HistoryTabMode.COMPARE
+    state.compare_filter_text = "topic"
+    state.show_branch_list = True
+    store.initialize_compare(repo, HistoryTabMode.HISTORY)
+    store.update_compare_form(repo, filter_text="", show_branch_list=False)
+    latest = store.state_for(repo)
+    assert latest.history_mode == HistoryTabMode.HISTORY
+    assert latest.compare_branch is None
+    assert latest.compare_filter_text == ""
+    assert latest.show_branch_list is False
+
+
 def test_generate_branch_context_menu_items_matches_desktop() -> None:
     from github_desktop.ui.branches import generate_branch_context_menu_items
 

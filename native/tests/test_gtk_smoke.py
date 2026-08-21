@@ -98,6 +98,23 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             assert branch_wrap.has_css_class("toolbar-resizable")
             assert branch_wrap.has_css_class(resizableComponentClass)
             win._resize_active_resizable(True)
+            assert win.lookup_action("increase-resizable").get_enabled() is False
+            win.store.app_focused_element_changed(True)
+            win._sync_resizable_menu()
+            assert win.lookup_action("increase-resizable").get_enabled() is True
+            win.store.app_focused_element_changed(False)
+            win._sync_resizable_menu()
+            assert win.lookup_action("increase-resizable").get_enabled() is False
+            from github_desktop.models import FoldoutType, RepositorySectionTab
+
+            win._view_stack.set_visible_child_name("history")
+            win.store.set_section(RepositorySectionTab.HISTORY)
+            win.store.show_foldout(FoldoutType.BRANCH)
+            win._go_to_commit_message()
+            assert win.store.section == RepositorySectionTab.CHANGES
+            assert win._view_stack.get_visible_child_name() == "changes"
+            assert win.store.foldout is None
+            assert win.store.focus_commit_message is False
             child = win._stack.get_visible_child_name()
             assert child in {"welcome", "empty", "repo"}
             win._refresh_files()

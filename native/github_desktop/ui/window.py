@@ -100,6 +100,7 @@ from .menus import (
     attach_paned_keyboard_resize,
     attach_paned_reset,
     attach_right_click,
+    find_active_resizable,
     resizable_limit,
     resize_active_resizable,
     wrap_toolbar_resizable,
@@ -486,6 +487,9 @@ class MainWindow(Adw.ApplicationWindow):
             for current in self.store.take_popups():
                 present_popup(self, self.store, current.type, current.payload)
         self._apply_underline_links()
+        self._sync_resizable_menu()
+        if self.store.focus_commit_message:
+            self._apply_commit_message_focus()
 
     def _apply_underline_links(self) -> None:
         if self.store.settings.underline_links:
@@ -539,11 +543,11 @@ class MainWindow(Adw.ApplicationWindow):
         add("add-local-repository", lambda: self.store.show_popup(PopupType.ADD_REPOSITORY))
         add("clone-repository", lambda: self.store.show_popup(PopupType.CLONE_REPOSITORY))
         add("preferences", lambda: show_preferences(self, self.store))
-        add("show-changes", lambda: self.store.set_section(RepositorySectionTab.CHANGES))
-        add("show-history", lambda: self.store.set_section(RepositorySectionTab.HISTORY))
+        add("show-changes", lambda: self._show_changes(should_focus_changes=True))
+        add("show-history", lambda: self._show_history(should_focus_history=True))
         add("choose-repository", self._toggle_repo_sidebar)
         add("show-branches", self._show_branches_foldout)
-        add("go-to-commit-message", lambda: self._summary.grab_focus() if hasattr(self, "_summary") else None)
+        add("go-to-commit-message", self._go_to_commit_message)
         add("push", lambda: self._repo_op(lambda r: self.store.push_repo(r)))
         add("force-push", lambda: self.store.show_popup(PopupType.CONFIRM_FORCE_PUSH))
         add("pull", lambda: self._repo_op(self.store.pull_repo))
@@ -601,6 +605,11 @@ class MainWindow(Adw.ApplicationWindow):
         add("pr-suggested-create", self._pr_suggested_create)
         add("show-shortcuts", self._show_shortcuts)
         add("toggle-fullscreen", self._toggle_fullscreen)
+        for name in ("increase-resizable", "decrease-resizable"):
+            action = self.lookup_action(name)
+            if action is not None:
+                action.set_enabled(False)
+        self.connect("notify::focus-widget", self._on_focus_widget)
         self.add_css_class("github-desktop-zoom")
         from .css import apply_zoom
 
@@ -740,11 +749,114 @@ class MainWindow(Adw.ApplicationWindow):
             self._diff_view.start_search()
 
     def _compare_to_branch(self) -> None:
+        """Desktop `showHistory(false, true)` — History tab with the compare branch list focused."""
+        self._show_history(should_focus_history=False, show_branch_list=True)
+
+    def _show_changes(self, *, should_focus_changes: bool = True) -> None:
+        """Desktop `showChanges`."""
+        if self.store.selected_repository is None:
+            return
+        self.store.close_current_foldout()
+        self.store.set_section(RepositorySectionTab.CHANGES)
+        if hasattr(self, "_view_stack"):
+            self._view_stack.set_visible_child_name("changes")
+        if should_focus_changes:
+            self.set_focus_changes_needed()
+            self._apply_changes_history_focus()
+
+    def _show_history(self, *, should_focus_history: bool = True, show_branch_list: bool = False) -> None:
+        """Desktop `showHistory`."""
+        repo = self.store.selected_repository
+        if repo is None:
+            return
+        self.store.close_current_foldout()
+        self.store.initialize_compare(repo, HistoryTabMode.HISTORY)
+        self.store.update_compare_form(repo, filter_text="", show_branch_list=show_branch_list)
         self.store.set_section(RepositorySectionTab.HISTORY)
         if hasattr(self, "_view_stack"):
             self._view_stack.set_visible_child_name("history")
         if hasattr(self, "_compare_search"):
-            GLib.idle_add(self._compare_search.grab_focus)
+            if self._compare_search.get_text():
+                self._compare_search.set_text("")
+            if show_branch_list:
+                GLib.idle_add(self._compare_search.grab_focus)
+        if should_focus_history:
+            self.set_focus_history_needed()
+            self._apply_changes_history_focus()
+
+    def _go_to_commit_message(self) -> None:
+        """Desktop `goToCommitMessage`."""
+        self._show_changes(should_focus_changes=False)
+        self.store.set_commit_message_focus(True)
+        self._apply_commit_message_focus()
+
+    def set_focus_changes_needed(self) -> None:
+        """Desktop `setFocusChangesNeeded`."""
+        self._focus_changes_needed = True
+
+    def set_focus_history_needed(self) -> None:
+        """Desktop `setFocusHistoryNeeded`."""
+        self._focus_history_needed = True
+
+    def _apply_changes_history_focus(self) -> None:
+        if getattr(self, "_focus_changes_needed", False):
+            self._focus_changes_needed = False
+            if (
+                self.store.settings.show_changes_filter
+                and hasattr(self, "_filter")
+                and getattr(self, "_filter_box", None) is not None
+                and self._filter_box.get_visible()
+            ):
+                self._filter.grab_focus()
+            elif hasattr(self, "_include_all"):
+                self._include_all.grab_focus()
+        if getattr(self, "_focus_history_needed", False):
+            self._focus_history_needed = False
+            if hasattr(self, "_commit_list"):
+                self._commit_list.grab_focus()
+
+    def _apply_commit_message_focus(self) -> None:
+        """Desktop commit-message `focusSummary` / `onCommitMessageFocusSet`."""
+        if not self.store.focus_commit_message or getattr(self, "_applying_commit_focus", False):
+            return
+        self._applying_commit_focus = True
+        try:
+            if hasattr(self, "_summary"):
+                self._summary.grab_focus()
+            self.store.set_commit_message_focus(False)
+        finally:
+            self._applying_commit_focus = False
+
+    def _is_app_menu_focus(self, widget) -> bool:
+        """Desktop `app-menu-bar` contains `document.activeElement`."""
+        current = widget
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if current is getattr(self, "_menu_btn", None):
+                return True
+            current = current.get_parent() if hasattr(current, "get_parent") else None
+        return False
+
+    def is_resize_pane_active(self) -> bool:
+        """Desktop `isResizePaneActive`."""
+        focus = self.get_focus()
+        if focus is None:
+            return False
+        if self._is_app_menu_focus(focus):
+            return bool(self.store.resizable_pane_active)
+        return find_active_resizable(focus) is not None
+
+    def _on_focus_widget(self, *_args: object) -> None:
+        self.store.app_focused_element_changed(self.is_resize_pane_active())
+        self._sync_resizable_menu()
+
+    def _sync_resizable_menu(self) -> None:
+        enabled = bool(self.store.resizable_pane_active)
+        for name in ("increase-resizable", "decrease-resizable"):
+            action = self.lookup_action(name)
+            if action is not None:
+                action.set_enabled(enabled)
 
     def _refresh_empty(self) -> None:
         if not hasattr(self, "_empty_tutorial_btn"):

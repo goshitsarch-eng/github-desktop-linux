@@ -1328,5 +1328,15 @@ def test_window_actions_cover_menus() -> None:
         "Pull request file list",
         "width increased",
         "getResizePercentage",
+        "setCommitMessageFocus",
+        "goToCommitMessage",
+        "setFocusChangesNeeded",
+        "setFocusHistoryNeeded",
+        "resizablePaneActive",
+        "_appFocusedElementChanged",
+        "isResizePaneActive",
+        "initializeCompare",
+        "_updateCompareForm",
+        "showBranchList",
     ]:
         assert phrase in src
