@@ -232,7 +232,7 @@ def test_clone_resolves_renamed_url(isolated_config, tmp_path: Path, monkeypatch
     monkeypatch.setattr(GitHubAPI, "fetch_repository_clone_info", fake_info)
     monkeypatch.setattr("github_desktop.store.clone_repository", fake_clone)
     monkeypatch.setattr(store, "_run", lambda work, done: (work(), done(None)))
-    monkeypatch.setattr(store, "add_repositories", lambda paths: [])
+    monkeypatch.setattr(store, "add_repositories", lambda paths, **_kwargs: [])
     store.clone("https://github.com/acme/old.git", str(dest))
     assert seen == ["https://github.com/acme/renamed.git"]
 
