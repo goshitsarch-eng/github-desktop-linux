@@ -128,6 +128,7 @@ from .menus import (
     committed_file_context_items,
     copy_text,
     generate_repository_list_context_menu_specs,
+    new_repository_button_menu_items,
     open_in_editor_label,
     open_in_shell_label,
     remove_repository_label,
@@ -1872,12 +1873,18 @@ class MainWindow(Adw.ApplicationWindow):
         box.append(scroller)
         self._repo_filter = search
         search.connect("search-changed", self._on_repository_filter_text)
-        add_box = Gtk.Box(spacing=6)
-        for label, action in (("Add", "win.add-local-repository"), ("Clone", "win.clone-repository"), ("New", "win.new-repository")):
-            b = Gtk.Button(label=label)
-            b.set_action_name(action)
-            add_box.append(b)
-        box.append(add_box)
+        add_btn = Gtk.Button()
+        add_btn.add_css_class("new-repository-button")
+        add_inner = Gtk.Box(spacing=4)
+        add_inner.append(Gtk.Label(label="Add"))
+        add_inner.append(Gtk.Image.new_from_icon_name("pan-down-symbolic"))
+        add_btn.set_child(add_inner)
+        add_btn.connect("clicked", self._on_new_repository_button_click)
+        down = Gtk.EventControllerKey()
+        down.connect("key-pressed", self._on_new_repository_button_key)
+        add_btn.add_controller(down)
+        self._new_repo_btn = add_btn
+        box.append(add_btn)
         return box
 
     def _build_changes(self) -> Gtk.Widget:
@@ -2773,6 +2780,26 @@ class MainWindow(Adw.ApplicationWindow):
             shown += 1
         if needle and shown == 0:
             self._repo_list.append(self._repo_filter_empty_row())
+
+    def _on_new_repository_button_click(self, widget: Gtk.Widget, *_args: object) -> None:
+        """Desktop `onNewRepositoryButtonClick`."""
+        show_context_menu(
+            widget,
+            new_repository_button_menu_items(
+                on_clone=lambda: self.store.show_popup(PopupType.CLONE_REPOSITORY),
+                on_create=lambda: self.store.show_popup(PopupType.CREATE_REPOSITORY),
+                on_add=lambda: self.store.show_popup(PopupType.ADD_REPOSITORY),
+            ),
+        )
+
+    def _on_new_repository_button_key(
+        self, _controller, keyval: int, *_args: object
+    ) -> bool:
+        """Desktop `onNewRepositoryButtonKeyDown` (ArrowDown opens the menu)."""
+        if keyval == Gdk.KEY_Down:
+            self._on_new_repository_button_click(self._new_repo_btn)
+            return True
+        return False
 
     def _repo_filter_empty_row(self) -> Gtk.Widget:
         """Desktop `RepositoriesList.renderNoItems` filter blank slate."""

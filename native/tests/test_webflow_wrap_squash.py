@@ -426,6 +426,31 @@ def test_generate_repository_list_context_menu_specs() -> None:
     assert "Create alias" not in [label for label, _enabled in cloning]
 
 
+def test_new_repository_button_menu_items_match_desktop() -> None:
+    from github_desktop.ui.menus import new_repository_button_menu_items
+
+    cloned: list[str] = []
+    created: list[str] = []
+    added: list[str] = []
+    items = new_repository_button_menu_items(
+        on_clone=lambda: cloned.append("clone"),
+        on_create=lambda: created.append("create"),
+        on_add=lambda: added.append("add"),
+    )
+    assert [item[0] for item in items] == [
+        "Clone repository…",
+        "Create new repository…",
+        "Add existing repository…",
+    ]
+    assert all(item[2] for item in items)
+    items[0][1]()
+    items[1][1]()
+    items[2][1]()
+    assert cloned == ["clone"]
+    assert created == ["create"]
+    assert added == ["add"]
+
+
 def test_unmerged_file_copy_helpers() -> None:
     from github_desktop.models import FileStatus, GitStatusEntry, AppFileStatusKind
     from github_desktop.ui.multi_commit import (

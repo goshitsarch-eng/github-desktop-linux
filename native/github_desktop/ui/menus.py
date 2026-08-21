@@ -217,6 +217,20 @@ def view_on_github_label(*, enterprise: bool) -> str:
     return "View on GitHub Enterprise" if enterprise else "View on GitHub"
 
 
+def new_repository_button_menu_items(
+    *,
+    on_clone: Callable[[], None],
+    on_create: Callable[[], None],
+    on_add: Callable[[], None],
+) -> list[MenuItem]:
+    """Desktop `onNewRepositoryButtonClick` (Linux labels)."""
+    return [
+        ("Clone repository…", on_clone, True),
+        ("Create new repository…", on_create, True),
+        ("Add existing repository…", on_add, True),
+    ]
+
+
 def generate_repository_list_context_menu_specs(
     *,
     alias: str | None,
