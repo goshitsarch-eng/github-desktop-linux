@@ -4116,7 +4116,15 @@ class AppStore:
         return holder[0]
 
     def add_dropped_paths(self, paths: Sequence[str]) -> None:
-        dirs = []
+        """Desktop `handleDragAndDrop`.
+
+        Several dropped paths go through `_addRepositories`. A single path is
+        resolved with `getRepositoryType` (nested folders map to
+        `topLevelWorkingDirectory`) then `matchExistingRepository` — select if
+        already listed, otherwise `PopupType.AddRepository` so the user can
+        initialize a non-git folder.
+        """
+        dirs: list[str] = []
         for raw in paths:
             path = os.path.abspath(os.path.expanduser(raw))
             if os.path.isfile(path):
@@ -4125,7 +4133,30 @@ class AppStore:
                 dirs.append(path)
         if not dirs:
             return
-        self.add_repositories(dirs)
+        if len(dirs) > 1:
+            self.add_repositories(dirs, onboarding="add")
+            return
+        dropped = dirs[0]
+
+        def work() -> str:
+            try:
+                info = get_repository_type(dropped)
+            except Exception as exc:
+                log.error("Could not determine repository type", exc_info=exc)
+                return dropped
+            if info.get("kind") == "regular":
+                return info.get("topLevelWorkingDirectory") or dropped
+            return dropped
+
+        def done(exc: BaseException | None, resolved: str | None = None) -> None:
+            target = resolved or dropped
+            existing = self._existing_repository_for_path(target)
+            if existing is not None:
+                self.select_repository(existing.id)
+                return
+            self.show_popup(PopupType.ADD_REPOSITORY, path=target)
+
+        self._run_ui(work, done)
 
     def select_commits(self, repo: Repository, commits: Sequence[Commit]) -> None:
         state = self.state_for(repo)

@@ -151,7 +151,7 @@ def test_commit_batch_size_constant() -> None:
     assert COMMIT_BATCH_SIZE == 100
 
 
-def test_add_dropped_paths_opens_error_for_non_repo(isolated_config, tmp_path) -> None:
+def test_add_dropped_paths_opens_add_dialog_for_single_non_repo(isolated_config, tmp_path) -> None:
     import os
     from pathlib import Path
 
@@ -161,10 +161,85 @@ def test_add_dropped_paths_opens_error_for_non_repo(isolated_config, tmp_path) -
     try:
         store.add_dropped_paths([str(empty)])
         assert store.popup is not None
-        assert store.popup.type == PopupType.ERROR
-        assert "isn't a Git repository." in str(store.popup.payload.get("error") or "")
+        assert store.popup.type == PopupType.ADD_REPOSITORY
+        assert os.path.normpath(store.popup.payload.get("path") or "") == os.path.normpath(str(empty))
     finally:
         empty.rmdir()
+
+
+def test_add_dropped_paths_selects_existing_repository(isolated_config, git_repo) -> None:
+    store = AppStore()
+    added = store.add_repositories([str(git_repo)])
+    assert added
+    store.selected_repository_id = None
+    store.add_dropped_paths([str(git_repo)])
+    assert store.selected_repository is added[0]
+    assert len(store.repositories) == 1
+    assert store.popup is None
+
+
+def test_add_dropped_paths_selects_existing_from_nested_folder(isolated_config, git_repo) -> None:
+    nested = git_repo / "nested-drop"
+    nested.mkdir()
+    store = AppStore()
+    added = store.add_repositories([str(git_repo)])
+    store.selected_repository_id = None
+    store.add_dropped_paths([str(nested)])
+    assert store.selected_repository is added[0]
+    assert len(store.repositories) == 1
+    assert store.popup is None
+
+
+def test_add_dropped_paths_opens_add_dialog_for_single_new_git_repo(isolated_config, tmp_path) -> None:
+    import os
+
+    other = tmp_path / "other-git"
+    other.mkdir()
+    run_git(other, "init", "-b", "main")
+    store = AppStore()
+    store.add_dropped_paths([str(other)])
+    assert store.popup is not None
+    assert store.popup.type == PopupType.ADD_REPOSITORY
+    assert os.path.normpath(store.popup.payload.get("path") or "") == os.path.normpath(str(other.resolve()))
+    assert store.repositories == []
+
+
+def test_add_dropped_paths_multiple_paths_call_add_repositories(
+    isolated_config, git_repo, tmp_path, monkeypatch
+) -> None:
+    store = AppStore()
+    seen: dict[str, object] = {}
+
+    def fake_add(paths, **kwargs):
+        seen["paths"] = list(paths)
+        seen["onboarding"] = kwargs.get("onboarding")
+        return []
+
+    monkeypatch.setattr(store, "add_repositories", fake_add)
+    other = tmp_path / "second-drop"
+    other.mkdir()
+    store.add_dropped_paths([str(git_repo), str(other)])
+    assert seen.get("onboarding") == "add"
+    dropped = seen.get("paths")
+    assert isinstance(dropped, list)
+    assert len(dropped) == 2
+    assert store.popup is None
+
+
+def test_add_dropped_paths_probes_off_thread(isolated_config, git_repo, monkeypatch) -> None:
+    import github_desktop.store as store_module
+
+    store = AppStore()
+
+    def boom(*_a, **_k):
+        raise AssertionError("live getRepositoryType on GTK thread")
+
+    monkeypatch.setattr(store_module, "get_repository_type", boom)
+    monkeypatch.setattr(AppStore, "_gtk_app_running", lambda self: True)
+    monkeypatch.setattr(AppStore, "_run", lambda self, work, done: None)
+    store.add_dropped_paths([str(git_repo)])
+    assert store.popup is None
+    assert store.repositories == []
 
 
 def test_partial_commit_still_works_with_changeset(git_repo) -> None:

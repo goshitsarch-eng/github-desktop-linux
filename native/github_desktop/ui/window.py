@@ -1022,11 +1022,32 @@ class MainWindow(Adw.ApplicationWindow):
     def _open_submodule(self, full_path: str) -> None:
         self.store.add_repositories([full_path])
 
+    def _is_showing_modal(self) -> bool:
+        """Desktop `isShowingModal` (`currentPopup !== null`).
+
+        Presented Adw.Dialogs drain `store.popup` via `take_popups()`, so a
+        visible dialog also counts as modal — the on-screen equivalent of
+        Electron's current popup.
+        """
+        if self.store.popup or self.store.all_popups:
+            return True
+        return bool(hasattr(self, "get_visible_dialog") and self.get_visible_dialog())
+
     def _install_file_drop(self) -> None:
         try:
             target = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
 
+            def on_enter(_t, _x, _y) -> Gdk.DragAction:
+                # Desktop `document.ondragover` sets `dropEffect` to `none`
+                # while `isShowingModal`; Gtk has no Gdk.DragAction.NONE.
+                if self._is_showing_modal():
+                    return Gdk.DragAction(0)
+                return Gdk.DragAction.COPY
+
             def on_drop(_t, value, _x, _y) -> bool:
+                # Desktop `document.body.ondrop` returns when `isShowingModal`.
+                if self._is_showing_modal():
+                    return False
                 files = value.get_files() if hasattr(value, "get_files") else []
                 paths = [f.get_path() for f in files if f.get_path()]
                 if paths:
@@ -1034,6 +1055,7 @@ class MainWindow(Adw.ApplicationWindow):
                     return True
                 return False
 
+            target.connect("enter", on_enter)
             target.connect("drop", on_drop)
             self.add_controller(target)
         except Exception:

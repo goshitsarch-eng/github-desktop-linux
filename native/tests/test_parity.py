@@ -1368,5 +1368,8 @@ def test_window_actions_cover_menus() -> None:
         "confirmOrForcePush",
         "issuesEnabled",
         "isArchived",
+        "handleDragAndDrop",
+        "isShowingModal",
+        "dropEffect",
     ]:
         assert phrase in src
