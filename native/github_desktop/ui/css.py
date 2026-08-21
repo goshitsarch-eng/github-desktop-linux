@@ -322,6 +322,12 @@ window:not(.underline-links) button.link label,
 window:not(.underline-links) link {
   text-decoration: none;
 }
+.prefs-example-link.example-link-on {
+  text-decoration: underline;
+}
+.prefs-example-link.example-link-off {
+  text-decoration: none;
+}
 .sandboxed-markdown {
   opacity: 0.92;
 }

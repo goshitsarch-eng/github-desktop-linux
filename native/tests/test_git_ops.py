@@ -443,3 +443,47 @@ def test_stash_pop_with_conflicts_keeps_stash(git_repo: Path) -> None:
     # Desktop `expectedErrors: MergeConflicts` — git keeps the stash on conflict.
     assert get_last_desktop_stash_entry_for_branch(str(git_repo), "main") is not None
 
+
+def test_image_diff_conflicted_wd_and_range_parent(monkeypatch) -> None:
+    from github_desktop.git.ops import _image_diff
+    from github_desktop.models import AppFileStatusKind, FileStatus
+
+    seen: list[str] = []
+
+    def fake_show(repo: str, spec: str, name: str):
+        seen.append(spec)
+        return b"img"
+
+    monkeypatch.setattr("github_desktop.git.ops._show_blob", fake_show)
+    empty = _image_diff(
+        "/tmp/r",
+        "a.png",
+        FileStatus(AppFileStatusKind.CONFLICTED),
+        None,
+        working_directory=True,
+    )
+    assert empty.previous is None
+    assert empty.current is None
+    assert seen == []
+
+    _image_diff(
+        "/tmp/r",
+        "a.png",
+        FileStatus(AppFileStatusKind.MODIFIED),
+        "NEWSHA",
+        oldest_commitish="OLDSHA",
+    )
+    assert "NEWSHA:a.png" in seen
+    assert "OLDSHA^:a.png" in seen
+
+    seen.clear()
+    _image_diff(
+        "/tmp/r",
+        "gone.png",
+        FileStatus(AppFileStatusKind.DELETED),
+        "NEWSHA",
+        oldest_commitish="OLDSHA",
+        parent_commitish="PARENT",
+    )
+    assert seen == ["PARENT:gone.png"]
+

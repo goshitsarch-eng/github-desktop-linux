@@ -422,7 +422,7 @@ def get_working_directory_diff(
     else:
         args += ["HEAD", "--", ensure_relative_path(file.path)]
     result = git(args, repo, success_exit_codes=success, name="getWorkingDirectoryDiff")
-    return _diff_from_result(repo, file.path, file.status, result, commitish=None)
+    return _diff_from_result(repo, file.path, file.status, result, commitish=None, working_directory=True)
 
 
 MAX_PARTIAL_BLOB_BYTES = 256 * 1024
@@ -556,6 +556,9 @@ def get_commit_diff(
     status: FileStatus | None = None,
     hide_whitespace: bool = False,
     context_lines: int | None = None,
+    *,
+    oldest_commitish: str | None = None,
+    parent_commitish: str | None = None,
 ) -> FileDiff:
     """Desktop `getCommitDiff`: `git log -m -1 --first-parent --patch-with-raw`."""
     args = ["log", commitish]
@@ -567,7 +570,16 @@ def get_commit_diff(
     args += ["--", ensure_relative_path(path)]
     _append_old_path(args, path, status)
     result = git(args, repo, success_exit_codes={0, 1}, name="getCommitDiff")
-    return _diff_from_result(repo, path, status or FileStatus(AppFileStatusKind.MODIFIED), result, commitish)
+    kind = status or FileStatus(AppFileStatusKind.MODIFIED)
+    return _diff_from_result(
+        repo,
+        path,
+        kind,
+        result,
+        commitish,
+        oldest_commitish=oldest_commitish or commitish,
+        parent_commitish=parent_commitish,
+    )
 
 
 def diff_from_raw_diff_output(output: str) -> str:
@@ -590,13 +602,25 @@ def _diff_from_result(
     status: FileStatus,
     result: GitResult,
     commitish: str | None,
+    *,
+    oldest_commitish: str | None = None,
+    parent_commitish: str | None = None,
+    working_directory: bool = False,
 ) -> FileDiff:
     data = result.stdout_bytes or result.stdout.encode("utf-8", errors="replace")
     if not is_valid_buffer(data):
         return UnrenderableDiff()
     ext = os.path.splitext(path)[1].lower()
     if ext in IMAGE_EXTENSIONS:
-        return _image_diff(repo, path, status, commitish)
+        return _image_diff(
+            repo,
+            path,
+            status,
+            commitish,
+            oldest_commitish=oldest_commitish,
+            parent_commitish=parent_commitish,
+            working_directory=working_directory,
+        )
     if status.submodule_status is not None:
         return _submodule_diff(repo, path, status.submodule_status)
     text = result.stdout or data.decode("utf-8", errors="replace")
@@ -604,7 +628,15 @@ def _diff_from_result(
     parsed = parse_unified_diff(patch)
     if parsed.is_binary or ("Binary files" in patch or "GIT binary patch" in patch):
         if ext in IMAGE_EXTENSIONS:
-            return _image_diff(repo, path, status, commitish)
+            return _image_diff(
+                repo,
+                path,
+                status,
+                commitish,
+                oldest_commitish=oldest_commitish,
+                parent_commitish=parent_commitish,
+                working_directory=working_directory,
+            )
         return BinaryDiff()
     endings = parse_line_endings_warning(result.stderr)
     if endings:
@@ -626,18 +658,26 @@ def _show_blob(repo: str, spec: str, name: str) -> bytes | None:
     return result.stdout_bytes or result.stdout.encode("utf-8", errors="replace")
 
 
-def _image_diff(repo: str, path: str, status: FileStatus, commitish: str | None) -> ImageDiff:
+def _image_diff(
+    repo: str,
+    path: str,
+    status: FileStatus,
+    commitish: str | None,
+    *,
+    oldest_commitish: str | None = None,
+    parent_commitish: str | None = None,
+    working_directory: bool = False,
+) -> ImageDiff:
+    """Desktop `getImageDiff`: WD uses HEAD; commits use oldest^ / parentCommitish."""
+    media = get_media_type(os.path.splitext(path)[1])
+    empty = ImageDiff(previous=None, current=None, previous_media_type=media, current_media_type=media)
+    if status.kind == AppFileStatusKind.CONFLICTED and (working_directory or not commitish):
+        return empty
     previous = current = None
     full = os.path.join(repo, path)
     old_path = get_old_path_or_default(path=path, status=status)
-    if commitish:
-        if status.kind != AppFileStatusKind.DELETED:
-            current = _show_blob(repo, f"{commitish}:{path}", "showImageNew")
-        if status.kind == AppFileStatusKind.DELETED:
-            previous = _show_blob(repo, f"{commitish}^:{old_path}", "showImage")
-        elif status.kind not in (AppFileStatusKind.NEW, AppFileStatusKind.UNTRACKED):
-            previous = _show_blob(repo, f"{commitish}^:{old_path}", "showImage")
-    else:
+    wd = working_directory or not commitish
+    if wd:
         if status.kind not in (AppFileStatusKind.NEW, AppFileStatusKind.UNTRACKED):
             previous = _show_blob(repo, f"HEAD:{old_path}", "showImage")
         if status.kind != AppFileStatusKind.DELETED:
@@ -646,7 +686,16 @@ def _image_diff(repo: str, path: str, status: FileStatus, commitish: str | None)
                     current = fh.read()
             except OSError:
                 current = None
-    media = get_media_type(os.path.splitext(path)[1])
+    else:
+        newest = commitish or ""
+        oldest = oldest_commitish or newest
+        if status.kind != AppFileStatusKind.DELETED:
+            current = _show_blob(repo, f"{newest}:{path}", "showImageNew")
+        if status.kind == AppFileStatusKind.DELETED:
+            spec = parent_commitish or f"{oldest}^"
+            previous = _show_blob(repo, f"{spec}:{old_path}", "showImage")
+        elif status.kind not in (AppFileStatusKind.NEW, AppFileStatusKind.UNTRACKED):
+            previous = _show_blob(repo, f"{oldest}^:{old_path}", "showImage")
     return ImageDiff(previous=previous, current=current, previous_media_type=media, current_media_type=media)
 
 
@@ -1170,6 +1219,7 @@ def get_commit_range_diff(
     context_lines: int | None = None,
     *,
     use_null_tree: bool = False,
+    parent_commitish: str | None = None,
 ) -> FileDiff:
     parent = NULL_TREE_SHA if use_null_tree else f"{oldest_sha}^"
     args = _diff_flags(hide_whitespace, context_lines) + [
@@ -1188,9 +1238,27 @@ def get_commit_range_diff(
     )
     if result.git_error == "BadRevision" and not use_null_tree:
         return get_commit_range_diff(
-            repo, path, oldest_sha, newest_sha, status, hide_whitespace, context_lines, use_null_tree=True
+            repo,
+            path,
+            oldest_sha,
+            newest_sha,
+            status,
+            hide_whitespace,
+            context_lines,
+            use_null_tree=True,
+            parent_commitish=parent_commitish,
         )
-    return _diff_from_result(repo, path, status or FileStatus(AppFileStatusKind.MODIFIED), result, newest_sha)
+    kind = status or FileStatus(AppFileStatusKind.MODIFIED)
+    oldest = NULL_TREE_SHA if use_null_tree else oldest_sha
+    return _diff_from_result(
+        repo,
+        path,
+        kind,
+        result,
+        newest_sha,
+        oldest_commitish=oldest,
+        parent_commitish=parent_commitish,
+    )
 
 
 def _parse_name_status_z(stdout: str, sha: str, parent: str | None) -> list[CommittedFileChange]:
@@ -3283,7 +3351,14 @@ def get_branch_merge_base_diff(
     _append_old_path(args, path, status)
     result = git(args, repo, success_exit_codes={0, 1}, name="getBranchMergeBaseDiff")
     commitish = latest_sha or comparison_branch
-    return _diff_from_result(repo, path, status or FileStatus(AppFileStatusKind.MODIFIED), result, commitish)
+    return _diff_from_result(
+        repo,
+        path,
+        status or FileStatus(AppFileStatusKind.MODIFIED),
+        result,
+        commitish,
+        oldest_commitish=commitish,
+    )
 
 
 def get_files_diff_text(

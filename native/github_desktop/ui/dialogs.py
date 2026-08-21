@@ -3437,10 +3437,25 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
         title="Underline links",
         subtitle=(
             "When enabled, GitHub Desktop will underline links in commit messages, comments, "
-            "and other text fields. This can help make links easier to distinguish. This is an example link"
+            "and other text fields. This can help make links easier to distinguish."
         ),
         active=s.underline_links,
     )
+    example = Gtk.Label(label="This is an example link")
+    example.add_css_class("prefs-example-link")
+    example.set_valign(Gtk.Align.CENTER)
+
+    def style_example(*_a: object) -> None:
+        if underline.get_active():
+            example.add_css_class("example-link-on")
+            example.remove_css_class("example-link-off")
+        else:
+            example.add_css_class("example-link-off")
+            example.remove_css_class("example-link-on")
+
+    underline.connect("notify::active", style_example)
+    style_example()
+    underline.add_suffix(example)
     checks = Adw.SwitchRow(
         title="Show check marks in the diff",
         subtitle=(
@@ -4825,6 +4840,10 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
         access_warn.set_text("\n".join(access_lines))
         access_warn.set_visible(True)
         box.append(access_warn)
+    rules_warn = Gtk.Label(xalign=0, wrap=True)
+    rules_warn.add_css_class("warning")
+    rules_warn.set_visible(False)
+    box.append(rules_warn)
     description = Gtk.TextView()
     description.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
     description.set_size_request(-1, 120)
@@ -4891,6 +4910,38 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
     box.append(save)
     toolbar.set_content(box)
     dialog.set_child(toolbar)
+
+    def update_rules(*_a: object) -> None:
+        from ..github.repo_rules import commit_rule_warnings, use_repo_rules_logic
+        from ..git.ops import get_author_identity
+
+        text = summary.get_text().strip()
+        start, end = description.get_buffer().get_bounds()
+        desc = description.get_buffer().get_text(start, end, True).strip()
+        message = "\n\n".join(part for part in (text, desc) if part)
+        hard = False
+        lines: list[str] = []
+        if repo and state is not None and use_repo_rules_logic(store.account_for_repo(repo), repo):
+            _name, email = get_author_identity(repo.path)
+            unpublished = state.ahead_behind is None
+            lines, hard = commit_rule_warnings(
+                state.repo_rules,
+                message=message,
+                author_email=email,
+                branch=state.status.current_branch if state.status else None,
+                ahead_behind=state.ahead_behind,
+                unpublished=unpublished,
+            )
+        if lines:
+            rules_warn.set_text("\n".join(lines))
+            rules_warn.set_visible(True)
+        else:
+            rules_warn.set_visible(False)
+        save.set_sensitive(bool(text) and not hard)
+
+    summary.connect("changed", update_rules)
+    description.get_buffer().connect("changed", update_rules)
+    update_rules()
 
     def submit(*_a: Any) -> None:
         start, end = description.get_buffer().get_bounds()

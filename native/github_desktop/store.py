@@ -2961,7 +2961,13 @@ class AppStore:
                     repo,
                     file.path,
                     get_commit_diff(
-                        repo.path, file.path, file.commitish, file.status, self._hide_ws_changes(state), state.diff_context
+                        repo.path,
+                        file.path,
+                        file.commitish,
+                        file.status,
+                        self._hide_ws_changes(state),
+                        state.diff_context,
+                        parent_commitish=file.parent_commitish,
                     ),
                     commitish=file.commitish,
                     file=file,
@@ -3550,7 +3556,13 @@ class AppStore:
                     repo,
                     f.path,
                     get_commit_diff(
-                        repo.path, f.path, commit.sha, f.status, self._hide_ws_history(), state.diff_context
+                        repo.path,
+                        f.path,
+                        commit.sha,
+                        f.status,
+                        self._hide_ws_history(),
+                        state.diff_context,
+                        parent_commitish=f.parent_commitish,
                     ),
                     commitish=commit.sha,
                     file=f,
@@ -3570,14 +3582,30 @@ class AppStore:
         history = state.compare_ahead if state.history_mode == HistoryTabMode.COMPARE and state.compare_ahead else state.commits
         sha_set = {c.sha for c in selected}
         ordered = [c for c in history if c.sha in sha_set]
+        parent = next((item.parent_commitish for item in state.selected_commit_files if item.path == path), None)
         if len(ordered) >= 2 and _commits_are_contiguous(ordered, history):
             newest, oldest = ordered[0], ordered[-1]
             diff = get_commit_range_diff(
-                repo.path, path, oldest.sha, newest.sha, status, self._hide_ws_history(), state.diff_context
+                repo.path,
+                path,
+                oldest.sha,
+                newest.sha,
+                status,
+                self._hide_ws_history(),
+                state.diff_context,
+                parent_commitish=parent,
             )
             prepared = self._prepare_text_diff(repo, path, diff, commitish=newest.sha, status=status)
         else:
-            diff = get_commit_diff(repo.path, path, sha, status, self._hide_ws_history(), state.diff_context)
+            diff = get_commit_diff(
+                repo.path,
+                path,
+                sha,
+                status,
+                self._hide_ws_history(),
+                state.diff_context,
+                parent_commitish=parent,
+            )
             prepared = self._prepare_text_diff(repo, path, diff, commitish=sha, status=status)
         state.current_diff = prepared
         return prepared

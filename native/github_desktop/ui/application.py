@@ -85,12 +85,30 @@ class DesktopApplication(Adw.Application):
         GLib.timeout_add_seconds(3 * 60, self._poll_commit_status)
         GLib.idle_add(lambda: self.store.check_thank_you() or False)
         GLib.idle_add(lambda: self.store.report_stats() or False)
+        GLib.idle_add(self._install_global_lfs_filters)
         if not os.environ.get("PYTEST_CURRENT_TEST"):
             skew = 1 + (os.getpid() % 30)
             GLib.timeout_add_seconds(skew, self._background_fetch_tick)
             GLib.timeout_add_seconds(skew, self._indicator_tick)
             GLib.timeout_add_seconds(2 * 60, self._pr_updater_tick)
             GLib.timeout_add_seconds(SendStatsInterval, self._stats_tick)
+
+    def _install_global_lfs_filters(self) -> bool:
+        """Desktop `installGlobalLFSFilters(false)` from deferred launch actions."""
+        if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("GITHUB_DESKTOP_OFFLINE"):
+            return False
+
+        def work() -> None:
+            from ..git.ops import install_global_lfs_filters
+
+            install_global_lfs_filters(False)
+
+        def done(exc: BaseException | None, *_a: object) -> None:
+            if exc:
+                log.debug("installGlobalLFSFilters failed: %s", exc)
+
+        self.store._run(work, done)
+        return False
 
     def _poll_notifications(self) -> bool:
         self.store.poll_notifications()

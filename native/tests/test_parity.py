@@ -1226,5 +1226,8 @@ def test_window_actions_cover_menus() -> None:
         "[createDesktopStashEntry]",
         "[popStashEntry]",
         "isGitHubHost",
+        "getImageDiff",
+        "installGlobalLFSFilters",
+        "parentCommitish",
     ]:
         assert phrase in src

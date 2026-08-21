@@ -1151,7 +1151,7 @@ class DiffViewer(Gtk.Box):
 
     def _hunk_handle(self, index: int, selection: DiffSelection | None) -> Gtk.Widget | None:
         """Desktop overlay `.hunk-handle` check-all for groups of more than one line."""
-        if not self.interactive or getattr(self, "_hide_whitespace", False):
+        if not self.interactive or not self._show_checks or getattr(self, "_hide_whitespace", False):
             return None
         found = self._interactive_range(index)
         if is_only_one_check_in_row(found) or found is None:
