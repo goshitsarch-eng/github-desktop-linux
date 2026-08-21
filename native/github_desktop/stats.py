@@ -389,7 +389,13 @@ class StatsStore:
         self._activity_armed = True
         stored = get_has_opted_out_of_stats()
         self.opt_out = stored if stored is not None else bool(default_opt_out)
-        if not get_boolean(HasSentOptInPingKey, False) and not env_skips_stats_network():
+        # Native default is opted out. Don't ping Central until localStorage
+        # `stats-opt-out` is set (prefs / setOptOut), unlike Desktop's opted-in default.
+        if (
+            stored is not None
+            and not get_boolean(HasSentOptInPingKey, False)
+            and not env_skips_stats_network()
+        ):
             self.send_opt_in_status_ping(self.opt_out, stored)
 
     def get_opt_out(self) -> bool:

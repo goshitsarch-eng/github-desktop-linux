@@ -18,6 +18,18 @@ from github_desktop.store import AppStore
 from github_desktop.welcome import mark_welcome_flow_complete
 
 
+def test_constructor_does_not_ping_when_opt_out_unset(isolated_config, monkeypatch) -> None:
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    posted: list[dict] = []
+
+    def fake_post(body):
+        posted.append(dict(body))
+        return StatsResponse(200, "OK")
+
+    StatsStore(post=fake_post, default_opt_out=True)
+    assert posted == []
+
+
 def test_native_default_is_opted_out(isolated_config) -> None:
     store = StatsStore(default_opt_out=True)
     assert store.get_opt_out() is True
