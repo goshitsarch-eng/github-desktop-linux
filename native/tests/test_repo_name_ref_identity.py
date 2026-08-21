@@ -21,7 +21,7 @@ from github_desktop.models import (
     name_of,
     sanitize_ref_name,
     sanitized_ref_name,
-    test_for_invalid_chars,
+    test_for_invalid_chars as ref_has_invalid_chars,
 )
 
 
@@ -53,11 +53,11 @@ def test_sanitized_ref_name_matches_desktop() -> None:
     assert sanitize_ref_name("branch--name") == "branch--name"
     assert sanitize_ref_name("release 1") == "release-1"
     assert sanitized_ref_name("foo:bar") == "foo-bar"
-    assert not test_for_invalid_chars("")
-    assert not test_for_invalid_chars("this-is/fine")
-    assert test_for_invalid_chars("foo:bar")
-    assert test_for_invalid_chars("hello/")
-    assert test_for_invalid_chars("foo.lock")
+    assert not ref_has_invalid_chars("")
+    assert not ref_has_invalid_chars("this-is/fine")
+    assert ref_has_invalid_chars("foo:bar")
+    assert ref_has_invalid_chars("hello/")
+    assert ref_has_invalid_chars("foo.lock")
 
 
 def test_name_of_and_github_html_url() -> None:
