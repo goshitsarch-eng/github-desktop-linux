@@ -135,6 +135,11 @@ from .menus import (
     copy_text,
     generate_repository_list_context_menu_specs,
     new_repository_button_menu_items,
+    ADD_EXISTING_REPOSITORY_FROM_LOCAL_DRIVE,
+    CLONE_REPOSITORY_FROM_INTERNET,
+    CREATE_NEW_REPOSITORY_ON_LOCAL_DRIVE,
+    REPOSITORY_TOOLBAR_DESCRIPTION,
+    repository_toolbar_title,
     open_in_editor_label,
     open_in_shell_label,
     remove_repository_label,
@@ -1426,9 +1431,9 @@ class MainWindow(Adw.ApplicationWindow):
         self._empty_tutorial_btn = tutorial
         box.append(tutorial)
         for label, action in [
-            ("Clone a repository from the Internet…", "win.clone-repository"),
-            ("Create a New Repository on my local drive…", "win.new-repository"),
-            ("Add an Existing Repository from my local drive…", "win.add-local-repository"),
+            (CLONE_REPOSITORY_FROM_INTERNET, "win.clone-repository"),
+            (CREATE_NEW_REPOSITORY_ON_LOCAL_DRIVE, "win.new-repository"),
+            (ADD_EXISTING_REPOSITORY_FROM_LOCAL_DRIVE, "win.add-local-repository"),
         ]:
             btn = Gtk.Button(label=label)
             btn.set_action_name(action)
@@ -1459,7 +1464,15 @@ class MainWindow(Adw.ApplicationWindow):
         toolbar = Adw.ToolbarView()
         header = Adw.HeaderBar()
         self._repo_btn = Gtk.Button()
-        self._repo_btn.set_label("No repository")
+        repo_inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        repo_inner.set_halign(Gtk.Align.START)
+        self._repo_title = Gtk.Label(label=repository_toolbar_title(), xalign=0)
+        self._repo_desc = Gtk.Label(label=REPOSITORY_TOOLBAR_DESCRIPTION, xalign=0)
+        self._repo_desc.add_css_class("dim-label")
+        self._repo_desc.add_css_class("caption")
+        repo_inner.append(self._repo_title)
+        repo_inner.append(self._repo_desc)
+        self._repo_btn.set_child(repo_inner)
         self._repo_btn.connect("clicked", lambda *_: self._toggle_repo_sidebar())
         attach_right_click(self._repo_btn, self._on_repository_toolbar_context_menu)
         header.pack_start(self._repo_btn)
@@ -2340,10 +2353,17 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self.store.set_section(RepositorySectionTab.CHANGES)
 
+    def _set_repo_toolbar_title(self, title: str) -> None:
+        """Desktop repository toolbar title (description stays `Current repository`)."""
+        if hasattr(self, "_repo_title"):
+            self._repo_title.set_text(title)
+        else:
+            self._repo_btn.set_label(title)
+
     def _refresh_repo(self) -> None:
         cloning = self.store.selected_cloning
         if cloning is not None:
-            self._repo_btn.set_label(f"Cloning {cloning.name}…")
+            self._set_repo_toolbar_title(repository_toolbar_title(cloning_name=cloning.name))
             self.set_title(f"Cloning {cloning.name} — {APP_NAME}")
             if hasattr(self, "_repo_content"):
                 self._show_cloning(cloning)
@@ -2352,11 +2372,15 @@ class MainWindow(Adw.ApplicationWindow):
             return
         repo = self.store.selected_repository
         if repo is None:
-            if self.store.cloning:
-                fallback = self.store.cloning[0]
-                self._repo_btn.set_label(f"Cloning {fallback.name}…")
+            fallback = self.store.cloning[0] if self.store.cloning else None
+            self._set_repo_toolbar_title(
+                repository_toolbar_title(
+                    cloning_name=fallback.name if fallback else None,
+                    has_repositories=bool(self.store.repositories),
+                )
+            )
             return
-        self._repo_btn.set_label(repo.display_name)
+        self._set_repo_toolbar_title(repository_toolbar_title(selected_name=repo.display_name))
         self.set_title(f"{repo.display_name} — {APP_NAME}")
         self._apply_commit_form(repo, self.store.state_for(repo))
         if hasattr(self, "_repo_content"):
@@ -2492,7 +2516,9 @@ class MainWindow(Adw.ApplicationWindow):
             cloning = self.store.selected_cloning or (self.store.cloning[0] if self.store.cloning else None)
             if cloning is not None:
                 pct = int((cloning.progress or 0) * 100)
-                self._repo_btn.set_label(f"Cloning {cloning.name}… {pct}%" if pct else f"Cloning {cloning.name}…")
+                self._set_repo_toolbar_title(
+                    repository_toolbar_title(cloning_name=cloning.name, cloning_percent=pct or None)
+                )
                 if hasattr(self, "_cloning_title") and self.store.selected_cloning is not None:
                     self._show_cloning(cloning)
             return
@@ -2510,8 +2536,8 @@ class MainWindow(Adw.ApplicationWindow):
         if kind == "clone":
             cloning = self.store.selected_cloning or (self.store.cloning[0] if self.store.cloning else None)
             if cloning is not None:
-                self._repo_btn.set_label(
-                    f"Cloning {cloning.name}… {pct}%" if pct else f"Cloning {cloning.name}…"
+                self._set_repo_toolbar_title(
+                    repository_toolbar_title(cloning_name=cloning.name, cloning_percent=pct or None)
                 )
                 if hasattr(self, "_cloning_title") and self.store.selected_cloning is not None:
                     self._show_cloning(cloning)

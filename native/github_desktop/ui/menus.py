@@ -231,6 +231,35 @@ def new_repository_button_menu_items(
     ]
 
 
+# Desktop Linux `no-repositories-view` (Darwin uses Local Drive).
+CREATE_NEW_REPOSITORY_ON_LOCAL_DRIVE = "Create a New Repository on your local drive…"
+ADD_EXISTING_REPOSITORY_FROM_LOCAL_DRIVE = "Add an Existing Repository from your local drive…"
+CLONE_REPOSITORY_FROM_INTERNET = "Clone a repository from the Internet…"
+REPOSITORY_TOOLBAR_DESCRIPTION = "Current repository"
+
+
+def repository_toolbar_title(
+    *,
+    selected_name: str | None = None,
+    has_repositories: bool = False,
+    cloning_name: str | None = None,
+    cloning_percent: int | None = None,
+) -> str:
+    """Desktop Linux `renderRepositoryToolbarButton` title."""
+    if cloning_name:
+        if cloning_percent:
+            return f"Cloning {cloning_name}… {cloning_percent}%"
+        return f"Cloning {cloning_name}…"
+    if selected_name:
+        return selected_name
+    if has_repositories:
+        return "Select a repository"
+    return "No repositories"
+
+
+renderRepositoryToolbarButton = repository_toolbar_title
+
+
 def generate_repository_list_context_menu_specs(
     *,
     alias: str | None,

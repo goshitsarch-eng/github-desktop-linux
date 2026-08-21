@@ -117,6 +117,24 @@ def test_linux_branch_group_labels_and_compare_placeholder() -> None:
     assert [b.name for _title, items in group_branches([fork, extra], current=None, default_name=None, recent_names=[]) for b in items] == ["topic"]
 
 
+def test_linux_no_repositories_and_toolbar_labels_match_desktop() -> None:
+    from github_desktop.ui.menus import (
+        ADD_EXISTING_REPOSITORY_FROM_LOCAL_DRIVE,
+        CREATE_NEW_REPOSITORY_ON_LOCAL_DRIVE,
+        REPOSITORY_TOOLBAR_DESCRIPTION,
+        repository_toolbar_title,
+    )
+
+    assert CREATE_NEW_REPOSITORY_ON_LOCAL_DRIVE == "Create a New Repository on your local drive…"
+    assert ADD_EXISTING_REPOSITORY_FROM_LOCAL_DRIVE == "Add an Existing Repository from your local drive…"
+    assert REPOSITORY_TOOLBAR_DESCRIPTION == "Current repository"
+    assert repository_toolbar_title() == "No repositories"
+    assert repository_toolbar_title(has_repositories=True) == "Select a repository"
+    assert repository_toolbar_title(selected_name="desktop") == "desktop"
+    assert repository_toolbar_title(cloning_name="desktop") == "Cloning desktop…"
+    assert repository_toolbar_title(cloning_name="desktop", cloning_percent=40) == "Cloning desktop… 40%"
+
+
 def test_clone_list_empty_copy() -> None:
     class Account:
         login = "hubot"

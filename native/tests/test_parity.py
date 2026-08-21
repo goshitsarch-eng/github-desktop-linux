@@ -1458,5 +1458,11 @@ def test_window_actions_cover_menus() -> None:
         "Recent branches",
         "Other branches",
         "getPlaceholderText",
+        "renderRepositoryToolbarButton",
+        "Create a New Repository on your local drive",
+        "Add an Existing Repository from your local drive",
+        "Select a repository",
+        "No repositories",
+        "Current repository",
     ]:
         assert phrase in src

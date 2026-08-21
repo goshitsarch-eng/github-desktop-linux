@@ -59,6 +59,10 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             assert hasattr(win, "_menu_btn")
             assert hasattr(win, "_changes_paned")
             assert hasattr(win, "_branches_foldout")
+            from github_desktop.ui.menus import REPOSITORY_TOOLBAR_DESCRIPTION
+
+            assert win._repo_desc.get_text() == REPOSITORY_TOOLBAR_DESCRIPTION
+            assert win._repo_title.get_text() != "No repository"
             from github_desktop.ui.menus import (
                 DefaultMaxWidth,
                 nudge_resizable_width,
