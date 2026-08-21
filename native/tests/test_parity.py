@@ -1155,5 +1155,7 @@ def test_window_actions_cover_menus() -> None:
         "rejectOnError",
         "--unset-all",
         "removeRemote",
+        "Loading repositories…",
+        "streamUserRepositories",
     ]:
         assert phrase in src

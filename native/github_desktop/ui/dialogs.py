@@ -1887,17 +1887,31 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
         if not account:
             render_github_list()
             return
-        from ..github.api import GitHubAPI
+        github_load_gen[0] += 1
+        token = github_load_gen[0]
+        # Desktop `streamUserRepositories` / `ApiRepositoriesStore` load off the UI thread.
+        _clear_listbox(repo_list)
+        repo_list.append(Adw.ActionRow(title="Loading repositories…"))
 
-        try:
-            loaded.extend(GitHubAPI.from_account(account).fetch_repos())
-        except Exception as exc:
+        def work() -> list:
+            from ..github.api import GitHubAPI
+
+            return GitHubAPI.from_account(account).fetch_repos()
+
+        def done(exc: BaseException | None, result: list | None = None) -> None:
+            if token != github_load_gen[0]:
+                return
             loaded.clear()
-            _clear_listbox(repo_list)
-            repo_list.append(Adw.ActionRow(title="Could not load repositories", subtitle=str(exc)))
-            return
-        render_github_list()
+            if exc:
+                _clear_listbox(repo_list)
+                repo_list.append(Adw.ActionRow(title="Could not load repositories", subtitle=str(exc)))
+                return
+            loaded.extend(result or [])
+            render_github_list()
 
+        store._run(work, done)
+
+    github_load_gen = [0]
     fill_github()
     gh_filter.connect("search-changed", lambda *_: render_github_list())
     refresh_btn.connect("clicked", fill_github)
@@ -1938,17 +1952,30 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
         if not account:
             render_enterprise_list()
             return
-        from ..github.api import GitHubAPI
+        ent_load_gen[0] += 1
+        token = ent_load_gen[0]
+        _clear_listbox(ent_list)
+        ent_list.append(Adw.ActionRow(title="Loading repositories…"))
 
-        try:
-            loaded_ent.extend(GitHubAPI.from_account(account).fetch_repos())
-        except Exception as exc:
+        def work() -> list:
+            from ..github.api import GitHubAPI
+
+            return GitHubAPI.from_account(account).fetch_repos()
+
+        def done(exc: BaseException | None, result: list | None = None) -> None:
+            if token != ent_load_gen[0]:
+                return
             loaded_ent.clear()
-            _clear_listbox(ent_list)
-            ent_list.append(Adw.ActionRow(title="Could not load repositories", subtitle=str(exc)))
-            return
-        render_enterprise_list()
+            if exc:
+                _clear_listbox(ent_list)
+                ent_list.append(Adw.ActionRow(title="Could not load repositories", subtitle=str(exc)))
+                return
+            loaded_ent.extend(result or [])
+            render_enterprise_list()
 
+        store._run(work, done)
+
+    ent_load_gen = [0]
     fill_enterprise()
     ent_filter.connect("search-changed", lambda *_: render_enterprise_list())
     ent_refresh.connect("clicked", fill_enterprise)
