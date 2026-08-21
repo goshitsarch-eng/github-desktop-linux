@@ -39,6 +39,7 @@ showDiffCheckMarksKey = "diff-check-marks-visible"
 showChangesFilterKey = "show-changes-filter"
 showChangesFilterDefault = True
 commitSpellcheckEnabledKey = "commit-spellcheck-enabled"
+commitSpellcheckEnabledDefault = True
 repositoryIndicatorsEnabledKey = "enable-repository-indicators"
 showCommitLengthWarningKey = "show-commit-length-warning"
 

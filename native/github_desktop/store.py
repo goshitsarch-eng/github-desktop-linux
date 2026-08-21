@@ -275,8 +275,10 @@ from .remote_parsing import (
     url_matches_remote,
 )
 from .clamp import clamp, constrain
+from .local_storage import get_boolean, set_boolean
 from .settings import (
     Settings,
+    commitSpellcheckEnabledKey,
     defaultBranchDropdownWidth,
     defaultCommitSummaryWidth,
     defaultPullRequestFileListWidth,
@@ -421,6 +423,10 @@ class RepositoryViewState:
 class AppStore:
     def __init__(self) -> None:
         self.settings = load_settings()
+        # Desktop: getBoolean(commitSpellcheckEnabledKey, commitSpellcheckEnabledDefault)
+        stored_spellcheck = get_boolean(commitSpellcheckEnabledKey)
+        if stored_spellcheck is not None:
+            self.settings.spellcheck_enabled = stored_spellcheck
         self.repositories: list[Repository] = []
         self.accounts: list[Account] = []
         self.selected_repository_id: int | None = self.settings.selected_repository_id
@@ -7159,6 +7165,15 @@ class AppStore:
         self.settings.theme = theme
         self.persist_settings()
         self.apply_theme()
+        self.emit()
+
+    def set_commit_spellcheck_enabled(self, commit_spellcheck_enabled: bool) -> None:
+        """Desktop `_setCommitSpellcheckEnabled`."""
+        if self.settings.spellcheck_enabled == commit_spellcheck_enabled:
+            return
+        set_boolean(commitSpellcheckEnabledKey, commit_spellcheck_enabled)
+        self.settings.spellcheck_enabled = commit_spellcheck_enabled
+        self.persist_settings()
         self.emit()
 
     def save_git_user(

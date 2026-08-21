@@ -109,6 +109,8 @@ from .menus import (
     attach_paned_reset,
     attach_right_click,
     changes_list_context_menu_blocked,
+    commit_message_shared_menu_specs,
+    commit_spellcheck_menu_label,
     discard_changes_item_label,
     find_active_resizable,
     ignore_extension_globs,
@@ -2076,6 +2078,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._commit_form.append(co)
         self._commit_form.append(self._author_input)
         self._commit_form.append(btn_row)
+        self._attach_commit_message_context_menus()
         commit_box.append(self._undo_card)
         commit_box.append(self._commit_form)
         self._conflict_bar = Gtk.Box(spacing=6)
@@ -3248,6 +3251,135 @@ class MainWindow(Adw.ApplicationWindow):
         repo = self.store.selected_repository
         if repo:
             self.store.state_for(repo).show_co_authors = btn.get_active()
+
+    def _toggle_coauthors_from_menu(self) -> None:
+        """Desktop `onToggleCoAuthors` from `getAddRemoveCoAuthorsMenuItem`."""
+        if not hasattr(self, "_coauthor_check"):
+            return
+        self._coauthor_check.set_active(not self._coauthor_check.get_active())
+
+    def _commit_message_shared_menu_items(self) -> list:
+        """Desktop `getAddRemoveCoAuthorsMenuItem` + optional `getGenerateCommitMessageMenuItem`."""
+        repo = self.store.selected_repository
+        state = self.store.state_for(repo) if repo else None
+        showing = bool(hasattr(self, "_coauthor_check") and self._coauthor_check.get_active())
+        files_selected = False
+        if state and state.status:
+            files_selected = any(item.include for item in state.status.working_directory.files)
+        specs = commit_message_shared_menu_specs(
+            showing_co_authors=showing,
+            github_repository=bool(repo and repo.github),
+            is_committing=bool(state and state.is_committing),
+            accounts_can_generate=any(
+                enable_commit_message_generation(account) for account in self.store.accounts
+            ),
+            is_generating=bool(state and state.is_generating_commit_message),
+            commit_to_amend=bool(state and state.commit_to_amend),
+            files_selected=files_selected,
+        )
+        items = []
+        for label, enabled in specs:
+            if label in {"Add co-authors", "Remove co-authors"}:
+                callback = self._toggle_coauthors_from_menu
+            else:
+                callback = self._generate_commit_message
+            items.append((label, callback, enabled))
+        return items
+
+    def _on_commit_form_context(self, _gesture, n_press: int, x: float, y: float) -> None:
+        """Desktop commit-message `onContextMenu` (skip HTMLInputElement / HTMLTextAreaElement)."""
+        if n_press != 1 or not hasattr(self, "_commit_form"):
+            return
+        target = None
+        try:
+            target = self._commit_form.pick(x, y, Gtk.PickFlags.DEFAULT)
+        except Exception:
+            target = None
+        if self._commit_context_target_is_input(target):
+            return
+        show_context_menu(self._commit_form, self._commit_message_shared_menu_items())
+
+    def _commit_context_target_is_input(self, target) -> bool:
+        """Desktop: ignore chrome menu when `event.target` is HTMLInputElement or HTMLTextAreaElement."""
+        if target is None:
+            return False
+        inputs = []
+        if hasattr(self, "_summary"):
+            inputs.append(self._summary)
+        if hasattr(self, "_description"):
+            inputs.append(self._description)
+        if hasattr(self, "_author_input"):
+            inputs.append(self._author_input)
+        return any(self._widget_is_or_inside(target, widget) for widget in inputs)
+
+    def _widget_is_or_inside(self, widget, ancestor) -> bool:
+        current = widget
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            if current is ancestor:
+                return True
+            seen.add(id(current))
+            getter = getattr(current, "get_parent", None)
+            current = getter() if callable(getter) else None
+        return False
+
+    def _on_commit_input_context(self, widget: Gtk.Widget) -> None:
+        """Desktop `onAutocompletingInputContextMenu` (shared items + `{ role: 'editMenu' }` + spellcheck)."""
+        items = list(self._commit_message_shared_menu_items())
+        items.append(None)
+        items.extend(
+            [
+                ("Undo", lambda: self._edit_action("undo", widget), True),
+                ("Redo", lambda: self._edit_action("redo", widget), True),
+                ("Cut", lambda: self._edit_action("cut", widget), True),
+                ("Copy", lambda: self._edit_action("copy", widget), True),
+                ("Paste", lambda: self._edit_action("paste", widget), True),
+                ("Select All", lambda: self._edit_action("select-all", widget), True),
+            ]
+        )
+        items.append(None)
+        enabled = bool(self.store.settings.spellcheck_enabled)
+        items.append(
+            (
+                commit_spellcheck_menu_label(enabled=enabled),
+                lambda: self.store.set_commit_spellcheck_enabled(not enabled),  # onCommitSpellcheckEnabledChanged
+                True,
+            )
+        )
+        show_context_menu(widget, items)
+
+    def _attach_commit_message_context_menus(self) -> None:
+        for field in (getattr(self, "_summary", None), getattr(self, "_description", None)):
+            if field is None:
+                continue
+            gesture = Gtk.GestureClick()
+            gesture.set_button(3)
+            try:
+                gesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+            except Exception:
+                pass
+
+            def pressed(
+                g: Gtk.GestureClick,
+                n_press: int,
+                _x: float,
+                _y: float,
+                widget: Gtk.Widget = field,
+            ) -> None:
+                if n_press != 1:
+                    return
+                self._on_commit_input_context(widget)
+                try:
+                    g.set_state(Gtk.EventSequenceState.CLAIMED)
+                except Exception:
+                    pass
+
+            gesture.connect("pressed", pressed)
+            field.add_controller(gesture)
+        chrome = Gtk.GestureClick()
+        chrome.set_button(3)
+        chrome.connect("pressed", self._on_commit_form_context)
+        self._commit_form.add_controller(chrome)
 
     def _on_authors_changed(self, authors) -> None:
         repo = self.store.selected_repository
@@ -4898,9 +5030,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _update_copilot_button(self, state=None) -> None:
         if not hasattr(self, "_generate_btn"):
             return
-        repo = self.store.selected_repository
-        account = self.store.account_for_repo(repo) if repo else None
-        entitled = enable_commit_message_generation(account)
+        entitled = any(enable_commit_message_generation(account) for account in self.store.accounts)
         self._generate_btn.set_visible(entitled)
         if hasattr(self, "_generate_box"):
             self._generate_box.set_visible(entitled)
@@ -5008,6 +5138,7 @@ class MainWindow(Adw.ApplicationWindow):
         return False
 
     def _generate_commit_message(self) -> None:
+        """Desktop `onGenerateCommitMessage` from the Copilot button and context menu."""
         has_text = bool(self._summary.get_text().strip()) if hasattr(self, "_summary") else False
         if has_text and self.store.settings.confirm_commit_message_override:
             self.store.show_popup(PopupType.GENERATE_COMMIT_MESSAGE_OVERRIDE)
@@ -5082,8 +5213,8 @@ class MainWindow(Adw.ApplicationWindow):
 
         walk(viewer)
 
-    def _edit_action(self, action: str) -> None:
-        widget = self.get_focus()
+    def _edit_action(self, action: str, widget=None) -> None:
+        widget = widget if widget is not None else self.get_focus()
         if widget is None:
             return
         clipboard = self.get_clipboard()

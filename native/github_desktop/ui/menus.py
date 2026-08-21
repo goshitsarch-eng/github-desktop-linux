@@ -63,6 +63,83 @@ def changes_list_context_menu_blocked(*, committing: bool, rebasing: bool) -> bo
     return committing or rebasing
 
 
+def add_remove_co_authors_label(*, showing: bool) -> str:
+    """Linux `getAddRemoveCoAuthorsMenuItem` / `toggleCoAuthorsText`."""
+    return "Remove co-authors" if showing else "Add co-authors"
+
+
+GENERATE_COMMIT_MESSAGE_WITH_COPILOT = "Generate commit message with Copilot"
+
+
+def commit_spellcheck_menu_label(*, enabled: bool) -> str:
+    """Linux `getCommitSpellcheckEnabilityMenuItem`."""
+    return "Disable commit spellcheck" if enabled else "Enable commit spellcheck"
+
+
+def generate_commit_message_menu_item_enabled(
+    *,
+    is_committing: bool,
+    is_generating: bool,
+    commit_to_amend: bool,
+    files_selected: bool,
+) -> bool:
+    """Desktop `getGenerateCommitMessageMenuItem` `.enabled`."""
+    no_files_selected = not files_selected
+    no_changes_available = (not commit_to_amend) and no_files_selected
+    return (not is_committing) and (not is_generating) and (not no_changes_available)
+
+
+def generate_commit_message_menu_item(
+    *,
+    accounts_can_generate: bool,
+    is_committing: bool,
+    is_generating: bool,
+    commit_to_amend: bool,
+    files_selected: bool,
+) -> tuple[str, bool] | None:
+    """Desktop `getGenerateCommitMessageMenuItem`. ``None`` when Copilot is unavailable."""
+    if not accounts_can_generate:
+        return None
+    return (
+        GENERATE_COMMIT_MESSAGE_WITH_COPILOT,
+        generate_commit_message_menu_item_enabled(
+            is_committing=is_committing,
+            is_generating=is_generating,
+            commit_to_amend=commit_to_amend,
+            files_selected=files_selected,
+        ),
+    )
+
+
+def commit_message_shared_menu_specs(
+    *,
+    showing_co_authors: bool,
+    github_repository: bool,
+    is_committing: bool,
+    accounts_can_generate: bool,
+    is_generating: bool,
+    commit_to_amend: bool,
+    files_selected: bool,
+) -> list[tuple[str, bool]]:
+    """Desktop `onContextMenu` items before `{ role: 'editMenu' }`."""
+    items: list[tuple[str, bool]] = [
+        (
+            add_remove_co_authors_label(showing=showing_co_authors),
+            bool(github_repository) and not is_committing,
+        )
+    ]
+    generate = generate_commit_message_menu_item(
+        accounts_can_generate=accounts_can_generate,
+        is_committing=is_committing,
+        is_generating=is_generating,
+        commit_to_amend=commit_to_amend,
+        files_selected=files_selected,
+    )
+    if generate is not None:
+        items.append(generate)
+    return items
+
+
 def rebase_changed_file_menu_labels(
     kind: AppFileStatusKind,
     *,

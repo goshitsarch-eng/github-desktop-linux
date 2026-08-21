@@ -303,3 +303,73 @@ def test_rebase_changed_file_menu_hides_ignore() -> None:
     )
     assert untracked[0] == "Discard changes…"
     assert "Ignore file (add to .gitignore)" not in untracked
+
+
+def test_commit_message_context_menu_labels() -> None:
+    from github_desktop.ui.menus import (
+        GENERATE_COMMIT_MESSAGE_WITH_COPILOT,
+        add_remove_co_authors_label,
+        commit_message_shared_menu_specs,
+        commit_spellcheck_menu_label,
+        generate_commit_message_menu_item,
+        generate_commit_message_menu_item_enabled,
+    )
+
+    assert add_remove_co_authors_label(showing=False) == "Add co-authors"
+    assert add_remove_co_authors_label(showing=True) == "Remove co-authors"
+    assert GENERATE_COMMIT_MESSAGE_WITH_COPILOT == "Generate commit message with Copilot"
+    assert commit_spellcheck_menu_label(enabled=True) == "Disable commit spellcheck"
+    assert commit_spellcheck_menu_label(enabled=False) == "Enable commit spellcheck"
+    assert generate_commit_message_menu_item(accounts_can_generate=False, is_committing=False, is_generating=False, commit_to_amend=False, files_selected=True) is None
+    item = generate_commit_message_menu_item(
+        accounts_can_generate=True,
+        is_committing=False,
+        is_generating=False,
+        commit_to_amend=False,
+        files_selected=True,
+    )
+    assert item == (GENERATE_COMMIT_MESSAGE_WITH_COPILOT, True)
+    assert generate_commit_message_menu_item_enabled(
+        is_committing=False, is_generating=False, commit_to_amend=False, files_selected=False
+    ) is False
+    assert generate_commit_message_menu_item_enabled(
+        is_committing=False, is_generating=False, commit_to_amend=True, files_selected=False
+    ) is True
+    assert generate_commit_message_menu_item_enabled(
+        is_committing=True, is_generating=False, commit_to_amend=False, files_selected=True
+    ) is False
+    assert generate_commit_message_menu_item_enabled(
+        is_committing=False, is_generating=True, commit_to_amend=False, files_selected=True
+    ) is False
+    chrome = commit_message_shared_menu_specs(
+        showing_co_authors=False,
+        github_repository=True,
+        is_committing=False,
+        accounts_can_generate=True,
+        is_generating=False,
+        commit_to_amend=False,
+        files_selected=True,
+    )
+    assert chrome[0] == ("Add co-authors", True)
+    assert chrome[1] == (GENERATE_COMMIT_MESSAGE_WITH_COPILOT, True)
+    disabled_co = commit_message_shared_menu_specs(
+        showing_co_authors=True,
+        github_repository=False,
+        is_committing=False,
+        accounts_can_generate=False,
+        is_generating=False,
+        commit_to_amend=False,
+        files_selected=False,
+    )
+    assert disabled_co == [("Remove co-authors", False)]
+    committing = commit_message_shared_menu_specs(
+        showing_co_authors=False,
+        github_repository=True,
+        is_committing=True,
+        accounts_can_generate=True,
+        is_generating=False,
+        commit_to_amend=False,
+        files_selected=True,
+    )
+    assert committing[0] == ("Add co-authors", False)
+    assert committing[1][1] is False

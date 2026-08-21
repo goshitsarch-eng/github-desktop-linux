@@ -64,6 +64,31 @@ def test_set_theme(isolated_config) -> None:
     apply_theme("system")
 
 
+def test_set_commit_spellcheck_enabled(isolated_config) -> None:
+    from github_desktop.local_storage import get_boolean
+    from github_desktop.settings import commitSpellcheckEnabledKey
+
+    store = AppStore()
+    assert store.settings.spellcheck_enabled is True
+    store.set_commit_spellcheck_enabled(False)
+    assert store.settings.spellcheck_enabled is False
+    assert get_boolean(commitSpellcheckEnabledKey) is False
+    store.set_commit_spellcheck_enabled(False)
+    assert store.settings.spellcheck_enabled is False
+    store.set_commit_spellcheck_enabled(True)
+    assert store.settings.spellcheck_enabled is True
+    assert get_boolean(commitSpellcheckEnabledKey) is True
+
+
+def test_commit_spellcheck_loads_from_local_storage(isolated_config) -> None:
+    from github_desktop.local_storage import set_boolean
+    from github_desktop.settings import commitSpellcheckEnabledKey
+
+    set_boolean(commitSpellcheckEnabledKey, False)
+    store = AppStore()
+    assert store.settings.spellcheck_enabled is False
+
+
 def test_cli_help(capsys) -> None:
     assert cli_main(["--help"]) == 0
     out = capsys.readouterr().out

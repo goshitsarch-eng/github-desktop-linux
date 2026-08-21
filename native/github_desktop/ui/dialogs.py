@@ -50,7 +50,13 @@ from ..models import (
     uncommitted_changes_strategy_choices,
 )
 from ..clamp import clamp
-from ..settings import defaultPullRequestFileListWidth, get_default_dir, set_default_dir
+from ..local_storage import set_boolean
+from ..settings import (
+    commitSpellcheckEnabledKey,
+    defaultPullRequestFileListWidth,
+    get_default_dir,
+    set_default_dir,
+)
 from ..shells import get_available_shells, open_external
 from ..store import AppStore
 from ..text_tokens import MaxSummaryLength
@@ -3594,6 +3600,7 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
         s.underline_links = underline.get_active()
         s.show_diff_check_marks = checks.get_active()
         s.spellcheck_enabled = spell.get_active()
+        set_boolean(commitSpellcheckEnabledKey, s.spellcheck_enabled)
         set_default_dir(s, clone_row.get_text().strip())
         s.show_commit_length_warning = length_row.get_active()
         idx = strategy.get_selected()

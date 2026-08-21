@@ -13,6 +13,7 @@ from github_desktop.models import (
 )
 from github_desktop.settings import (
     Settings,
+    commitSpellcheckEnabledDefault,
     commitSpellcheckEnabledKey,
     repositoryIndicatorsEnabledKey,
     showChangesFilterDefault,
@@ -59,6 +60,7 @@ def test_tab_size_default_matches_desktop() -> None:
     assert showChangesFilterKey == "show-changes-filter"
     assert showChangesFilterDefault is True
     assert commitSpellcheckEnabledKey == "commit-spellcheck-enabled"
+    assert commitSpellcheckEnabledDefault is True
     assert repositoryIndicatorsEnabledKey == "enable-repository-indicators"
 
 
