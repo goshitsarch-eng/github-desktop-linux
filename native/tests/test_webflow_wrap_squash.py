@@ -277,3 +277,29 @@ def test_ignore_folder_labels_deepest_first() -> None:
         ".json",
     ]
     assert ignore_extension_globs(["README", ".gitignore"]) == []
+
+
+def test_rebase_changed_file_menu_hides_ignore() -> None:
+    from github_desktop.models import AppFileStatusKind
+    from github_desktop.ui.menus import (
+        changes_list_context_menu_blocked,
+        discard_changes_item_label,
+        rebase_changed_file_menu_labels,
+    )
+
+    assert discard_changes_item_label(["a.txt"], confirm=True) == "Discard changes…"
+    assert discard_changes_item_label(["a.txt", "b.txt"], confirm=False) == "Discard 2 selected changes"
+    assert changes_list_context_menu_blocked(committing=True, rebasing=False)
+    assert changes_list_context_menu_blocked(committing=False, rebasing=True)
+    assert not changes_list_context_menu_blocked(committing=False, rebasing=False)
+    tracked = rebase_changed_file_menu_labels(
+        AppFileStatusKind.MODIFIED, confirm_discard=True, editor_label="Open in external editor"
+    )
+    assert "Ignore file (add to .gitignore)" not in tracked
+    assert "Discard changes…" not in tracked
+    assert "Copy file path" in tracked
+    untracked = rebase_changed_file_menu_labels(
+        AppFileStatusKind.UNTRACKED, confirm_discard=True, editor_label="Open in external editor"
+    )
+    assert untracked[0] == "Discard changes…"
+    assert "Ignore file (add to .gitignore)" not in untracked

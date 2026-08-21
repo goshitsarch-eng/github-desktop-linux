@@ -108,10 +108,13 @@ from .menus import (
     attach_paned_keyboard_resize,
     attach_paned_reset,
     attach_right_click,
+    changes_list_context_menu_blocked,
+    discard_changes_item_label,
     find_active_resizable,
     ignore_extension_globs,
     ignore_folder_labels,
     is_safe_file_extension,
+    rebase_changed_file_menu_labels,
     resizable_limit,
     resize_active_resizable,
     wrap_toolbar_resizable,
@@ -3797,32 +3800,43 @@ class MainWindow(Adw.ApplicationWindow):
         return files
 
     def _file_list_menu(self) -> None:
+        """Desktop Changes list `onContextMenu` (blank area)."""
         repo = self.store.selected_repository
         if not repo:
             return
         state = self.store.state_for(repo)
+        rebasing = bool(state.status and state.status.rebase_internal_state)
+        if changes_list_context_menu_blocked(committing=state.is_committing, rebasing=rebasing):
+            return
         has = bool(state.status and state.status.working_directory.files)
         has_conflicts = bool(state.status and has_conflicted_files(state.status.working_directory))
+        branch = state.status.current_branch if state.status else None
+        has_stash = self.store.desktop_stash_for_branch(repo, branch) is not None
         show_context_menu(
             self._file_list,
             [
                 ("Discard all changes…", lambda: self.store.show_popup(PopupType.CONFIRM_DISCARD_CHANGES, discarding_all=True), has),
-                (stash_all_changes_label(self.store.settings.confirm_stash_all_changes), self._stash_all, has and not has_conflicts),
+                (stash_all_changes_label(has_stash), self._stash_all, has and branch is not None and not has_conflicts),
             ],
         )
 
     def _file_item_menu(self, row: Gtk.ListBoxRow) -> None:
+        """Desktop `onItemContextMenu` → `getDefaultContextMenu` / `getRebaseContextMenu`."""
         repo = self.store.selected_repository
         file = getattr(row, "_file", None)
         if not repo or file is None:
             return
+        state = self.store.state_for(repo)
+        rebasing = bool(state.status and state.status.rebase_internal_state)
+        if state.is_committing:
+            return
+        if rebasing:
+            self._rebase_file_item_menu(row, repo, file)
+            return
         selected = self._selected_change_files() or [file]
         paths = [f.path for f in selected]
         confirm = self.store.settings.confirm_discard_changes
-        if len(paths) == 1:
-            discard_label = "Discard changes…" if confirm else "Discard changes"
-        else:
-            discard_label = f"Discard {len(paths)} selected changes" + ("…" if confirm else "")
+        discard_label = discard_changes_item_label(paths, confirm=confirm)
         items = [
             (discard_label, lambda: self.store.show_popup(PopupType.CONFIRM_DISCARD_CHANGES, files=selected), True),
             None,
@@ -3899,6 +3913,36 @@ class MainWindow(Adw.ApplicationWindow):
                     ("Use theirs", lambda: self._resolve(file.path, ManualConflictResolution.THEIRS), True),
                 ]
             )
+        show_context_menu(row, items)
+
+    def _rebase_file_item_menu(self, row: Gtk.ListBoxRow, repo, file) -> None:
+        """Desktop `getRebaseContextMenu`."""
+        confirm = self.store.settings.confirm_discard_changes
+        exists = file.status.kind != AppFileStatusKind.DELETED
+        items: list = []
+        if file.status.kind is AppFileStatusKind.UNTRACKED:
+            items.append(
+                (
+                    discard_changes_item_label([file.path], confirm=confirm),
+                    lambda: self.store.show_popup(PopupType.CONFIRM_DISCARD_CHANGES, files=[file]),
+                    True,
+                )
+            )
+            items.append(None)
+        items.extend(
+            [
+                (CopyFilePathLabel, lambda: copy_text(os.path.join(repo.path, file.path)), True),
+                (CopyRelativeFilePathLabel, lambda: copy_text(file.path), True),
+                None,
+                (RevealInFileManagerLabel, lambda: self.store.reveal_in_file_manager(repo, file.path), exists),
+                (self._open_in_editor_label(), lambda: self.store.open_in_editor(repo, os.path.join(repo.path, file.path)), exists),
+                (
+                    OpenWithDefaultProgramLabel,
+                    lambda: self.store.open_file_default(repo, file.path),
+                    exists and is_safe_file_extension(os.path.splitext(file.path)[1]),
+                ),
+            ]
+        )
         show_context_menu(row, items)
 
     def _hist_file_menu(self, file, anchor: Gtk.Widget | None = None) -> None:

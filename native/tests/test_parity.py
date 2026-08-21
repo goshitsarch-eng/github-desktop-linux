@@ -1392,5 +1392,10 @@ def test_window_actions_cover_menus() -> None:
         "Ignore folder (add to .gitignore)",
         "Five menu items should be enough for everyone",
         "Ignore File (Add to .gitignore)",
+        "getRebaseContextMenu",
+        "getDefaultContextMenu",
+        "onItemContextMenu",
+        "rebaseConflictState",
+        "getDiscardChangesMenuItemLabel",
     ]:
         assert phrase in src

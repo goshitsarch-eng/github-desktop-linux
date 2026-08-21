@@ -10,6 +10,8 @@ import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gdk, Gtk
 
+from ..models import AppFileStatusKind
+
 
 MenuCallback = Callable[[], None]
 MenuItem = tuple[str, MenuCallback | Sequence["MenuItem"], bool] | None
@@ -45,6 +47,42 @@ def ignore_extension_globs(paths: Sequence[str], *, limit: int = 5) -> list[str]
         if len(seen) >= limit:
             break
     return seen
+
+
+def discard_changes_item_label(paths: Sequence[str], *, confirm: bool) -> str:
+    """Desktop `getDiscardChangesMenuItemLabel` (Linux)."""
+    if len(paths) == 1:
+        base = "Discard changes"
+    else:
+        base = f"Discard {len(paths)} selected changes"
+    return f"{base}…" if confirm else base
+
+
+def changes_list_context_menu_blocked(*, committing: bool, rebasing: bool) -> bool:
+    """Desktop Changes `onContextMenu` / `onItemContextMenu` `isCommitting` + `rebaseConflictState`."""
+    return committing or rebasing
+
+
+def rebase_changed_file_menu_labels(
+    kind: AppFileStatusKind,
+    *,
+    confirm_discard: bool,
+    editor_label: str,
+) -> list[str]:
+    """Desktop `getRebaseContextMenu` labels (Linux)."""
+    labels: list[str] = []
+    if kind is AppFileStatusKind.UNTRACKED:
+        labels.append(discard_changes_item_label(["untracked"], confirm=confirm_discard))
+    labels.extend(
+        [
+            CopyFilePathLabel,
+            CopyRelativeFilePathLabel,
+            RevealInFileManagerLabel,
+            editor_label,
+            OpenWithDefaultProgramLabel,
+        ]
+    )
+    return labels
 
 
 def open_in_editor_label(editor_name: str | None) -> str:
