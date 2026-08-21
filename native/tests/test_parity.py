@@ -249,6 +249,9 @@ def test_window_actions_cover_menus() -> None:
     from github_desktop import api_cache as api_cache_mod
 
     src += open(api_cache_mod.__file__, encoding="utf-8").read()
+    from github_desktop import api_repositories as api_repositories_mod
+
+    src += open(api_repositories_mod.__file__, encoding="utf-8").read()
     from github_desktop import push_pull, commit_dnd
     from github_desktop.ui import css as css_mod
 
@@ -1180,5 +1183,17 @@ def test_window_actions_cover_menus() -> None:
         "unrecoverable error",
         "getArchitecture",
         "SendStatsInterval",
+        "accountEquals",
+        "Let's get started!",
+        "Add a repository to GitHub Desktop to start collaborating",
+        "Unable to create repository for organization",
+        "Unable to publish repository",
+        "Filter your repositories",
+        "Loading repositories from",
+        "Refresh the list of repositories",
+        "fetchOrgs",
+        "fetchIssues",
+        "createRepository",
+        "IAccountRepositories",
     ]:
         assert phrase in src

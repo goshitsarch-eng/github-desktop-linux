@@ -67,7 +67,15 @@ from .autocompletion import (
 )
 from .branches import BranchesFoldout
 from .checks import present_checks_popover
-from .dialogs import present_popup, show_preferences, show_reorder_commits
+from .dialogs import (
+    present_popup,
+    show_preferences,
+    show_reorder_commits,
+    _clear_listbox,
+    _clone_list_empty_title,
+    _clone_list_loading_title,
+    _render_grouped_clone_list,
+)
 from .diff_view import DiffViewer
 from .history import ExpandableCommitSummary
 from .menus import (
@@ -243,6 +251,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._install_shortcuts()
         self._install_file_drop()
         self.store.subscribe(self._on_store)
+        self.store.api_repositories.subscribe(self._on_api_repositories)
         self.connect("close-request", self._on_close)
         self.connect("notify::fullscreened", self._on_fullscreened)
         self._apply_underline_links()
@@ -615,10 +624,92 @@ class MainWindow(Adw.ApplicationWindow):
     def _refresh_empty(self) -> None:
         if not hasattr(self, "_empty_tutorial_btn"):
             return
+        signed_in = bool(self.store.accounts)
         paused = self.store.tutorial_step == TutorialStep.PAUSED
         self._empty_tutorial_btn.set_label(
             "Return to in progress tutorial" if paused else "Create a tutorial repository…"
         )
+        self._empty_tutorial_btn.set_visible(signed_in)
+        if hasattr(self, "_empty_clone_pane"):
+            self._empty_clone_pane.set_visible(signed_in)
+        self._refresh_empty_clone_list()
+
+    def _on_api_repositories(self) -> None:
+        if getattr(self, "_stack", None) is None:
+            return
+        if self._stack.get_visible_child_name() == "empty":
+            self._refresh_empty_clone_list()
+
+    def _empty_selected_account(self):
+        accounts = list(self.store.accounts)
+        if not accounts:
+            return None
+        drop = getattr(self, "_empty_account_drop", None)
+        if drop is not None and drop.get_visible():
+            idx = int(drop.get_selected())
+            if 0 <= idx < len(accounts):
+                return accounts[idx]
+        return accounts[0]
+
+    def _refresh_empty_clone_list(self) -> None:
+        listbox = getattr(self, "_empty_clone_list", None)
+        if listbox is None or getattr(self, "_empty_clone_refreshing", False):
+            return
+        self._empty_clone_refreshing = True
+        try:
+            self._refresh_empty_clone_list_inner(listbox)
+        finally:
+            self._empty_clone_refreshing = False
+
+    def _refresh_empty_clone_list_inner(self, listbox: Gtk.ListBox) -> None:
+        accounts = list(self.store.accounts)
+        drop = getattr(self, "_empty_account_drop", None)
+        if drop is not None:
+            drop.set_visible(len(accounts) > 1)
+            labels = [f"{item.login} ({item.friendly_endpoint})" for item in accounts]
+            current = int(drop.get_selected()) if drop.get_visible() else 0
+            drop.set_model(Gtk.StringList.new(labels or [""]))
+            if labels:
+                drop.set_selected(min(max(current, 0), len(labels) - 1))
+        account = self._empty_selected_account()
+        if not account:
+            _clear_listbox(listbox)
+            if hasattr(self, "_empty_clone_selected"):
+                self._empty_clone_selected.set_visible(False)
+            return
+        state = self.store.api_repositories.get_account_state(account)
+        if state is None:
+            self.store.refresh_api_repositories(account)
+            repos, loading = [], True
+        else:
+            repos, loading = list(state.repositories), state.loading
+        needle = ""
+        if hasattr(self, "_empty_clone_filter"):
+            needle = self._empty_clone_filter.get_text().strip()
+        if loading and not repos:
+            _clear_listbox(listbox)
+            listbox.append(Adw.ActionRow(title=_clone_list_loading_title(account)))
+            return
+        _render_grouped_clone_list(
+            listbox,
+            repos,
+            account.login,
+            needle,
+            empty_title=_clone_list_empty_title(account, needle),
+            on_pick=self._on_empty_clone_pick,
+        )
+
+    def _on_empty_clone_pick(self, gh) -> None:
+        self._empty_selected_repo = gh
+        btn = getattr(self, "_empty_clone_selected", None)
+        if btn is not None:
+            btn.set_label(f"Clone {gh.full_name}")
+            btn.set_visible(True)
+
+    def _on_empty_clone_selected(self, *_args: object) -> None:
+        gh = getattr(self, "_empty_selected_repo", None)
+        if gh is not None and gh.clone_url:
+            self.store.show_popup(PopupType.CLONE_REPOSITORY, initial_url=gh.clone_url)
 
     def _on_empty_tutorial(self, *_args: object) -> None:
         if self.store.tutorial_step == TutorialStep.PAUSED:
@@ -800,10 +891,50 @@ class MainWindow(Adw.ApplicationWindow):
             self._welcome_extra.append(finish)
 
     def _build_empty(self) -> Gtk.Widget:
-        page = Adw.StatusPage(title="No repositories", description="Add a local repository, clone from GitHub, or create a new one.")
+        page = Adw.StatusPage(
+            title="Let's get started!",
+            description="Add a repository to GitHub Desktop to start collaborating",
+        )
         page.set_icon_name("folder-symbolic")
+        page.add_css_class("no-repositories")
+        outer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=24)
+        outer.set_halign(Gtk.Align.CENTER)
+        outer.set_valign(Gtk.Align.START)
+
+        clone_pane = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        clone_pane.set_hexpand(True)
+        clone_pane.set_size_request(320, 280)
+        self._empty_clone_pane = clone_pane
+        self._empty_account_drop = Adw.ComboRow(title="Account")
+        self._empty_account_drop.set_model(Gtk.StringList.new([""]))
+        self._empty_account_drop.set_visible(False)
+        self._empty_account_drop.connect("notify::selected", lambda *_: self._refresh_empty_clone_list())
+        clone_pane.append(self._empty_account_drop)
+        self._empty_clone_filter = Gtk.SearchEntry()
+        self._empty_clone_filter.set_placeholder_text("Filter your repositories")
+        self._empty_clone_filter.connect("search-changed", lambda *_: self._refresh_empty_clone_list())
+        clone_pane.append(self._empty_clone_filter)
+        scroller = Gtk.ScrolledWindow(vexpand=True, hexpand=True)
+        scroller.set_min_content_height(220)
+        self._empty_clone_list = Gtk.ListBox()
+        self._empty_clone_list.add_css_class("boxed-list")
+        scroller.set_child(self._empty_clone_list)
+        clone_pane.append(scroller)
+        self._empty_clone_selected = Gtk.Button(label="Clone selected")
+        self._empty_clone_selected.add_css_class("suggested-action")
+        self._empty_clone_selected.set_visible(False)
+        self._empty_clone_selected.connect("clicked", self._on_empty_clone_selected)
+        clone_pane.append(self._empty_clone_selected)
+        self._empty_selected_repo = None
+        outer.append(clone_pane)
+
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         box.set_halign(Gtk.Align.CENTER)
+        box.set_valign(Gtk.Align.START)
+        tutorial = Gtk.Button(label="Create a tutorial repository…")
+        tutorial.connect("clicked", self._on_empty_tutorial)
+        self._empty_tutorial_btn = tutorial
+        box.append(tutorial)
         for label, action in [
             ("Clone a repository from the Internet…", "win.clone-repository"),
             ("Create a New Repository on my local drive…", "win.new-repository"),
@@ -812,10 +943,6 @@ class MainWindow(Adw.ApplicationWindow):
             btn = Gtk.Button(label=label)
             btn.set_action_name(action)
             box.append(btn)
-        tutorial = Gtk.Button(label="Create a tutorial repository…")
-        tutorial.connect("clicked", self._on_empty_tutorial)
-        self._empty_tutorial_btn = tutorial
-        box.append(tutorial)
         protip = Gtk.Label(
             label="ProTip! You can drag & drop an existing repository folder here to add it to Desktop",
             wrap=True,
@@ -826,7 +953,8 @@ class MainWindow(Adw.ApplicationWindow):
         protip.set_halign(Gtk.Align.CENTER)
         protip.set_justify(Gtk.Justification.CENTER)
         box.append(protip)
-        page.set_child(box)
+        outer.append(box)
+        page.set_child(outer)
         return page
 
     def _build_repo_page(self) -> Gtk.Widget:

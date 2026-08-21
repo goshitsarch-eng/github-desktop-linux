@@ -1584,17 +1584,17 @@ def _render_grouped_clone_list(
     login: str,
     needle: str,
     *,
-    selected_clone_url: dict[str, str],
-    url_row: Adw.EntryRow,
-    path_row: Adw.EntryRow,
-    default_dir: str,
+    selected_clone_url: dict[str, str] | None = None,
+    url_row: Adw.EntryRow | None = None,
+    path_row: Adw.EntryRow | None = None,
+    default_dir: str = "",
     empty_title: str,
+    on_pick: Callable[[Any], None] | None = None,
 ) -> None:
     from ..clone_groups import group_cloneable_repositories
     from ..fuzzy_find import filter_items
 
     _clear_listbox(listbox)
-    shown = 0
     any_shown = False
     query = needle.strip()
     for title, items in group_cloneable_repositories(list(repos), login):
@@ -1614,19 +1614,19 @@ def _render_grouped_clone_list(
             _decorate_clone_row(row, gh)
 
             def pick(_r, g=gh) -> None:
-                selected_clone_url["url"] = g.clone_url
-                selected_clone_url["name"] = g.name
-                url_row.set_text(g.clone_url)
-                path_row.set_text(os.path.join(default_dir, g.name))
+                if selected_clone_url is not None:
+                    selected_clone_url["url"] = g.clone_url
+                    selected_clone_url["name"] = g.name
+                if url_row is not None:
+                    url_row.set_text(g.clone_url)
+                if path_row is not None:
+                    path_row.set_text(os.path.join(default_dir, g.name))
+                if on_pick is not None:
+                    on_pick(g)
 
             row.connect("activated", pick)
             listbox.append(row)
-            shown += 1
             any_shown = True
-            if shown >= 300:
-                break
-        if shown >= 300:
-            break
     if not any_shown:
         listbox.append(Adw.ActionRow(title=empty_title))
 
@@ -1638,6 +1638,12 @@ def _clone_list_empty_title(account, needle: str) -> str:
     login = getattr(account, "login", "") or ""
     host = getattr(account, "friendly_endpoint", None) or "GitHub"
     return f"Looks like there are no repositories for {login} on {host}."
+
+
+def _clone_list_loading_title(account) -> str:
+    """Desktop `Loading repositories from ${account.friendlyEndpoint}…`."""
+    host = getattr(account, "friendly_endpoint", None) or "GitHub"
+    return f"Loading repositories from {host}…"
 
 
 def show_config_lock_file_exists(
@@ -1770,10 +1776,10 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
     list_box.set_margin_end(8)
     filter_row = Gtk.Box(spacing=6)
     gh_filter = Gtk.SearchEntry()
-    gh_filter.set_placeholder_text("Filter repositories")
+    gh_filter.set_placeholder_text("Filter your repositories")
     gh_filter.set_hexpand(True)
     refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic")
-    refresh_btn.set_tooltip_text("Refresh")
+    refresh_btn.set_tooltip_text("Refresh the list of repositories")
     filter_row.append(gh_filter)
     filter_row.append(refresh_btn)
     list_box.append(filter_row)
@@ -1809,10 +1815,10 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
     ent_box.set_margin_end(8)
     ent_filter_row = Gtk.Box(spacing=6)
     ent_filter = Gtk.SearchEntry()
-    ent_filter.set_placeholder_text("Filter repositories")
+    ent_filter.set_placeholder_text("Filter your repositories")
     ent_filter.set_hexpand(True)
     ent_refresh = Gtk.Button(icon_name="view-refresh-symbolic")
-    ent_refresh.set_tooltip_text("Refresh")
+    ent_refresh.set_tooltip_text("Refresh the list of repositories")
     ent_filter_row.append(ent_filter)
     ent_filter_row.append(ent_refresh)
     ent_box.append(ent_filter_row)
@@ -1843,7 +1849,6 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
     ent_clone.set_visible(bool(ent_accounts))
 
     selected_clone_url = {"url": "", "name": ""}
-    loaded: list = []
 
     def selected_account(enterprise: bool = False):
         dropdown = ent_drop if enterprise else account_drop
@@ -1856,6 +1861,12 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
             return next((a for a in store.accounts if not a.is_dotcom), None)
         return next((a for a in store.accounts if a.is_dotcom), None)
 
+    def repos_for(account) -> tuple[list, bool]:
+        state = store.api_repositories.get_account_state(account) if account else None
+        if state is None:
+            return [], True
+        return list(state.repositories), state.loading
+
     def render_github_list() -> None:
         account = selected_account()
         signed_in = account is not None
@@ -1867,6 +1878,12 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
             account_drop.set_visible(signed_in)
         if not signed_in:
             _clear_listbox(repo_list)
+            return
+        loaded, loading = repos_for(account)
+        refresh_btn.set_sensitive(not loading)
+        if loading and not loaded:
+            _clear_listbox(repo_list)
+            repo_list.append(Adw.ActionRow(title=_clone_list_loading_title(account)))
             return
         needle = gh_filter.get_text().strip()
         empty = _clone_list_empty_title(account, needle)
@@ -1882,72 +1899,17 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
             empty_title=empty,
         )
 
-    def fill_github(*_a: Any) -> None:
+    def fill_github(*_a: Any, force: bool = False) -> None:
         account = selected_account()
-        loaded.clear()
-        if not account:
-            render_github_list()
-            return
-        github_load_gen[0] += 1
-        token = github_load_gen[0]
-        # Desktop `streamUserRepositories` / `ApiRepositoriesStore` load off the UI thread.
-        _clear_listbox(repo_list)
-        repo_list.append(Adw.ActionRow(title="Loading repositories…"))
-        by_url: dict[str, Any] = {}
+        render_github_list()
+        if account and (force or store.api_repositories.get_account_state(account) is None):
+            store.refresh_api_repositories(account)
 
-        def apply_page(page: list) -> None:
-            if token != github_load_gen[0]:
-                return
-            for gh in page:
-                key = gh.clone_url or gh.full_name
-                by_url[key] = gh
-            loaded.clear()
-            loaded.extend(by_url.values())
-            render_github_list()
-
-        def on_page(page: list) -> None:
-            def tick() -> bool:
-                apply_page(page)
-                return False
-
-            invoked = False
-            try:
-                from gi.repository import Gio, GLib
-
-                if Gio.Application.get_default() is not None:
-                    GLib.idle_add(tick)
-                    invoked = True
-            except Exception:
-                invoked = False
-            if not invoked:
-                apply_page(page)
-
-        def work() -> None:
-            from ..github.api import GitHubAPI
-
-            GitHubAPI.from_account(account).load_cloneable_repositories(on_page)
-
-        def done(exc: BaseException | None, result: object = None) -> None:
-            if token != github_load_gen[0]:
-                return
-            if exc:
-                _clear_listbox(repo_list)
-                repo_list.append(Adw.ActionRow(title="Could not load repositories", subtitle=str(exc)))
-                return
-            loaded.clear()
-            loaded.extend(by_url.values())
-            render_github_list()
-
-        store._run(work, done)
-
-    github_load_gen = [0]
     fill_github()
     gh_filter.connect("search-changed", lambda *_: render_github_list())
-    refresh_btn.connect("clicked", fill_github)
+    refresh_btn.connect("clicked", lambda *_: fill_github(force=True))
     if account_drop is not None:
         account_drop.connect("notify::selected", fill_github)
-
-    loaded_ent: list = []
 
     def render_enterprise_list() -> None:
         account = selected_account(True)
@@ -1960,6 +1922,12 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
             ent_drop.set_visible(signed_in)
         if not signed_in:
             _clear_listbox(ent_list)
+            return
+        loaded_ent, loading = repos_for(account)
+        ent_refresh.set_sensitive(not loading)
+        if loading and not loaded_ent:
+            _clear_listbox(ent_list)
+            ent_list.append(Adw.ActionRow(title=_clone_list_loading_title(account)))
             return
         needle = ent_filter.get_text().strip()
         empty = _clone_list_empty_title(account, needle)
@@ -1975,69 +1943,31 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
             empty_title=empty,
         )
 
-    def fill_enterprise(*_a: Any) -> None:
+    def fill_enterprise(*_a: Any, force: bool = False) -> None:
         account = selected_account(True)
-        loaded_ent.clear()
-        if not account:
-            render_enterprise_list()
-            return
-        ent_load_gen[0] += 1
-        token = ent_load_gen[0]
-        _clear_listbox(ent_list)
-        ent_list.append(Adw.ActionRow(title="Loading repositories…"))
-        by_url: dict[str, Any] = {}
+        render_enterprise_list()
+        if account and (force or store.api_repositories.get_account_state(account) is None):
+            store.refresh_api_repositories(account)
 
-        def apply_page(page: list) -> None:
-            if token != ent_load_gen[0]:
-                return
-            for gh in page:
-                key = gh.clone_url or gh.full_name
-                by_url[key] = gh
-            loaded_ent.clear()
-            loaded_ent.extend(by_url.values())
-            render_enterprise_list()
-
-        def on_page(page: list) -> None:
-            def tick() -> bool:
-                apply_page(page)
-                return False
-
-            invoked = False
-            try:
-                from gi.repository import Gio, GLib
-
-                if Gio.Application.get_default() is not None:
-                    GLib.idle_add(tick)
-                    invoked = True
-            except Exception:
-                invoked = False
-            if not invoked:
-                apply_page(page)
-
-        def work() -> None:
-            from ..github.api import GitHubAPI
-
-            GitHubAPI.from_account(account).load_cloneable_repositories(on_page)
-
-        def done(exc: BaseException | None, result: object = None) -> None:
-            if token != ent_load_gen[0]:
-                return
-            if exc:
-                _clear_listbox(ent_list)
-                ent_list.append(Adw.ActionRow(title="Could not load repositories", subtitle=str(exc)))
-                return
-            loaded_ent.clear()
-            loaded_ent.extend(by_url.values())
-            render_enterprise_list()
-
-        store._run(work, done)
-
-    ent_load_gen = [0]
     fill_enterprise()
     ent_filter.connect("search-changed", lambda *_: render_enterprise_list())
-    ent_refresh.connect("clicked", fill_enterprise)
+    ent_refresh.connect("clicked", lambda *_: fill_enterprise(force=True))
     if ent_drop is not None:
         ent_drop.connect("notify::selected", fill_enterprise)
+
+    def on_api_repos() -> None:
+        render_github_list()
+        render_enterprise_list()
+
+    unsub = store.api_repositories.subscribe(on_api_repos)
+
+    def _unsub(*_a: Any) -> None:
+        unsub()
+
+    try:
+        dialog.connect("closed", _unsub)
+    except TypeError:
+        dialog.connect("destroy", _unsub)
 
     def do_clone(*_a: Any) -> None:
         url = url_row.get_text().strip() or selected_clone_url["url"]
@@ -2648,7 +2578,6 @@ def show_publish(parent: Gtk.Window, store: AppStore) -> None:
         return
     from ..create_repo import sanitized_repository_name
     from ..git.ops import read_description
-    from ..github.api import GitHubAPI
 
     accounts = list(store.accounts)
     dialog = Adw.Dialog()
@@ -2710,14 +2639,26 @@ def show_publish(parent: Gtk.Window, store: AppStore) -> None:
         def load_orgs() -> None:
             nonlocal org_logins
             current = selected[0]
-            try:
-                fetched = GitHubAPI.from_account(current).fetch_orgs()
-            except Exception:
-                fetched = []
-            fetched = sorted(fetched, key=lambda item: str(item.get("login") or "").casefold())
-            org_logins = ["None"] + [str(item.get("login") or "") for item in fetched if item.get("login")]
-            org_row.set_model(Gtk.StringList.new(org_logins or ["None"]))
-            org_row.set_selected(0)
+
+            def work() -> list:
+                from ..github.api import GitHubAPI
+
+                try:
+                    return GitHubAPI.from_account(current).fetch_orgs()
+                except Exception:
+                    return []
+
+            def done(exc: BaseException | None, fetched: object = None) -> None:
+                nonlocal org_logins
+                if current is not selected[0]:
+                    return
+                items = fetched if isinstance(fetched, list) else []
+                items = sorted(items, key=lambda item: str(item.get("login") or "").casefold())
+                org_logins = ["None"] + [str(item.get("login") or "") for item in items if item.get("login")]
+                org_row.set_model(Gtk.StringList.new(org_logins or ["None"]))
+                org_row.set_selected(0)
+
+            store._run(work, done)
 
         def on_account(*_a: Any) -> None:
             idx = int(account_row.get_selected())

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from urllib.parse import parse_qs, urlsplit
 
+import pytest
+
+from github_desktop.errors import APIError
 from github_desktop.github.api import (
     GitHubAPI,
     get_next_page_path_from_link,
@@ -262,3 +265,59 @@ def test_load_cloneable_repositories_splits_affiliations_after_first_page() -> N
     assert any("affiliation=collaborator" in path for path in seen)
     assert any("affiliation=organization_member" in path for path in seen)
     assert not any("page=2" in path and "affiliation=" not in path for path in seen)
+
+
+def test_fetch_orgs_follows_link_headers() -> None:
+    api = GitHubAPI("https://api.github.com", "tok")
+    seen: list[str] = []
+
+    def fake_request(method, path, **kwargs):
+        seen.append(path)
+        if "page=2" in path:
+            return [{"login": "beta"}], {}
+        return [{"login": "acme"}], {"Link": '</user/orgs?page=2>; rel="next"'}
+
+    api.request = fake_request  # type: ignore[method-assign]
+    assert [item["login"] for item in api.fetch_orgs()] == ["acme", "beta"]
+    assert any("user/orgs" in path for path in seen)
+    assert not any("?page=1" in path or "&page=1" in path for path in seen)
+
+
+def test_fetch_issues_skips_pull_requests() -> None:
+    api = GitHubAPI("https://api.github.com", "tok")
+
+    def fake_request(method, path, **kwargs):
+        assert "repos/o/r/issues" in path
+        return [
+            {"number": 1, "title": "bug", "state": "open", "updated_at": "2024-01-01T00:00:00Z"},
+            {
+                "number": 2,
+                "title": "pr",
+                "state": "open",
+                "updated_at": "2024-01-02T00:00:00Z",
+                "pull_request": {"url": "https://api.github.com/repos/o/r/pulls/2"},
+            },
+        ], {}
+
+    api.request = fake_request  # type: ignore[method-assign]
+    issues = api.fetch_issues("o", "r")
+    assert [item.number for item in issues] == [1]
+    assert issues[0].title == "bug"
+
+
+def test_create_repository_org_and_network_errors() -> None:
+    api = GitHubAPI("https://api.github.com", "tok")
+
+    def fail_org(method, path, **kwargs):
+        raise APIError("exists", status=422, body="already exists")
+
+    api.request = fail_org  # type: ignore[method-assign]
+    with pytest.raises(APIError, match="Unable to create repository for organization 'acme'"):
+        api.create_repository("hello", org="acme")
+
+    def fail_net(method, path, **kwargs):
+        raise APIError("offline", status=None)
+
+    api.request = fail_net  # type: ignore[method-assign]
+    with pytest.raises(APIError, match="Unable to publish repository"):
+        api.create_repository("hello")

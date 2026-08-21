@@ -457,10 +457,22 @@ class GitHubAPI:
         return collected
 
     def fetch_orgs(self) -> list[dict[str, Any]]:
-        return self._paginate("/user/orgs")
+        """Desktop `fetchOrgs`: `GET /user/orgs` via `fetchAll` Link headers."""
+        try:
+            items = self.fetch_all("user/orgs")
+        except Exception as exc:
+            log.warn("fetchOrgs: failed with endpoint %s", self.endpoint, exc_info=exc)
+            return []
+        return [item for item in items if isinstance(item, dict)]
 
     def fetch_org_repos(self, org: str) -> list[GitHubRepository]:
-        items = self._paginate(f"/orgs/{org}/repos", {"sort": "updated"})
+        try:
+            items = self.fetch_all(
+                url_with_query_string(f"orgs/{org}/repos", {"sort": "updated"})
+            )
+        except Exception as exc:
+            log.warn("fetchOrgRepos: failed for org %s", org, exc_info=exc)
+            return []
         return [
             self._to_repo(item)
             for item in items
@@ -500,12 +512,37 @@ class GitHubAPI:
         private: bool = False,
         org: str | None = None,
     ) -> GitHubRepository:
+        """Desktop `createRepository`: org vs personal create with Desktop error copy."""
         body = {"name": name, "description": description, "private": private}
-        if org:
-            data = self.post(f"/orgs/{org}/repos", body)
-        else:
-            data = self.post("/user/repos", body)
-        return self._to_repo(data)
+        try:
+            if org:
+                data = self.post(f"/orgs/{org}/repos", body)
+            else:
+                data = self.post("/user/repos", body)
+            return self._to_repo(data)
+        except APIError as exc:
+            if exc.status is None:
+                raise APIError(
+                    "Unable to publish repository. Please check if you have an internet connection and try again.",
+                    status=exc.status,
+                    body=exc.body,
+                    headers=exc.headers,
+                ) from exc
+            if org:
+                raise APIError(
+                    f"Unable to create repository for organization '{org}'. "
+                    "Verify that the repository does not already exist and that you have "
+                    "permission to create a repository there.",
+                    status=exc.status,
+                    body=exc.body,
+                    headers=exc.headers,
+                ) from exc
+            raise
+        except Exception as exc:
+            log.error("createRepository: failed with endpoint %s", self.endpoint, exc_info=exc)
+            raise APIError(
+                "Unable to publish repository. Please check if you have an internet connection and try again."
+            ) from exc
 
     def fork_repository(self, owner: str, name: str, org: str | None = None) -> GitHubRepository:
         body = {"organization": org} if org else {}
@@ -590,13 +627,19 @@ class GitHubAPI:
     def fetch_issues(
         self, owner: str, name: str, state: str = "open", since: str | None = None
     ) -> list[Issue]:
+        """Desktop `fetchIssues`: paged `GET /repos/{owner}/{name}/issues`, skip PRs."""
         query: dict[str, str] = {"state": state}
         if since:
             query["since"] = since
-        items = self._paginate(f"/repos/{owner}/{name}/issues", query)
+        path = url_with_query_string(f"repos/{owner}/{name}/issues", query)
+        try:
+            items = self.fetch_all(path)
+        except Exception as exc:
+            log.warn("fetchIssues: failed for repository %s/%s", owner, name, exc_info=exc)
+            raise
         issues = []
         for item in items:
-            if "pull_request" in item:
+            if not isinstance(item, dict) or "pull_request" in item:
                 continue
             issues.append(
                 Issue(

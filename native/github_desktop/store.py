@@ -173,6 +173,7 @@ from .find_default_branch import (
 from .find_default_remote import find_default_remote
 from .tags_to_push import clear_tags_to_push, get_tags_to_push, store_tags_to_push
 from .api_cache import apply_github_api_cache, clear_github_api_cache, store_github_api_cache
+from .api_repositories import ApiRepositoriesStore
 from .offset_from import offset_from_now
 from .logging import get_logger
 from .models import (
@@ -442,7 +443,9 @@ class AppStore:
         self._ahead_behind_lock = threading.Lock()
         self._credential_sign_in_finish: list[Callable[[Account | None], None]] = []
         self._issue_refresh_at: dict[int, float] = {}
+        self.api_repositories = ApiRepositoriesStore()
         self._load_accounts()
+        self.api_repositories.on_accounts_changed(self.accounts)
         self._load_repositories()
         self._maybe_show_accessibility_banner()
         if not os.environ.get("PYTEST_CURRENT_TEST"):
@@ -452,6 +455,10 @@ class AppStore:
             set_credential_callback(self.handle_credential)
         # Desktop `API.onTokenInvalidated` — last AppStore wins (module-level callback).
         on_token_invalidated(self._on_token_invalidated)
+
+    def refresh_api_repositories(self, account: Account) -> None:
+        """Desktop `AppStore._refreshApiRepositories` / `loadRepositories`."""
+        self.api_repositories.load_repositories(account, self._run)
 
     # --- persistence ---
     def _load_accounts(self) -> None:
@@ -4665,12 +4672,17 @@ class AppStore:
         self.accounts = [a for a in self.accounts if not (a.endpoint == account.endpoint and a.login == account.login)]
         self.accounts.insert(0, account)
         self._save_accounts()
+        self.api_repositories.on_accounts_changed(self.accounts)
+        # Desktop `_addAccount`: preload cloneable lists during the welcome flow.
+        if self.welcome_step is not None:
+            self.refresh_api_repositories(account)
 
     def sign_out(self, account: Account) -> None:
         snapshot = account
         secrets.delete_account_token(account.endpoint, account.login)
         self.accounts = [a for a in self.accounts if a is not account and not (a.endpoint == account.endpoint and a.login == account.login)]
         self._save_accounts()
+        self.api_repositories.on_accounts_changed(self.accounts)
         self.emit()
         if snapshot.token and not os.environ.get("PYTEST_CURRENT_TEST"):
             def work() -> bool:

@@ -351,6 +351,9 @@ window:not(.underline-links) link {
 .protip {
   opacity: 0.8;
 }
+.no-repositories {
+  min-width: 42em;
+}
 .no-results-found, .no-branches {
   padding: 12px;
 }

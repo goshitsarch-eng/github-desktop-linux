@@ -1573,6 +1573,11 @@ class Account:
         return cls(login="", endpoint="https://api.github.com", token="", id=-1, plan="free")
 
 
+def account_equals(left: Account, right: Account) -> bool:
+    """Desktop `accountEquals`: same API endpoint and GitHub user id."""
+    return left.endpoint == right.endpoint and left.id == right.id
+
+
 def friendly_endpoint_name(account: Account) -> str:
     """Desktop `friendlyEndpointName`.
 
