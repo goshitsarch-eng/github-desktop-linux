@@ -277,6 +277,9 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             assert viewer._search_count.get_text().startswith("Result ")
             assert 'for "hello"' in viewer._search_count.get_text()
             viewer.close_search()
+            viewer._on_expand_whole_clicked()
+            assert viewer.ariaLiveMessage == "Expanded"
+            assert viewer._aria_live.get_text() == "Expanded"
             viewer.render(None, path="")
             assert viewer.isLoadingDiff is False
             viewer.render(BinaryDiff(), path="photo.bin")

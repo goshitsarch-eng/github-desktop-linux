@@ -1366,12 +1366,6 @@ def test_diff_search_aria_live_copy_matches_desktop() -> None:
     assert diff_search_result_message(3, 3, "bar") == 'Result 3 of 3 for "bar"'
     assert DIFF_EXPANDED_ARIA_LIVE == "Expanded"
     assert diff_expanded_aria_live() == "Expanded"
-    from github_desktop.ui.diff_view import DiffViewer
-
-    viewer = DiffViewer(on_expand_whole=lambda: None, on_expand_hunk=lambda *_: None)
-    viewer._on_expand_whole_clicked()
-    assert viewer.ariaLiveMessage == "Expanded"
-    assert viewer._aria_live.get_text() == "Expanded"
 
 
 def test_hidden_changes_warning_copy_matches_desktop() -> None:
