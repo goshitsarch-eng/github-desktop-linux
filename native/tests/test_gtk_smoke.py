@@ -448,6 +448,39 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             win._refresh_repo()
             assert win._repo_content.get_visible_child_name() == "cloning"
             store.select_repository(repos[0].id)
+            (git_repo / "second.txt").write_text("two\n", encoding="utf-8")
+            from github_desktop.git.ops import get_status as refresh_status
+            from github_desktop.filter_changes import files_selected_label
+
+            store.state_for(repos[0]).status = refresh_status(str(git_repo))
+            win._refresh_files()
+            file_rows = []
+            child = win._file_list.get_first_child()
+            while child is not None:
+                if isinstance(child, Gtk.ListBoxRow) and getattr(child, "_file", None) is not None:
+                    file_rows.append(child)
+                child = child.get_next_sibling()
+            assert len(file_rows) >= 2
+            win._building = True
+            try:
+                win._file_list.unselect_all()
+                win._file_list.select_row(file_rows[0])
+                win._file_list.select_row(file_rows[1])
+            finally:
+                win._building = False
+            win._on_selected_rows_changed(win._file_list)
+            assert win._changes_diff_stack.get_visible_child_name() == "multiple"
+            assert win._multiple_selection_label.get_text() == files_selected_label(2)
+            assert win._multiple_selection.has_css_class("blankslate")
+            assert win._multiple_selection.get_name() == "no-changes"
+            win._building = True
+            try:
+                win._file_list.unselect_all()
+                win._file_list.select_row(file_rows[0])
+            finally:
+                win._building = False
+            win._on_selected_rows_changed(win._file_list)
+            assert win._changes_diff_stack.get_visible_child_name() == "diff"
             from github_desktop.ui.dialogs import show_create_repository
 
             show_create_repository(win, store, "")

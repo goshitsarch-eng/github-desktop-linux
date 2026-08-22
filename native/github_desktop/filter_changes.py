@@ -131,3 +131,18 @@ def get_no_results_message(filters: FileListFilterState) -> str | None:
     else:
         filter_list = f"{', '.join(active[:-1])}, and {active[-1]}"
     return f"Sorry, I can't find any changed files matching the following filters: {filter_list}"
+
+
+def files_selected_label(count: int) -> str:
+    """Desktop `MultipleSelection` blankslate: `{count} files selected`."""
+    return f"{count} files selected"
+
+
+MaximumChangesCount = 300
+
+
+def files_changed_badge(count: int) -> str:
+    """Desktop `FilesChangedBadge` — cap displayed count at `MaximumChangesCount`."""
+    if count > MaximumChangesCount:
+        return f"{MaximumChangesCount}+"
+    return str(count)

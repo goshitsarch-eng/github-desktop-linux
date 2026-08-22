@@ -347,6 +347,7 @@ class RepositoryViewState:
     pull_requests: list[PullRequest] = field(default_factory=list)
     issues: list[tuple[int, str]] = field(default_factory=list)
     selected_file: WorkingDirectoryFileChange | None = None
+    selected_file_ids: list[str] = field(default_factory=list)  # Desktop `selectedFileIDs`
     selected_commit: Commit | None = None
     selected_commit_files: list[CommittedFileChange] = field(default_factory=list)
     current_diff: FileDiff | None = None
@@ -2594,6 +2595,16 @@ class AppStore:
                     state.selected_file = next((f for f in status.working_directory.files if f.path == previous_selected), None)
                 if state.selected_file is None and status and status.working_directory.files:
                     state.selected_file = status.working_directory.files[0]
+                if status:
+                    live = {f.id: f for f in status.working_directory.files}
+                    kept = [fid for fid in state.selected_file_ids if fid in live]
+                    if kept:
+                        state.selected_file_ids = kept
+                        state.selected_file = live.get(kept[0], state.selected_file)
+                    elif state.selected_file is not None:
+                        state.selected_file_ids = [state.selected_file.id]
+                    else:
+                        state.selected_file_ids = []
                 if previous_commit:
                     state.selected_commit = next((c for c in state.commits if c.sha == previous_commit), None)
                 if state.stashed_visible and state.stashes:
@@ -2601,7 +2612,8 @@ class AppStore:
                     self.load_stash_files(repo)
                     return
                 if state.selected_file and self.section == RepositorySectionTab.CHANGES:
-                    self._load_working_diff(repo, state)
+                    if len(state.selected_file_ids) <= 1:
+                        self._load_working_diff(repo, state)
                 self._advance_tutorial(repo, state)
                 self._finish_pending_open(repo)
                 self._persist_github_api_cache(repo, state)
@@ -5068,6 +5080,8 @@ class AppStore:
         state = self.state_for(repo)
         previous = state.selected_file
         state.selected_file = file
+        state.selected_file_ids = [file.id] if file is not None else []
+        selectedFileIDs = state.selected_file_ids
         state.current_diff = None
         if file:
             # Desktop `recordSubmoduleDiffViewedFromChangesIfNeeded`
@@ -5078,6 +5092,23 @@ class AppStore:
             self.emit()
             self._load_working_diff(repo, state)
             return
+        self.emit()
+
+    def select_working_files(self, repo: Repository, files: list[WorkingDirectoryFileChange]) -> None:
+        """Desktop `selectWorkingDirectoryFiles` / `selectedFileIDs`; multiple files show `MultipleSelection`."""
+        state = self.state_for(repo)
+        ids = [item.id for item in files]
+        selectedFileIDs = ids
+        if ids == list(state.selected_file_ids):
+            if files:
+                state.selected_file = files[0]
+            return
+        state.selected_file_ids = ids
+        if len(files) == 1:
+            self.select_file(repo, files[0])
+            return
+        state.selected_file = files[0] if files else None
+        state.current_diff = None
         self.emit()
 
     def select_commit(self, repo: Repository, commit: Commit | None) -> None:

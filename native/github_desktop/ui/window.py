@@ -78,6 +78,7 @@ from ..menu_update import (
     updateMenuState,
 )
 from ..store import AppStore
+from ..filter_changes import files_selected_label
 from ..text_tokens import MaxSummaryLength
 from ..truncate import truncate_with_ellipsis
 from ..fuzzy_find import filter_items
@@ -2031,6 +2032,12 @@ class MainWindow(Adw.ApplicationWindow):
         self._file_list.add_css_class("boxed-list")
         self._file_list.set_selection_mode(Gtk.SelectionMode.MULTIPLE)
         self._file_list.connect("row-selected", self._on_file_selected)
+        self._file_list_uses_rows_changed = False
+        try:
+            self._file_list.connect("selected-rows-changed", self._on_selected_rows_changed)
+            self._file_list_uses_rows_changed = True
+        except TypeError:
+            pass
         attach_right_click(self._file_list, lambda *_: self._file_list_menu())
         scroller.set_child(self._file_list)
         self._suggested = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -2266,7 +2273,24 @@ class MainWindow(Adw.ApplicationWindow):
             on_hide_whitespace_changed=self._set_hide_whitespace,
             on_side_by_side_changed=lambda enabled: self._set_side_by_side_value(enabled),
         )
-        paned.set_end_child(self._diff_view)
+        self._multiple_selection = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self._multiple_selection.add_css_class("panel")
+        self._multiple_selection.add_css_class("blankslate")
+        self._multiple_selection.add_css_class("multiple-selection")
+        self._multiple_selection.set_name("no-changes")
+        self._multiple_selection.set_valign(Gtk.Align.CENTER)
+        self._multiple_selection.set_halign(Gtk.Align.CENTER)
+        icon = Gtk.Image.new_from_icon_name("folder-documents-symbolic")
+        icon.set_pixel_size(64)
+        icon.add_css_class("blankslate-image")
+        self._multiple_selection.append(icon)
+        self._multiple_selection_label = Gtk.Label()
+        self._multiple_selection_label.add_css_class("heading")
+        self._multiple_selection.append(self._multiple_selection_label)
+        self._changes_diff_stack = Gtk.Stack()
+        self._changes_diff_stack.add_named(self._diff_view, "diff")
+        self._changes_diff_stack.add_named(self._multiple_selection, "multiple")
+        paned.set_end_child(self._changes_diff_stack)
         self._changes_stack = Gtk.Stack()
         self._stash_viewer = StashDiffViewer(
             on_restore=lambda: self._repo_op(self.store.restore_stash),
@@ -3120,6 +3144,7 @@ class MainWindow(Adw.ApplicationWindow):
             else:
                 for file in files:
                     self._file_list.append(self._file_row(file))
+                self._restore_file_list_selection(state)
         include_all = True
         if files:
             from ..models import WorkingDirectoryStatus
@@ -3524,13 +3549,41 @@ class MainWindow(Adw.ApplicationWindow):
         if repo:
             self.store.set_side_by_side(repo, btn.get_active())
 
-    def _on_file_selected(self, _list: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
-        repo = self.store.selected_repository
-        if not repo or row is None:
+    def _restore_file_list_selection(self, state) -> None:
+        """Re-apply Desktop `selectedFileIDs` after rebuilding the Changes list."""
+        want = list(state.selected_file_ids or [])
+        if not want and state.selected_file is not None:
+            want = [state.selected_file.id]
+        if not want:
             return
-        file = getattr(row, "_file", None)
-        if file:
-            self.store.select_file(repo, file)
+        wanted = set(want)
+        child = self._file_list.get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.ListBoxRow):
+                file = getattr(child, "_file", None)
+                if file is not None and file.id in wanted:
+                    self._file_list.select_row(child)
+            child = child.get_next_sibling()
+
+    def _on_file_selected(self, _list: Gtk.ListBox, _row: Gtk.ListBoxRow | None) -> None:
+        if getattr(self, "_file_list_uses_rows_changed", False):
+            return
+        self._on_selected_rows_changed(_list)
+
+    def _on_selected_rows_changed(self, *_args: object) -> None:
+        """Desktop Changes list selection → `selectWorkingDirectoryFiles`."""
+        if self._building:
+            return
+        repo = self.store.selected_repository
+        if not repo:
+            return
+        files = self._selected_change_files()
+        self._light_update = True
+        try:
+            self.store.select_working_files(repo, files)
+        finally:
+            self._light_update = False
+        self._render_working_diff(self.store.state_for(repo))
 
     def _on_coauthors(self, btn: Gtk.CheckButton) -> None:
         self._author_input.set_visible(btn.get_active())
@@ -4072,6 +4125,12 @@ class MainWindow(Adw.ApplicationWindow):
     def _render_working_diff(self, state) -> None:
         if not hasattr(self, "_diff_view"):
             return
+        ids = list(getattr(state, "selected_file_ids", None) or [])
+        if len(ids) > 1 and hasattr(self, "_changes_diff_stack"):
+            self._render_multiple_selection(len(ids))
+            return
+        if hasattr(self, "_changes_diff_stack"):
+            self._changes_diff_stack.set_visible_child_name("diff")
         file = state.selected_file
         self._diff_view.render(
             state.current_diff,
@@ -4086,6 +4145,11 @@ class MainWindow(Adw.ApplicationWindow):
             comments=list(state.diff_comments),
             ask_discard_confirm=self.store.settings.confirm_discard_changes,
         )
+
+    def _render_multiple_selection(self, count: int) -> None:
+        """Desktop `MultipleSelection` blankslate in the Changes diff pane."""
+        self._multiple_selection_label.set_text(files_selected_label(count))
+        self._changes_diff_stack.set_visible_child_name("multiple")
 
     def _render_history_diff(self, state) -> None:
         if not hasattr(self, "_hist_diff_view"):
@@ -5762,8 +5826,8 @@ class MainWindow(Adw.ApplicationWindow):
         row = box.get_selected_row()
         if box is getattr(self, "_commit_list", None):
             self._on_commit_selected(box, row)
-        elif box is getattr(self, "_file_list", None) and row is not None:
-            self._on_file_selected(box, row)
+        elif box is getattr(self, "_file_list", None):
+            self._on_selected_rows_changed(box)
 
     def _select_all_diff_text(self, viewer: Gtk.Widget) -> None:
         """Desktop diff `onSelectAll` / `selectAllChildren` of the diff container."""

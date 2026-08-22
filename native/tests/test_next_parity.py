@@ -12,6 +12,7 @@ from github_desktop.models import (
     ManualConflictResolution,
     RefCheck,
     SignInStep,
+    WorkingDirectoryFileChange,
     get_conflicted_files,
     get_label_for_manual_resolution_option,
     group_pr_base_branches,
@@ -442,3 +443,41 @@ def test_select_file_records_submodule_diff_viewed(isolated_config, git_repo, mo
     assert store.stats.get_daily_measures()["submoduleDiffViewedFromChangesListCount"] == 1
     store.select_file(repo, file)
     assert store.stats.get_daily_measures()["submoduleDiffViewedFromChangesListCount"] == 1
+
+
+def test_working_directory_file_change_id() -> None:
+    from github_desktop.models import AppFileStatusKind, FileStatus, WorkingDirectoryFileChange
+
+    modified = WorkingDirectoryFileChange("file.txt", FileStatus(AppFileStatusKind.MODIFIED))
+    renamed = WorkingDirectoryFileChange("new.txt", FileStatus(AppFileStatusKind.RENAMED, old_path="old.txt"))
+    copied = WorkingDirectoryFileChange("copy.txt", FileStatus(AppFileStatusKind.COPIED, old_path="src.txt"))
+    assert modified.id == "Modified+file.txt"
+    assert renamed.id == "Renamed+new.txt+old.txt"
+    assert copied.id == "Copied+copy.txt+src.txt"
+
+
+def test_files_selected_label_and_badge() -> None:
+    from github_desktop.filter_changes import (
+        MaximumChangesCount,
+        files_changed_badge,
+        files_selected_label,
+    )
+
+    assert files_selected_label(2) == "2 files selected"
+    assert files_changed_badge(MaximumChangesCount) == "300"
+    assert files_changed_badge(MaximumChangesCount + 1) == "300+"
+
+
+def test_select_working_files_clears_diff_for_multiple(isolated_config, git_repo, monkeypatch) -> None:
+    store = AppStore()
+    repo = store.add_repositories([str(git_repo)])[0]
+    monkeypatch.setattr(store, "_load_working_diff", lambda *_a, **_k: None)
+    a = WorkingDirectoryFileChange("a.txt", FileStatus(AppFileStatusKind.MODIFIED))
+    b = WorkingDirectoryFileChange("b.txt", FileStatus(AppFileStatusKind.NEW))
+    store.select_working_files(repo, [a, b])
+    state = store.state_for(repo)
+    selectedFileIDs = state.selected_file_ids
+    assert selectedFileIDs == [a.id, b.id]
+    assert state.current_diff is None
+    store.select_working_files(repo, [a])
+    assert store.state_for(repo).selected_file_ids == [a.id]

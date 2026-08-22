@@ -403,6 +403,13 @@ window:not(.underline-links) link {
 .length-hint-tooltip .description {
   opacity: 0.7;
 }
+/* Desktop `multiple-selection.tsx` `.panel.blankslate` */
+.multiple-selection.blankslate {
+  padding: 24px;
+}
+.multiple-selection .blankslate-image {
+  opacity: 0.55;
+}
 """
 
 _provider: Gtk.CssProvider | None = None

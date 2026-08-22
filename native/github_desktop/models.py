@@ -784,6 +784,14 @@ class WorkingDirectoryFileChange:
     def with_selection(self, selection: DiffSelection) -> "WorkingDirectoryFileChange":
         return replace(self, selection=selection)
 
+    @property
+    def id(self) -> str:
+        """Desktop `FileChange.id` used as `selectedFileIDs`."""
+        kind = self.status.kind.value
+        if self.status.kind in {AppFileStatusKind.RENAMED, AppFileStatusKind.COPIED}:
+            return f"{kind}+{self.path}+{self.status.old_path}"
+        return f"{kind}+{self.path}"
+
 
 UNCOMMITTABLE_SUBMODULE_TOOLTIP = (
     "This submodule change cannot be added to a commit in this repository because it contains changes that have not been committed."

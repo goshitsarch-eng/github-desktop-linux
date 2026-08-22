@@ -1585,5 +1585,9 @@ def test_window_actions_cover_menus() -> None:
         "ariaLiveMessage",
         "isToggleTip",
         "IdealSummaryLength",
+        "MultipleSelection",
+        "selectedFileIDs",
+        "{count} files selected",
+        "selectWorkingDirectoryFiles",
     ]:
         assert phrase in src
