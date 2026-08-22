@@ -282,6 +282,10 @@ def test_announce_filter_list_results_waits_for_filter_value_changed() -> None:
 
     announce_filter_list_results(entry, 3, context="prs")
     assert entry.announced[-1] == filter_list_results_aria_live(3)
+    before = list(entry.announced)
+    announce_filter_list_results(entry, 9, context="prs")
+    assert entry.announced == before
+    assert entry._filter_list_results_message == filter_list_results_aria_live(9)
 
 
 def test_author_input_and_diff_options_linux_copy() -> None:
