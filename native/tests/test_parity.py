@@ -228,6 +228,9 @@ def test_window_actions_cover_menus() -> None:
     src += open(ci_checks.__file__, encoding="utf-8").read()
     src += open(multi_commit.__file__, encoding="utf-8").read()
     src += open(repo_rules.__file__, encoding="utf-8").read()
+    from github_desktop.ui import rule_failure_popover as rule_failure_popover_mod
+
+    src += open(rule_failure_popover_mod.__file__, encoding="utf-8").read()
     from github_desktop import thank_you, custom_integration
     from github_desktop.git import progress as git_progress
 
@@ -1536,5 +1539,8 @@ def test_window_actions_cover_menus() -> None:
         "Hang on…",
         "progressButton",
         "fastForwardBranches",
+        "showInputLabels",
+        "show_commit_message_rule_failure_hint",
+        "inline_commit_rule_warning_lines",
     ]:
         assert phrase in src

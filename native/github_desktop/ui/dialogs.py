@@ -4986,12 +4986,23 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
     box.set_margin_end(16)
     if payload.get("body"):
         box.append(Gtk.Label(label=str(payload.get("body")), wrap=True, xalign=0))
+    show_input_labels = True  # Desktop CommitMessageDialog `showInputLabels={true}`
+    showInputLabels = show_input_labels
+    if showInputLabels:
+        box.append(Gtk.Label(label="Summary", xalign=0))
     summary = Gtk.Entry()
     summary.set_placeholder_text("Summary (required)")
     summary.set_text(payload.get("summary") or "")
     summary.set_max_length(MaxSummaryLength)
+    summary.set_hexpand(True)
     issue_store = install_entry_completion(summary)
-    box.append(summary)
+    from .rule_failure_popover import RuleFailurePopover
+
+    summary_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+    summary_row.append(summary)
+    rule_popover = RuleFailurePopover(summary)
+    rule_popover.attach_to_row(summary_row)
+    box.append(summary_row)
     length_warn = Gtk.Label(xalign=0, wrap=True)
     length_warn.add_css_class("warning")
     length_warn.set_visible(False)
@@ -5007,6 +5018,10 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
     rules_warn.add_css_class("warning")
     rules_warn.set_visible(False)
     box.append(rules_warn)
+    if showInputLabels:
+        desc_label = Gtk.Label(label="Description", xalign=0)
+        desc_label.set_mnemonic_widget(None)
+        box.append(desc_label)
     description = Gtk.TextView()
     description.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
     description.set_size_request(-1, 120)
@@ -5036,12 +5051,6 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
         populate_completion_store(issue_store, current_state(), token, exclude_login=exclude_login())
         if token.startswith("#"):
             store.refresh_issues(repo)
-        hint = summary_length_hint(summary.get_text(), store.settings.show_commit_length_warning)
-        if hint:
-            length_warn.set_text(hint)
-            length_warn.set_visible(True)
-        else:
-            length_warn.set_visible(False)
 
     summary.connect("changed", refresh_completion)
     description.get_buffer().connect("changed", lambda *_: desc_completer.update())
@@ -5084,27 +5093,55 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
     dialog.set_child(toolbar)
 
     def update_rules(*_a: object) -> None:
-        from ..github.repo_rules import commit_rule_warnings, use_repo_rules_logic
+        from ..github.repo_rules import (
+            RepoRulesMetadataFailures,
+            commit_rule_warnings,
+            inline_commit_rule_warning_lines,
+            show_commit_message_rule_failure_hint,
+            use_repo_rules_logic,
+        )
 
+        view = current_state()
         text = summary.get_text().strip()
         start, end = description.get_buffer().get_bounds()
         desc = description.get_buffer().get_text(start, end, True).strip()
         message = "\n\n".join(part for part in (text, desc) if part)
         hard = False
         lines: list[str] = []
-        if repo and state is not None and use_repo_rules_logic(store.account_for_repo(repo), repo):
+        branch = view.status.current_branch if view is not None and view.status else None
+        msg_fail = RepoRulesMetadataFailures()
+        repo_rules_enabled = bool(repo and view is not None and use_repo_rules_logic(store.account_for_repo(repo), repo))
+        repoRulesEnabled = repo_rules_enabled
+        if repo and view is not None and repoRulesEnabled:
             _name, email = store.author_identity(repo)
-            unpublished = state.ahead_behind is None
+            unpublished = view.ahead_behind is None
             lines, hard = commit_rule_warnings(
-                state.repo_rules,
+                view.repo_rules,
                 message=message,
                 author_email=email,
-                branch=state.status.current_branch if state.status else None,
-                ahead_behind=state.ahead_behind,
+                branch=branch,
+                ahead_behind=view.ahead_behind,
                 unpublished=unpublished,
             )
-        if lines:
-            rules_warn.set_text("\n".join(lines))
+            msg_fail = view.repo_rules.commit_message_patterns.get_failed_rules(message)
+        show_rule_hint = show_commit_message_rule_failure_hint(
+            repo_rules_enabled=repo_rules_enabled,
+            branch=branch,
+            github=bool(repo and repo.github),
+            failures=msg_fail,
+        )
+        rule_popover.update(repo, branch, msg_fail, show_rule_hint)
+        hint = None if show_rule_hint else summary_length_hint(
+            summary.get_text(), store.settings.show_commit_length_warning
+        )
+        if hint:
+            length_warn.set_text(hint)
+            length_warn.set_visible(True)
+        else:
+            length_warn.set_visible(False)
+        inline = inline_commit_rule_warning_lines(lines)
+        if inline:
+            rules_warn.set_text("\n".join(inline))
             rules_warn.set_visible(True)
         else:
             rules_warn.set_visible(False)

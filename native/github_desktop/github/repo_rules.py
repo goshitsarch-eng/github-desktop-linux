@@ -152,6 +152,22 @@ def commit_message_failure_hint_aria_label(*, can_bypass: bool) -> str:
     return f"{prefix}: Commit message fails repository rules{bypass}. View details."
 
 
+def show_commit_message_rule_failure_hint(
+    *,
+    repo_rules_enabled: bool,
+    branch: str | None,
+    github: bool,
+    failures: RepoRulesMetadataFailures,
+) -> bool:
+    """Desktop: hint when `repoRulesEnabled` and message rules are not `pass`."""
+    return bool(repo_rules_enabled and branch and github and failures.status != "pass")
+
+
+def inline_commit_rule_warning_lines(lines: list[str]) -> list[str]:
+    """Keep non-message rule copy inline; message failures live in the popover."""
+    return [line for line in lines if not line.startswith("The commit message ")]
+
+
 def use_repo_rules_logic(account: Account | None, repository: Repository) -> bool:
     """Client-side gate matching Desktop `useRepoRulesLogic`."""
     if account is None or repository is None or repository.github is None:

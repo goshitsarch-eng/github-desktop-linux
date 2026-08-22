@@ -125,6 +125,38 @@ def test_regex_and_commit_rule_warnings() -> None:
     assert none_hard is False
 
 
+def test_commit_message_dialog_hides_message_failures_inline() -> None:
+    from github_desktop.github.repo_rules import (
+        RepoRulesMetadataFailure,
+        RepoRulesMetadataFailures,
+        inline_commit_rule_warning_lines,
+        show_commit_message_rule_failure_hint,
+    )
+
+    lines = [
+        "The commit message must start with feat.",
+        "The commit author email must end with @github.com.",
+        "This branch requires signed commits. Configure commit.gpgsign to push.",
+    ]
+    assert inline_commit_rule_warning_lines(lines) == lines[1:]
+    fail = RepoRulesMetadataFailures(failed=[RepoRulesMetadataFailure("must start with feat", 1)])
+    assert (
+        show_commit_message_rule_failure_hint(
+            repo_rules_enabled=True, branch="main", github=True, failures=fail
+        )
+        is True
+    )
+    assert (
+        show_commit_message_rule_failure_hint(
+            repo_rules_enabled=True,
+            branch="main",
+            github=True,
+            failures=RepoRulesMetadataFailures(),
+        )
+        is False
+    )
+
+
 def test_rulesets_url_for_branch() -> None:
     from github_desktop.github.repo_rules import rulesets_url_for_branch
 
