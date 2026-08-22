@@ -271,6 +271,51 @@ ADD_EXISTING_REPOSITORY_FROM_LOCAL_DRIVE = "Add an Existing Repository from your
 CLONE_REPOSITORY_FROM_INTERNET = "Clone a repository from the Internet…"
 REPOSITORY_TOOLBAR_DESCRIPTION = "Current repository"
 
+# Desktop Linux `BranchDropdown` description (`Current Branch` on Darwin).
+BRANCH_TOOLBAR_DESCRIPTION = "Current branch"
+DETACHED_HEAD_DESCRIPTION = "Detached HEAD"
+REBASING_BRANCH_DESCRIPTION = "Rebasing branch"
+REFRESHING_REPOSITORY = "Refreshing repository"
+CURRENTLY_ON_A_DETACHED_HEAD = "Currently on a detached HEAD"
+
+
+def branch_toolbar_chrome(
+    *,
+    branch_name: str | None = None,
+    current_tip: str | None = None,
+    checkout: bool = False,
+    checkout_title: str = "",
+    checkout_value: float = 0.0,
+    rebasing_target: str | None = None,
+) -> tuple[str, str, str, bool]:
+    """Desktop Linux `BranchDropdown.render` (title, description, tooltip, sensitive)."""
+    if checkout:
+        raw = checkout_title or "Checking out"
+        target = raw
+        description = "Checking out"
+        if raw.startswith("Checking out "):
+            target = raw[len("Checking out "):]
+        elif raw == REFRESHING_REPOSITORY or raw.startswith("Refreshing "):
+            description = "Checking out"
+        else:
+            description = raw
+        percent = int(round(checkout_value * 100)) if checkout_value > 0 else 0
+        if percent:
+            description = f"{description} ({percent}%)"
+        tooltip = f"Checking out {target}" if target and target != REFRESHING_REPOSITORY else "Checking out"
+        return target, description, tooltip, False
+    if rebasing_target:
+        return rebasing_target, REBASING_BRANCH_DESCRIPTION, f"Rebasing {rebasing_target}", False
+    if current_tip and not branch_name:
+        return f"On {current_tip[:7]}", DETACHED_HEAD_DESCRIPTION, CURRENTLY_ON_A_DETACHED_HEAD, True
+    if branch_name and not current_tip:
+        return branch_name, BRANCH_TOOLBAR_DESCRIPTION, f"Current branch is {branch_name}", True
+    name = branch_name or ""
+    return name, BRANCH_TOOLBAR_DESCRIPTION, name, True
+
+
+renderBranchDropdown = branch_toolbar_chrome
+
 
 def repository_toolbar_title(
     *,

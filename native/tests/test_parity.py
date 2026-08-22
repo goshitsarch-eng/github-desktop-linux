@@ -1489,5 +1489,12 @@ def test_window_actions_cover_menus() -> None:
         "suggestedStepPublishBranch",
         "suggestedStepCreatePullRequest",
         "suggestedStepViewStash",
+        "Current branch",
+        "Currently on a detached HEAD",
+        "Rebasing branch",
+        "Refreshing repository",
+        "renderBranchDropdown",
+        "updateCheckoutProgress",
+        "Current branch is",
     ]:
         assert phrase in src

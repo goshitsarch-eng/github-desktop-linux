@@ -140,6 +140,8 @@ from .menus import (
     CREATE_NEW_REPOSITORY_ON_LOCAL_DRIVE,
     REPOSITORY_TOOLBAR_DESCRIPTION,
     repository_toolbar_title,
+    BRANCH_TOOLBAR_DESCRIPTION,
+    branch_toolbar_chrome,
     open_in_editor_label,
     open_in_shell_label,
     is_external_editor_available,
@@ -1486,6 +1488,15 @@ class MainWindow(Adw.ApplicationWindow):
         self._branch_btn = Gtk.MenuButton()
         self._branch_btn.set_always_show_arrow(True)
         self._branch_btn.set_size_request(max(160, int(self.store.settings.branch_dropdown_width or 230)), -1)
+        branch_inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        branch_inner.set_halign(Gtk.Align.START)
+        self._branch_title = Gtk.Label(label="", xalign=0)
+        self._branch_desc = Gtk.Label(label=BRANCH_TOOLBAR_DESCRIPTION, xalign=0)
+        self._branch_desc.add_css_class("dim-label")
+        self._branch_desc.add_css_class("caption")
+        branch_inner.append(self._branch_title)
+        branch_inner.append(self._branch_desc)
+        self._branch_btn.set_child(branch_inner)
         self._branches_foldout = BranchesFoldout(
             on_checkout=lambda b: self._repo_op(lambda r: self.store.checkout(r, b)),
             on_create=lambda: self.store.show_popup(PopupType.CREATE_BRANCH),
@@ -2397,12 +2408,7 @@ class MainWindow(Adw.ApplicationWindow):
                 return
             self._repo_content.set_visible_child_name("content")
         state = self.store.state_for(repo)
-        branch = state.status.current_branch if state.status else "detached"
-        if self.store.progress_kind == "checkout":
-            self._update_checkout_progress()
-        else:
-            self._branch_btn.set_label(branch or "detached HEAD")
-            self._branch_btn.set_sensitive(True)
+        self._refresh_branch_toolbar(state)
         default_branch = self.store.find_default_branch_for(repo)
         default_name = default_branch.name if default_branch else self.store.default_branch_name(repo)
         current_branch = state.status.current_branch if state.status else None
@@ -2508,10 +2514,10 @@ class MainWindow(Adw.ApplicationWindow):
             return
         kind = self.store.progress_kind
         if kind == "checkout":
-            self._update_checkout_progress()
+            self._refresh_branch_toolbar()
             return
         if hasattr(self, "_branch_btn") and not kind:
-            self._branch_btn.set_sensitive(True)
+            self._refresh_branch_toolbar()
         if not kind:
             self._push_btn.set_sensitive(True)
             if hasattr(self, "_push_menu_btn"):
@@ -2612,22 +2618,46 @@ class MainWindow(Adw.ApplicationWindow):
                 self._push_icon.set_visible(True)
         self._push_btn.set_sensitive(sensitive)
 
-    def _update_checkout_progress(self) -> None:
-        """Desktop `updateCheckoutProgress` on the branch dropdown."""
+    def _set_branch_toolbar(self, title: str, description: str, tooltip: str, *, sensitive: bool = True) -> None:
+        """Desktop `BranchDropdown` title + Linux `Current branch` subtitle."""
+        if hasattr(self, "_branch_title"):
+            self._branch_title.set_text(title)
+        if hasattr(self, "_branch_desc"):
+            self._branch_desc.set_text(description)
+            self._branch_desc.set_visible(bool(description))
+        if hasattr(self, "_branch_btn"):
+            self._branch_btn.set_tooltip_text(tooltip)
+            self._branch_btn.set_sensitive(sensitive)
+
+    def _refresh_branch_toolbar(self, state=None) -> None:
+        """Desktop `BranchDropdown.render` / `updateCheckoutProgress`."""
         if not hasattr(self, "_branch_btn"):
             return
-        title = self.store.progress_title or "Checking out"
-        pct = int(self.store.progress_value * 100)
-        description = title
-        if pct:
-            description = f"{title} ({pct}%)"
-        self._branch_btn.set_label(description)
-        self._branch_btn.set_tooltip_text(title)
-        self._branch_btn.set_sensitive(False)
+        repo = self.store.selected_repository
+        if state is None and repo is not None:
+            state = self.store.state_for(repo)
+        status = getattr(state, "status", None) if state is not None else None
+        checkout = self.store.progress_kind == "checkout"
+        rebasing = None
+        if status and getattr(status, "rebase_internal_state", None) and not checkout:
+            rebasing = status.rebase_internal_state.target_branch
+        title, description, tooltip, sensitive = branch_toolbar_chrome(
+            branch_name=status.current_branch if status else None,
+            current_tip=status.current_tip if status else None,
+            checkout=checkout,
+            checkout_title=self.store.progress_title if checkout else "",
+            checkout_value=self.store.progress_value if checkout else 0.0,
+            rebasing_target=rebasing,
+        )
+        self._set_branch_toolbar(title, description, tooltip, sensitive=sensitive)
+
+    def _update_checkout_progress(self) -> None:
+        """Desktop `updateCheckoutProgress` on the branch dropdown."""
+        self._refresh_branch_toolbar()
 
     def _update_push_label(self, state) -> None:
         if self.store.progress_kind == "checkout":
-            self._update_checkout_progress()
+            self._refresh_branch_toolbar(state)
             return
         if self.store.progress_kind:
             self._update_network_progress()

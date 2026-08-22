@@ -201,6 +201,47 @@ def test_no_changes_editor_linux_copy_and_availability() -> None:
     assert open_in_editor_label(None) == "Open in external editor"
 
 
+def test_branch_toolbar_linux_copy_matches_desktop() -> None:
+    from github_desktop.ui.menus import (
+        BRANCH_TOOLBAR_DESCRIPTION,
+        CURRENTLY_ON_A_DETACHED_HEAD,
+        DETACHED_HEAD_DESCRIPTION,
+        REBASING_BRANCH_DESCRIPTION,
+        REFRESHING_REPOSITORY,
+        branch_toolbar_chrome,
+    )
+
+    assert BRANCH_TOOLBAR_DESCRIPTION == "Current branch"
+    assert DETACHED_HEAD_DESCRIPTION == "Detached HEAD"
+    assert REBASING_BRANCH_DESCRIPTION == "Rebasing branch"
+    assert REFRESHING_REPOSITORY == "Refreshing repository"
+    assert CURRENTLY_ON_A_DETACHED_HEAD == "Currently on a detached HEAD"
+    title, description, tooltip, sensitive = branch_toolbar_chrome(branch_name="main", current_tip="abcdef1")
+    assert (title, description, tooltip, sensitive) == ("main", "Current branch", "main", True)
+    title, description, tooltip, sensitive = branch_toolbar_chrome(branch_name="topic", current_tip=None)
+    assert title == "topic"
+    assert description == "Current branch"
+    assert tooltip == "Current branch is topic"
+    title, description, tooltip, sensitive = branch_toolbar_chrome(current_tip="abcdef1234567")
+    assert title == "On abcdef1"
+    assert description == "Detached HEAD"
+    assert tooltip == "Currently on a detached HEAD"
+    title, description, tooltip, sensitive = branch_toolbar_chrome(
+        checkout=True, checkout_title="Checking out main", checkout_value=0.4
+    )
+    assert title == "main"
+    assert description == "Checking out (40%)"
+    assert tooltip == "Checking out main"
+    assert sensitive is False
+    title, description, tooltip, sensitive = branch_toolbar_chrome(rebasing_target="topic")
+    assert (title, description, tooltip, sensitive) == ("topic", "Rebasing branch", "Rebasing topic", False)
+    title, description, _, _ = branch_toolbar_chrome(
+        checkout=True, checkout_title="Refreshing repository", checkout_value=1
+    )
+    assert title == "Refreshing repository"
+    assert description == "Checking out (100%)"
+
+
 def test_clone_list_empty_copy() -> None:
     class Account:
         login = "hubot"
