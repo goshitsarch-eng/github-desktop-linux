@@ -30,6 +30,38 @@ def sanitized_repository_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "-", cleaned)
 
 
+def create_repository_exists_aria_live(full_path: str) -> str:
+    """Desktop create-repository InputError `ariaLiveMessage`."""
+    return (
+        f"The directory {full_path} appears to be a Git repository. "
+        "Would you like to add this repository instead?"
+    )
+
+
+def create_repository_subfolder_aria_live(full_path: str) -> str:
+    """Desktop create-repository InputWarning `ariaLiveMessage`."""
+    return (
+        f"The directory {full_path} appears to be a subfolder Git repository. "
+        "Did you know about submodules?"
+    )
+
+
+def create_repository_sanitized_name_aria_live(sanitized_name: str) -> str:
+    """Desktop create-repository sanitized-name InputWarning `ariaLiveMessage`."""
+    return (
+        f"Will be created as {sanitized_name}. "
+        "Spaces and invalid characters have been replaced by hyphens."
+    )
+
+
+def create_repository_readme_overwrite_aria_live() -> str:
+    """Desktop create-repository README overwrite InputWarning `ariaLiveMessage`."""
+    return (
+        "This directory contains a README.md file already. Checking "
+        "this box will result in the existing file being overwritten."
+    )
+
+
 def write_default_readme(path: str, name: str, description: str | None = None) -> None:
     """Desktop `writeDefaultReadme`."""
     body = f"# {name}\n{description}\n" if description is not None else f"# {name}\n"
