@@ -1509,5 +1509,13 @@ def test_window_actions_cover_menus() -> None:
         "getAutocompleteItemFilter",
         "onAutocompleteItemSelected",
         "userToHit",
+        "Commit message rule failures",
+        "renderRuleFailurePopover",
+        "renderRepoRuleCommitMessageFailureHint",
+        "commit-message-failure-hint",
+        "Commit message fails repository rules",
+        "toggleRuleFailurePopover",
+        "isRuleFailurePopoverOpen",
+        "repoRulesEnabled",
     ]:
         assert phrase in src

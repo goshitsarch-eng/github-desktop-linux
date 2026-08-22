@@ -173,6 +173,25 @@ def test_repo_ruleset_links_and_failure_copy() -> None:
     assert "Proceed with caution!" in caution
 
 
+def test_commit_message_rule_failure_popover_linux_copy() -> None:
+    from github_desktop.github.repo_rules import (
+        COMMIT_MESSAGE_RULE_FAILURES_HEADER,
+        COMMIT_MSG_ERROR_BTN_ID,
+        commit_message_failure_hint_aria_label,
+        commit_message_rule_failures_header,
+    )
+
+    assert commit_message_rule_failures_header() == "Commit message rule failures"
+    assert COMMIT_MESSAGE_RULE_FAILURES_HEADER == "Commit message rule failures"
+    assert COMMIT_MSG_ERROR_BTN_ID == "commit-message-failure-hint"
+    assert commit_message_failure_hint_aria_label(can_bypass=False) == (
+        "Error: Commit message fails repository rules. View details."
+    )
+    assert commit_message_failure_hint_aria_label(can_bypass=True) == (
+        "Warning: Commit message fails repository rules, but you can bypass them. View details."
+    )
+
+
 def test_notification_permission_copy(monkeypatch) -> None:
     monkeypatch.setenv("GITHUB_DESKTOP_NOTIFICATIONS_PERMISSION", "denied")
     hint = notification_preference_hint(True)

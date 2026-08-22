@@ -135,6 +135,23 @@ def repo_rules_failure_heading(leading_text: str, failures: RepoRulesMetadataFai
     return f"{leading_text} fails {total} {noun}."
 
 
+# Desktop Linux `renderRuleFailurePopover` header (`__DARWIN__` uses title case).
+COMMIT_MESSAGE_RULE_FAILURES_HEADER = "Commit message rule failures"
+COMMIT_MSG_ERROR_BTN_ID = "commit-message-failure-hint"
+
+
+def commit_message_rule_failures_header() -> str:
+    """Desktop Linux `Commit message rule failures` popover title."""
+    return COMMIT_MESSAGE_RULE_FAILURES_HEADER
+
+
+def commit_message_failure_hint_aria_label(*, can_bypass: bool) -> str:
+    """Desktop `renderRepoRuleCommitMessageFailureHint` aria-label."""
+    prefix = "Warning" if can_bypass else "Error"
+    bypass = ", but you can bypass them" if can_bypass else ""
+    return f"{prefix}: Commit message fails repository rules{bypass}. View details."
+
+
 def use_repo_rules_logic(account: Account | None, repository: Repository) -> bool:
     """Client-side gate matching Desktop `useRepoRulesLogic`."""
     if account is None or repository is None or repository.github is None:

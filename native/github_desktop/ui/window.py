@@ -2023,6 +2023,37 @@ class MainWindow(Adw.ApplicationWindow):
         self._summary.set_max_length(MaxSummaryLength)
         self._summary.set_hexpand(True)
         summary_row.append(self._summary)
+        from ..github.repo_rules import (
+            COMMIT_MSG_ERROR_BTN_ID,
+            commit_message_rule_failures_header,
+        )
+
+        self._rule_failure_hint = Gtk.Button()
+        self._rule_failure_hint.set_name(COMMIT_MSG_ERROR_BTN_ID)
+        self._rule_failure_hint.add_css_class("commit-message-failure-hint")
+        self._rule_failure_hint.add_css_class("flat")
+        self._rule_failure_hint.add_css_class("circular")
+        self._rule_failure_hint.set_visible(False)
+        self._rule_failure_hint.connect("clicked", self._toggle_rule_failure_popover)
+        summary_row.append(self._rule_failure_hint)
+        self._rule_failure_popover_wanted = False
+        self._suppress_rule_popover_closed = False
+        self._rule_failure_popover = Gtk.Popover()
+        self._rule_failure_popover.set_autohide(True)
+        self._rule_failure_popover.connect("closed", self._on_rule_failure_popover_closed)
+        pop_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        pop_box.set_margin_top(12)
+        pop_box.set_margin_bottom(12)
+        pop_box.set_margin_start(12)
+        pop_box.set_margin_end(12)
+        self._rule_failure_header = Gtk.Label(label=commit_message_rule_failures_header(), xalign=0)
+        self._rule_failure_header.add_css_class("title-4")
+        self._rule_failure_header.set_name("commit-message-rule-failure-popover-header")
+        pop_box.append(self._rule_failure_header)
+        self._rule_failure_list_host = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        pop_box.append(self._rule_failure_list_host)
+        self._rule_failure_popover.set_child(pop_box)
+        self._rule_failure_popover.set_parent(self._summary)
         self._issue_store = install_entry_completion(self._summary)
         self._summary.connect("changed", self._on_summary_changed)
         self._summary_warn = Gtk.Label(xalign=0, wrap=True)
@@ -5060,17 +5091,9 @@ class MainWindow(Adw.ApplicationWindow):
         if not hasattr(self, "_summary_warn"):
             return
         text = self._summary.get_text() if hasattr(self, "_summary") else ""
-        hint = summary_length_hint(text, self.store.settings.show_commit_length_warning)
-        if hint:
-            self._summary_warn.set_text(hint)
-            self._summary_warn.set_visible(True)
-        else:
-            self._summary_warn.set_visible(False)
-        if not hasattr(self, "_rules_warn"):
-            return
         repo = self.store.selected_repository
 
-        def hide_rules() -> None:
+        def hide_inline_rules() -> None:
             self._rules_warn.set_visible(False)
             if hasattr(self, "_rules_link"):
                 self._rules_link.set_visible(False)
@@ -5078,11 +5101,27 @@ class MainWindow(Adw.ApplicationWindow):
                 self._rules_box.set_visible(False)
             self._clear_commit_warning_links()
 
+        def hide_rules() -> None:
+            hide_inline_rules()
+            self._hide_rule_failure_hint()
+
+        if not hasattr(self, "_rules_warn"):
+            hint = summary_length_hint(text, self.store.settings.show_commit_length_warning)
+            self._summary_warn.set_text(hint or "")
+            self._summary_warn.set_visible(bool(hint))
+            return
         if not repo:
+            hint = summary_length_hint(text, self.store.settings.show_commit_length_warning)
+            self._summary_warn.set_text(hint or "")
+            self._summary_warn.set_visible(bool(hint))
             hide_rules()
             self._apply_commit_busy()
             return
-        from ..github.repo_rules import commit_rule_warnings, rulesets_url_for_branch, use_repo_rules_logic
+        from ..github.repo_rules import (
+            commit_rule_warnings,
+            rulesets_url_for_branch,
+            use_repo_rules_logic,
+        )
 
         state = self.store.state_for(repo)
         start, end = self._description.get_buffer().get_bounds()
@@ -5092,7 +5131,9 @@ class MainWindow(Adw.ApplicationWindow):
         unpublished = state.ahead_behind is None
         warnings: list[str] = []
         hard = False
-        if use_repo_rules_logic(self.store.account_for_repo(repo), repo):
+        repo_rules_enabled = use_repo_rules_logic(self.store.account_for_repo(repo), repo)
+        repoRulesEnabled = repo_rules_enabled
+        if repoRulesEnabled:
             warnings, hard = commit_rule_warnings(
                 state.repo_rules,
                 message=message,
@@ -5102,6 +5143,22 @@ class MainWindow(Adw.ApplicationWindow):
                 unpublished=unpublished,
             )
         branch = state.status.current_branch if state.status else None
+        msg_fail = state.repo_rules.commit_message_patterns.get_failed_rules(message)
+        show_rule_hint = bool(
+            repoRulesEnabled
+            and branch
+            and repo.github
+            and msg_fail.status != "pass"
+        )
+        hint = None if show_rule_hint else summary_length_hint(
+            text, self.store.settings.show_commit_length_warning
+        )
+        if hint:
+            self._summary_warn.set_text(hint)
+            self._summary_warn.set_visible(True)
+        else:
+            self._summary_warn.set_visible(False)
+        self._update_rule_failure_hint(repo, branch, msg_fail, show_rule_hint)
         self._clear_commit_warning_links()
         action_rows: list[Gtk.Widget] = []
         if state.commit_to_amend is not None:
@@ -5149,9 +5206,6 @@ class MainWindow(Adw.ApplicationWindow):
                 )
             )
         if repo.github:
-            msg_fail = state.repo_rules.commit_message_patterns.get_failed_rules(message)
-            if msg_fail.status != "pass":
-                action_rows.append(self._repo_rules_failure_list("This commit message", msg_fail, repo.github, branch))
             if email:
                 email_fail = state.repo_rules.commit_author_email_patterns.get_failed_rules(email)
                 if email_fail.status != "pass":
@@ -5164,18 +5218,18 @@ class MainWindow(Adw.ApplicationWindow):
                     action_rows.append(
                         self._repo_rules_failure_list(f"The branch '{branch}'", name_fail, repo.github, branch)
                     )
-        if warnings or action_rows:
-            extra = [
-                line
-                for line in warnings
-                if "Want to create a fork" not in line
-                and "Want to switch branches" not in line
-                and "Stop amending" not in line
-                and "requires signed commits" not in line
-                and "may prevent pushing" not in line
-                and not line.startswith("The commit message ")
-                and not line.startswith("The commit author email ")
-            ]
+        extra = [
+            line
+            for line in warnings
+            if "Want to create a fork" not in line
+            and "Want to switch branches" not in line
+            and "Stop amending" not in line
+            and "requires signed commits" not in line
+            and "may prevent pushing" not in line
+            and not line.startswith("The commit message ")
+            and not line.startswith("The commit author email ")
+        ]
+        if extra or action_rows:
             self._rules_warn.set_text("\n".join(extra) if extra else "\n".join(warnings))
             self._rules_warn.set_visible(bool(extra))
             if hasattr(self, "_rules_box"):
@@ -5192,7 +5246,7 @@ class MainWindow(Adw.ApplicationWindow):
                 else:
                     self._rules_link.set_visible(False)
         else:
-            hide_rules()
+            hide_inline_rules()
         if hasattr(self, "_commit_btn"):
             self._commit_btn.set_sensitive(not hard)
         self._apply_commit_busy(state)
@@ -5256,6 +5310,93 @@ class MainWindow(Adw.ApplicationWindow):
             if child not in {self._rules_warn, getattr(self, "_rules_link", None)}:
                 self._rules_box.remove(child)
             child = nxt
+
+    def _hide_rule_failure_hint(self) -> None:
+        if hasattr(self, "_rule_failure_hint"):
+            self._rule_failure_hint.set_visible(False)
+        self._hide_rule_failure_popover(keep_wanted=True)
+
+    def _hide_rule_failure_popover(self, *, keep_wanted: bool) -> None:
+        if not hasattr(self, "_rule_failure_popover"):
+            return
+        self._suppress_rule_popover_closed = True
+        try:
+            self._rule_failure_popover.popdown()
+        finally:
+            self._suppress_rule_popover_closed = False
+        if not keep_wanted:
+            self._rule_failure_popover_wanted = False
+
+    def _update_rule_failure_hint(self, repo, branch, failures, show_hint: bool) -> None:
+        """Desktop `renderRepoRuleCommitMessageFailureHint` + `renderRuleFailurePopover`."""
+        from ..github.repo_rules import commit_message_failure_hint_aria_label
+
+        if not hasattr(self, "_rule_failure_hint"):
+            return
+        if not show_hint:
+            self._hide_rule_failure_hint()
+            return
+        can_bypass = failures.status == "bypass"
+        aria = commit_message_failure_hint_aria_label(can_bypass=can_bypass)
+        self._rule_failure_hint.set_icon_name(
+            "dialog-warning-symbolic" if can_bypass else "dialog-error-symbolic"
+        )
+        self._rule_failure_hint.set_tooltip_text(aria)
+        try:
+            self._rule_failure_hint.update_property([Gtk.AccessibleProperty.LABEL], [aria])
+        except Exception:
+            pass
+        self._rule_failure_hint.remove_css_class("warning-icon")
+        self._rule_failure_hint.remove_css_class("error-icon")
+        self._rule_failure_hint.add_css_class("warning-icon" if can_bypass else "error-icon")
+        self._rule_failure_hint.set_visible(True)
+        self._render_rule_failure_popover(repo, branch, failures)
+        if self._rule_failure_popover_wanted:
+            self._rule_failure_popover.popup()
+        else:
+            self._hide_rule_failure_popover(keep_wanted=True)
+
+    def _render_rule_failure_popover(self, repo, branch, failures) -> None:
+        """Desktop `renderRuleFailurePopover`."""
+        if not hasattr(self, "_rule_failure_list_host") or not repo.github:
+            return
+        while (child := self._rule_failure_list_host.get_first_child()) is not None:
+            self._rule_failure_list_host.remove(child)
+        self._rule_failure_list_host.append(
+            self._repo_rules_failure_list("This commit message", failures, repo.github, branch)
+        )
+
+    renderRuleFailurePopover = _render_rule_failure_popover
+    renderRepoRuleCommitMessageFailureHint = _update_rule_failure_hint
+
+    def _toggle_rule_failure_popover(self, *_args: object) -> None:
+        """Desktop `toggleRuleFailurePopover`."""
+        self._rule_failure_popover_wanted = not getattr(self, "_rule_failure_popover_wanted", False)
+        if self._rule_failure_popover_wanted:
+            if hasattr(self, "_rule_failure_popover"):
+                self._rule_failure_popover.popup()
+        else:
+            self._hide_rule_failure_popover(keep_wanted=False)
+
+    toggleRuleFailurePopover = _toggle_rule_failure_popover
+
+    def _close_rule_failure_popover(self) -> None:
+        """Desktop `closeRuleFailurePopover`."""
+        self._hide_rule_failure_popover(keep_wanted=False)
+
+    closeRuleFailurePopover = _close_rule_failure_popover
+
+    def _on_rule_failure_popover_closed(self, *_args: object) -> None:
+        if getattr(self, "_suppress_rule_popover_closed", False):
+            return
+        self._rule_failure_popover_wanted = False
+
+    @property
+    def is_rule_failure_popover_open(self) -> bool:
+        """Desktop `isRuleFailurePopoverOpen`."""
+        return bool(getattr(self, "_rule_failure_popover_wanted", False))
+
+    isRuleFailurePopoverOpen = is_rule_failure_popover_open
 
     def _commit_warning_markup(self, markup: str) -> Gtk.Label:
         label = Gtk.Label(wrap=True, xalign=0, use_markup=True)
