@@ -446,19 +446,21 @@ def fill_coauthor_store(
     include_unknown_user: bool = False,
     exclude_usernames: Sequence[str] = (),
     endpoint: str = "",
-) -> None:
+) -> int:
     list_store.clear()
     if state is None and not (include_unknown_user and query):
-        return
-    for item in get_user_autocompletion_items(
+        return 0
+    items = get_user_autocompletion_items(
         state,
         query,
         include_unknown_user=include_unknown_user,
         exclude_login=exclude_login,
         exclude_usernames=exclude_usernames,
         endpoint=endpoint,
-    ):
+    )
+    for item in items:
         append_user_hit(list_store, item)
+    return len(items)
 
 
 def completion_matches(
@@ -520,16 +522,60 @@ def completion_matches(
     return matches
 
 
+def autocompletion_suggestions_aria_live(count: int) -> str | None:
+    """Desktop `autocompleting-text-input.tsx` suggestionsMessage.
+
+    AriaLiveContainer `message` is null when `autoCompleteItems.length` is 0.
+    """
+    if count <= 0:
+        return None
+    return "1 suggestion" if count == 1 else f"{count} suggestions"
+
+
+suggestionsMessage = autocompletion_suggestions_aria_live
+
+
+def announce_autocompletion_suggestions(
+    widget: Any,
+    count: int,
+    *,
+    rangeText: str = "",
+    tracker: dict[str, Any] | None = None,
+) -> str | None:
+    """Announce suggestionsMessage; re-read when trackedUserInput rangeText changes."""
+    message = autocompletion_suggestions_aria_live(count)
+    if tracker is not None:
+        prev = (tracker.get("count"), tracker.get("rangeText"))
+        tracker["count"] = count
+        tracker["rangeText"] = rangeText
+        if message is None or prev == (count, rangeText):
+            return None
+    elif message is None:
+        return None
+    if widget is not None:
+        try:
+            widget._suggestions_message = message  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        try:
+            widget.announce(message, Gtk.AccessibleAnnouncementPriority.MEDIUM)
+        except Exception:
+            pass
+    return message
+
+
 def populate_completion_store(
     list_store: Gtk.ListStore,
     state: Any,
     token: str,
     *,
     exclude_login: str | None = None,
-) -> None:
+) -> int:
     list_store.clear()
-    for item in completion_matches(state, token, exclude_login=exclude_login):
+    matches = completion_matches(state, token, exclude_login=exclude_login)
+    for item in matches:
         list_store.append([item])
+    return len(matches)
 
 
 def replace_entry_token(entry: Gtk.Entry, insert: str) -> None:
@@ -604,6 +650,7 @@ class TextViewCompleter:
         self.popover.set_autohide(True)
         self.listbox = Gtk.ListBox()
         self.listbox.connect("row-activated", self._on_row)
+        self._suggestions_tracker: dict[str, Any] = {}
         scroll = Gtk.ScrolledWindow()
         scroll.set_min_content_height(80)
         scroll.set_min_content_width(220)
@@ -628,6 +675,12 @@ class TextViewCompleter:
         matches = completion_matches(state, token, exclude_login=skip)
         if token.startswith("#") and self.on_hash:
             self.on_hash()
+        announce_autocompletion_suggestions(
+            self.textview,
+            len(matches),
+            rangeText=token,
+            tracker=self._suggestions_tracker,
+        )
         if not matches:
             self.popover.popdown()
             return

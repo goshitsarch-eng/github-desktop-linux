@@ -95,6 +95,7 @@ from .avatar import Avatar, AvatarStack, users_from_commit
 from .author_input import AuthorInput, bind_store_exact_match
 from .autocompletion import (
     TextViewCompleter,
+    announce_autocompletion_suggestions,
     committing_just_now_message,
     get_button_title,
     handle_commit_warning_uri,
@@ -2185,6 +2186,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._length_hint = SummaryLengthHint()
         summary_row.append(self._length_hint.renderSummaryLengthHint())
         self._issue_store = install_entry_completion(self._summary)
+        self._summary_suggestions_tracker: dict[str, object] = {}
         self._summary.connect("changed", self._on_summary_changed)
         self._author_warn = Gtk.Label(xalign=0, wrap=True)
         self._author_warn.add_css_class("warning")
@@ -5084,11 +5086,17 @@ class MainWindow(Adw.ApplicationWindow):
         repo = self.store.selected_repository
         state = self.store.state_for(repo) if repo else None
         token = self._token_before_cursor(self._summary)
-        populate_completion_store(
+        count = populate_completion_store(
             self._issue_store,
             state,
             token,
             exclude_login=self._completion_exclude_login(),
+        )
+        announce_autocompletion_suggestions(
+            self._summary,
+            count,
+            rangeText=token,
+            tracker=self._summary_suggestions_tracker,
         )
         if token.startswith("#"):
             self.store.refresh_issues(repo)

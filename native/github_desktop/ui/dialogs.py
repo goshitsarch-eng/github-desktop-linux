@@ -67,6 +67,7 @@ from .length_hint import SummaryLengthHint
 from .autocompletion import (
     UNREACHABLE_COMMITS_LEARN_MORE,
     TextViewCompleter,
+    announce_autocompletion_suggestions,
     branch_protections_repo_rules_commit_warning_markups,
     fill_commit_warning_box,
     install_entry_completion,
@@ -5245,9 +5246,19 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
         exclude_login=exclude_login,
     )
 
+    summary_suggestions_tracker: dict[str, object] = {}
+
     def refresh_completion(*_a: object) -> None:
         token = token_before_cursor(summary.get_text(), summary.get_position())
-        populate_completion_store(issue_store, current_state(), token, exclude_login=exclude_login())
+        count = populate_completion_store(
+            issue_store, current_state(), token, exclude_login=exclude_login()
+        )
+        announce_autocompletion_suggestions(
+            summary,
+            count,
+            rangeText=token,
+            tracker=summary_suggestions_tracker,
+        )
         if token.startswith("#"):
             store.refresh_issues(repo)
 
