@@ -383,6 +383,15 @@ window:not(.underline-links) link {
 .no-results-found, .no-branches {
   padding: 12px;
 }
+/* Desktop `onboarding-tutorial/_nudge-arrow.scss` (--nudge-arrow-z-index: 16) */
+.nudge-arrow-graphic {
+  min-width: 22px;
+  min-height: 22px;
+}
+.nudge-arrow.nudge-arrow-up,
+.nudge-arrow.nudge-arrow-left {
+  outline-color: #2188FF;
+}
 """
 
 _provider: Gtk.CssProvider | None = None

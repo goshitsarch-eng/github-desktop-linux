@@ -178,7 +178,14 @@ from .menus import (
 from .multi_commit import MERGE_OPTIONS, _their_branch, merge_cta_message, show_confirm_abort, show_conflicts_dialog
 from .spellcheck import attach_spellcheck
 from .stash import StashDiffViewer
-from .tutorial import TutorialPanel
+from .tutorial import (
+    NudgeArrow,
+    TutorialPanel,
+    apply_nudge_arrow_classes,
+    publishBranchButton,
+    shouldNudge,
+    shouldNudgeToCommit,
+)
 
 
 STATUS_CLASS = {
@@ -419,6 +426,7 @@ class MainWindow(Adw.ApplicationWindow):
         if width <= 0:
             return
         self._schedule_resizable_constraints()
+        self._position_nudge_arrows()
 
     def _schedule_resizable_constraints(self) -> None:
         if getattr(self, "_building", False) or getattr(self, "_constraint_idle", 0):
@@ -1505,6 +1513,8 @@ class MainWindow(Adw.ApplicationWindow):
         header.pack_start(self._repo_btn)
 
         self._branch_btn = Gtk.MenuButton()
+        self._branch_btn.add_css_class("branch-toolbar-button")
+        self._branch_btn.add_css_class("nudge-arrow")
         self._branch_btn.set_always_show_arrow(True)
         self._branch_btn.set_size_request(max(160, int(self.store.settings.branch_dropdown_width or 230)), -1)
         branch_inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -1570,6 +1580,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._push_box.add_css_class("linked")
         self._push_btn = Gtk.Button()
         self._push_btn.add_css_class("push-pull-button")
+        self._install_nudge_arrows()
         push_inner = Gtk.Box(spacing=8)
         push_inner.set_valign(Gtk.Align.CENTER)
         self._push_icon = Gtk.Image.new_from_icon_name("view-refresh-symbolic")
@@ -2051,6 +2062,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._author_btn.set_popover(self._author_popover)
         summary_row.append(self._author_btn)
         self._summary = Gtk.Entry()
+        self._summary.add_css_class("summary-field")
+        self._summary.add_css_class("nudge-arrow")
         self._summary.set_placeholder_text("Summary (required)")
         self._summary.set_max_length(MaxSummaryLength)
         self._summary.set_hexpand(True)
@@ -2764,6 +2777,12 @@ class MainWindow(Adw.ApplicationWindow):
         self._refresh_branch_toolbar()
 
     def _update_push_label(self, state) -> None:
+        try:
+            self._update_push_label_chrome(state)
+        finally:
+            self._update_tutorial_nudge()
+
+    def _update_push_label_chrome(self, state) -> None:
         if self.store.progress_kind == "checkout":
             self._refresh_branch_toolbar(state)
             return
@@ -4700,13 +4719,107 @@ class MainWindow(Adw.ApplicationWindow):
             if active:
                 editor = self.store.settings.selected_external_editor
                 self._tutorial_panel.refresh(self.store.tutorial_step, editor)
-        if not hasattr(self, "_tutorial_banner"):
-            return
-        # The side panel is the Desktop tutorial UI; keep the banner for the first editor nudge only
-        # when the panel is unavailable.
-        if hasattr(self, "_tutorial_panel"):
+        if hasattr(self, "_tutorial_banner") and hasattr(self, "_tutorial_panel"):
+            # The side panel is the Desktop tutorial UI; keep the banner for the first editor nudge only
+            # when the panel is unavailable.
             self._tutorial_banner.set_revealed(False)
+        self._update_tutorial_nudge()
+
+    def _install_nudge_arrows(self) -> None:
+        """Overlay octicon arrows matching Desktop `nudge-arrow-up` / `nudge-arrow-left`."""
+        if hasattr(self, "_branch_nudge") or not hasattr(self, "_overlay"):
             return
+        self._branch_nudge = NudgeArrow("up")
+        self._push_nudge = NudgeArrow("up")
+        self._commit_nudge = NudgeArrow("left")
+        for arrow in (self._branch_nudge, self._push_nudge, self._commit_nudge):
+            self._overlay.add_overlay(arrow)
+
+    def _showing_publish_branch_button(self) -> bool:
+        """Desktop `publishBranchButton` is the live push/pull chrome."""
+        repo = self.store.selected_repository
+        if repo is None or not hasattr(self, "_push_btn"):
+            return False
+        state = self.store.state_for(repo)
+        status = getattr(state, "status", None)
+        return publishBranchButton(
+            remote_name=self._remote_name(state) if state is not None else None,
+            current_branch=getattr(status, "current_branch", None) if status is not None else None,
+            current_tip=getattr(status, "current_tip", None) if status is not None else None,
+            has_upstream=bool(status and getattr(status, "current_upstream_branch", None)),
+            progress=bool(self.store.progress_kind),
+        )
+
+    def _update_tutorial_nudge(self) -> None:
+        """Desktop `shouldNudge` / `shouldNudgeToCommit` chrome on branch, push, and summary."""
+        step = self.store.tutorial_step
+        branch_nudge = shouldNudge(step, "branch")
+        commit_nudge = shouldNudgeToCommit(step)
+        publish = self._showing_publish_branch_button()
+        push_nudge = shouldNudge(step, "push") and publish
+        if hasattr(self, "_branch_btn"):
+            apply_nudge_arrow_classes(self._branch_btn, should_nudge=branch_nudge, direction="up", base=True)
+        if hasattr(self, "_push_btn"):
+            apply_nudge_arrow_classes(
+                self._push_btn,
+                should_nudge=push_nudge,
+                direction="up",
+                base=publish,
+            )
+        if hasattr(self, "_summary"):
+            apply_nudge_arrow_classes(self._summary, should_nudge=commit_nudge, direction="left", base=True)
+        if hasattr(self, "_branch_nudge"):
+            self._branch_nudge.set_nudging(branch_nudge)
+        if hasattr(self, "_push_nudge"):
+            self._push_nudge.set_nudging(push_nudge)
+        if hasattr(self, "_commit_nudge"):
+            self._commit_nudge.set_nudging(commit_nudge)
+        self._position_nudge_arrows()
+
+    def _translate_to_overlay(self, widget: Gtk.Widget) -> tuple[float, float] | None:
+        if not hasattr(self, "_overlay"):
+            return None
+        try:
+            result = widget.translate_coordinates(self._overlay, 0, 0)
+        except Exception:
+            return None
+        if result is None:
+            return None
+        if isinstance(result, tuple) and len(result) == 3:
+            ok, x, y = result
+            if not ok:
+                return None
+            return float(x), float(y)
+        if isinstance(result, tuple) and len(result) == 2:
+            return float(result[0]), float(result[1])
+        return None
+
+    def _place_nudge_arrow(self, arrow, target: Gtk.Widget | None, direction: str) -> None:
+        if arrow is None or target is None or not arrow.get_visible():
+            return
+        origin = self._translate_to_overlay(target)
+        if origin is None:
+            return
+        x, y = origin
+        width = target.get_allocated_width() or target.get_width() or 0
+        height = target.get_allocated_height() or target.get_height() or 0
+        gap = int(getattr(arrow, "_offset", 40))
+        if direction == "up":
+            # Desktop `.nudge-arrow-up::after { left: 35%; bottom: -offset }`
+            arrow.set_margin_start(max(0, int(x + width * 0.35)))
+            arrow.set_margin_top(max(0, int(y + height + gap - 36)))
+        else:
+            # Desktop `.nudge-arrow-left::after { top: 25%; right: -offset }`
+            arrow.set_margin_start(max(0, int(x + width + gap - 36)))
+            arrow.set_margin_top(max(0, int(y + height * 0.25)))
+
+    def _position_nudge_arrows(self) -> None:
+        if hasattr(self, "_branch_nudge"):
+            self._place_nudge_arrow(self._branch_nudge, getattr(self, "_branch_btn", None), "up")
+        if hasattr(self, "_push_nudge"):
+            self._place_nudge_arrow(self._push_nudge, getattr(self, "_push_btn", None), "up")
+        if hasattr(self, "_commit_nudge"):
+            self._place_nudge_arrow(self._commit_nudge, getattr(self, "_summary", None), "left")
 
     def _completion_exclude_login(self) -> str | None:
         repo = self.store.selected_repository

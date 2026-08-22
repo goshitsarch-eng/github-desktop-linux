@@ -1568,5 +1568,11 @@ def test_window_actions_cover_menus() -> None:
         "isCommittingStatusMessage",
         "Committed Just now",
         "getButtonTitle",
+        "shouldNudge",
+        "shouldNudgeToCommit",
+        "nudge-arrow",
+        "nudge-arrow-up",
+        "nudge-arrow-left",
+        "publishBranchButton",
     ]:
         assert phrase in src

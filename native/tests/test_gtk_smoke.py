@@ -268,6 +268,36 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             assert hasattr(win, "_missing_page")
             assert hasattr(win, "_tutorial_panel")
             win._tutorial_panel.refresh(TutorialStep.PICK_EDITOR, "GNOME Text Editor")
+            from github_desktop.models import Remote
+
+            assert win._branch_btn.has_css_class("nudge-arrow")
+            assert win._summary.has_css_class("summary-field")
+            assert win._summary.has_css_class("nudge-arrow")
+            store.tutorial_step = TutorialStep.CREATE_BRANCH
+            win._update_tutorial_nudge()
+            assert win._branch_btn.has_css_class("nudge-arrow-up")
+            assert not win._summary.has_css_class("nudge-arrow-left")
+            assert win._branch_nudge.get_visible()
+            store.tutorial_step = TutorialStep.MAKE_COMMIT
+            win._update_tutorial_nudge()
+            assert win._summary.has_css_class("nudge-arrow-left")
+            assert not win._branch_btn.has_css_class("nudge-arrow-up")
+            assert win._commit_nudge.get_visible()
+            repo_state = store.state_for(repos[0])
+            repo_state.remotes = [Remote(name="origin", url="https://github.com/octocat/hello.git")]
+            if repo_state.status is not None:
+                repo_state.status.current_upstream_branch = None
+            store.tutorial_step = TutorialStep.PUSH_BRANCH
+            win._update_tutorial_nudge()
+            assert win._push_btn.has_css_class("nudge-arrow")
+            assert win._push_btn.has_css_class("nudge-arrow-up")
+            assert win._push_nudge.get_visible()
+            store.tutorial_step = TutorialStep.NOT_APPLICABLE
+            win._update_tutorial_nudge()
+            assert not win._branch_btn.has_css_class("nudge-arrow-up")
+            assert not win._push_btn.has_css_class("nudge-arrow-up")
+            assert not win._summary.has_css_class("nudge-arrow-left")
+            win._tutorial_panel.refresh(TutorialStep.PICK_EDITOR, "GNOME Text Editor")
             win._commit_summary.bind([], None)
             win._find()
             win._show_window_info("Press F11 to exit fullscreen", hold_ms=1)

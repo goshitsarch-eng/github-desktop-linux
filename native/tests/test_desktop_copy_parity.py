@@ -1081,3 +1081,80 @@ def test_get_by_login_matches_desktop_exact_match(isolated_config, monkeypatch) 
     assert hit["email"] == "1+octocat@users.noreply.github.com"
     assert store.exact_match("octocat") is None
     assert store.get_by_login(store.accounts[0], "missing") is None
+
+
+def test_tutorial_nudge_arrows_match_desktop() -> None:
+    from github_desktop.models import TutorialStep
+    from github_desktop.ui.tutorial import (
+        apply_nudge_arrow_classes,
+        nudge_arrow_frame,
+        publishBranchButton,
+        shouldNudge,
+        shouldNudgeToCommit,
+    )
+
+    assert shouldNudge(TutorialStep.CREATE_BRANCH, "branch") is True
+    assert shouldNudge(TutorialStep.PUSH_BRANCH, "push") is True
+    assert shouldNudge(TutorialStep.MAKE_COMMIT, "branch") is False
+    assert shouldNudgeToCommit(TutorialStep.MAKE_COMMIT) is True
+    assert shouldNudgeToCommit(TutorialStep.CREATE_BRANCH) is False
+    assert publishBranchButton(
+        remote_name="origin",
+        current_branch="tutorial",
+        current_tip="abc",
+        has_upstream=False,
+    )
+    assert not publishBranchButton(
+        remote_name="origin",
+        current_branch="tutorial",
+        current_tip="abc",
+        has_upstream=True,
+    )
+    assert not publishBranchButton(
+        remote_name="origin",
+        current_branch="tutorial",
+        current_tip="abc",
+        has_upstream=False,
+        progress=True,
+    )
+    assert not publishBranchButton(
+        remote_name=None,
+        current_branch="tutorial",
+        current_tip="abc",
+        has_upstream=False,
+    )
+    opacity, offset = nudge_arrow_frame(0, direction="up")
+    assert opacity == 0.0
+    assert offset == 55
+    opacity, offset = nudge_arrow_frame(6600, direction="up")
+    assert opacity == 1.0
+    assert offset == 40
+    left_opacity, left_offset = nudge_arrow_frame(0, direction="left")
+    assert left_opacity == 0.0
+    assert left_offset == 65
+
+    class FakeWidget:
+        def __init__(self) -> None:
+            self.classes: set[str] = set()
+
+        def has_css_class(self, name: str) -> bool:
+            return name in self.classes
+
+        def add_css_class(self, name: str) -> None:
+            self.classes.add(name)
+
+        def remove_css_class(self, name: str) -> None:
+            self.classes.discard(name)
+
+    branch = FakeWidget()
+    apply_nudge_arrow_classes(branch, should_nudge=True, direction="up", base=True)
+    assert branch.classes == {"nudge-arrow", "nudge-arrow-up"}
+    apply_nudge_arrow_classes(branch, should_nudge=False, direction="up", base=True)
+    assert branch.classes == {"nudge-arrow"}
+    summary = FakeWidget()
+    apply_nudge_arrow_classes(summary, should_nudge=True, direction="left", base=True)
+    assert summary.classes == {"nudge-arrow", "nudge-arrow-left"}
+    publish = FakeWidget()
+    apply_nudge_arrow_classes(publish, should_nudge=True, direction="up", base=False)
+    assert publish.classes == set()
+
