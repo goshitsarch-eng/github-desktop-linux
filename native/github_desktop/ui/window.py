@@ -247,6 +247,28 @@ def keyboard_reorder_insert_message(count: int, row: int, total: int) -> str:
     )
 
 
+NO_HISTORY = "No history"
+NO_COMMITS_TO_LIST = "No commits to list"
+NO_COMMIT_SELECTED = "No commit selected"
+NoCommitSelected = NO_COMMIT_SELECTED
+
+
+def commit_list_empty_message(
+    *,
+    history_mode: HistoryTabMode,
+    comparison_mode: ComparisonMode | None = None,
+    branch_name: str | None = None,
+) -> str:
+    """Desktop `CommitList` `emptyListMessage` from `compare.tsx`."""
+    if history_mode != HistoryTabMode.COMPARE:
+        return NO_HISTORY
+    name = branch_name or ""
+    # Desktop defaults Compare to Ahead; Behind is the only other comparisonMode.
+    if comparison_mode == ComparisonMode.BEHIND:
+        return f"Your branch is up to date with the compared branch ({name})"
+    return f"The compared branch ({name}) is up to date with your branch"
+
+
 def format_banner_text(kind: BannerType, banner) -> str:
     """Desktop success/conflict banner copy."""
     if kind == BannerType.SUCCESSFUL_MERGE:
@@ -2441,7 +2463,20 @@ class MainWindow(Adw.ApplicationWindow):
         window_reorder.connect("key-pressed", self._on_keyboard_reorder_key)
         self.add_controller(window_reorder)
         scroller.set_child(self._commit_list)
-        left.append(scroller)
+        self._history_list_stack = Gtk.Stack()
+        self._history_list_stack.set_hexpand(True)
+        self._history_list_stack.set_vexpand(True)
+        self._history_list_stack.add_named(scroller, "list")
+        self._commit_list_empty = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER)
+        self._commit_list_empty.add_css_class("panel")
+        self._commit_list_empty.add_css_class("blankslate")
+        self._commit_list_empty.set_valign(Gtk.Align.CENTER)
+        self._commit_list_empty.set_halign(Gtk.Align.CENTER)
+        self._commit_list_empty.set_hexpand(True)
+        self._commit_list_empty.set_vexpand(True)
+        self._history_list_stack.add_named(self._commit_list_empty, "empty")
+        self._history_list_stack.set_visible_child_name("empty")
+        left.append(self._history_list_stack)
         paned.set_start_child(left)
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self._hist_detail = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -2519,9 +2554,23 @@ class MainWindow(Adw.ApplicationWindow):
         self._hist_blank.append(blank_title)
         self._hist_blank.append(blank_hint)
         self._hist_blank.append(blank_list)
-        self._hist_blank.set_visible(False)
-        right.append(self._hist_detail)
-        right.append(self._hist_blank)
+        self._hist_no_commit = Adw.StatusPage(
+            title=NO_COMMIT_SELECTED,
+            icon_name="folder-documents-symbolic",
+        )
+        self._hist_no_commit.add_css_class("panel")
+        self._hist_no_commit.add_css_class("blankslate")
+        self._hist_no_commit.add_css_class("no-commit-selected")
+        self._hist_no_commit.set_hexpand(True)
+        self._hist_no_commit.set_vexpand(True)
+        self._hist_detail_stack = Gtk.Stack()
+        self._hist_detail_stack.set_hexpand(True)
+        self._hist_detail_stack.set_vexpand(True)
+        self._hist_detail_stack.add_named(self._hist_no_commit, "no_commit")
+        self._hist_detail_stack.add_named(self._hist_detail, "detail")
+        self._hist_detail_stack.add_named(self._hist_blank, "blank")
+        self._hist_detail_stack.set_visible_child_name("no_commit")
+        right.append(self._hist_detail_stack)
         paned.set_end_child(right)
         self._history_paned = paned
         try:
@@ -3826,14 +3875,13 @@ class MainWindow(Adw.ApplicationWindow):
                 self._building = False
         elif hasattr(self, "_compare_tabs"):
             self._compare_tabs.set_visible(False)
-        if state.history_mode == HistoryTabMode.COMPARE and not commits:
-            commits = state.commits
         new_shas = [c.sha for c in commits]
         shown = getattr(self, "_history_shas", [])
         if shown and shown == new_shas[: len(shown)] and len(new_shas) > len(shown):
             for commit in commits[len(shown) :]:
                 self._commit_list.append(self._commit_row(commit))
             self._history_shas = new_shas
+            self._sync_commit_list_empty(state, new_shas)
             self._refresh_compare_cta(state)
             self._refresh_history_detail(state)
             self._sync_keyboard_reorder_chrome()
@@ -3843,10 +3891,28 @@ class MainWindow(Adw.ApplicationWindow):
         for commit in commits:
             self._commit_list.append(self._commit_row(commit))
         self._history_shas = new_shas
+        self._sync_commit_list_empty(state, new_shas)
         self._refresh_compare_cta(state)
         self._building = False
         self._refresh_history_detail(state)
         self._sync_keyboard_reorder_chrome()
+
+    def _sync_commit_list_empty(self, state, shas: list[str]) -> None:
+        """Desktop `CommitList` emptyListMessage vs a populated list."""
+        if not hasattr(self, "_history_list_stack"):
+            return
+        if shas:
+            self._history_list_stack.set_visible_child_name("list")
+            return
+        branch = state.compare_branch.name if getattr(state, "compare_branch", None) else ""
+        self._commit_list_empty.set_text(
+            commit_list_empty_message(
+                history_mode=state.history_mode,
+                comparison_mode=getattr(state, "compare_mode", None),
+                branch_name=branch,
+            )
+        )
+        self._history_list_stack.set_visible_child_name("empty")
 
     def _commit_row(self, commit) -> Gtk.ListBoxRow:
         row = Gtk.ListBoxRow()
@@ -3942,11 +4008,18 @@ class MainWindow(Adw.ApplicationWindow):
         if not hasattr(self, "_hist_files"):
             return
         non_contig = bool(getattr(state, "non_contiguous_selection", False))
-        if hasattr(self, "_hist_blank"):
-            self._hist_blank.set_visible(non_contig)
-        if hasattr(self, "_hist_detail"):
-            self._hist_detail.set_visible(not non_contig)
-        if non_contig:
+        no_commit = not (
+            list(getattr(state, "selected_commits", None) or [])
+            or getattr(state, "selected_commit", None)
+        )
+        if hasattr(self, "_hist_detail_stack"):
+            if non_contig:
+                self._hist_detail_stack.set_visible_child_name("blank")
+            elif no_commit:
+                self._hist_detail_stack.set_visible_child_name("no_commit")
+            else:
+                self._hist_detail_stack.set_visible_child_name("detail")
+        if non_contig or no_commit:
             if hasattr(self, "_hist_diff_view"):
                 self._hist_diff_view.render(None)
             return
@@ -4216,7 +4289,8 @@ class MainWindow(Adw.ApplicationWindow):
         if not hasattr(self, "_hist_diff_view"):
             return
         path = state.selected_commit_files[0].path if state.selected_commit_files else ""
-        loading = state.selected_commit is not None and state.current_diff is None
+        has_files = bool(state.selected_commit_files)
+        loading = state.selected_commit is not None and state.current_diff is None and has_files
         self._hist_diff_view.render(
             state.current_diff,
             path=path,

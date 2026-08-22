@@ -231,6 +231,15 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             assert child in {"welcome", "empty", "repo"}
             win._refresh_files()
             win._refresh_history()
+            assert win._history_list_stack.get_visible_child_name() in {"list", "empty"}
+            assert win._hist_detail_stack.get_visible_child_name() in {
+                "detail",
+                "no_commit",
+                "blank",
+            }
+            assert win._hist_no_commit.get_title() == "No commit selected"
+            assert win._hist_no_commit.has_css_class("blankslate")
+            assert win._hist_no_commit.has_css_class("no-commit-selected")
             show_about(win)
             show_preferences(win, store)
             from github_desktop.ui.diff_view import DiffViewer

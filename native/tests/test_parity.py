@@ -1670,5 +1670,11 @@ def test_window_actions_cover_menus() -> None:
         "NoRepositorySelected",
         "ariaLiveMessage: 'Expanded'",
         "diff_expanded_aria_live",
+        "No history",
+        "The compared branch (",
+        "is up to date with your branch",
+        "Your branch is up to date with the compared branch",
+        "NoCommitSelected",
+        "No commits to list",
     ]:
         assert phrase in src

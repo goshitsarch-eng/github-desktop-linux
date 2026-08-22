@@ -420,8 +420,12 @@ window:not(.underline-links) link {
 .length-hint-tooltip .description {
   opacity: 0.7;
 }
-/* Desktop `app.tsx` `NoRepositorySelected` `.panel.blankslate` */
-.panel.blankslate.no-repository-selected {
+/* Desktop `selected-commits.tsx` `NoCommitSelected` `.panel.blankslate` */
+.panel.blankslate.no-commit-selected {
+  padding: 24px;
+}
+/* Desktop `commit-list.tsx` emptyListMessage */
+.panel.blankslate {
   padding: 24px;
 }
 /* Desktop `multiple-selection.tsx` `.panel.blankslate` */

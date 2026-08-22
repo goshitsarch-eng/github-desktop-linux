@@ -141,6 +141,47 @@ def test_linux_no_repositories_and_toolbar_labels_match_desktop() -> None:
     assert NoRepositorySelected == "No repository selected"
 
 
+def test_commit_list_empty_copy_matches_desktop() -> None:
+    from github_desktop.models import ComparisonMode, HistoryTabMode
+    from github_desktop.ui.window import (
+        NO_COMMIT_SELECTED,
+        NO_COMMITS_TO_LIST,
+        NO_HISTORY,
+        NoCommitSelected,
+        commit_list_empty_message,
+    )
+
+    assert NO_HISTORY == "No history"
+    assert NO_COMMITS_TO_LIST == "No commits to list"
+    assert NO_COMMIT_SELECTED == "No commit selected"
+    assert NoCommitSelected == "No commit selected"
+    assert commit_list_empty_message(history_mode=HistoryTabMode.HISTORY) == "No history"
+    assert (
+        commit_list_empty_message(
+            history_mode=HistoryTabMode.COMPARE,
+            comparison_mode=ComparisonMode.AHEAD,
+            branch_name="topic",
+        )
+        == "The compared branch (topic) is up to date with your branch"
+    )
+    assert (
+        commit_list_empty_message(
+            history_mode=HistoryTabMode.COMPARE,
+            comparison_mode=None,
+            branch_name="topic",
+        )
+        == "The compared branch (topic) is up to date with your branch"
+    )
+    assert (
+        commit_list_empty_message(
+            history_mode=HistoryTabMode.COMPARE,
+            comparison_mode=ComparisonMode.BEHIND,
+            branch_name="main",
+        )
+        == "Your branch is up to date with the compared branch (main)"
+    )
+
+
 def test_author_input_and_diff_options_linux_copy() -> None:
     from github_desktop.models import Author
     from github_desktop.ui.author_input import (
