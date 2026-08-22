@@ -363,6 +363,7 @@ class RepositoryViewState:
     stashed_visible: bool = False
     local_tags_to_push: list[str] = field(default_factory=list)
     loading: bool = False
+    pull_requests_loading: bool = False
     error: str | None = None
     ahead_behind: AheadBehind | None = None
     current_pull_request: PullRequest | None = None
@@ -7623,6 +7624,8 @@ class AppStore:
         existing = list(state.pull_requests)
         last_updated = state.last_pr_updated_at
         current = state.status.current_branch if state.status else None
+        state.pull_requests_loading = True
+        self.emit()
 
         def work() -> dict:
             api = GitHubAPI.from_account(account)
@@ -7640,9 +7643,11 @@ class AppStore:
             }
 
         def done(exc: BaseException | None, result: dict | None = None) -> None:
-            if exc or not result:
-                return
             view = self.state_for(repo)
+            view.pull_requests_loading = False
+            if exc or not result:
+                self.emit()
+                return
             view.pull_requests = result["pull_requests"]
             view.last_pr_updated_at = result.get("last_pr_updated_at")
             view.last_pr_refresh = result.get("last_pr_refresh")

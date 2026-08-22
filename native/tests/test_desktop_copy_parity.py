@@ -1482,3 +1482,37 @@ def test_no_pull_requests_cta_matches_desktop() -> None:
     assert feature_link == CREATE_A_PULL_REQUEST_LINK == "create a pull request"
     assert feature_suffix == " from the current branch?"
 
+
+def test_pull_request_list_screen_reader_copy_matches_desktop() -> None:
+    from github_desktop.ui.branches import (
+        HANG_TIGHT_LOADING_PULL_REQUESTS,
+        pull_request_list_found_message,
+        pull_request_list_screen_reader_message,
+    )
+
+    assert (
+        HANG_TIGHT_LOADING_PULL_REQUESTS
+        == "Hang Tight. Loading pull requests as fast as I can!"
+    )
+    assert pull_request_list_found_message(0) == "0 pull requests found"
+    assert pull_request_list_found_message(1) == "1 pull request found"
+    assert pull_request_list_found_message(3) == "3 pull requests found"
+    assert (
+        pull_request_list_screen_reader_message(
+            loading_started=True, loading_complete=False, count=0
+        )
+        == HANG_TIGHT_LOADING_PULL_REQUESTS
+    )
+    assert (
+        pull_request_list_screen_reader_message(
+            loading_started=False, loading_complete=True, count=1
+        )
+        == "1 pull request found"
+    )
+    assert (
+        pull_request_list_screen_reader_message(
+            loading_started=False, loading_complete=False, count=9
+        )
+        is None
+    )
+

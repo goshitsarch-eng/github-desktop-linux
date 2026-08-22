@@ -432,9 +432,32 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
                 assert win._branches_foldout._stack.get_page(prs_page).get_title() == "Pull requests"
                 from github_desktop.ui.branches import (
                     CREATE_A_PULL_REQUEST_LINK,
+                    HANG_TIGHT_LOADING_PULL_REQUESTS,
                     no_pull_requests_cta_sentence,
                 )
 
+                win._branches_foldout.refresh(
+                    [Branch("main", None, "aaa", _BranchType.LOCAL)],
+                    [],
+                    current="main",
+                    default_name="main",
+                    recent=[],
+                    has_github=True,
+                    prs_loading=True,
+                )
+                assert win._branches_foldout.screenReaderStateMessage == HANG_TIGHT_LOADING_PULL_REQUESTS
+                assert win._branches_foldout._pr_live.get_visible() is True
+                assert win._branches_foldout._pr_live.get_text() == HANG_TIGHT_LOADING_PULL_REQUESTS
+                win._branches_foldout.refresh(
+                    [Branch("main", None, "aaa", _BranchType.LOCAL)],
+                    [],
+                    current="main",
+                    default_name="main",
+                    recent=[],
+                    has_github=True,
+                    prs_loading=False,
+                )
+                assert win._branches_foldout.screenReaderStateMessage == "0 pull requests found"
                 win._branches_foldout._github = True
                 win._branches_foldout._on_default_branch = False
                 empty = win._branches_foldout._pr_empty_state(False)

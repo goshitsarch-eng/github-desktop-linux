@@ -2657,7 +2657,7 @@ class MainWindow(Adw.ApplicationWindow):
             is_on_default_branch=bool(
                 current_branch and default_name and (current_branch == default_name or current_branch == self.store.default_branch_name(repo))
             ),
-            prs_loading=bool(state.loading),
+            prs_loading=bool(state.pull_requests_loading),
             enterprise=bool(repo.github and not is_dotcom_endpoint(repo.github.endpoint)),
             selected_tab=self.store.selected_branches_tab,
         )
