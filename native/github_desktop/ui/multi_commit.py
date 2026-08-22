@@ -43,6 +43,7 @@ from ..store import AppStore
 from ..truncate import truncate_with_ellipsis
 from .branches import group_branches
 from .menus import OpenWithDefaultProgramLabel, RevealInFileManagerLabel, clear_box
+from .text_box import search_entry
 
 
 MERGE_OPTIONS = (
@@ -248,7 +249,7 @@ def _show_choose_branch(parent: Gtk.Window, store: AppStore, kind: str, initial_
     box.set_margin_bottom(8)
     box.set_margin_start(12)
     box.set_margin_end(12)
-    search = Gtk.SearchEntry()
+    search = search_entry()
     search.set_placeholder_text("Filter branches")
     box.append(search)
     scroller = Gtk.ScrolledWindow(vexpand=True)
@@ -588,7 +589,7 @@ def _show_cherry_pick_target(parent: Gtk.Window, store: AppStore, payload: dict[
     box.set_margin_bottom(8)
     box.set_margin_start(12)
     box.set_margin_end(12)
-    search = Gtk.SearchEntry()
+    search = search_entry()
     search.set_placeholder_text("Filter branches")
     box.append(search)
     name_row = Adw.EntryRow(title="New branch name")

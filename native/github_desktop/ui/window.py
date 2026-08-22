@@ -121,6 +121,7 @@ from .dialogs import (
 )
 from .diff_view import DiffViewer
 from .history import ExpandableCommitSummary
+from .text_box import search_entry
 from .menus import (
     CopyFilePathLabel,
     CopyRelativeFilePathLabel,
@@ -1473,7 +1474,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._empty_account_drop.set_visible(False)
         self._empty_account_drop.connect("notify::selected", lambda *_: self._refresh_empty_clone_list())
         clone_pane.append(self._empty_account_drop)
-        self._empty_clone_filter = Gtk.SearchEntry()
+        self._empty_clone_filter = search_entry()
         self._empty_clone_filter.set_placeholder_text("Filter your repositories")
         self._empty_clone_filter.connect("search-changed", lambda *_: self._refresh_empty_clone_list())
         clone_pane.append(self._empty_clone_filter)
@@ -1990,7 +1991,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _build_repo_list(self) -> Gtk.Widget:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        search = Gtk.SearchEntry()
+        search = search_entry()
         search.set_placeholder_text("Filter")
         box.append(search)
         scroller = Gtk.ScrolledWindow(vexpand=True)
@@ -2019,7 +2020,7 @@ class MainWindow(Adw.ApplicationWindow):
         paned.set_resize_start_child(False)
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         left.set_size_request(220, -1)
-        self._filter = Gtk.SearchEntry()
+        self._filter = search_entry()
         self._filter.set_placeholder_text("Filter changed files")
         self._filter.connect("search-changed", self._on_changes_filter_text)
         chips = Gtk.Box(spacing=4)
@@ -2398,7 +2399,7 @@ class MainWindow(Adw.ApplicationWindow):
         compare_row.append(Gtk.Label(label="Compare to"))
         compare_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         compare_col.set_hexpand(True)
-        self._compare_search = Gtk.SearchEntry()
+        self._compare_search = search_entry()
         self._compare_search.set_placeholder_text("Select branch to compare…")
         self._compare_search.set_hexpand(True)
         self._compare_search.connect("search-changed", lambda *_: self._refresh_compare_list())
@@ -2415,7 +2416,7 @@ class MainWindow(Adw.ApplicationWindow):
         compare_col.append(compare_scroll)
         compare_row.append(compare_col)
         left.append(compare_row)
-        self._history_filter = Gtk.SearchEntry()
+        self._history_filter = search_entry()
         self._history_filter.set_placeholder_text("Search commits…")
         self._history_filter.connect("search-changed", self._on_history_filter)
         left.append(self._history_filter)

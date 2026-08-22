@@ -40,6 +40,7 @@ from ..settings import tabSizeDefault
 from .menus import MenuItem, attach_right_click, clear_box, copy_text, show_context_menu
 from .copy_button import CopyButton, copy_the_full_sha_label
 from .syntax import markup_for_diff_line
+from .text_box import search_entry
 
 # Desktop Linux `DiffOptions` button/header: `Diff ${__DARWIN__ ? 'Settings' : 'Options'}`.
 DIFF_OPTIONS_LABEL = "Diff Options"
@@ -316,7 +317,7 @@ class DiffViewer(Gtk.Box):
         self._search_revealer = Gtk.Revealer()
         search_row = Gtk.Box(spacing=6)
         search_row.add_css_class("diff-search")
-        self._search_entry = Gtk.SearchEntry()
+        self._search_entry = search_entry()
         self._search_entry.set_placeholder_text("Search…")
         self._search_entry.set_hexpand(True)
         self._search_entry.connect("search-changed", lambda *_: self._run_search(self._search_entry.get_text(), "next"))

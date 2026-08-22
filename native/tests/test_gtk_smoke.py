@@ -302,6 +302,12 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             assert empty.has_css_class("blankslate")
             assert empty.get_name() == "diff"
             assert not isinstance(empty, Adw.StatusPage)
+            from github_desktop.ui.text_box import INPUT_CLEARED, search_entry
+
+            cleared = search_entry()
+            cleared.set_text("branch")
+            cleared.set_text("")
+            assert getattr(cleared, "_input_cleared_message", "") == INPUT_CLEARED
             viewer.render(BinaryDiff(), path="photo.bin")
             from github_desktop.models import ImageDiff, ImageDiffType
 

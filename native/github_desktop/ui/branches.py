@@ -16,6 +16,7 @@ from ..push_pull import format_commit_relative_time
 from ..shells import open_external
 from .markdown import issue_base_from_html_url, sandboxed_markdown_label
 from .menus import attach_right_click, clear_box, copy_text, show_context_menu, view_on_github_label
+from .text_box import search_entry
 
 
 def generate_branch_context_menu_items(
@@ -172,7 +173,7 @@ class BranchesFoldout(Gtk.Popover):
         root.set_margin_start(8)
         root.set_margin_end(8)
 
-        self._search = Gtk.SearchEntry()
+        self._search = search_entry()
         self._search.set_placeholder_text("Find a branch…")
         self._search.connect("search-changed", lambda *_: self._refilter())
         root.append(self._search)

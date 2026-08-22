@@ -208,6 +208,18 @@ def test_last_expanded_hunk_focus_key_matches_desktop() -> None:
     assert focusAfterLastExpandedHunkChange is closest_expansion_focus_key
 
 
+def test_input_cleared_aria_live_matches_desktop() -> None:
+    from github_desktop.ui.text_box import (
+        INPUT_CLEARED,
+        displayClearButton,
+        input_cleared_aria_live,
+    )
+
+    assert INPUT_CLEARED == "Input cleared"
+    assert input_cleared_aria_live() == "Input cleared"
+    assert displayClearButton is True
+
+
 def test_author_input_and_diff_options_linux_copy() -> None:
     from github_desktop.models import Author
     from github_desktop.ui.author_input import (

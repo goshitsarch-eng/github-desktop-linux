@@ -240,6 +240,9 @@ def test_window_actions_cover_menus() -> None:
     from github_desktop.ui import copy_button as copy_button_mod
 
     src += open(copy_button_mod.__file__, encoding="utf-8").read()
+    from github_desktop.ui import text_box as text_box_mod
+
+    src += open(text_box_mod.__file__, encoding="utf-8").read()
     from github_desktop import thank_you, custom_integration
     from github_desktop.git import progress as git_progress
 
@@ -1682,5 +1685,8 @@ def test_window_actions_cover_menus() -> None:
         "lastExpandedHunk",
         "focusAfterLastExpandedHunkChange",
         "hunkExpansionRefs",
+        "Input cleared",
+        "displayClearButton",
+        "input_cleared_aria_live",
     ]:
         assert phrase in src

@@ -79,6 +79,7 @@ from .author_input import AuthorInput, bind_store_exact_match
 from .checks import show_checks, show_rerun_checks
 from .copy_button import COPY_THE_FULL_SHA, CopyButton
 from .diff_view import DiffViewer
+from .text_box import search_entry
 from .menus import (
     TrashNameLabel,
     attach_paned_keyboard_resize,
@@ -1898,7 +1899,7 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
     list_box.set_margin_start(8)
     list_box.set_margin_end(8)
     filter_row = Gtk.Box(spacing=6)
-    gh_filter = Gtk.SearchEntry()
+    gh_filter = search_entry()
     gh_filter.set_placeholder_text("Filter your repositories")
     gh_filter.set_hexpand(True)
     refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic")
@@ -1937,7 +1938,7 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
     ent_box.set_margin_start(8)
     ent_box.set_margin_end(8)
     ent_filter_row = Gtk.Box(spacing=6)
-    ent_filter = Gtk.SearchEntry()
+    ent_filter = search_entry()
     ent_filter.set_placeholder_text("Filter your repositories")
     ent_filter.set_hexpand(True)
     ent_refresh = Gtk.Button(icon_name="view-refresh-symbolic")
