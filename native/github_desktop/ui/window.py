@@ -549,6 +549,7 @@ class MainWindow(Adw.ApplicationWindow):
             self._sync_menu_state()
             return
         if self._light_update:
+            self._refresh_changed_file_path_messages()
             return
         if self.store.welcome_step is not None:
             self._refresh_welcome()
@@ -3593,11 +3594,8 @@ class MainWindow(Adw.ApplicationWindow):
             box.append(ours)
             box.append(theirs)
         row.set_child(box)
-        row._file = file  # type: ignore[attr-defined]
-        message = path_screen_reader_message_for_file(file)
-        row._path_screen_reader_message = message  # type: ignore[attr-defined]
+        self._apply_path_screen_reader_message(row, file)
         try:
-            row.update_property([Gtk.AccessibleProperty.LABEL], [message])
             for hidden in (label, badge):
                 hidden.set_accessible_role(Gtk.AccessibleRole.PRESENTATION)
                 hidden.update_state([Gtk.AccessibleState.HIDDEN], [True])
@@ -3605,6 +3603,38 @@ class MainWindow(Adw.ApplicationWindow):
             pass
         attach_right_click(row, lambda *_ , r=row: self._file_item_menu(r))
         return row
+
+    def _apply_path_screen_reader_message(
+        self, row: Gtk.Widget, file: WorkingDirectoryFileChange
+    ) -> None:
+        """Desktop ChangedFile `pathScreenReaderMessage` on the existing list row."""
+        row._file = file  # type: ignore[attr-defined]
+        message = path_screen_reader_message_for_file(file)
+        row._path_screen_reader_message = message  # type: ignore[attr-defined]
+        try:
+            row.update_property([Gtk.AccessibleProperty.LABEL], [message])
+        except Exception:
+            pass
+
+    def _refresh_changed_file_path_messages(self) -> None:
+        """Update row labels after include/line selection when `_light_update` skips a rebuild."""
+        repo = self.store.selected_repository
+        files_by_path: dict[str, WorkingDirectoryFileChange] = {}
+        if repo:
+            state = self.store.state_for(repo)
+            if state.status:
+                files_by_path = {item.path: item for item in state.status.working_directory.files}
+        index = 0
+        while True:
+            row = self._file_list.get_row_at_index(index)
+            if row is None:
+                break
+            current = getattr(row, "_file", None)
+            if current is not None:
+                self._apply_path_screen_reader_message(
+                    row, files_by_path.get(current.path, current)
+                )
+            index += 1
 
     def _toggle_file(self, path: str, included: bool) -> None:
         if self._building:

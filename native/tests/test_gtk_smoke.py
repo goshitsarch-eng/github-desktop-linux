@@ -608,6 +608,18 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
                 assert getattr(file_row, "_path_screen_reader_message", "") == (
                     path_screen_reader_message_for_file(file_row._file)
                 )
+            excluded_path = file_rows[0]._file.path
+            win._toggle_file(excluded_path, False)
+            excluded = next(
+                item
+                for item in store.state_for(repos[0]).status.working_directory.files
+                if item.path == excluded_path
+            )
+            assert file_rows[0]._path_screen_reader_message == (
+                path_screen_reader_message_for_file(excluded)
+            )
+            assert "not included" in file_rows[0]._path_screen_reader_message
+            win._toggle_file(excluded_path, True)
             win._building = True
             try:
                 win._file_list.unselect_all()
