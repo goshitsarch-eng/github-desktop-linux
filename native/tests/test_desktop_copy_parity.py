@@ -1332,3 +1332,16 @@ def test_summary_length_hint_lightbulb_matches_desktop() -> None:
     assert show_summary_length_hint("short", True, rule_hint=False) is False
     assert show_summary_length_hint("x" * 51, False, rule_hint=False) is False
 
+
+def test_hidden_changes_warning_copy_matches_desktop() -> None:
+    from github_desktop.filter_changes import (
+        HIDDEN_CHANGES_WILL_BE_COMMITTED,
+        hidden_changes_adjust_filters_label,
+        hidden_changes_warning_tooltip,
+    )
+
+    assert HIDDEN_CHANGES_WILL_BE_COMMITTED == "Hidden changes will be committed. "
+    assert hidden_changes_adjust_filters_label(1) == "Adjust the filters to see all 1 changes"
+    assert hidden_changes_adjust_filters_label(12) == "Adjust the filters to see all 12 changes"
+    assert hidden_changes_warning_tooltip() == "Warning: Hidden changes will be committed."
+

@@ -74,6 +74,23 @@ APP_CSS = """
 .commit-box {
   padding: 8px;
 }
+/* Desktop `_changes-list.scss` `.hidden-changes-warning` */
+.hidden-changes-warning {
+  padding: 6px 8px;
+  background-color: alpha(@warning_color, 0.12);
+  border-top: 1px solid alpha(@warning_color, 0.35);
+  border-bottom: 1px solid alpha(@warning_color, 0.35);
+}
+.hidden-changes-warning .link-button-component {
+  padding: 0;
+}
+.sr-only {
+  opacity: 0;
+  min-width: 1px;
+  min-height: 1px;
+  padding: 0;
+  margin: 0;
+}
 .suggested-actions {
   padding: 8px;
 }

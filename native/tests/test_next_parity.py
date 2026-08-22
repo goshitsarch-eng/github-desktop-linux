@@ -456,6 +456,42 @@ def test_working_directory_file_change_id() -> None:
     assert copied.id == "Copied+copy.txt+src.txt"
 
 
+def test_hidden_changes_warning_copy_and_show_files(isolated_config, git_repo) -> None:
+    from github_desktop.filter_changes import (
+        HIDDEN_CHANGES_WARNING_SR_ONLY,
+        HIDDEN_CHANGES_WILL_BE_COMMITTED,
+        hidden_changes_adjust_filters_label,
+        hidden_changes_warning_tooltip,
+    )
+    from github_desktop.models import ChangesListFilter
+    from github_desktop.store import AppStore
+
+    assert HIDDEN_CHANGES_WILL_BE_COMMITTED == "Hidden changes will be committed. "
+    assert HIDDEN_CHANGES_WARNING_SR_ONLY == "Warning:"
+    assert hidden_changes_adjust_filters_label(3) == "Adjust the filters to see all 3 changes"
+    assert hidden_changes_warning_tooltip() == "Warning: Hidden changes will be committed."
+    assert AppStore.showFilesToBeCommitted is AppStore.show_files_to_be_committed
+
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    state = store.state_for(repo)
+    state.filter_text = "nope"
+    state.filter_new = True
+    state.filter_modified = True
+    state.filter_deleted = True
+    state.file_filter = ChangesListFilter.EXCLUDED.value
+    store.show_files_to_be_committed(repo)
+    updated = store.state_for(repo)
+    assert updated.filter_text == ""
+    assert updated.filter_new is False
+    assert updated.filter_modified is False
+    assert updated.filter_deleted is False
+    assert updated.file_filter == ChangesListFilter.INCLUDED.value
+    assert store.stats.get_daily_measures()["adjustedFiltersForHiddenChangesCount"] == 1
+
+
 def test_files_selected_label_and_badge() -> None:
     from github_desktop.filter_changes import (
         MaximumChangesCount,

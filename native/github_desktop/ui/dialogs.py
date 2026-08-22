@@ -802,7 +802,7 @@ def show_filtered_commit(parent: Gtk.Window, store: AppStore, payload: dict[str,
     def show_hidden(_response: str) -> None:
         repo = store.selected_repository
         if repo:
-            store.clear_changes_filter(repo)
+            store.show_files_to_be_committed(repo)
 
     _alert_with_check(
         parent,

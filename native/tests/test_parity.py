@@ -1638,5 +1638,11 @@ def test_window_actions_cover_menus() -> None:
         "PushBranchCommits",
         "renderPublishView",
         "unPushedCommits",
+        "Hidden changes will be committed.",
+        "Adjust the filters to see all",
+        "hidden-changes-warning",
+        "showFilesToBeCommitted",
+        "renderHiddenChangesWarning",
+        'increment("adjustedFiltersForHiddenChangesCount")',
     ]:
         assert phrase in src

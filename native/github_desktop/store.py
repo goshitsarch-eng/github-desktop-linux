@@ -4823,6 +4823,19 @@ class AppStore:
         state.filter_deleted = False
         self.emit()
 
+    def show_files_to_be_committed(self, repo: Repository) -> None:
+        """Desktop `showFilesToBeCommitted`: reveal included files hidden by the current filter."""
+        self.stats.increment("adjustedFiltersForHiddenChangesCount")
+        state = self.state_for(repo)
+        state.filter_text = ""
+        state.filter_new = False
+        state.filter_modified = False
+        state.filter_deleted = False
+        state.file_filter = ChangesListFilter.INCLUDED.value
+        self.emit()
+
+    showFilesToBeCommitted = show_files_to_be_committed
+
     def should_show_copilot_disclaimer(self) -> bool:
         seen = self.settings.commit_message_generation_disclaimer_last_seen
         if not seen:

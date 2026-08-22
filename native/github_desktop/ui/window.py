@@ -78,7 +78,14 @@ from ..menu_update import (
     updateMenuState,
 )
 from ..store import AppStore
-from ..filter_changes import files_selected_label
+from ..filter_changes import (
+    files_selected_label,
+    HIDDEN_CHANGES_WARNING_SR_ONLY,
+    HIDDEN_CHANGES_WILL_BE_COMMITTED,
+    hidden_changes_adjust_filters_label,
+    hidden_changes_warning_tooltip,
+    is_committing_file_hidden_by_filter,
+)
 from ..text_tokens import MaxSummaryLength
 from ..truncate import truncate_with_ellipsis
 from ..fuzzy_find import filter_items
@@ -2053,6 +2060,31 @@ class MainWindow(Adw.ApplicationWindow):
         left.append(self._changes_pages)
         self._stash_bar = Gtk.Box()
         left.append(self._stash_bar)
+        self._hidden_changes_warning = Gtk.Box(spacing=6)
+        self._hidden_changes_warning.add_css_class("hidden-changes-warning")
+        self._hidden_changes_warning.set_name("hidden-changes-warning")
+        warn_icon = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
+        warn_icon.set_valign(Gtk.Align.START)
+        self._hidden_changes_warning.append(warn_icon)
+        warn_sr = Gtk.Label(label=HIDDEN_CHANGES_WARNING_SR_ONLY)
+        warn_sr.add_css_class("sr-only")
+        self._hidden_changes_warning.append(warn_sr)
+        warn_copy = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        warn_copy.set_hexpand(True)
+        warn_text = Gtk.Label(label=HIDDEN_CHANGES_WILL_BE_COMMITTED, wrap=True, xalign=0)
+        warn_copy.append(warn_text)
+        self._hidden_changes_link = Gtk.Button()
+        self._hidden_changes_link.add_css_class("flat")
+        self._hidden_changes_link.add_css_class("link-button-component")
+        self._hidden_changes_link.set_halign(Gtk.Align.START)
+        self._hidden_changes_link_label = Gtk.Label(label="", wrap=True, xalign=0)
+        self._hidden_changes_link.set_child(self._hidden_changes_link_label)
+        self._hidden_changes_link.connect("clicked", lambda *_: self._show_files_to_be_committed())
+        warn_copy.append(self._hidden_changes_link)
+        self._hidden_changes_warning.append(warn_copy)
+        self._hidden_changes_warning.set_tooltip_text(hidden_changes_warning_tooltip())
+        self._hidden_changes_warning.set_visible(False)
+        left.append(self._hidden_changes_warning)
         commit_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         commit_box.add_css_class("commit-box")
         summary_row = Gtk.Box(spacing=6)
@@ -3159,6 +3191,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._include_all.set_inconsistent(include_all is None)
         self._include_all.set_active(bool(include_all))
         self._building = False
+        self._update_hidden_changes_warning(all_files, files, filters)
         self._render_working_diff(state)
         repo = self.store.selected_repository
         if repo:
@@ -4262,6 +4295,33 @@ class MainWindow(Adw.ApplicationWindow):
         repo = self.store.selected_repository
         if repo:
             self.store.clear_changes_filter(repo)
+
+    def _show_files_to_be_committed(self) -> None:
+        """Desktop `showFilesToBeCommitted` from the hidden-changes warning."""
+        repo = self.store.selected_repository
+        if repo:
+            self.store.showFilesToBeCommitted(repo)
+
+    def renderHiddenChangesWarning(self, visible: bool, included_count: int = 0) -> None:
+        """Desktop `renderHiddenChangesWarning`."""
+        if not hasattr(self, "_hidden_changes_warning"):
+            return
+        self._hidden_changes_warning.set_visible(visible)
+        if visible:
+            self._hidden_changes_link_label.set_text(hidden_changes_adjust_filters_label(included_count))
+
+    def _update_hidden_changes_warning(self, all_files, visible_files, filters) -> None:
+        if not self.store.settings.show_changes_filter:
+            self.renderHiddenChangesWarning(False)
+            return
+        included = [file for file in all_files if file.include]
+        show = is_committing_file_hidden_by_filter(
+            [file.path for file in included],
+            [file.path for file in visible_files],
+            len(all_files),
+            filters,
+        )
+        self.renderHiddenChangesWarning(show, len(included))
 
     def _selected_change_files(self) -> list[WorkingDirectoryFileChange]:
         files = []

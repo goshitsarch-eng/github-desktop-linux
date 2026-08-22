@@ -104,6 +104,22 @@ def is_committing_file_hidden_by_filter(
     return any(path not in visible for path in included_paths)
 
 
+isCommittingFileHiddenByFilter = is_committing_file_hidden_by_filter
+
+HIDDEN_CHANGES_WILL_BE_COMMITTED = "Hidden changes will be committed. "
+HIDDEN_CHANGES_WARNING_SR_ONLY = "Warning:"
+
+
+def hidden_changes_adjust_filters_label(count: int) -> str:
+    """Desktop `Adjust the filters to see all {filesSelected.length} changes`."""
+    return f"Adjust the filters to see all {count} changes"
+
+
+def hidden_changes_warning_tooltip() -> str:
+    """Screen-reader mapping of Desktop `.sr-only` Warning: plus the visible sentence."""
+    return f"{HIDDEN_CHANGES_WARNING_SR_ONLY} {HIDDEN_CHANGES_WILL_BE_COMMITTED.strip()}"
+
+
 def get_no_results_message(filters: FileListFilterState) -> str | None:
     """Desktop `getNoResultsMessage`."""
     if not has_active_filters(filters):

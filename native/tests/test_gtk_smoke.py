@@ -148,6 +148,9 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             assert win.lookup_action("pull").get_enabled() is False
             assert win.lookup_action("stash-all").get_enabled() is True
             assert win.lookup_action("discard-all").get_enabled() is True
+            assert win._hidden_changes_warning.has_css_class("hidden-changes-warning")
+            assert win._hidden_changes_warning.get_name() == "hidden-changes-warning"
+            assert not win._hidden_changes_warning.get_visible()
             from github_desktop.models import AheadBehind
 
             assert win._push_menu_label() == "Push"
@@ -549,6 +552,25 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
                 win._building = False
             win._on_selected_rows_changed(win._file_list)
             assert win._changes_diff_stack.get_visible_child_name() == "diff"
+            from github_desktop.filter_changes import hidden_changes_adjust_filters_label
+            from github_desktop.models import ChangesListFilter
+
+            assert not win._hidden_changes_warning.get_visible()
+            store.set_filter_kind(repos[0], "new", True)
+            assert win._hidden_changes_warning.get_visible()
+            included = [
+                file
+                for file in store.state_for(repos[0]).status.working_directory.files
+                if file.include
+            ]
+            assert win._hidden_changes_link_label.get_text() == hidden_changes_adjust_filters_label(
+                len(included)
+            )
+            win._show_files_to_be_committed()
+            assert store.state_for(repos[0]).file_filter == ChangesListFilter.INCLUDED.value
+            assert not store.state_for(repos[0]).filter_new
+            assert not win._hidden_changes_warning.get_visible()
+            store.clear_changes_filter(repos[0])
             from github_desktop.ui.dialogs import show_create_repository
 
             show_create_repository(win, store, "")
