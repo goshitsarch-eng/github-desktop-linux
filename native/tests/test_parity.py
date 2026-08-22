@@ -968,6 +968,8 @@ def test_window_actions_cover_menus() -> None:
         "matchGitHubRepository",
         "matchExistingRepository",
         "urlsMatch",
+        "doesRepositoryMatchUrl",
+        "resolveOAuthRequest",
         "parseRepositoryIdentifier",
         "ReceiveLimit",
         "findAssociatedPullRequest",

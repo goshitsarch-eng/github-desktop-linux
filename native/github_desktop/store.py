@@ -278,6 +278,7 @@ from .push_pull import (
 )
 from .remote_parsing import (
     account_for_remote,
+    does_repository_match_url,
     github_from_remote,
     is_github_host,
     match_existing_repository,
@@ -7058,37 +7059,45 @@ class AppStore:
             self._open_from_url(action)
 
     def complete_oauth(self, code: str, state: str) -> None:
-        if self.oauth_state and state != self.oauth_state:
+        """Desktop `SignInStore.resolveOAuthRequest`: pending CSRF state, then GTK-thread completion."""
+        # Unsolicited / cold-start callbacks must not exchange a code (OAuth login CSRF).
+        if self.sign_in_step != SignInStep.AUTHENTICATION or not self.oauth_state:
+            return
+        if state != self.oauth_state:
             self.sign_in_error = "OAuth state mismatch"
             self.emit()
             return
         endpoint = self.sign_in_endpoint or dotcom_endpoint()
+        csrf = self.oauth_state
 
         def work() -> Account | None:
             return exchange_code_for_account(endpoint, code)
 
         def done(exc: BaseException | None, result: Account | None = None) -> None:
-            # _run doesn't pass result; use a holder
-            pass
-
-        def thread() -> None:
-            try:
-                account = exchange_code_for_account(endpoint, code)
-                if account is None:
-                    self.sign_in_error = "Failed to exchange OAuth code"
-                else:
-                    self._add_account(account)
-                    self.sign_in_step = SignInStep.SUCCESS
-                    self._finish_credential_sign_in(account)
-                    self.close_popup()
-                    if self.welcome_step is not None:
-                        self.welcome_step = WelcomeStep.CONFIGURE_GIT
-                    self.retry_last_remote_action()
-            except Exception as exc:
+            # Same sign-in session as Desktop: ignore completion after reset / a new flow.
+            if self.oauth_state != csrf or self.sign_in_step != SignInStep.AUTHENTICATION:
+                return
+            if exc is not None:
                 self.sign_in_error = str(exc)
+                self.emit()
+                return
+            if result is None:
+                self.sign_in_error = "Failed to exchange OAuth code"
+                self.emit()
+                return
+            self._add_account(result)
+            self.oauth_state = None
+            self.sign_in_step = SignInStep.SUCCESS
+            self._finish_credential_sign_in(result)
+            self.close_popup()
+            if self.welcome_step is not None:
+                self.welcome_step = WelcomeStep.CONFIGURE_GIT
+            self.retry_last_remote_action()
             self.emit()
 
-        threading.Thread(target=thread, daemon=True).start()
+        # `_run_ui` exchanges on a worker when a Gtk.Application is live, then
+        # marshals `_add_account` / `close_popup` / `emit` onto the GTK thread.
+        self._run_ui(work, done)
 
     def _add_account(self, account: Account) -> None:
         if self.sign_in_existing and self.sign_in_existing.endpoint == account.endpoint:
@@ -7192,11 +7201,7 @@ class AppStore:
         parsed = parse_remote(url)
         if parsed:
             existing = next(
-                (
-                    r
-                    for r in self.repositories
-                    if r.github and r.github.owner == parsed.owner and r.github.name == parsed.name
-                ),
+                (r for r in self.repositories if does_repository_match_url(r, url)),
                 None,
             )
             if existing:

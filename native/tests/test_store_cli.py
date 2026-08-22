@@ -5,7 +5,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from github_desktop.cli import main as cli_main
-from github_desktop.models import ApplicationTheme, PopupType, RepositorySectionTab
+from github_desktop.models import (
+    Account,
+    ApplicationTheme,
+    GitHubRepository,
+    PopupType,
+    Repository,
+    RepositorySectionTab,
+    SignInStep,
+)
+from github_desktop.protocol import OpenRepositoryAction
 from github_desktop.store import AppStore
 from github_desktop.theme import apply_theme
 from tests.conftest import run_git
@@ -266,6 +275,156 @@ def test_reset_sign_in_state_clears_oauth(isolated_config) -> None:
     assert store.oauth_state is None
     assert store.sign_in_step is None
     assert store.sign_in_error is None
+
+
+def test_complete_oauth_rejects_unsolicited_callback(isolated_config, monkeypatch) -> None:
+    """Desktop SignInStore.resolveOAuthRequest: no pending oauthState → do not exchange."""
+    store = AppStore()
+    store.welcome_step = None
+    called: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "github_desktop.store.exchange_code_for_account",
+        lambda endpoint, code: called.append((endpoint, code)) or Account(login="evil", endpoint=endpoint, token="x"),
+    )
+    store.complete_oauth("stolen-code", "attacker-state")
+    assert called == []
+    assert store.accounts == []
+    assert store.sign_in_step is None
+    assert store.sign_in_error is None
+
+
+def test_complete_oauth_rejects_state_mismatch(isolated_config, monkeypatch) -> None:
+    store = AppStore()
+    store.welcome_step = None
+    store.sign_in_step = SignInStep.AUTHENTICATION
+    store.oauth_state = "expected-csrf"
+    called: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "github_desktop.store.exchange_code_for_account",
+        lambda endpoint, code: called.append((endpoint, code)) or Account(login="evil", endpoint=endpoint, token="x"),
+    )
+    store.complete_oauth("code", "wrong-csrf")
+    assert called == []
+    assert store.accounts == []
+    assert store.oauth_state == "expected-csrf"
+    assert store.sign_in_error == "OAuth state mismatch"
+
+
+def test_complete_oauth_exchanges_matching_state(isolated_config, monkeypatch) -> None:
+    store = AppStore()
+    store.welcome_step = None
+    store.sign_in_step = SignInStep.AUTHENTICATION
+    store.oauth_state = "expected-csrf"
+    account = Account(login="octocat", endpoint="https://api.github.com", token="tok")
+    monkeypatch.setattr("github_desktop.store.exchange_code_for_account", lambda endpoint, code: account)
+    store.complete_oauth("good-code", "expected-csrf")
+    assert any(item.login == "octocat" and item.token == "tok" for item in store.accounts)
+    assert store.sign_in_step == SignInStep.SUCCESS
+    assert store.oauth_state is None
+    assert store.sign_in_error is None
+
+
+def test_complete_oauth_marshals_completion_through_run_ui(isolated_config, monkeypatch) -> None:
+    """Browser sign-in must not emit()/mutate UI state on a raw worker Thread."""
+    store = AppStore()
+    store.welcome_step = None
+    store.sign_in_step = SignInStep.AUTHENTICATION
+    store.oauth_state = "expected-csrf"
+    account = Account(login="octocat", endpoint="https://api.github.com", token="tok")
+    ran: list[str] = []
+
+    def fake_run_ui(work, done) -> None:
+        ran.append("run_ui")
+        done(None, work())
+
+    monkeypatch.setattr(store, "_run_ui", fake_run_ui)
+    monkeypatch.setattr("github_desktop.store.exchange_code_for_account", lambda endpoint, code: account)
+    store.complete_oauth("good-code", "expected-csrf")
+    assert ran == ["run_ui"]
+    assert any(item.login == "octocat" for item in store.accounts)
+
+
+def test_complete_oauth_uses_run_when_gtk_app_running(isolated_config, monkeypatch) -> None:
+    store = AppStore()
+    store.welcome_step = None
+    store.sign_in_step = SignInStep.AUTHENTICATION
+    store.oauth_state = "expected-csrf"
+    account = Account(login="octocat", endpoint="https://api.github.com", token="tok")
+    ran: list[str] = []
+
+    monkeypatch.setattr(store, "_gtk_app_running", lambda: True)
+
+    def fake_run(work, done) -> None:
+        ran.append("run")
+        done(None, account)
+
+    monkeypatch.setattr(store, "_run", fake_run)
+    monkeypatch.setattr("github_desktop.store.exchange_code_for_account", lambda endpoint, code: account)
+    store.complete_oauth("good-code", "expected-csrf")
+    assert ran == ["run"]
+    assert any(item.login == "octocat" for item in store.accounts)
+
+
+def test_open_from_url_matches_hostname_not_just_name(isolated_config) -> None:
+    """Open in Desktop must not pick github.com/acme/project for a GHE clone of the same name."""
+    store = AppStore()
+    store.welcome_step = None
+    dotcom = Repository(
+        id=1,
+        path="/tmp/dotcom-project",
+        name="project",
+        is_missing=True,
+        github=GitHubRepository(
+            name="project",
+            owner="acme",
+            html_url="https://github.com/acme/project",
+            clone_url="https://github.com/acme/project.git",
+        ),
+    )
+    ghe = Repository(
+        id=2,
+        path="/tmp/ghe-project",
+        name="project",
+        is_missing=True,
+        github=GitHubRepository(
+            name="project",
+            owner="acme",
+            html_url="https://ghe.example.com/acme/project",
+            clone_url="https://ghe.example.com/acme/project.git",
+            endpoint="https://ghe.example.com/api/v3",
+        ),
+    )
+    store.repositories = [dotcom, ghe]
+    store.handle_url_action(OpenRepositoryAction(url="https://ghe.example.com/acme/project"))
+    assert store.selected_repository_id == 2
+    assert store.popup is None
+    store.handle_url_action(OpenRepositoryAction(url="https://github.com/acme/project"))
+    assert store.selected_repository_id == 1
+    assert store.popup is None
+
+
+def test_open_from_url_clones_when_host_does_not_match(isolated_config) -> None:
+    store = AppStore()
+    store.welcome_step = None
+    store.repositories = [
+        Repository(
+            id=1,
+            path="/tmp/dotcom-project",
+            name="project",
+            is_missing=True,
+            github=GitHubRepository(
+                name="project",
+                owner="acme",
+                html_url="https://github.com/acme/project",
+                clone_url="https://github.com/acme/project.git",
+            ),
+        )
+    ]
+    store.handle_url_action(OpenRepositoryAction(url="https://ghe.example.com/acme/project"))
+    assert store.selected_repository_id is None
+    assert store.popup is not None
+    assert store.popup.type == PopupType.CLONE_REPOSITORY
+    assert store.popup.payload.get("initial_url") == "https://ghe.example.com/acme/project"
 
 
 def test_set_files_included_toggles_subset(isolated_config, git_repo: Path) -> None:
