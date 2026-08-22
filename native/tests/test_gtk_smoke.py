@@ -432,6 +432,16 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
                 steps=[CheckStep(name="Set up job", number=1, status="completed", conclusion="success")],
             )
             assert not _run_expander(stepped).has_css_class("no-steps")
+            from github_desktop.ui.checks import LoadingCheckRuns
+            from github_desktop.github.ci_checks import CHECK_RUNS_INCOMING, CHECK_RUN_STEPS_INCOMING, STAND_BY
+
+            loading = LoadingCheckRuns(steps=False)
+            assert loading.has_css_class("loading-check-runs")
+            title = loading.get_first_child().get_next_sibling()
+            assert title.get_text() == STAND_BY
+            assert title.get_next_sibling().get_text() == CHECK_RUNS_INCOMING
+            steps_loading = LoadingCheckRuns(steps=True)
+            assert steps_loading.get_first_child().get_next_sibling().get_next_sibling().get_text() == CHECK_RUN_STEPS_INCOMING
             show_pull_request_review(
                 win,
                 store,

@@ -23,6 +23,10 @@ MAX_JOB_LOG_CHARS = 512 * 1024
 # Desktop `CICheckRunNoStepItem` (`app/src/ui/check-runs/ci-check-run-no-steps.tsx`).
 THERE_ARE_NO_STEPS = "There are no steps to display for this check."
 VIEW_CHECK_DETAILS = "View check details"
+# Desktop `renderCheckRunLoadings` / `renderCheckRunStepsLoading`.
+STAND_BY = "Stand By"
+CHECK_RUNS_INCOMING = "Check runs incoming!"
+CHECK_RUN_STEPS_INCOMING = "Check run steps incoming!"
 
 
 def to_sentence(parts: Sequence[str]) -> str:
@@ -356,6 +360,11 @@ def view_check_details_url(
     if repo_html_url and pr_number:
         return f"{str(repo_html_url).rstrip('/')}/pull/{int(pr_number)}"
     return None
+
+
+def loading_check_runs_copy(*, steps: bool = False) -> tuple[str, str]:
+    """Desktop loading blankslate title + call-to-action."""
+    return STAND_BY, CHECK_RUN_STEPS_INCOMING if steps else CHECK_RUNS_INCOMING
 
 
 def group_check_runs_by_workflow(runs: Sequence[RefCheck]) -> dict[str, list[RefCheck]]:

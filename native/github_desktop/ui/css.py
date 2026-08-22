@@ -447,6 +447,19 @@ window:not(.underline-links) link {
 .ci-steps-container.no-steps {
   min-height: 150px;
 }
+/* Desktop `_ci-check-run-popover.scss` `.loading-check-runs` */
+.loading-check-runs {
+  padding: 16px;
+}
+.loading-check-runs .title {
+  font-weight: 600;
+}
+.loading-check-runs .call-to-action {
+  opacity: 0.8;
+}
+.loading-check-runs .blankslate-image {
+  opacity: 0.55;
+}
 """
 
 _provider: Gtk.CssProvider | None = None

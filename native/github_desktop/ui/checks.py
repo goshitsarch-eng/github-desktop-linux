@@ -24,6 +24,7 @@ from ..github.ci_checks import (
     get_combined_status_summary,
     group_check_runs_by_workflow,
     is_failure,
+    loading_check_runs_copy,
     view_check_details_url,
 )
 from ..endpoint_capabilities import (
@@ -127,6 +128,32 @@ class CICheckRunNoStepItem(Gtk.Box):
         illustration.set_valign(Gtk.Align.CENTER)
         illustration.add_css_class("blankslate-image")
         self.append(illustration)
+
+
+class LoadingCheckRuns(Gtk.Box):
+    """Desktop `renderCheckRunLoadings` / `renderCheckRunStepsLoading`."""
+
+    def __init__(self, *, steps: bool = False) -> None:
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.add_css_class("loading-check-runs")
+        self.set_hexpand(True)
+        self.set_halign(Gtk.Align.CENTER)
+        self.set_valign(Gtk.Align.CENTER)
+        title_text, call_to_action = loading_check_runs_copy(steps=steps)
+        illustration = Gtk.Image.new_from_icon_name("view-refresh-symbolic")
+        illustration.set_pixel_size(48)
+        illustration.add_css_class("blankslate-image")
+        illustration.set_halign(Gtk.Align.CENTER)
+        self.append(illustration)
+        title = Gtk.Label(label=title_text)
+        title.add_css_class("title")
+        title.set_halign(Gtk.Align.CENTER)
+        self.append(title)
+        cta = Gtk.Label(label=call_to_action, wrap=True)
+        cta.add_css_class("call-to-action")
+        cta.add_css_class("dim-label")
+        cta.set_halign(Gtk.Align.CENTER)
+        self.append(cta)
 
 
 DONUT_COLORS = {
@@ -400,7 +427,7 @@ def present_checks_popover(anchor: Gtk.Widget, store: AppStore) -> None:
     popover.set_parent(anchor)
     holder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 
-    def rebuild(_exc: object = None) -> None:
+    def rebuild(_exc: object = None, *, loadingActionWorkflows: bool = False) -> None:
         try:
             if popover.get_parent() is None:
                 return
@@ -413,9 +440,12 @@ def present_checks_popover(anchor: Gtk.Widget, store: AppStore) -> None:
             nxt = child.get_next_sibling()
             holder.remove(child)
             child = nxt
-        holder.append(_popover_body(anchor, store, repo, runs, popover))
+        holder.append(
+            _popover_body(
+                anchor, store, repo, runs, popover, loadingActionWorkflows=loadingActionWorkflows
+            )
+        )
 
-    holder.append(Gtk.Label(label="Stand by — check runs incoming!"))
     scroller = Gtk.ScrolledWindow()
     scroller.set_min_content_height(140)
     scroller.set_max_content_height(420)
@@ -424,7 +454,8 @@ def present_checks_popover(anchor: Gtk.Widget, store: AppStore) -> None:
     popover.set_child(scroller)
     popover.popup()
     store.stats.increment("opensCheckRunsPopover")
-    rebuild()
+    cached = list(store.state_for(repo).check_runs or [])
+    rebuild(loadingActionWorkflows=not cached)
     store.load_check_steps(repo, on_done=rebuild)
 
 
@@ -434,19 +465,26 @@ def _popover_body(
     repo,
     runs: list[RefCheck],
     popover: Gtk.Popover,
+    *,
+    loadingActionWorkflows: bool = False,
 ) -> Gtk.Box:
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     box.set_margin_top(10)
     box.set_margin_bottom(10)
     box.set_margin_start(10)
     box.set_margin_end(10)
-    title_text, css = checks_header_state(runs)
+    header_loading = loadingActionWorkflows and not runs
+    title_text, css = checks_header_state(runs, loading=header_loading)
     box.append(_completeness_widget(runs, title_text, css))
-    summary = get_combined_status_summary(runs)
-    if summary:
-        sub = Gtk.Label(label=summary, xalign=0, wrap=True)
-        sub.add_css_class("dim-label")
-        box.append(sub)
+    if not header_loading:
+        summary = get_combined_status_summary(runs)
+        if summary:
+            sub = Gtk.Label(label=summary, xalign=0, wrap=True)
+            sub.add_css_class("dim-label")
+            box.append(sub)
+    if loadingActionWorkflows:
+        box.append(LoadingCheckRuns(steps=False))
+        return box
     if not runs:
         box.append(Gtk.Label(label="No checks for this branch", xalign=0))
         return box
@@ -530,6 +568,7 @@ def show_checks(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) ->
     right_holder = Gtk.ScrolledWindow()
     right_holder.set_hexpand(True)
     selected: dict[str, RefCheck | None] = {"run": (failed or runs or [None])[0]}
+    loadingActionWorkflows = {"value": repo is not None}
 
     def render_right() -> None:
         run = selected["run"]
@@ -540,6 +579,12 @@ def show_checks(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) ->
         child.set_margin_end(8)
         if run is None:
             child.append(Gtk.Label(label="Select a check to see job steps.", xalign=0))
+        elif loadingActionWorkflows["value"]:
+            heading_row = Gtk.Label(label=run.name, xalign=0)
+            heading_row.add_css_class("heading")
+            child.append(heading_row)
+            child.append(Gtk.Label(label=run.description or run.conclusion or run.status, xalign=0, wrap=True))
+            child.append(LoadingCheckRuns(steps=True))
         else:
             heading_row = Gtk.Label(label=run.name, xalign=0)
             heading_row.add_css_class("heading")
@@ -684,7 +729,14 @@ def show_checks(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) ->
     dialog.present(parent)
     store.stats.increment("checksFailedDialogOpenCount")
     if repo:
-        store.load_check_steps(repo, on_done=lambda: (selected.__setitem__("run", selected["run"]), render_right()))
+        store.load_check_steps(
+            repo,
+            on_done=lambda: (
+                loadingActionWorkflows.__setitem__("value", False),
+                selected.__setitem__("run", selected["run"]),
+                render_right(),
+            ),
+        )
 
 
 def show_rerun_checks(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:

@@ -848,6 +848,21 @@ def test_ci_check_run_no_steps_copy_matches_desktop() -> None:
     assert are_no_check_steps(with_steps) is False
 
 
+def test_ci_check_loading_copy_matches_desktop() -> None:
+    from github_desktop.github.ci_checks import (
+        CHECK_RUNS_INCOMING,
+        CHECK_RUN_STEPS_INCOMING,
+        STAND_BY,
+        loading_check_runs_copy,
+    )
+
+    assert STAND_BY == "Stand By"
+    assert CHECK_RUNS_INCOMING == "Check runs incoming!"
+    assert CHECK_RUN_STEPS_INCOMING == "Check run steps incoming!"
+    assert loading_check_runs_copy() == (STAND_BY, CHECK_RUNS_INCOMING)
+    assert loading_check_runs_copy(steps=True) == (STAND_BY, CHECK_RUN_STEPS_INCOMING)
+
+
 def test_get_hunk_handle_label_matches_desktop() -> None:
     from github_desktop.git.diff import DiffRange, DiffRangeType
     from github_desktop.ui.diff_view import get_hunk_handle_label, is_only_one_check_in_row

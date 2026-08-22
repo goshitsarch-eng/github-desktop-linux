@@ -1623,5 +1623,11 @@ def test_window_actions_cover_menus() -> None:
         "onViewCheckExternally",
         'increment("viewsCheckOnline")',
         'increment("opensCheckRunsPopover")',
+        "Stand By",
+        "Check runs incoming!",
+        "Check run steps incoming!",
+        "loading-check-runs",
+        "loadingActionWorkflows",
+        "LoadingCheckRuns",
     ]:
         assert phrase in src
