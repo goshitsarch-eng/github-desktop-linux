@@ -82,6 +82,7 @@ from .git import (
     get_git_description,
     get_last_desktop_stash_entry_for_branch,
     get_last_fetched,
+    get_merge_base,
     get_rebase_snapshot,
     get_remotes,
     get_remote_head,
@@ -117,6 +118,7 @@ from .git import (
     reorder_commits,
     reset,
     revert,
+    rev_range,
     is_co_authored_by_trailer,
     set_config_value,
     set_default_branch,
@@ -428,6 +430,21 @@ class RepositoryViewState:
     remote_head: str | None = None
     default_remote_name: str | None = None
     init_default_branch: str | None = None
+
+
+def reconcile_history_commits(
+    existing: list[Commit],
+    incoming: list[Commit],
+    merge_base: str,
+) -> list[Commit] | None:
+    """Desktop `GitStore.reconcileHistory` splice, or None when history is unchanged."""
+    if not existing:
+        return None
+    index = next((i for i, commit in enumerate(existing) if commit.sha == merge_base), -1)
+    if index < 0:
+        return None
+    remaining = existing[index:]
+    return list(incoming) + remaining
 
 
 class AppStore:
@@ -5456,12 +5473,20 @@ class AppStore:
         state = self.state_for(repo)
         cached_remotes = list(state.remotes)
         cached_status = state.status
+        existing_history = list(state.commits)
 
         def work() -> dict:
             remotes = cached_remotes or get_remotes(repo.path)
             remote = self.current_remote(repo, remotes, status=cached_status)
             if not remote:
                 return {"kind": "noop", "tags": []}
+            merge_base = None
+            if cached_status and cached_status.current_branch and cached_status.current_upstream_branch:
+                merge_base = get_merge_base(
+                    repo.path,
+                    cached_status.current_branch,
+                    cached_status.current_upstream_branch,
+                )
             env = self.env_for_repo(repo, remote.url)
             pull(repo.path, remote.name, env=env, progress=self._network_progress_cb("pull", f"Pulling {remote.name}"))
             try:
@@ -5469,7 +5494,11 @@ class AppStore:
             except GitError as exc:
                 log.debug("update remote HEAD failed: %s", exc)
             self.fast_forward_branches_for_repo(repo)
-            return {"kind": "ok", "tags": self._tags_to_push(repo, remote)}
+            reconciled = None
+            if merge_base:
+                incoming = get_commits(repo.path, rev_range("HEAD", merge_base), limit=COMMIT_BATCH_SIZE)
+                reconciled = reconcile_history_commits(existing_history, incoming, merge_base)
+            return {"kind": "ok", "tags": self._tags_to_push(repo, remote), "reconciled_commits": reconciled}
 
         def done(exc: BaseException | None, result: dict | None = None) -> None:
             kind = (result or {}).get("kind") if not exc else None
@@ -5485,9 +5514,26 @@ class AppStore:
                 return
             if tags is not None:
                 self.set_local_tags_to_push(repo, tags)
+            reconciled = (result or {}).get("reconciled_commits")
+            if reconciled is not None:
+                self.state_for(repo).commits = reconciled
+                self.emit()
             self._refresh_after_push_pull_fetch(repo, on_complete=self.emit)
 
         self._run(work, done)
+
+    def reconcile_history(self, repo: Repository, merge_base: str) -> None:
+        """Desktop `GitStore.reconcileHistory` after a successful pull."""
+        state = self.state_for(repo)
+        if not state.commits:
+            return
+        incoming = get_commits(repo.path, rev_range("HEAD", merge_base), limit=COMMIT_BATCH_SIZE)
+        spliced = reconcile_history_commits(list(state.commits), incoming, merge_base)
+        if spliced is not None:
+            state.commits = spliced
+            self.emit()
+
+    reconcileHistory = reconcile_history
 
     def should_background_fetch(self, repo: Repository | None = None, last_push: float | None = None) -> bool:
         """Desktop `shouldBackgroundFetch`: skip when recently fetched or nothing pushed since."""

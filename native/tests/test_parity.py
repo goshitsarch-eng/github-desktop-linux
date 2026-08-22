@@ -1599,5 +1599,7 @@ def test_window_actions_cover_menus() -> None:
         "showCopied",
         "openTooltipOnClick",
         "Copy the full SHA",
+        "reconcileHistory",
+        "revRange",
     ]:
         assert phrase in src

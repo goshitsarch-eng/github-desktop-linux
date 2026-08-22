@@ -3708,6 +3708,7 @@ def prune_merged_branches(
 
 
 def rev_range(from_ref: str, to_ref: str) -> str:
+    """Desktop `revRange`."""
     return f"{from_ref}..{to_ref}"
 
 

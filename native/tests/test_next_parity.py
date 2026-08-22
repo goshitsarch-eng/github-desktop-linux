@@ -489,3 +489,24 @@ def test_copy_the_full_sha_label() -> None:
     assert copy_the_full_sha_label() == COPY_THE_FULL_SHA
     assert copy_the_full_sha_label("previous") == "Copy the full previous SHA"
     assert copy_the_full_sha_label("new") == "Copy the full new SHA"
+
+
+def test_reconcile_history_commits_splices_before_merge_base() -> None:
+    from datetime import datetime, timezone
+
+    from github_desktop.models import Commit, CommitIdentity
+    from github_desktop.store import reconcile_history_commits
+
+    when = datetime(2024, 1, 2, tzinfo=timezone.utc)
+    who = CommitIdentity("Ada", "ada@example.com", when)
+
+    def commit(sha: str) -> Commit:
+        return Commit(sha=sha, short_sha=sha[:7], summary=sha, body="", author=who, committer=who)
+
+    existing = [commit("ccc"), commit("bbb"), commit("aaa")]
+    incoming = [commit("eee"), commit("ddd")]
+    spliced = reconcile_history_commits(existing, incoming, "bbb")
+    assert spliced is not None
+    assert [item.sha for item in spliced] == ["eee", "ddd", "bbb", "aaa"]
+    assert reconcile_history_commits([], incoming, "bbb") is None
+    assert reconcile_history_commits(existing, incoming, "missing") is None
