@@ -582,6 +582,97 @@ def test_commit_autocompletion_matches_desktop() -> None:
     assert "unreachable-commits.md" in UNREACHABLE_COMMITS_LEARN_MORE
 
 
+def test_commit_warning_links_and_status_message() -> None:
+    from types import SimpleNamespace
+
+    from github_desktop.github.repo_rules import RepoRulesInfo
+    from github_desktop.models import FoldoutType, GitHubRepository, PopupType, Repository
+    from github_desktop.ui.autocompletion import (
+        branch_protections_repo_rules_commit_warning_markups,
+        committing_just_now_message,
+        get_button_title,
+        handle_commit_warning_uri,
+        protected_branch_warning_markup,
+        write_access_warning_markup,
+    )
+
+    github = GitHubRepository(
+        name="hello",
+        owner="octocat",
+        html_url="https://github.com/octocat/hello",
+        clone_url="https://github.com/octocat/hello.git",
+        permissions="read",
+    )
+    repo = Repository(1, "/tmp/hello", "hello", github=github)
+    fork = write_access_warning_markup(repo)
+    assert fork is not None
+    assert 'href="fork"' in fork
+    assert "create a fork" in fork
+    assert branch_protections_repo_rules_commit_warning_markups(repo, None) == [fork]
+
+    state = SimpleNamespace(
+        current_branch_protected=True,
+        status=SimpleNamespace(current_branch="topic"),
+        repo_rules=RepoRulesInfo(),
+        ahead_behind=None,
+    )
+    assert branch_protections_repo_rules_commit_warning_markups(repo, state) == [fork]
+
+    writable = Repository(
+        1,
+        "/tmp/hello",
+        "hello",
+        github=GitHubRepository(
+            name="hello",
+            owner="octocat",
+            html_url="https://github.com/octocat/hello",
+            clone_url="https://github.com/octocat/hello.git",
+            permissions="write",
+        ),
+    )
+    protected = protected_branch_warning_markup(state)
+    assert protected is not None
+    assert 'href="switch"' in protected
+    assert "switch branches" in protected
+    assert branch_protections_repo_rules_commit_warning_markups(writable, state) == [protected]
+
+    signed_state = SimpleNamespace(
+        current_branch_protected=False,
+        status=SimpleNamespace(current_branch="topic"),
+        repo_rules=RepoRulesInfo(signed_commits_required=True),
+        ahead_behind=object(),
+    )
+    signed = branch_protections_repo_rules_commit_warning_markups(writable, signed_state)
+    assert signed
+    assert "Learn more about commit signing" in signed[0]
+    assert 'href="rulesets"' in signed[0]
+
+    assert committing_just_now_message("Fix login", "abc1234") == (
+        "Committed Just now - Fix login (Sha: abc1234)"
+    )
+    assert get_button_title(committing=True, branch="main") == "Committing to main"
+    assert get_button_title(amending=True, committing=False) == "Amend last commit"
+
+    class Store:
+        def __init__(self) -> None:
+            self.popup = None
+            self.foldout = None
+
+        def show_popup(self, kind, **_kwargs):
+            self.popup = kind
+
+        def show_foldout(self, kind) -> None:
+            self.foldout = kind
+
+        selected_repository = None
+
+    store = Store()
+    assert handle_commit_warning_uri(store, "fork") is True
+    assert store.popup == PopupType.CREATE_FORK
+    assert handle_commit_warning_uri(store, "switch") is True
+    assert store.foldout == FoldoutType.BRANCH
+
+
 def test_refresh_issues_is_noop_without_github(isolated_config, git_repo) -> None:
     store = AppStore()
     repos = store.add_repositories([str(git_repo)])

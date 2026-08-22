@@ -66,13 +66,13 @@ from .avatar import Avatar
 from .autocompletion import (
     UNREACHABLE_COMMITS_LEARN_MORE,
     TextViewCompleter,
+    branch_protections_repo_rules_commit_warning_markups,
+    fill_commit_warning_box,
     install_entry_completion,
     populate_completion_store,
-    protected_branch_warning,
     summary_length_hint,
     token_before_cursor,
     unreachable_commits_message,
-    write_access_warning,
 )
 from .author_input import AuthorInput, bind_store_exact_match
 from .checks import show_checks, show_rerun_checks
@@ -5010,13 +5010,9 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
     length_warn.add_css_class("warning")
     length_warn.set_visible(False)
     box.append(length_warn)
-    access_warn = Gtk.Label(xalign=0, wrap=True)
-    access_warn.add_css_class("warning")
-    access_lines = [line for line in (write_access_warning(repo), protected_branch_warning(state)) if line]
-    if access_lines:
-        access_warn.set_text("\n".join(access_lines))
-        access_warn.set_visible(True)
-        box.append(access_warn)
+    access_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+    access_box.set_visible(False)
+    box.append(access_box)
     rules_warn = Gtk.Label(xalign=0, wrap=True)
     rules_warn.add_css_class("warning")
     rules_warn.set_visible(False)
@@ -5143,6 +5139,15 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
             length_warn.set_visible(True)
         else:
             length_warn.set_visible(False)
+        fill_commit_warning_box(
+            access_box,
+            branch_protections_repo_rules_commit_warning_markups(
+                repo,
+                view,
+                repo_rules_enabled=repo_rules_enabled,
+            ),
+            store,
+        )
         inline = inline_commit_rule_warning_lines(lines, hide_email=True)
         if inline:
             rules_warn.set_text("\n".join(inline))

@@ -1562,5 +1562,11 @@ def test_window_actions_cover_menus() -> None:
         "checkoutEnv",
         "_publishRepository",
         "getHTMLURL",
+        "onShowCreateForkDialog",
+        "onSwitchBranch",
+        "renderBranchProtectionsRepoRulesCommitWarning",
+        "isCommittingStatusMessage",
+        "Committed Just now",
+        "getButtonTitle",
     ]:
         assert phrase in src

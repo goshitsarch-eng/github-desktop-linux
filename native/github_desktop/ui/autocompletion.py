@@ -12,7 +12,7 @@ from typing import Any
 import gi
 
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk
+from gi.repository import GLib, Gtk
 
 from .emoji import emoji_map, matching_shortcodes
 
@@ -87,6 +87,191 @@ def protected_branch_warning(state: Any) -> str | None:
     if not branch:
         return None
     return f"{branch} is a protected branch. Want to switch branches?"
+
+
+def _markup_escape(text: str) -> str:
+    return GLib.markup_escape_text(text or "")
+
+
+def write_access_warning_markup(repo: Any) -> str | None:
+    """Desktop CommitWarning `onShowCreateForkDialog` link."""
+    if write_access_warning(repo) is None:
+        return None
+    name = getattr(repo, "name", "") or "this repository"
+    return (
+        f'You don\'t have write access to <b>{_markup_escape(name)}</b>. '
+        'Want to <a href="fork">create a fork</a>?'
+    )
+
+
+def protected_branch_warning_markup(state: Any) -> str | None:
+    """Desktop CommitWarning `onSwitchBranch` link."""
+    if protected_branch_warning(state) is None:
+        return None
+    status = getattr(state, "status", None)
+    branch = getattr(status, "current_branch", None) if status is not None else None
+    return (
+        f'<b>{_markup_escape(str(branch))}</b> is a protected branch. '
+        'Want to <a href="switch">switch branches</a>?'
+    )
+
+
+def signed_commits_warning_markup(branch: str | None, *, can_bypass: bool = False) -> str:
+    extra = ", but you can bypass them. Proceed with caution!" if can_bypass else "."
+    return (
+        f'<a href="rulesets">One or more rules</a> apply to the branch '
+        f'<b>{_markup_escape(branch or "")}</b> that require signed commits{extra} '
+        '<a href="https://docs.github.com/authentication/managing-commit-signature-verification/signing-commits">'
+        "Learn more about commit signing.</a>"
+    )
+
+
+def basic_commit_warning_markup(branch: str, *, can_bypass: bool = False) -> str:
+    if can_bypass:
+        return (
+            f'<a href="rulesets">One or more rules</a> apply to the branch '
+            f'<b>{_markup_escape(branch)}</b> that would prevent pushing, but you can bypass them. '
+            "Proceed with caution!"
+        )
+    return (
+        f'<a href="rulesets">One or more rules</a> apply to the branch '
+        f'<b>{_markup_escape(branch)}</b> that will prevent pushing. '
+        'Want to <a href="switch">switch branches</a>?'
+    )
+
+
+def unpublished_branch_rules_warning_markup(branch: str, *, can_bypass: bool = False) -> str:
+    if can_bypass:
+        return (
+            f'The branch name <b>{_markup_escape(branch)}</b> fails '
+            '<a href="rulesets">one or more rules</a> that would prevent it from being published, '
+            "but you can bypass them. Proceed with caution!"
+        )
+    return (
+        f'The branch name <b>{_markup_escape(branch)}</b> fails '
+        '<a href="rulesets">one or more rules</a> that will prevent it from being published. '
+        'Want to <a href="switch">switch branches</a>?'
+    )
+
+
+def branch_protections_repo_rules_commit_warning_markups(
+    repo: Any,
+    state: Any,
+    *,
+    repo_rules_enabled: bool = True,
+) -> list[str]:
+    """Desktop `renderBranchProtectionsRepoRulesCommitWarning` (exclusive)."""
+    fork = write_access_warning_markup(repo)
+    if fork:
+        return [fork]
+    protected = protected_branch_warning_markup(state)
+    if protected:
+        return [protected]
+    if not repo_rules_enabled or state is None:
+        return []
+    rules = getattr(state, "repo_rules", None)
+    if rules is None:
+        return []
+    status = getattr(state, "status", None)
+    branch = getattr(status, "current_branch", None) if status is not None else None
+    unpublished = getattr(state, "ahead_behind", None) is None
+    if unpublished and branch:
+        name_fail = rules.branch_name_patterns.get_failed_rules(branch)
+        if rules.creation_restricted is True or name_fail.status == "fail":
+            return [unpublished_branch_rules_warning_markup(branch, can_bypass=False)]
+        if rules.creation_restricted == "bypass" or name_fail.status == "bypass":
+            return [unpublished_branch_rules_warning_markup(branch, can_bypass=True)]
+    if rules.signed_commits_required is True:
+        return [signed_commits_warning_markup(branch, can_bypass=False)]
+    if rules.signed_commits_required == "bypass":
+        return [signed_commits_warning_markup(branch, can_bypass=True)]
+    if rules.basic_commit_warning is True and branch:
+        return [basic_commit_warning_markup(branch, can_bypass=False)]
+    if rules.basic_commit_warning == "bypass" and branch:
+        return [basic_commit_warning_markup(branch, can_bypass=True)]
+    return []
+
+
+renderBranchProtectionsRepoRulesCommitWarning = branch_protections_repo_rules_commit_warning_markups
+onShowCreateForkDialog = write_access_warning_markup
+onSwitchBranch = protected_branch_warning_markup
+
+
+def commit_warning_label(markup: str, store: Any) -> Gtk.Label:
+    label = Gtk.Label(wrap=True, xalign=0, use_markup=True)
+    label.set_markup(markup)
+    label.add_css_class("warning")
+    label.connect("activate-link", lambda _widget, uri: handle_commit_warning_uri(store, uri))
+    return label
+
+
+def fill_commit_warning_box(box: Gtk.Box, markups: Sequence[str], store: Any) -> None:
+    child = box.get_first_child()
+    while child is not None:
+        nxt = child.get_next_sibling()
+        box.remove(child)
+        child = nxt
+    for markup in markups:
+        box.append(commit_warning_label(markup, store))
+    box.set_visible(bool(markups))
+
+
+def handle_commit_warning_uri(store: Any, uri: str) -> bool:
+    """Desktop `onShowCreateForkDialog` / `onSwitchBranch` / ruleset and http links."""
+    from ..models import FoldoutType, PopupType
+    from ..shells import open_external
+
+    if uri == "fork":
+        store.show_popup(PopupType.CREATE_FORK)
+        return True
+    if uri == "switch":
+        store.show_foldout(FoldoutType.BRANCH)
+        return True
+    if uri == "stop-amend":
+        repo = store.selected_repository
+        if repo is not None:
+            store.stop_amending(repo)
+        return True
+    if uri == "rulesets":
+        repo = store.selected_repository
+        if repo is not None and repo.github:
+            from ..github.repo_rules import rulesets_url_for_branch
+
+            state = store.state_for(repo)
+            branch = state.status.current_branch if state.status else None
+            href = rulesets_url_for_branch(repo.github, branch)
+            if href:
+                open_external(href)
+        return True
+    if uri.startswith("http://") or uri.startswith("https://"):
+        open_external(uri)
+        return True
+    return False
+
+
+def committing_just_now_message(summary: str, short_sha: str) -> str:
+    """Desktop `isCommittingStatusMessage` after a successful commit."""
+    return f"Committed Just now - {summary} (Sha: {short_sha})"
+
+
+def get_button_title(
+    *,
+    amending: bool = False,
+    committing: bool = False,
+    branch: str | None = None,
+) -> str:
+    """Desktop `getButtonTitle`."""
+    if amending:
+        verb = "Amending" if committing else "Amend"
+        return f"{verb} last commit"
+    verb = "Committing" if committing else "Commit"
+    if not branch:
+        return verb
+    return f"{verb} to {branch}"
+
+
+isCommittingStatusMessage = committing_just_now_message
+getButtonTitle = get_button_title
 
 
 def unreachable_commits_message(*, unreachable_tab: bool, count: int) -> str:
