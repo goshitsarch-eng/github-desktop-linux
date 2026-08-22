@@ -2466,7 +2466,7 @@ def discard_working_files(
     move_to_trash: bool = True,
     ask_permanent: bool = False,
 ) -> None:
-    """Desktop `discardChanges`: trash working copies, reset index paths, then checkout-index."""
+    """Desktop `discardChanges`: trash working copies, resetSubmodulePaths, reset index, checkout-index."""
     from ..errors import DiscardChangesError
 
     if not files:
@@ -2513,6 +2513,8 @@ def discard_working_files(
         for p in paths_to_checkout
         if p not in submodule_paths or changed.get(p) != IndexStatus.ADDED
     ]
+    if submodule_paths:
+        reset_submodule_paths(repo, submodule_paths)
     if necessary_reset:
         reset_paths(repo, "HEAD", necessary_reset)
     checkout_index(repo, necessary_checkout)

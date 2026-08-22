@@ -1297,6 +1297,62 @@ def test_network_remote_uses_cached_remotes(isolated_config, git_repo: Path, mon
     assert store.env_for_repo(repo) is not None
 
 
+def test_current_default_upstream_remotes_match_desktop(isolated_config, git_repo: Path) -> None:
+    import inspect
+
+    from github_desktop.models import GitHubRepository, Remote
+    from github_desktop.store import AppStore
+
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    origin = Remote(name="origin", url="https://github.com/me/app.git")
+    upstream = Remote(name="upstream", url="https://github.com/acme/app.git")
+    remotes = [origin, upstream]
+    parent = GitHubRepository(
+        "app", "acme", "https://github.com/acme/app", "https://github.com/acme/app.git"
+    )
+    repo.github = GitHubRepository(
+        "app",
+        "me",
+        "https://github.com/me/app",
+        "https://github.com/me/app.git",
+        fork=True,
+        parent=parent,
+    )
+    status = store.state_for(repo).status
+    assert status is not None
+    status.current_upstream_branch = "upstream/main"
+    assert store.currentRemote(repo, remotes, status) is upstream
+    assert store.defaultRemote(repo, remotes) is origin
+    assert store.upstreamRemote(repo, remotes) is upstream
+    assert [item.name for item in store.remotesToFetch(repo, remotes, status)] == [
+        "upstream",
+        "origin",
+    ]
+    status.current_upstream_branch = "origin/main"
+    assert [item.name for item in store.remotesToFetch(repo, remotes, status)] == [
+        "origin",
+        "upstream",
+    ]
+    assert "current_remote" in inspect.getsource(AppStore.push_repo)
+    pull_src = inspect.getsource(AppStore.pull_repo)
+    assert "current_remote" in pull_src
+    assert "update_remote_head" in pull_src
+    assert "remotes_to_fetch" in inspect.getsource(AppStore.fetch_repo)
+
+
+def test_discard_resets_submodules_before_index() -> None:
+    import inspect
+
+    from github_desktop.git.ops import discard_working_files
+
+    src = inspect.getsource(discard_working_files)
+    assert "reset_submodule_paths" in src
+    assert src.index("reset_submodule_paths") < src.index("reset_paths")
+
+
 def test_get_git_description_is_file_only(git_repo: Path, monkeypatch) -> None:
     from github_desktop.git import ops as git_ops
 

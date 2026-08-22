@@ -179,6 +179,7 @@ from .find_default_branch import (
     is_forked_repository_contributing_to_parent,
 )
 from .find_default_remote import find_default_remote
+from .find_upstream_remote import find_upstream_remote
 from .tags_to_push import clear_tags_to_push, get_tags_to_push, store_tags_to_push
 from .api_cache import apply_github_api_cache, clear_github_api_cache, store_github_api_cache
 from .api_repositories import ApiRepositoriesStore
@@ -5203,6 +5204,70 @@ class AppStore:
 
         self._run_ui(work, done)
 
+    def default_remote(self, repo: Repository, remotes: Sequence[Remote] | None = None) -> Remote | None:
+        """Desktop `gitStore.defaultRemote` (`findDefaultRemote`)."""
+        if remotes is None:
+            remotes = list(self.state_for(repo).remotes)
+        return find_default_remote(list(remotes))
+
+    def current_remote(
+        self,
+        repo: Repository,
+        remotes: Sequence[Remote] | None = None,
+        status: IStatusResult | None = None,
+    ) -> Remote | None:
+        """Desktop `gitStore.currentRemote`: branch upstream remote, else default."""
+        if remotes is None:
+            remotes = list(self.state_for(repo).remotes)
+        remotes = list(remotes)
+        default = find_default_remote(remotes)
+        if status is None:
+            status = self.state_for(repo).status
+        name = None
+        if status is not None and status.current_upstream_branch:
+            name = status.current_upstream_branch.split("/", 1)[0]
+        if name:
+            found = next((item for item in remotes if item.name == name), None)
+            if found is not None:
+                return found
+        return default
+
+    def upstream_remote(self, repo: Repository, remotes: Sequence[Remote] | None = None) -> Remote | None:
+        """Desktop `gitStore.upstreamRemote` — parent GitHub repo's `upstream` remote."""
+        if remotes is None:
+            remotes = list(self.state_for(repo).remotes)
+        parent = repo.github.parent if repo.github else None
+        if parent is None:
+            return None
+        return find_upstream_remote(parent, list(remotes))
+
+    def remotes_to_fetch(
+        self,
+        repo: Repository,
+        remotes: Sequence[Remote] | None = None,
+        status: IStatusResult | None = None,
+    ) -> list[Remote]:
+        """Desktop `gitStore.fetch`: current, then default, then upstream (unique)."""
+        if remotes is None:
+            remotes = list(self.state_for(repo).remotes)
+        remotes = list(remotes)
+        ordered: list[Remote] = []
+        seen: set[str] = set()
+        for item in (
+            self.current_remote(repo, remotes, status),
+            self.default_remote(repo, remotes),
+            self.upstream_remote(repo, remotes),
+        ):
+            if item is not None and item.name not in seen:
+                seen.add(item.name)
+                ordered.append(item)
+        return ordered
+
+    currentRemote = current_remote
+    defaultRemote = default_remote
+    upstreamRemote = upstream_remote
+    remotesToFetch = remotes_to_fetch
+
     def _network_remote(self, repo: Repository, remotes: Sequence[Remote] | None = None, *, prefer_upstream: bool = False) -> Remote | None:
         # Cache-only when remotes are omitted so this is safe on the GTK thread.
         # Push/pull/fetch workers pass remotes collected off-thread.
@@ -5228,7 +5293,7 @@ class AppStore:
             remotes = cached_remotes or get_remotes(repo.path)
             if not status or not status.current_branch:
                 return {"kind": "noop"}
-            remote = self._network_remote(repo, remotes)
+            remote = self.current_remote(repo, remotes, status=status)
             if not remote:
                 return {"kind": "publish"}
             if status.branch_ahead_behind and status.branch_ahead_behind.behind > 0 and not force:
@@ -5295,14 +5360,19 @@ class AppStore:
     def pull_repo(self, repo: Repository) -> None:
         state = self.state_for(repo)
         cached_remotes = list(state.remotes)
+        cached_status = state.status
 
         def work() -> dict:
             remotes = cached_remotes or get_remotes(repo.path)
-            remote = self._network_remote(repo, remotes, prefer_upstream=True)
+            remote = self.current_remote(repo, remotes, status=cached_status)
             if not remote:
                 return {"kind": "noop", "tags": []}
             env = self.env_for_repo(repo, remote.url)
             pull(repo.path, remote.name, env=env, progress=self._network_progress_cb("pull", f"Pulling {remote.name}"))
+            try:
+                update_remote_head(repo.path, remote.name, env=env)
+            except GitError as exc:
+                log.debug("update remote HEAD failed: %s", exc)
             self.fast_forward_branches_for_repo(repo)
             return {"kind": "ok", "tags": self._tags_to_push(repo, remote)}
 
@@ -5444,30 +5514,28 @@ class AppStore:
                 return
             self._background_fetch_in_flight = True
         cached_remotes = list(self.state_for(repo).remotes)
+        cached_status = self.state_for(repo).status
 
         def work() -> dict:
             remotes = cached_remotes or get_remotes(repo.path)
-            remote = self._network_remote(repo, remotes, prefer_upstream=True)
-            if not remote:
+            targets = self.remotes_to_fetch(repo, remotes, status=cached_status)
+            if not targets:
                 return {"kind": "noop", "tags": None}
-            env = self.env_for_repo(repo, remote.url, background=quiet)
-            extra = [r for r in remotes if r.name == "upstream" and r.name != remote.name]
-            progress = None if quiet else self._network_progress_cb("fetch", f"Fetching {remote.name}")
-            fetch(repo.path, remote.name, env=env, progress=progress)
+            primary, *rest = targets
+            env = self.env_for_repo(repo, primary.url, background=quiet)
+            progress = None if quiet else self._network_progress_cb("fetch", f"Fetching {primary.name}")
+            fetch(repo.path, primary.name, env=env, progress=progress)
             try:
-                update_remote_head(repo.path, remote.name, env=env)
+                update_remote_head(repo.path, primary.name, env=env)
             except GitError as exc:
                 log.debug("update remote HEAD failed: %s", exc)
-            for other in extra:
-                try:
-                    fetch(repo.path, other.name, env=self.env_for_repo(repo, other.url, background=quiet))
-                except GitError as exc:
-                    log.debug("upstream fetch failed: %s", exc)
+            if rest:
+                self.fetch_remotes(repo, rest, background_task=quiet)
             self.fast_forward_branches_for_repo(repo)
             self._prune_merged_branches(repo)
             if quiet and repo.github:
                 self._update_background_fetch_interval(repo)
-            return {"kind": "ok", "tags": self._tags_to_push(repo, remote)}
+            return {"kind": "ok", "tags": self._tags_to_push(repo, primary)}
 
         def done(exc: BaseException | None, result: dict | None = None) -> None:
             if quiet:

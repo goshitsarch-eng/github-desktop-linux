@@ -1554,5 +1554,10 @@ def test_window_actions_cover_menus() -> None:
         "Cannot publish: no commits",
         "Cannot publish detached HEAD",
         "push-pull-button-state",
+        "currentRemote",
+        "defaultRemote",
+        "upstreamRemote",
+        "remotesToFetch",
+        "resetSubmodulePaths",
     ]:
         assert phrase in src
