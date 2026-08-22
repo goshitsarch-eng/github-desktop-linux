@@ -1654,5 +1654,12 @@ def test_window_actions_cover_menus() -> None:
         "diff_search_no_results",
         "diff_search_result_message",
         "ariaLiveMessage",
+        "Would you like to ",
+        "create a new branch",
+        "and get going on your next project?",
+        "create a pull request",
+        "from the current branch?",
+        "renderCallToAction",
+        "NoPullRequests",
     ]:
         assert phrase in src

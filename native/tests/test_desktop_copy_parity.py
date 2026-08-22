@@ -1353,3 +1353,26 @@ def test_hidden_changes_warning_copy_matches_desktop() -> None:
     assert hidden_changes_adjust_filters_label(12) == "Adjust the filters to see all 12 changes"
     assert hidden_changes_warning_tooltip() == "Warning: Hidden changes will be committed."
 
+
+def test_no_pull_requests_cta_matches_desktop() -> None:
+    from github_desktop.ui.branches import (
+        CREATE_A_NEW_BRANCH_LINK,
+        CREATE_A_PULL_REQUEST_LINK,
+        no_pull_requests_cta_parts,
+        no_pull_requests_cta_sentence,
+    )
+
+    assert no_pull_requests_cta_sentence(is_on_default_branch=True) == (
+        "Would you like to create a new branch and get going on your next project?"
+    )
+    assert no_pull_requests_cta_sentence(is_on_default_branch=False) == (
+        "Would you like to create a pull request from the current branch?"
+    )
+    prefix, link, suffix = no_pull_requests_cta_parts(is_on_default_branch=True)
+    assert prefix == "Would you like to "
+    assert link == CREATE_A_NEW_BRANCH_LINK == "create a new branch"
+    assert suffix == " and get going on your next project?"
+    _, feature_link, feature_suffix = no_pull_requests_cta_parts(is_on_default_branch=False)
+    assert feature_link == CREATE_A_PULL_REQUEST_LINK == "create a pull request"
+    assert feature_suffix == " from the current branch?"
+

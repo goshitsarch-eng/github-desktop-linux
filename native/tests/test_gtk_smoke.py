@@ -401,6 +401,24 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
                 assert "Recent branches" in foldout_labels
                 prs_page = win._branches_foldout._stack.get_child_by_name("prs")
                 assert win._branches_foldout._stack.get_page(prs_page).get_title() == "Pull requests"
+                from github_desktop.ui.branches import (
+                    CREATE_A_PULL_REQUEST_LINK,
+                    no_pull_requests_cta_sentence,
+                )
+
+                win._branches_foldout._github = True
+                win._branches_foldout._on_default_branch = False
+                empty = win._branches_foldout._pr_empty_state(False)
+                empty_box = empty.get_child()
+                assert empty_box.has_css_class("no-pull-requests")
+                cta = empty_box.get_last_child()
+                assert cta.has_css_class("call-to-action")
+                assert cta.get_first_child().get_text() == no_pull_requests_cta_sentence(
+                    is_on_default_branch=False
+                )
+                assert cta.get_first_child().get_next_sibling().get_child().get_text() == (
+                    CREATE_A_PULL_REQUEST_LINK
+                )
             show_release_notes(win)
             show_push_branch_commits(win, store, {"unpublished": True, "branch": "topic"})
             show_push_branch_commits(win, store, {"unpublished": False, "unpushed": 2, "branch": "topic"})

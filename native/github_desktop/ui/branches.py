@@ -58,6 +58,26 @@ def branch_group_label(identifier: str) -> str:
     return "Other branches"
 
 
+# Desktop `NoPullRequests.renderCallToAction` (`no-pull-requests.tsx`).
+WOULD_YOU_LIKE_TO = "Would you like to "
+CREATE_A_NEW_BRANCH_LINK = "create a new branch"
+AND_GET_GOING_ON_YOUR_NEXT_PROJECT = " and get going on your next project?"
+CREATE_A_PULL_REQUEST_LINK = "create a pull request"
+FROM_THE_CURRENT_BRANCH = " from the current branch?"
+
+
+def no_pull_requests_cta_parts(*, is_on_default_branch: bool) -> tuple[str, str, str]:
+    """Desktop `renderCallToAction` prefix, LinkButton label, suffix."""
+    if is_on_default_branch:
+        return (WOULD_YOU_LIKE_TO, CREATE_A_NEW_BRANCH_LINK, AND_GET_GOING_ON_YOUR_NEXT_PROJECT)
+    return (WOULD_YOU_LIKE_TO, CREATE_A_PULL_REQUEST_LINK, FROM_THE_CURRENT_BRANCH)
+
+
+def no_pull_requests_cta_sentence(*, is_on_default_branch: bool) -> str:
+    prefix, link, suffix = no_pull_requests_cta_parts(is_on_default_branch=is_on_default_branch)
+    return f"{prefix}{link}{suffix}"
+
+
 def group_branches(
     branches: list[Branch],
     *,
@@ -389,17 +409,30 @@ class BranchesFoldout(Gtk.Popover):
             name = self._repository_name or "this repository"
             box.append(Gtk.Label(label=f"No open pull requests in {name}", wrap=True, xalign=0))
         if self._github and not is_search and not self._prs_loading:
+            _, link_text, _ = no_pull_requests_cta_parts(
+                is_on_default_branch=self._on_default_branch
+            )
+            cta = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            cta.add_css_class("call-to-action")
+            sentence = Gtk.Label(
+                label=no_pull_requests_cta_sentence(is_on_default_branch=self._on_default_branch),
+                wrap=True,
+                xalign=0,
+            )
+            cta.append(sentence)
+            link = Gtk.Button()
+            link.add_css_class("flat")
+            link.add_css_class("link-button-component")
+            link.set_halign(Gtk.Align.START)
+            link.set_child(Gtk.Label(label=link_text))
             if self._on_default_branch:
-                cta = Gtk.Button(label="Create a new branch")
-                cta.add_css_class("flat")
-                cta.connect("clicked", lambda *_: (self.popdown(), self._on_create()))
+                link.connect("clicked", lambda *_: (self.popdown(), self._on_create()))
             else:
-                cta = Gtk.Button(label="Create a pull request")
-                cta.add_css_class("suggested-action")
-                cta.connect(
+                link.connect(
                     "clicked",
                     lambda *_: (self.popdown(), self._on_create_pr() if self._on_create_pr else None),
                 )
+            cta.append(link)
             box.append(cta)
         row = Gtk.ListBoxRow()
         row.set_activatable(False)
