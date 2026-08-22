@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -42,6 +43,8 @@ from .syntax import markup_for_diff_line
 
 # Desktop Linux `DiffOptions` button/header: `Diff ${__DARWIN__ ? 'Settings' : 'Options'}`.
 DIFF_OPTIONS_LABEL = "Diff Options"
+# Desktop `seamless-diff-switcher.tsx` — fade the previous Diff after this many ms.
+SlowDiffLoadingThreshold = 150
 
 
 def diff_options_label() -> str:
@@ -117,6 +120,54 @@ def is_only_one_check_in_row(found) -> bool:
     return found.to_index <= found.from_index
 
 
+def is_text_diff(diff: FileDiff | None) -> bool:
+    """Desktop SeamlessDiffSwitcher `isTextDiff` (Text or LargeText)."""
+    if diff is None:
+        return False
+    kind = getattr(diff, "kind", None)
+    return kind in (DiffType.TEXT, DiffType.LARGE_TEXT)
+
+
+def is_loading_diff(diff: FileDiff | None, *, file_contents: object | None = True) -> bool:
+    """Desktop SeamlessDiffSwitcher `isLoadingDiff`.
+
+    A text diff stays loading until old/new file contents are available. Native
+    loads those in the git worker before handing a `TextDiff` to the viewer, so
+    `file_contents` defaults to already-present.
+    """
+    if diff is None:
+        return True
+    if is_text_diff(diff):
+        return file_contents is None
+    return False
+
+
+isLoadingDiff = is_loading_diff
+
+
+def isLoadingSlow(
+    is_loading: bool,
+    elapsed_ms: int,
+    threshold: int = SlowDiffLoadingThreshold,
+) -> bool:
+    """Desktop `isLoadingSlow` once `SlowDiffLoadingThreshold` has elapsed."""
+    return bool(is_loading) and elapsed_ms >= threshold
+
+
+def is_seamless_file_loading(
+    diff: FileDiff | None,
+    path: str = "",
+    *,
+    loading: bool | None = None,
+) -> bool:
+    """True while SeamlessDiffSwitcher should keep the previous Diff painted."""
+    if diff is not None:
+        return is_loading_diff(diff)
+    if loading is not None:
+        return bool(loading)
+    return bool(path)
+
+
 @dataclass
 class RowSpec:
     kind: str
@@ -142,6 +193,8 @@ class DiffRowItem(GObject.Object):
 
 
 class DiffViewer(Gtk.Box):
+    """Diff pane plus Desktop `SeamlessDiffSwitcher` loading overlay."""
+
     def __init__(
         self,
         *,
@@ -163,6 +216,7 @@ class DiffViewer(Gtk.Box):
     ) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL)
         self.add_css_class("diff-view")
+        self.add_css_class("seamless-diff-switcher")
         self.interactive = interactive
         self.on_line_toggle = on_line_toggle
         self.on_line_range_toggle = on_line_range_toggle
@@ -179,9 +233,18 @@ class DiffViewer(Gtk.Box):
         self.on_hide_whitespace_changed = on_hide_whitespace_changed
         self.on_side_by_side_changed = on_side_by_side_changed
         self.view_github_label = "View on GitHub"
+        overlay = Gtk.Overlay()
+        overlay.set_hexpand(True)
+        overlay.set_vexpand(True)
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content.add_css_class("diff-switcher-content")
+        content.set_hexpand(True)
+        content.set_vexpand(True)
+        self._overlay = overlay
+        self._content = content
         self._toolbar = Gtk.Box(spacing=6)
         self._toolbar.add_css_class("diff-toolbar")
-        self.append(self._toolbar)
+        content.append(self._toolbar)
         self._search_revealer = Gtk.Revealer()
         search_row = Gtk.Box(spacing=6)
         search_row.add_css_class("diff-search")
@@ -207,7 +270,7 @@ class DiffViewer(Gtk.Box):
         search_row.append(self._search_count)
         search_row.append(close_search)
         self._search_revealer.set_child(search_row)
-        self.append(self._search_revealer)
+        content.append(self._search_revealer)
         self._hint_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self._hint_box.add_css_class("whitespace-hint")
         self._hint_box.set_visible(False)
@@ -227,11 +290,28 @@ class DiffViewer(Gtk.Box):
         hint_btns.append(show_ws)
         hint_btns.append(no_ws)
         self._hint_box.append(hint_btns)
-        self.append(self._hint_box)
+        content.append(self._hint_box)
         self._scroll = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
         self._inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self._scroll.set_child(self._inner)
-        self.append(self._scroll)
+        content.append(self._scroll)
+        overlay.set_child(content)
+        indicator = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        indicator.add_css_class("loading-indicator")
+        indicator.set_halign(Gtk.Align.CENTER)
+        indicator.set_valign(Gtk.Align.CENTER)
+        try:
+            indicator.set_can_target(False)
+        except Exception:
+            pass
+        spinner = Gtk.Spinner()
+        spinner.set_size_request(32, 32)
+        indicator.append(spinner)
+        indicator.set_visible(False)
+        overlay.add_overlay(indicator)
+        self._loading_indicator = indicator
+        self._loading_spinner = spinner
+        self.append(overlay)
         self._path = ""
         self._show_checks = True
         self._tab_size = tabSizeDefault
@@ -254,7 +334,13 @@ class DiffViewer(Gtk.Box):
         self._hovered_hunk: int | None = None
         self._scroll_timer_id = 0
         self._line_widgets: dict[int, list[Gtk.Widget]] = {}
+        self._is_loading_diff = False
+        self._is_loading_slow = False
+        self._slow_timeout_id = 0
+        self.set_hexpand(True)
+        self.set_vexpand(True)
         self.set_focusable(True)
+        self.connect("destroy", lambda *_: self._clear_slow_loading_timeout())
         key = Gtk.EventControllerKey()
         key.connect("key-pressed", self._on_key)
         self.add_controller(key)
@@ -279,6 +365,75 @@ class DiffViewer(Gtk.Box):
         legacy.connect("event", on_legacy)
         self.add_controller(legacy)
 
+    @property
+    def isLoadingDiff(self) -> bool:
+        """Desktop SeamlessDiffSwitcher `isLoadingDiff`."""
+        return self._is_loading_diff
+
+    @property
+    def isLoadingSlow(self) -> bool:
+        """Desktop SeamlessDiffSwitcher `isLoadingSlow`."""
+        return self._is_loading_slow
+
+    def _if_ready(self, callback: Callable | None, *args: object) -> None:
+        """Desktop SeamlessDiffSwitcher noops include/discard/open while `isLoadingDiff`."""
+        if self._is_loading_diff or callback is None:
+            return
+        callback(*args)
+
+    def _set_loading_diff(self, loading: bool) -> None:
+        began_or_finished = loading != self._is_loading_diff
+        self._is_loading_diff = loading
+        if began_or_finished:
+            # Desktop resets `isLoadingSlow` when loading starts or finishes.
+            self._is_loading_slow = False
+            self._clear_slow_loading_timeout()
+            if loading:
+                self._schedule_slow_loading_timeout()
+        if not loading:
+            self._is_loading_slow = False
+            self._clear_slow_loading_timeout()
+        self._apply_loading_chrome()
+
+    def _schedule_slow_loading_timeout(self) -> None:
+        self._clear_slow_loading_timeout()
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return
+        self._slow_timeout_id = GLib.timeout_add(
+            SlowDiffLoadingThreshold, self._on_slow_loading_timeout
+        )
+
+    def _clear_slow_loading_timeout(self) -> None:
+        if self._slow_timeout_id:
+            GLib.source_remove(self._slow_timeout_id)
+            self._slow_timeout_id = 0
+
+    def _on_slow_loading_timeout(self) -> bool:
+        self._slow_timeout_id = 0
+        if self._is_loading_diff:
+            self._is_loading_slow = True
+            self._apply_loading_chrome()
+        return False
+
+    def _apply_loading_chrome(self) -> None:
+        has_diff = self._diff is not None
+        for name in ("loading", "slow", "has-diff"):
+            self.remove_css_class(name)
+        if has_diff:
+            self.add_css_class("has-diff")
+        if self._is_loading_diff:
+            self.add_css_class("loading")
+            if self._is_loading_slow:
+                self.add_css_class("slow")
+        show_spinner = self._is_loading_diff and (not has_diff or self._is_loading_slow)
+        self._loading_indicator.set_visible(show_spinner)
+        if show_spinner:
+            self._loading_spinner.start()
+        else:
+            self._loading_spinner.stop()
+        fade = self._is_loading_diff and has_diff and self._is_loading_slow
+        self._content.set_opacity(0.2 if fade else 1.0)
+
     def render(
         self,
         diff: FileDiff | None,
@@ -293,7 +448,12 @@ class DiffViewer(Gtk.Box):
         tab_size: int = tabSizeDefault,
         comments: list | None = None,
         ask_discard_confirm: bool = True,
+        loading: bool | None = None,
     ) -> None:
+        # Desktop `propSnapshot`: keep the previous Diff painted until the next one is ready.
+        if is_seamless_file_loading(diff, path, loading=loading):
+            self._set_loading_diff(True)
+            return
         if path != self._path:
             self._force_show_large = False
         self._path = path
@@ -316,6 +476,7 @@ class DiffViewer(Gtk.Box):
         clear_box(self._inner)
         self._list_store = None
         self._diff = diff
+        self._set_loading_diff(False)
         self._hide_whitespace = hide_whitespace
         self._side_by_side = side_by_side
         if diff is None:
@@ -330,7 +491,7 @@ class DiffViewer(Gtk.Box):
                 btn.add_css_class("pill")
                 btn.add_css_class("suggested-action")
                 btn.set_halign(Gtk.Align.CENTER)
-                btn.connect("clicked", lambda *_: self.on_open_binary and self.on_open_binary(self._path))
+                btn.connect("clicked", lambda *_: self._if_ready(self.on_open_binary, self._path))
                 page.set_child(btn)
             self._inner.append(page)
             self._add_diff_options()
@@ -355,7 +516,7 @@ class DiffViewer(Gtk.Box):
             if self.on_open_binary and path:
                 btn = Gtk.Button(label="Open in default program")
                 btn.add_css_class("pill")
-                btn.connect("clicked", lambda *_: self.on_open_binary and self.on_open_binary(self._path))
+                btn.connect("clicked", lambda *_: self._if_ready(self.on_open_binary, self._path))
                 page.set_child(btn)
             self._inner.append(page)
             self._add_diff_options()
@@ -375,7 +536,7 @@ class DiffViewer(Gtk.Box):
             if self.on_open_binary and path:
                 open_btn = Gtk.Button(label="Open in default program")
                 open_btn.add_css_class("pill")
-                open_btn.connect("clicked", lambda *_: self.on_open_binary and self.on_open_binary(self._path))
+                open_btn.connect("clicked", lambda *_: self._if_ready(self.on_open_binary, self._path))
                 actions.append(open_btn)
             page.set_child(actions)
             self._inner.append(page)
@@ -490,8 +651,7 @@ class DiffViewer(Gtk.Box):
         def on_hide(check: Gtk.CheckButton) -> None:
             hidden = check.get_active()
             self._hide_whitespace = hidden
-            if self.on_hide_whitespace_changed:
-                self.on_hide_whitespace_changed(hidden)
+            self._if_ready(self.on_hide_whitespace_changed, hidden)
 
         hide.connect("toggled", on_hide)
         box.append(hide)
@@ -547,8 +707,7 @@ class DiffViewer(Gtk.Box):
     def _on_show_whitespace(self, *_args: object) -> None:
         self._hide_whitespace = False
         self._hint_box.set_visible(False)
-        if self.on_hide_whitespace_changed:
-            self.on_hide_whitespace_changed(False)
+        self._if_ready(self.on_hide_whitespace_changed, False)
 
     def close_search(self) -> None:
         self._search_revealer.set_reveal_child(False)
@@ -702,7 +861,7 @@ class DiffViewer(Gtk.Box):
             if full:
                 open_btn.connect(
                     "clicked",
-                    lambda *_a, p=full: self.on_open_submodule and self.on_open_submodule(p),
+                    lambda *_a, p=full: self._if_ready(self.on_open_submodule, p),
                 )
             else:
                 open_btn.set_sensitive(False)
@@ -877,7 +1036,7 @@ class DiffViewer(Gtk.Box):
             check.set_tooltip_text("Include this hunk")
             check.connect(
                 "toggled",
-                lambda btn, s=start, n=length: self.on_hunk_toggle and self.on_hunk_toggle(self._path, s, n, btn.get_active()),
+                lambda btn, s=start, n=length: self._if_ready(self.on_hunk_toggle, self._path, s, n, btn.get_active()),
             )
             row.append(check)
         row.append(self._expansion_buttons(hunk_index, expansion))
@@ -1008,6 +1167,8 @@ class DiffViewer(Gtk.Box):
         included = bool(tmp["is_selected"])
         start = min(from_index, to_index)
         end = max(from_index, to_index)
+        if self._is_loading_diff:
+            return
         if self.on_line_range_toggle:
             self.on_line_range_toggle(self._path, start, end, included)
             return
@@ -1175,12 +1336,16 @@ class DiffViewer(Gtk.Box):
         widget.add_controller(drag)
 
     def _discard_line(self, index: int) -> None:
+        if self._is_loading_diff:
+            return
         if self.on_discard_range:
             self.on_discard_range(self._path, index, index)
         elif self.on_discard_selection:
             self.on_discard_selection(self._path)
 
     def _discard_range(self, start: int, end: int) -> None:
+        if self._is_loading_diff:
+            return
         if self.on_discard_range:
             self.on_discard_range(self._path, start, end)
         elif self.on_discard_selection:
@@ -1235,6 +1400,8 @@ class DiffViewer(Gtk.Box):
 
         def on_toggled(btn, lo=found.from_index, hi=found.to_index) -> None:
             included = btn.get_active()
+            if self._is_loading_diff:
+                return
             if self.on_line_range_toggle:
                 self.on_line_range_toggle(self._path, lo, hi, included)
             elif self.on_hunk_toggle:
@@ -1274,7 +1441,7 @@ class DiffViewer(Gtk.Box):
                 row.add_css_class("diff-excluded")
             check.connect(
                 "toggled",
-                lambda btn, i=index: self.on_line_toggle and self.on_line_toggle(self._path, i, btn.get_active()),
+                lambda btn, i=index: self._if_ready(self.on_line_toggle, self._path, i, btn.get_active()),
             )
             row.append(check)
         old = Gtk.Label(label=str(line.old_line_number or ""))
@@ -1346,7 +1513,7 @@ class DiffViewer(Gtk.Box):
             check.set_active(active)
             check.connect(
                 "toggled",
-                lambda btn, i=index: self.on_line_toggle and self.on_line_toggle(self._path, i, btn.get_active()),
+                lambda btn, i=index: self._if_ready(self.on_line_toggle, self._path, i, btn.get_active()),
             )
             box.append(check)
         num = line.old_line_number if delete else line.new_line_number
@@ -1382,7 +1549,7 @@ class DiffViewer(Gtk.Box):
             items.append(
                 (
                     "Exclude line" if selected else "Include line",
-                    lambda: self.on_line_toggle and self.on_line_toggle(self._path, index, not selected),
+                    lambda: self._if_ready(self.on_line_toggle, self._path, index, not selected),
                     True,
                 )
             )
@@ -1440,8 +1607,8 @@ class DiffViewer(Gtk.Box):
         """Desktop hunk-handle discard menu plus `onContextMenuExpandHunk`."""
         items: list[MenuItem] = []
         if self.interactive:
-            items.append(("Include hunk", lambda: self.on_hunk_toggle and self.on_hunk_toggle(self._path, start, length, True), True))
-            items.append(("Exclude hunk", lambda: self.on_hunk_toggle and self.on_hunk_toggle(self._path, start, length, False), True))
+            items.append(("Include hunk", lambda: self._if_ready(self.on_hunk_toggle, self._path, start, length, True), True))
+            items.append(("Exclude hunk", lambda: self._if_ready(self.on_hunk_toggle, self._path, start, length, False), True))
             probe = start + 1 if length > 1 else start
             found = self._interactive_range(probe)
             if found is not None and found.type is not None:
@@ -1478,7 +1645,7 @@ class DiffViewer(Gtk.Box):
         ):
             btn = Gtk.ToggleButton(label=label)
             btn.set_active(mode == value)
-            btn.connect("toggled", lambda b, v=value: b.get_active() and self.on_image_mode and self.on_image_mode(v))
+            btn.connect("toggled", lambda b, v=value: b.get_active() and self._if_ready(self.on_image_mode, v))
             group.append(btn)
         toolbar.append(group)
         self._inner.append(toolbar)

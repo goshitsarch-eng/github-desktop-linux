@@ -416,6 +416,19 @@ window:not(.underline-links) link {
   min-height: 28px;
   padding: 2px;
 }
+/* Desktop `_diff.scss` `.seamless-diff-switcher` */
+.seamless-diff-switcher .loading-indicator {
+  opacity: 0;
+}
+.seamless-diff-switcher.loading:not(.has-diff) .loading-indicator {
+  opacity: 1;
+}
+.seamless-diff-switcher.loading.has-diff.slow .loading-indicator {
+  opacity: 1;
+}
+.seamless-diff-switcher.loading.has-diff.slow .diff-switcher-content {
+  opacity: 0.2;
+}
 """
 
 _provider: Gtk.CssProvider | None = None

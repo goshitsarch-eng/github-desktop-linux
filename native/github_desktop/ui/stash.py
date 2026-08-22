@@ -128,7 +128,7 @@ class StashDiffViewer(Gtk.Box):
             label.add_css_class("dim-label")
             row.set_child(label)
             self._file_list.append(row)
-            self.diff_view.render(None)
+            self.diff_view.render(None, loading=True)
             return
         for file in files:
             row = Gtk.ListBoxRow()

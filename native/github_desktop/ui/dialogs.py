@@ -4208,6 +4208,7 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
             file_list.append(row)
         if st.pr_files:
             file = st.pr_files[0]
+            viewer.render(None, path=file.path, loading=True)
             store.load_pr_preview_diff(
                 repo,
                 file,
@@ -4225,6 +4226,7 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     def on_file(_l, row) -> None:
         file = getattr(row, "_file", None)
         if file:
+            viewer.render(None, path=file.path, loading=True)
             store.load_pr_preview_diff(
                 repo,
                 file,

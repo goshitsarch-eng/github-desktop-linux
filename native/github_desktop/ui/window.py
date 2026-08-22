@@ -4132,6 +4132,7 @@ class MainWindow(Adw.ApplicationWindow):
         if hasattr(self, "_changes_diff_stack"):
             self._changes_diff_stack.set_visible_child_name("diff")
         file = state.selected_file
+        loading = file is not None and state.current_diff is None
         self._diff_view.render(
             state.current_diff,
             path=file.path if file else "",
@@ -4144,6 +4145,7 @@ class MainWindow(Adw.ApplicationWindow):
             tab_size=self.store.settings.tab_size,
             comments=list(state.diff_comments),
             ask_discard_confirm=self.store.settings.confirm_discard_changes,
+            loading=loading,
         )
 
     def _render_multiple_selection(self, count: int) -> None:
@@ -4155,6 +4157,7 @@ class MainWindow(Adw.ApplicationWindow):
         if not hasattr(self, "_hist_diff_view"):
             return
         path = state.selected_commit_files[0].path if state.selected_commit_files else ""
+        loading = state.selected_commit is not None and state.current_diff is None
         self._hist_diff_view.render(
             state.current_diff,
             path=path,
@@ -4165,6 +4168,7 @@ class MainWindow(Adw.ApplicationWindow):
             can_collapse=state.original_diff is not None,
             tab_size=self.store.settings.tab_size,
             comments=list(state.diff_comments),
+            loading=loading,
         )
 
     def _on_line_toggle(self, path: str, index: int, included: bool) -> None:

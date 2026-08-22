@@ -1601,5 +1601,11 @@ def test_window_actions_cover_menus() -> None:
         "Copy the full SHA",
         "reconcileHistory",
         "revRange",
+        "SeamlessDiffSwitcher",
+        "SlowDiffLoadingThreshold",
+        "isLoadingDiff",
+        "isLoadingSlow",
+        "loading-indicator",
+        "propSnapshot",
     ]:
         assert phrase in src

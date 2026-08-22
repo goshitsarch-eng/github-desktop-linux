@@ -248,8 +248,25 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
                 on_expand_hunk=lambda *_: None,
                 on_expand_whole=lambda: None,
             )
+            assert viewer.has_css_class("seamless-diff-switcher")
+            viewer.render(None, path="README.md")
+            assert viewer.isLoadingDiff is True
+            assert viewer.has_css_class("loading")
+            assert not viewer.has_css_class("has-diff")
+            assert viewer._loading_indicator.get_visible()
             viewer.render(sample, path="README.md", selection=selection, side_by_side=True)
+            assert viewer.isLoadingDiff is False
+            kept = viewer._inner.get_first_child()
+            assert kept is not None
+            viewer.render(None, path="other.md")
+            assert viewer.isLoadingDiff is True
+            assert viewer.has_css_class("loading")
+            assert viewer.has_css_class("has-diff")
+            assert viewer._inner.get_first_child() is kept
             viewer.render(sample, path="README.md", selection=selection, side_by_side=False)
+            assert viewer.isLoadingDiff is False
+            viewer.render(None, path="")
+            assert viewer.isLoadingDiff is False
             viewer.render(BinaryDiff(), path="photo.bin")
             from github_desktop.models import ImageDiff, ImageDiffType
 

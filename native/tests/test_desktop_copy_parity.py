@@ -744,6 +744,35 @@ def test_get_discard_label_matches_desktop_linux() -> None:
     assert get_discard_label(DiffRangeType.ADDITIONS, 2, confirm=False) == "Discard added lines"
 
 
+def test_seamless_diff_switcher_loading_helpers() -> None:
+    from github_desktop.models import BinaryDiff, TextDiff
+    from github_desktop.ui.diff_view import (
+        SlowDiffLoadingThreshold,
+        isLoadingDiff,
+        isLoadingSlow,
+        is_loading_diff,
+        is_seamless_file_loading,
+        is_text_diff,
+    )
+
+    assert SlowDiffLoadingThreshold == 150
+    assert is_loading_diff(None) is True
+    assert isLoadingDiff is is_loading_diff
+    assert is_seamless_file_loading(None, "README.md") is True
+    assert is_seamless_file_loading(None, "") is False
+    assert is_seamless_file_loading(None, "", loading=True) is True
+    text = TextDiff()
+    assert is_text_diff(text) is True
+    assert is_loading_diff(text) is False
+    assert is_loading_diff(text, file_contents=None) is True
+    assert is_seamless_file_loading(text, "README.md") is False
+    assert is_text_diff(BinaryDiff()) is False
+    assert is_loading_diff(BinaryDiff()) is False
+    assert isLoadingSlow(True, 149) is False
+    assert isLoadingSlow(True, 150) is True
+    assert isLoadingSlow(False, 999) is False
+
+
 def test_get_hunk_handle_label_matches_desktop() -> None:
     from github_desktop.git.diff import DiffRange, DiffRangeType
     from github_desktop.ui.diff_view import get_hunk_handle_label, is_only_one_check_in_row
