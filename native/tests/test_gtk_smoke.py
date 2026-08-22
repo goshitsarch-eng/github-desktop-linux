@@ -646,6 +646,9 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
                 push_pull_loading_aria_live,
             )
 
+            win.actionInProgress = None
+            win.screenReaderStateMessage = None
+            win._push_pull_progress_active = False
             store.progress_kind = "push"
             store.progress_title = "Pushing to origin"
             store.progress_description = ""
