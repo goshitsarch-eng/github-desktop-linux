@@ -110,7 +110,12 @@ def test_create_branch_no_track_skips_upstream(git_repo: Path, monkeypatch) -> N
 
 
 def test_git_email_not_found_warning_copy() -> None:
-    from github_desktop.email import git_email_attribution_warning
+    from github_desktop.email import (
+        GIT_EMAIL_NOT_FOUND_WARNING_FOR_SCREEN_READERS,
+        buildScreenReaderMessage,
+        git_email_attribution_warning,
+        git_email_not_found_warning_aria_live,
+    )
 
     github = Account(login="octocat", endpoint="https://api.github.com", token="x", emails=["octocat@github.com"], id=1)
     msg, mismatch = git_email_attribution_warning([github], "other@example.com")
@@ -123,6 +128,21 @@ def test_git_email_not_found_warning_copy() -> None:
     assert ok is not None and "matches your GitHub account" in ok
     hidden, _ = git_email_attribution_warning([], "x@y.com")
     assert hidden is None
+    assert buildScreenReaderMessage is git_email_not_found_warning_aria_live
+    assert git_email_not_found_warning_aria_live([github], "other@example.com") == (
+        "This email address does not match your GitHub account. "
+        "Your commits will be wrongly attributed. "
+    )
+    assert (
+        git_email_not_found_warning_aria_live([github], "octocat@github.com")
+        == "This email address matches your GitHub account. "
+    )
+    assert git_email_not_found_warning_aria_live([], "x@y.com") is None
+    assert git_email_not_found_warning_aria_live([github], "  ") is None
+    assert (
+        GIT_EMAIL_NOT_FOUND_WARNING_FOR_SCREEN_READERS
+        == "git-email-not-found-warning-for-screen-readers"
+    )
 
 
 def test_git_rebase_and_auth_env_helpers() -> None:

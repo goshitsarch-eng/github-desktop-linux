@@ -2976,10 +2976,16 @@ def attach_git_email_not_found_warning(
     get_email: Callable[[], str],
 ) -> Callable[[], None]:
     """Desktop `GitEmailNotFoundWarning` under Git Config email fields."""
-    from ..email import COMMIT_ATTRIBUTION_DOCS, git_email_attribution_warning
+    from ..email import (
+        COMMIT_ATTRIBUTION_DOCS,
+        GIT_EMAIL_NOT_FOUND_WARNING_FOR_SCREEN_READERS,
+        git_email_attribution_warning,
+        git_email_not_found_warning_aria_live,
+    )
 
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
     box.add_css_class("git-email-not-found-warning")
+    box.set_name(GIT_EMAIL_NOT_FOUND_WARNING_FOR_SCREEN_READERS)
     box.set_margin_top(6)
     box.set_margin_bottom(6)
     label = Gtk.Label(wrap=True, xalign=0)
@@ -2988,11 +2994,16 @@ def attach_git_email_not_found_warning(
     link.set_tooltip_text("Learn more about commit attribution")
     box.append(label)
     box.append(link)
+    tracked_email: dict[str, object] = {"value": object()}
 
     def refresh(*_a: object) -> None:
-        msg, mismatch = git_email_attribution_warning(list(accounts), get_email())
+        email = get_email()
+        msg, mismatch = git_email_attribution_warning(list(accounts), email)
+        sr = git_email_not_found_warning_aria_live(list(accounts), email)
         if not msg:
             box.set_visible(False)
+            tracked_email["value"] = email
+            label._aria_live_message = ""  # type: ignore[attr-defined]
             return
         box.set_visible(True)
         label.set_text(msg)
@@ -3001,6 +3012,16 @@ def attach_git_email_not_found_warning(
         else:
             label.remove_css_class("warning")
         link.set_visible(mismatch)
+        if sr:
+            label._aria_live_message = sr  # type: ignore[attr-defined]
+            if tracked_email["value"] != email:
+                tracked_email["value"] = email
+                try:
+                    label.announce(sr, Gtk.AccessibleAnnouncementPriority.MEDIUM)
+                except Exception:
+                    pass
+        else:
+            tracked_email["value"] = email
 
     refresh()
     group.add(box)

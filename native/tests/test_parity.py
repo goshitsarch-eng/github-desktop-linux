@@ -1688,5 +1688,8 @@ def test_window_actions_cover_menus() -> None:
         "Input cleared",
         "displayClearButton",
         "input_cleared_aria_live",
+        "buildScreenReaderMessage",
+        "git-email-not-found-warning-for-screen-readers",
+        "git_email_not_found_warning_aria_live",
     ]:
         assert phrase in src
