@@ -6,7 +6,7 @@ Ports `app/src/ui/autocompletion/` so the Changes commit box and the squash/amen
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import gi
@@ -103,23 +103,186 @@ def unreachable_commits_message(*, unreachable_tab: bool, count: int) -> str:
     )
 
 
-def fill_coauthor_store(list_store: Gtk.ListStore, state: Any) -> None:
-    list_store.clear()
-    if state is None:
-        return
+# Desktop `CoAuthorAutocompletionProvider.renderItem` description for unknown users.
+SEARCH_FOR_USER = "Search for user"
+includeUnknownUser = True
+
+
+def _state_endpoint(state: Any, endpoint: str = "") -> str:
+    if endpoint:
+        return endpoint
+    github = getattr(state, "github", None) if state is not None else None
+    if github is None:
+        repo = getattr(state, "repository", None) if state is not None else None
+        github = getattr(repo, "github", None) if repo is not None else None
+    return str(getattr(github, "endpoint", None) or "")
+
+
+def user_to_hit(user: dict, endpoint: str = "") -> dict[str, Any]:
+    """Desktop `userToHit`."""
+    login = str(user.get("login") or user.get("username") or "")
+    name = user.get("name")
+    return {
+        "kind": "known-user",
+        "username": login,
+        "name": None if name in (None, "") else str(name),
+        "email": str(user.get("email") or ""),
+        "endpoint": endpoint or str(user.get("endpoint") or ""),
+        "login": login,
+    }
+
+
+userToHit = user_to_hit
+
+
+def user_hit_display(item: dict[str, Any]) -> str:
+    username = str(item.get("username") or "")
+    if item.get("kind") == "unknown-user":
+        return f"{username}  {SEARCH_FOR_USER}"
+    name = str(item.get("name") or "")
+    if name and name != username:
+        return f"{username}  {name}"
+    return username
+
+
+def user_hit_completion_text(item: dict[str, Any]) -> str:
+    """Desktop `UserAutocompletionProvider.getCompletionText`."""
+    return f"@{item.get('username') or ''}"
+
+
+getCompletionText = user_hit_completion_text
+
+
+def autocomplete_item_filter(item: dict[str, Any], authors: Sequence[Any]) -> bool:
+    """Desktop `AuthorInput.getAutocompleteItemFilter`."""
+    if item.get("kind") != "known-user":
+        return True
+    usernames = {(getattr(author, "username", None) or "").lower() for author in authors}
+    return str(item.get("username") or "").lower() not in usernames
+
+
+getAutocompleteItemFilter = autocomplete_item_filter
+
+
+def get_user_autocompletion_items(
+    state: Any,
+    text: str,
+    *,
+    include_unknown_user: bool = False,
+    exclude_login: str | None = None,
+    exclude_usernames: Sequence[str] = (),
+    endpoint: str = "",
+    max_hits: int = DefaultMaxHits,
+) -> list[dict[str, Any]]:
+    """Desktop `UserAutocompletionProvider.getUserAutocompletionItems`."""
+    needle = (text or "").lstrip("@")
+    skip = (exclude_login or "").lower()
+    already = {name.lower() for name in exclude_usernames if name}
+    host = _state_endpoint(state, endpoint)
+    mentionables = list(getattr(state, "mentionables", None) or []) if state is not None else []
+    if not mentionables and state is not None:
+        mentionables = [
+            {"login": login, "name": login, "email": ""}
+            for login in getattr(state, "mentions", None) or []
+            if login
+        ]
+    ranked: list[tuple[int, str, dict[str, Any]]] = []
     seen: set[str] = set()
-    for user in getattr(state, "mentionables", None) or []:
+    for user in mentionables:
         login = str(user.get("login") or "")
-        if not login or login in seen:
+        if not login:
             continue
-        seen.add(login)
-        name = str(user.get("name") or login)
-        email = str(user.get("email") or f"{login}@users.noreply.github.com")
-        list_store.append([f"{name} <{email}>"])
-        list_store.append([f"@{login}"])
-    for login in getattr(state, "mentions", None) or []:
-        if login and login not in seen:
-            list_store.append([f"@{login}"])
+        key = login.lower()
+        if key == skip or key in already or key in seen:
+            continue
+        name = str(user.get("name") or "")
+        hay = f"{login} {name}".strip().lower()
+        index = hay.find(needle.lower()) if needle else 0
+        if needle and index < 0:
+            continue
+        seen.add(key)
+        ranked.append((index, login.lower(), user_to_hit(user, host)))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    hits = [item[2] for item in ranked[:max_hits]]
+    if include_unknown_user and needle:
+        exact = any(hit["username"].lower() == needle.lower() for hit in hits)
+        if not exact:
+            hits.append({"kind": "unknown-user", "username": needle})
+    return hits
+
+
+getUserAutocompletionItems = get_user_autocompletion_items
+
+
+class UserAutocompletionProvider:
+    """Desktop `UserAutocompletionProvider`."""
+
+    kind = "user"
+    include_unknown_user = False
+    includeUnknownUser = False
+
+    def get_user_autocompletion_items(
+        self,
+        state: Any,
+        text: str,
+        include_unknown_user: bool | None = None,
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        include = self.include_unknown_user if include_unknown_user is None else include_unknown_user
+        return get_user_autocompletion_items(state, text, include_unknown_user=include, **kwargs)
+
+    getUserAutocompletionItems = get_user_autocompletion_items
+
+    def get_autocompletion_items(self, state: Any, text: str, **kwargs: Any) -> list[dict[str, Any]]:
+        return self.get_user_autocompletion_items(state, text, include_unknown_user=False, **kwargs)
+
+    getAutocompletionItems = get_autocompletion_items
+
+
+class CoAuthorAutocompletionProvider(UserAutocompletionProvider):
+    """Desktop `CoAuthorAutocompletionProvider`: optional `@` and includeUnknownUser."""
+
+    include_unknown_user = True
+    includeUnknownUser = True
+
+    def get_autocompletion_items(self, state: Any, text: str, **kwargs: Any) -> list[dict[str, Any]]:
+        return self.get_user_autocompletion_items(state, text, include_unknown_user=True, **kwargs)
+
+
+def append_user_hit(list_store: Gtk.ListStore, item: dict[str, Any]) -> None:
+    display = user_hit_display(item)
+    kind = str(item.get("kind") or "known-user")
+    username = str(item.get("username") or "")
+    name = str(item.get("name") or "")
+    email = str(item.get("email") or "")
+    if list_store.get_n_columns() >= 5:
+        list_store.append([display, kind, username, name, email])
+    else:
+        list_store.append([display])
+
+
+def fill_coauthor_store(
+    list_store: Gtk.ListStore,
+    state: Any,
+    *,
+    exclude_login: str | None = None,
+    query: str = "",
+    include_unknown_user: bool = False,
+    exclude_usernames: Sequence[str] = (),
+    endpoint: str = "",
+) -> None:
+    list_store.clear()
+    if state is None and not (include_unknown_user and query):
+        return
+    for item in get_user_autocompletion_items(
+        state,
+        query,
+        include_unknown_user=include_unknown_user,
+        exclude_login=exclude_login,
+        exclude_usernames=exclude_usernames,
+        endpoint=endpoint,
+    ):
+        append_user_hit(list_store, item)
 
 
 def completion_matches(

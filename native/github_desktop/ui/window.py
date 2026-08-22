@@ -76,10 +76,9 @@ from ..truncate import truncate_with_ellipsis
 from ..fuzzy_find import filter_items
 from ..version import APP_NAME
 from .avatar import Avatar, AvatarStack, users_from_commit
-from .author_input import AuthorInput
+from .author_input import AuthorInput, bind_store_exact_match
 from .autocompletion import (
     TextViewCompleter,
-    fill_coauthor_store,
     install_entry_completion,
     populate_completion_store,
     summary_length_hint,
@@ -2067,7 +2066,13 @@ class MainWindow(Adw.ApplicationWindow):
         co = Gtk.CheckButton(label="Co-authors")
         co.connect("toggled", self._on_coauthors)
         self._coauthor_check = co
-        self._author_input = AuthorInput(on_changed=self._on_authors_changed)
+        self._author_input = AuthorInput(
+            on_changed=self._on_authors_changed,
+            get_state=self._coauthor_state,
+            exclude_login=self._completion_exclude_login,
+            get_endpoint=self._coauthor_endpoint,
+            exact_match=bind_store_exact_match(self.store),
+        )
         self._author_input.set_visible(False)
         self._coauthor_entry = self._author_input.entry
         self._coauthor_store = self._author_input.store
@@ -4603,11 +4608,21 @@ class MainWindow(Adw.ApplicationWindow):
         account = self.store.account_for_repo(repo) if repo else None
         return account.login if account else None
 
+    def _coauthor_state(self):
+        repo = self.store.selected_repository
+        return self.store.state_for(repo) if repo else None
+
+    def _coauthor_endpoint(self) -> str:
+        repo = self.store.selected_repository
+        if repo is not None and repo.github is not None:
+            return repo.github.endpoint
+        return self.store.accounts[0].endpoint if self.store.accounts else ""
+
     def _refresh_issue_completion(self, state) -> None:
         if not hasattr(self, "_issue_store"):
             return
-        if hasattr(self, "_coauthor_store"):
-            fill_coauthor_store(self._coauthor_store, state)
+        if hasattr(self, "_author_input"):
+            self._author_input.refresh_completion()
         self._update_summary_completion()
 
     def _token_before_cursor(self, entry: Gtk.Entry) -> str:

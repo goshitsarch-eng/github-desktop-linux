@@ -184,6 +184,66 @@ def test_author_input_and_diff_options_linux_copy() -> None:
     assert "press backspace or delete to remove" in author_handle_aria_label(searching)
 
 
+def test_unknown_author_live_search_and_user_hits() -> None:
+    from types import SimpleNamespace
+
+    from github_desktop.models import Author
+    from github_desktop.ui.author_input import (
+        apply_unknown_author_search_result,
+        author_from_user_hit,
+        get_email_address_for_user,
+        is_known_author,
+        unknown_author_from_username,
+        update_unknown_author,
+    )
+    from github_desktop.ui.autocompletion import (
+        SEARCH_FOR_USER,
+        CoAuthorAutocompletionProvider,
+        autocomplete_item_filter,
+        get_user_autocompletion_items,
+        user_hit_display,
+    )
+
+    searching = unknown_author_from_username("hubot")
+    assert searching.unknown is True
+    assert searching.state == "searching"
+    found = author_from_user_hit(
+        {
+            "kind": "known-user",
+            "username": "hubot",
+            "name": "Hubot",
+            "email": "",
+            "endpoint": "https://api.github.com",
+        }
+    )
+    assert is_known_author(found)
+    assert found.email == "hubot@users.noreply.github.com"
+    assert get_email_address_for_user({"email": "a@b.com", "username": "x"}) == "a@b.com"
+    resolved = apply_unknown_author_search_result([searching], searching, found)
+    assert resolved[0].name == "Hubot"
+    assert is_known_author(resolved[0])
+    errored = apply_unknown_author_search_result([searching], searching, None)
+    assert errored[0].state == "error"
+    assert errored[0].unknown is True
+    leftover = update_unknown_author(
+        [Author(name="octocat", email="o@x", username="octocat")],
+        Author(name="hubot", email="", username="hubot", unknown=True, state="error"),
+    )
+    assert leftover[0].username == "octocat"
+
+    state = SimpleNamespace(
+        mentionables=[{"login": "octocat", "name": "The Octocat", "email": "octocat@github.com"}],
+        mentions=["octocat"],
+    )
+    known_only = get_user_autocompletion_items(state, "oc", include_unknown_user=False)
+    assert [item["username"] for item in known_only] == ["octocat"]
+    with_unknown = CoAuthorAutocompletionProvider().get_autocompletion_items(state, "nobody")
+    assert any(item.get("kind") == "unknown-user" and item["username"] == "nobody" for item in with_unknown)
+    assert SEARCH_FOR_USER in user_hit_display({"kind": "unknown-user", "username": "nobody"})
+    assert autocomplete_item_filter(known_only[0], [Author(name="The Octocat", email="e", username="octocat")]) is False
+    assert autocomplete_item_filter({"kind": "unknown-user", "username": "nobody"}, []) is True
+
+
 def test_no_changes_editor_linux_copy_and_availability() -> None:
     from github_desktop.ui.menus import (
         OPEN_THE_REPOSITORY_IN_YOUR_EXTERNAL_EDITOR,
@@ -753,3 +813,24 @@ def test_resolve_co_authors_uses_stealth_email(isolated_config, monkeypatch) -> 
     assert resolved[0].name == "The Octocat"
     _, org_unknown = store.resolve_co_authors([Author(name="github", email="", username="github")])
     assert [author.username for author in org_unknown] == ["github"]
+
+
+def test_get_by_login_matches_desktop_exact_match(isolated_config, monkeypatch) -> None:
+    from github_desktop.models import Account
+    from github_desktop.store import AppStore
+
+    store = AppStore()
+    store.accounts = [Account(login="me", endpoint="https://api.github.com", token="t")]
+
+    def fake_user(self, login):
+        if login == "missing":
+            return None
+        return {"login": login, "name": "The Octocat", "id": 1, "type": "User", "email": None, "avatar_url": "https://n"}
+
+    monkeypatch.setattr("github_desktop.github.api.GitHubAPI.fetch_user_by_login", fake_user)
+    hit = store.get_by_login(store.accounts[0], "octocat")
+    assert hit is not None
+    assert hit["kind"] == "known-user"
+    assert hit["email"] == "1+octocat@users.noreply.github.com"
+    assert store.exact_match("octocat") is None
+    assert store.get_by_login(store.accounts[0], "missing") is None

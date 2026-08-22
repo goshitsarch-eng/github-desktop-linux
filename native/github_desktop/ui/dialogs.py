@@ -66,7 +66,6 @@ from .avatar import Avatar
 from .autocompletion import (
     UNREACHABLE_COMMITS_LEARN_MORE,
     TextViewCompleter,
-    fill_coauthor_store,
     install_entry_completion,
     populate_completion_store,
     protected_branch_warning,
@@ -75,7 +74,7 @@ from .autocompletion import (
     unreachable_commits_message,
     write_access_warning,
 )
-from .author_input import AuthorInput
+from .author_input import AuthorInput, bind_store_exact_match
 from .checks import show_checks, show_rerun_checks
 from .diff_view import DiffViewer
 from .menus import (
@@ -5054,8 +5053,16 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
     show_co = bool(payload.get("show_co_authors") or payload.get("co_authors") or github_repo)
     if show_co:
         co_check = Gtk.CheckButton(label="Co-authors")
-        author_input = AuthorInput()
-        fill_coauthor_store(author_input.store, state)
+        author_input = AuthorInput(
+            get_state=current_state,
+            exclude_login=exclude_login,
+            get_endpoint=lambda: (
+                repo.github.endpoint
+                if repo is not None and repo.github is not None
+                else (store.accounts[0].endpoint if store.accounts else "")
+            ),
+            exact_match=bind_store_exact_match(store),
+        )
         raw = payload.get("co_authors")
         if isinstance(raw, list):
             author_input.set_authors(list(raw))

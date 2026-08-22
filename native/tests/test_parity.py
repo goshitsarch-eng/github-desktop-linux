@@ -1496,5 +1496,18 @@ def test_window_actions_cover_menus() -> None:
         "renderBranchDropdown",
         "updateCheckoutProgress",
         "Current branch is",
+        "attemptUnknownAuthorSearch",
+        "exactMatch",
+        "includeUnknownUser",
+        "Search for user",
+        "CoAuthorAutocompletionProvider",
+        "getByLogin",
+        "authorFromUserHit",
+        "getEmailAddressForUser",
+        "getUserAutocompletionItems",
+        "updateUnknownAuthor",
+        "getAutocompleteItemFilter",
+        "onAutocompleteItemSelected",
+        "userToHit",
     ]:
         assert phrase in src

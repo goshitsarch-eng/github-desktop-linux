@@ -3033,24 +3033,16 @@ class AppStore:
         unknown: list[Author] = []
         repo = self.selected_repository
         account = self.account_for_repo(repo) if repo else (self.accounts[0] if self.accounts else None)
-        api = GitHubAPI.from_account(account) if account else None
         for author in authors:
             login = author.username
-            if login and api is not None and account is not None:
-                try:
-                    user = api.fetch_user_by_login(login)
-                except Exception:
-                    user = None
-                if user and user.get("login") and user.get("type") == "User":
-                    handle = str(user["login"])
-                    email = str(user.get("email") or "")
-                    if not email:
-                        email = stealth_email_for_user(int(user.get("id") or 0), handle, account.endpoint)
+            if login and account is not None:
+                hit = self.get_by_login(account, login)
+                if hit is not None:
                     resolved.append(
                         Author(
-                            name=str(user.get("name") or handle),
-                            email=email,
-                            username=handle,
+                            name=str(hit.get("name") or hit.get("username") or login),
+                            email=str(hit.get("email") or ""),
+                            username=str(hit.get("username") or login),
                         )
                     )
                     continue
@@ -3059,6 +3051,41 @@ class AppStore:
                 continue
             resolved.append(author)
         return resolved, unknown
+
+    def get_by_login(self, account: Account, login: str) -> dict | None:
+        """Desktop `GitHubUserStore.getByLogin`."""
+        api = GitHubAPI.from_account(account)
+        try:
+            api_user = api.fetch_user_by_login(login)
+        except Exception:
+            api_user = None
+        if not api_user or api_user.get("type") != "User":
+            return None
+        email = str(api_user.get("email") or "")
+        if not email:
+            email = stealth_email_for_user(int(api_user.get("id") or 0), login, account.endpoint)
+        handle = str(api_user.get("login") or login)
+        return {
+            "kind": "known-user",
+            "username": handle,
+            "login": handle,
+            "name": str(api_user.get("name") or handle),
+            "email": email,
+            "endpoint": account.endpoint,
+            "avatarURL": str(api_user.get("avatar_url") or ""),
+        }
+
+    getByLogin = get_by_login
+
+    def exact_match(self, login: str) -> dict | None:
+        """Desktop `UserAutocompletionProvider.exactMatch`."""
+        repo = self.selected_repository
+        account = self.account_for_repo(repo) if repo else None
+        if account is None:
+            return None
+        return self.get_by_login(account, login)
+
+    exactMatch = exact_match
 
     def _commit_now(
         self,

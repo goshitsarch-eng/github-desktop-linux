@@ -2010,7 +2010,13 @@ def parse_name_email(value: str) -> tuple[str, str]:
 
 
 def parse_co_authors(text: str) -> list[Author]:
-    """Parse comma/newline-separated co-authors (`Name <email>` or `@login`)."""
+    """Parse comma/newline-separated co-authors (`Name <email>` or `@login`).
+
+    `@login` (and other handle-like tokens) stay unknown with an empty email so
+    Desktop `AuthorInput.attemptUnknownAuthorSearch` / `exactMatch` can resolve
+    them. Do not fabricate a stealth email here — that would skip both live
+    lookup and the unknown-authors commit dialog.
+    """
     import re
 
     authors: list[Author] = []
@@ -2018,16 +2024,18 @@ def parse_co_authors(text: str) -> list[Author]:
         token = raw.strip()
         if not token:
             continue
-        handle = token.startswith("@") and "<" not in token
+        if "<" in token and ">" in token:
+            name, email = parse_name_email(token)
+            authors.append(Author(name=name, email=email, username=None, unknown=not bool(email)))
+            continue
+        handle = token.startswith("@")
+        login = token[1:].strip() if handle else token
+        if handle or (" " not in token and "@" not in token):
+            if login:
+                authors.append(Author(name=login, email="", username=login, unknown=True))
+            continue
         name, email = parse_name_email(token)
-        authors.append(
-            Author(
-                name=name,
-                email=email,
-                username=token[1:].strip() if handle else None,
-                unknown=not bool(email),
-            )
-        )
+        authors.append(Author(name=name, email=email, username=None, unknown=not bool(email)))
     return authors
 
 

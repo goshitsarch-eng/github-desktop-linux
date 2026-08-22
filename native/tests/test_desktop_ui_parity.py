@@ -111,9 +111,11 @@ def test_get_repository_type_reports_toplevel(git_repo, tmp_path) -> None:
 def test_parse_co_authors_handles_handles_and_emails() -> None:
     authors = parse_co_authors("@octocat, Jane Doe <jane@example.com>\nNameless")
     assert authors[0].username == "octocat"
-    assert authors[0].email.endswith("users.noreply.github.com")
+    assert authors[0].unknown is True
+    assert authors[0].email == ""
     assert authors[1].email == "jane@example.com"
     assert authors[2].unknown is True
+    assert authors[2].username == "Nameless"
 
 
 def test_relocate_repository(isolated_config, git_repo, tmp_path) -> None:
