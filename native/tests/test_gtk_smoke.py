@@ -393,10 +393,16 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             win._show_zoom_info(1.1)
             win._hide_window_info()
             if hasattr(win, "_repo_filter"):
+                from github_desktop.ui.text_box import filter_list_results_aria_live
+
                 win._repo_filter.set_text("zzz-no-such-repo")
                 win._refresh_repo_list()
+                assert getattr(win._repo_filter, "_filter_list_results_message", "") == filter_list_results_aria_live(0)
                 win._repo_filter.set_text("")
                 win._refresh_repo_list()
+                assert getattr(win._repo_filter, "_filter_list_results_message", "").endswith("results") or getattr(
+                    win._repo_filter, "_filter_list_results_message", ""
+                ).endswith("result")
             if hasattr(win, "_branches_foldout"):
                 win._branches_foldout.refresh(
                     [],
@@ -428,6 +434,16 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
                     row = row.get_next_sibling()
                 assert "Default branch" in foldout_labels
                 assert "Recent branches" in foldout_labels
+                from github_desktop.ui.text_box import filter_list_results_aria_live as _fl_live
+
+                win._branches_foldout._search.set_text("zzz-no-branch")
+                win._branches_foldout._refilter()
+                assert getattr(win._branches_foldout._search, "_filter_list_results_message", "") == _fl_live(0)
+                win._branches_foldout._search.set_text("main")
+                win._branches_foldout._refilter()
+                assert getattr(win._branches_foldout._search, "_filter_list_results_message", "") == _fl_live(1)
+                win._branches_foldout._search.set_text("")
+                win._branches_foldout._refilter()
                 prs_page = win._branches_foldout._stack.get_child_by_name("prs")
                 assert win._branches_foldout._stack.get_page(prs_page).get_title() == "Pull requests"
                 from github_desktop.ui.branches import (

@@ -43,7 +43,7 @@ from ..store import AppStore
 from ..truncate import truncate_with_ellipsis
 from .branches import group_branches
 from .menus import OpenWithDefaultProgramLabel, RevealInFileManagerLabel, clear_box
-from .text_box import search_entry
+from .text_box import announce_filter_list_results, search_entry
 
 
 MERGE_OPTIONS = (
@@ -290,23 +290,20 @@ def _show_choose_branch(parent: Gtk.Window, store: AppStore, kind: str, initial_
             return MERGE_OPTIONS[idx][0]
         return kind
 
-    def grouped() -> list:
-        remaining = filter_items(search.get_text(), branches, lambda b: [b.name, b.upstream or ""])
-        return group_branches(
-            remaining,
-            current=None,
-            default_name=default_name,
-            recent_names=recent_names,
-        )
-
     def render_list() -> None:
         while True:
             row = listbox.get_first_child()
             if row is None:
                 break
             listbox.remove(row)
+        remaining = filter_items(search.get_text(), branches, lambda b: [b.name, b.upstream or ""])
         shown = 0
-        for group_name, items in grouped():
+        for group_name, items in group_branches(
+            remaining,
+            current=None,
+            default_name=default_name,
+            recent_names=recent_names,
+        ):
             header_row = Adw.ActionRow(title=group_name)
             header_row.set_sensitive(False)
             listbox.append(header_row)
@@ -317,9 +314,12 @@ def _show_choose_branch(parent: Gtk.Window, store: AppStore, kind: str, initial_
                 listbox.append(row)
                 shown += 1
                 if shown >= 200:
-                    return
+                    break
+            if shown >= 200:
+                break
         if shown == 0:
             listbox.append(Adw.ActionRow(title="No matching branches"))
+        announce_filter_list_results(search, len(remaining))
 
     def update_op_hint() -> None:
         k = current_kind()
@@ -647,6 +647,7 @@ def _show_cherry_pick_target(parent: Gtk.Window, store: AppStore, payload: dict[
         else:
             hint.set_text("")
             start_btn.set_label(f"Cherry-pick {count} {noun}")
+        announce_filter_list_results(search, shown)
 
     def on_row(_lb, row) -> None:
         branch = getattr(row, "_branch", None) if row is not None else None

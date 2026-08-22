@@ -220,6 +220,70 @@ def test_input_cleared_aria_live_matches_desktop() -> None:
     assert displayClearButton is True
 
 
+def test_filter_list_results_aria_live_matches_desktop() -> None:
+    from github_desktop.ui.text_box import (
+        filter_list_results_aria_live,
+        filterValueChanged,
+        onFilterListResultsChanged,
+        resultsPluralized,
+        results_pluralized,
+    )
+
+    assert results_pluralized(0) == "results"
+    assert results_pluralized(1) == "result"
+    assert results_pluralized(2) == "results"
+    assert resultsPluralized is results_pluralized
+    assert filter_list_results_aria_live(0) == "0 results"
+    assert filter_list_results_aria_live(1) == "1 result"
+    assert filter_list_results_aria_live(12) == "12 results"
+    assert filter_list_results_aria_live(
+        0, "Sorry, I can't find that branch"
+    ) == "0 results Sorry, I can't find that branch"
+    assert filter_list_results_aria_live(1, "ignored when there are hits") == "1 result"
+    assert filterValueChanged is True
+    assert onFilterListResultsChanged.__name__ == "announce_filter_list_results"
+
+
+def test_announce_filter_list_results_waits_for_filter_value_changed() -> None:
+    from github_desktop.ui.text_box import (
+        announce_filter_list_results,
+        filter_list_results_aria_live,
+    )
+
+    class _FakeFilterEntry:
+        def __init__(self, text: str = "") -> None:
+            self._text = text
+            self.announced: list[str] = []
+
+        def get_text(self) -> str:
+            return self._text
+
+        def announce(self, message: str, _priority: object) -> None:
+            self.announced.append(message)
+
+    entry = _FakeFilterEntry("")
+    announce_filter_list_results(entry, 4)
+    assert entry.announced == []
+    assert not getattr(entry, "_filter_value_changed", False)
+
+    announce_filter_list_results(entry, 2, items_filtered=True)
+    assert entry._filter_value_changed is True
+    assert entry.announced == [filter_list_results_aria_live(2)]
+
+    entry._text = "ma"
+    announce_filter_list_results(entry, 1)
+    assert entry.announced[-1] == filter_list_results_aria_live(1)
+    announce_filter_list_results(entry, 1)
+    assert entry.announced == [filter_list_results_aria_live(2), filter_list_results_aria_live(1)]
+
+    entry._text = ""
+    announce_filter_list_results(entry, 4)
+    assert entry.announced[-1] == filter_list_results_aria_live(4)
+
+    announce_filter_list_results(entry, 3, context="prs")
+    assert entry.announced[-1] == filter_list_results_aria_live(3)
+
+
 def test_author_input_and_diff_options_linux_copy() -> None:
     from github_desktop.models import Author
     from github_desktop.ui.author_input import (
