@@ -1644,5 +1644,10 @@ def test_window_actions_cover_menus() -> None:
         "showFilesToBeCommitted",
         "renderHiddenChangesWarning",
         'increment("adjustedFiltersForHiddenChangesCount")',
+        "CICheckRunStepListHeader",
+        "ci-check-run-steps-header",
+        'get_combined_status_summary(steps, "step")',
+        "job-rerun",
+        "view-check-externally",
     ]:
         assert phrase in src

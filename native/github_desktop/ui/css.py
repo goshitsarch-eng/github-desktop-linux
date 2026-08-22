@@ -464,6 +464,14 @@ window:not(.underline-links) link {
 .ci-steps-container.no-steps {
   min-height: 150px;
 }
+/* Desktop `_ci-check-run-step-header.scss` */
+.ci-check-run-steps-header {
+  padding: 4px 8px;
+}
+.ci-check-run-steps-header .job-rerun,
+.ci-check-run-steps-header .view-check-externally {
+  padding: 4px;
+}
 /* Desktop `_ci-check-run-popover.scss` `.loading-check-runs` */
 .loading-check-runs {
   padding: 16px;

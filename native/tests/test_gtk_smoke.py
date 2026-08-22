@@ -437,6 +437,16 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
                 steps=[CheckStep(name="Set up job", number=1, status="completed", conclusion="success")],
             )
             assert not _run_expander(stepped).has_css_class("no-steps")
+            from github_desktop.ui.checks import CICheckRunStepListHeader
+            from github_desktop.github.ci_checks import get_combined_status_summary
+
+            header = CICheckRunStepListHeader(stepped)
+            assert header.has_css_class("ci-check-run-steps-header")
+            assert header.get_first_child().get_text() == get_combined_status_summary(
+                stepped.steps, "step"
+            )
+            empty_header = CICheckRunStepListHeader(sample_run)
+            assert not empty_header.get_visible()
             from github_desktop.ui.checks import LoadingCheckRuns
             from github_desktop.github.ci_checks import CHECK_RUNS_INCOMING, CHECK_RUN_STEPS_INCOMING, STAND_BY
 

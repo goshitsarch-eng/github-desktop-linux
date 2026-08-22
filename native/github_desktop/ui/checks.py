@@ -130,6 +130,43 @@ class CICheckRunNoStepItem(Gtk.Box):
         self.append(illustration)
 
 
+class CICheckRunStepListHeader(Gtk.Box):
+    """Desktop `CICheckRunStepListHeader` — combined step summary plus optional job actions."""
+
+    def __init__(
+        self,
+        check: RefCheck,
+        *,
+        on_view_check_externally: Callable[[], None] | None = None,
+        on_rerun_job: Callable[[], None] | None = None,
+    ) -> None:
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.add_css_class("ci-check-run-steps-header")
+        self.onViewCheckExternally = on_view_check_externally
+        steps = check.actionJobSteps
+        if not steps:
+            self.set_visible(False)
+            return
+        summary = Gtk.Label(label=get_combined_status_summary(steps, "step"), wrap=True, xalign=0)
+        summary.add_css_class("dim-label")
+        summary.set_hexpand(True)
+        self.append(summary)
+        if on_rerun_job is not None:
+            rerun = Gtk.Button(icon_name="view-refresh-symbolic")
+            rerun.add_css_class("flat")
+            rerun.add_css_class("job-rerun")
+            rerun.set_tooltip_text(f"Re-run {check.name}")
+            rerun.connect("clicked", lambda *_: on_rerun_job())
+            self.append(rerun)
+        if on_view_check_externally is not None:
+            view = Gtk.Button(icon_name="web-browser-symbolic")
+            view.add_css_class("flat")
+            view.add_css_class("view-check-externally")
+            view.set_tooltip_text(f"View {check.name} on GitHub")
+            view.connect("clicked", lambda *_: on_view_check_externally())
+            self.append(view)
+
+
 class LoadingCheckRuns(Gtk.Box):
     """Desktop `renderCheckRunLoadings` / `renderCheckRunStepsLoading`."""
 
@@ -363,6 +400,15 @@ def _run_expander(
         )
         row.add_row(steps_box)
     else:
+        row.add_row(
+            CICheckRunStepListHeader(
+                run,
+                on_view_check_externally=lambda r=run: onViewCheckExternally(
+                    r, store=store, repo=repo, payload=payload, increment_views=increment_views
+                ),
+                on_rerun_job=(lambda r=run: on_rerun_one(r)) if on_rerun_one else None,
+            )
+        )
         for step in run.steps or []:
             step_row = _step_row_widget(step)
             if step.number:
@@ -626,6 +672,22 @@ def show_checks(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) ->
                     )
                 )
             else:
+                steps_holder.append(
+                    CICheckRunStepListHeader(
+                        run,
+                        on_view_check_externally=lambda r=run: onViewCheckExternally(
+                            r, store=store, repo=repo, payload=payload
+                        ),
+                        on_rerun_job=(
+                            lambda r=run: (
+                                store.stats.increment("checksFailedDialogRerunChecksCount"),
+                                store.show_popup(PopupType.CI_CHECK_RUN_RERUN, checks=[r], failed_only=False),
+                            )
+                        )
+                        if repo
+                        else None,
+                    )
+                )
                 steps_box = Gtk.ListBox()
                 steps_box.add_css_class("boxed-list")
                 for step in run.steps:

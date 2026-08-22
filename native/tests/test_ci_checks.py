@@ -60,6 +60,13 @@ def test_group_by_workflow_and_header() -> None:
     assert "1 successful and 1 failed checks" == get_combined_status_summary([ci, failed]) or "failed" in get_combined_status_summary(
         [ci, failed]
     )
+    from github_desktop.models import CheckStep
+
+    steps = [
+        CheckStep(name="a", number=1, status="completed", conclusion="success"),
+        CheckStep(name="b", number=2, status="completed", conclusion="failure"),
+    ]
+    assert get_combined_status_summary(steps, "step") == "1 successful and 1 failed steps"
 
 
 def test_check_status_count_map() -> None:

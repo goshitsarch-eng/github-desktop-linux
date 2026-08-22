@@ -212,7 +212,9 @@ def check_run_step_url(
     return None
 
 
-def get_combined_status_summary(runs: Sequence[RefCheck], description: str = "check") -> str:
+def get_combined_status_summary(
+    runs: Sequence[RefCheck | CheckStep], description: str = "check"
+) -> str:
     if not runs:
         return ""
     grouped: dict[str | None, int] = defaultdict(int)
