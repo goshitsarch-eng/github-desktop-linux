@@ -244,7 +244,7 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             show_preferences(win, store)
             from github_desktop.ui.diff_view import DiffViewer
             from github_desktop.git.diff import parse_unified_diff
-            from github_desktop.models import BinaryDiff, DiffSelection, DiffSelectionType
+            from github_desktop.models import BinaryDiff, DiffHunkExpansionType, DiffSelection, DiffSelectionType
 
             sample = parse_unified_diff(
                 "@@ -10,3 +10,4 @@\n hello\n-world\n+world!\n line\n"
@@ -289,6 +289,8 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             viewer._on_expand_whole_clicked()
             assert viewer.ariaLiveMessage == "Expanded"
             assert viewer._aria_live.get_text() == "Expanded"
+            viewer._on_expand_hunk_clicked(0, "up", DiffHunkExpansionType.UP)
+            assert viewer.lastExpandedHunk == (0, DiffHunkExpansionType.UP)
             viewer.render(None, path="")
             assert viewer.isLoadingDiff is False
             from github_desktop.ui.diff_view import NO_FILE_SELECTED, diff_no_file_blankslate

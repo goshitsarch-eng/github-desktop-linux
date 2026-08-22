@@ -76,6 +76,45 @@ def diff_no_file_blankslate(*, has_files: bool) -> str:
     return NO_FILE_SELECTED if has_files else ""
 
 
+def last_expanded_hunk_key(hunk_index: int, expansion_type: DiffHunkExpansionType | str) -> str:
+    """Desktop hunkExpansionRefs key `${hunkIndex}-${expansionType}`."""
+    return f"{hunk_index}-{expansion_type}"
+
+
+def expansion_hunk_key_index(key: str) -> int:
+    """Desktop `getHunkKeyIndex` for `focusAfterLastExpandedHunkChange`."""
+    head, _, _rest = key.partition("-")
+    try:
+        return int(head or "0")
+    except ValueError:
+        return 0
+
+
+def closest_expansion_focus_key(
+    keys: Sequence[str],
+    hunk_index: int,
+    expansion_type: DiffHunkExpansionType | str,
+) -> str | None:
+    """Desktop `focusAfterLastExpandedHunkChange` button key, or None to focus the list."""
+    key_list = list(keys)
+    if not key_list:
+        return None
+    last = last_expanded_hunk_key(hunk_index, expansion_type)
+    if last in key_list:
+        return last
+    ordered = sorted(key_list)
+    for key in ordered:
+        if expansion_hunk_key_index(key) >= hunk_index:
+            return key
+    for key in reversed(ordered):
+        if expansion_hunk_key_index(key) <= hunk_index:
+            return key
+    return None
+
+
+focusAfterLastExpandedHunkChange = closest_expansion_focus_key
+
+
 def diff_options_label() -> str:
     """Desktop Linux `DiffOptions` aria-label / popover header."""
     return DIFF_OPTIONS_LABEL
@@ -378,6 +417,9 @@ class DiffViewer(Gtk.Box):
         self._is_loading_diff = False
         self._is_loading_slow = False
         self._slow_timeout_id = 0
+        self.lastExpandedHunk: tuple[int, DiffHunkExpansionType] | None = None
+        self.hunkExpansionRefs: dict[str, Gtk.Widget] = {}
+        self._expansion_focus_idle = 0
         self.set_hexpand(True)
         self.set_vexpand(True)
         self.set_focusable(True)
@@ -433,10 +475,51 @@ class DiffViewer(Gtk.Box):
             self.on_expand_whole()
         self._announce_expanded()
 
-    def _on_expand_hunk_clicked(self, hunk_index: int, kind: str) -> None:
+    def _on_expand_hunk_clicked(
+        self,
+        hunk_index: int,
+        kind: str,
+        expansion_type: DiffHunkExpansionType | None = None,
+    ) -> None:
+        if expansion_type is None:
+            expansion_type = (
+                DiffHunkExpansionType.DOWN if kind == "down" else DiffHunkExpansionType.UP
+            )
+        self.lastExpandedHunk = (hunk_index, expansion_type)
         if self.on_expand_hunk:
             self.on_expand_hunk(hunk_index, kind)
         self._announce_expanded()
+
+    def _schedule_expansion_focus(self) -> None:
+        """Desktop componentDidUpdate → focusAfterLastExpandedHunkChange."""
+        if self.lastExpandedHunk is None or self._expansion_focus_idle:
+            return
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return
+        self._expansion_focus_idle = GLib.idle_add(self._focus_after_last_expanded_hunk_change)
+
+    def _focus_after_last_expanded_hunk_change(self) -> bool:
+        self._expansion_focus_idle = 0
+        if self.lastExpandedHunk is None:
+            return False
+        hunk_index, expansion_type = self.lastExpandedHunk
+        if not self.hunkExpansionRefs:
+            if self._list_view is not None:
+                self._list_view.grab_focus()
+            elif self._inner.get_first_child() is not None:
+                self._inner.grab_focus()
+            return False
+        key = closest_expansion_focus_key(
+            self.hunkExpansionRefs.keys(), hunk_index, expansion_type
+        )
+        button = self.hunkExpansionRefs.get(key) if key else None
+        if button is not None:
+            button.grab_focus()
+        elif self._list_view is not None:
+            self._list_view.grab_focus()
+        return False
+
+    focusAfterLastExpandedHunkChange = _focus_after_last_expanded_hunk_change
 
     def _if_ready(self, callback: Callable | None, *args: object) -> None:
         """Desktop SeamlessDiffSwitcher noops include/discard/open while `isLoadingDiff`."""
@@ -520,6 +603,7 @@ class DiffViewer(Gtk.Box):
             return
         if path != self._path:
             self._force_show_large = False
+            self.lastExpandedHunk = None
         self._path = path
         self._show_checks = show_checks
         self._tab_size = max(1, tab_size)
@@ -533,6 +617,7 @@ class DiffViewer(Gtk.Box):
         self._line_widgets = {}
         self._row_specs = []
         self._row_widgets = []
+        self.hunkExpansionRefs = {}
         self._list_view = None
         clear_box(self._toolbar)
         self._hint_box.set_visible(False)
@@ -676,6 +761,7 @@ class DiffViewer(Gtk.Box):
                 widget = self._widget_for(spec, selection)
                 self._row_widgets.append(widget)
                 self._inner.append(widget)
+        self._schedule_expansion_focus()
         if self._search_revealer.get_reveal_child() and self._search_query:
             self._run_search(self._search_query, "next")
 
@@ -1132,23 +1218,53 @@ class DiffViewer(Gtk.Box):
     def _expansion_buttons(self, hunk_index: int, expansion: DiffHunkExpansionType) -> Gtk.Widget:
         box = Gtk.Box(spacing=2)
 
-        def add_btn(label: str, tooltip: str, kind: str, index: int) -> None:
+        def add_btn(
+            label: str,
+            tooltip: str,
+            kind: str,
+            expand_index: int,
+            expansion_type: DiffHunkExpansionType,
+            header_index: int,
+        ) -> None:
             btn = Gtk.Button(label=label)
             btn.add_css_class("flat")
             btn.add_css_class("diff-expand")
             btn.set_tooltip_text(tooltip)
-            btn.connect("clicked", lambda *_: self._on_expand_hunk_clicked(index, kind))
+            key = last_expanded_hunk_key(header_index, expansion_type)
+            self.hunkExpansionRefs[key] = btn
+            btn.connect(
+                "clicked",
+                lambda *_: self._on_expand_hunk_clicked(
+                    expand_index, kind, expansion_type
+                ),
+            )
             box.append(btn)
 
         if expansion == DiffHunkExpansionType.UP:
-            add_btn("▲", "Expand up", "up", hunk_index)
+            add_btn("▲", "Expand up", "up", hunk_index, DiffHunkExpansionType.UP, hunk_index)
         elif expansion == DiffHunkExpansionType.DOWN:
-            add_btn("▼", "Expand down", "down", hunk_index - 1)
+            add_btn(
+                "▼",
+                "Expand down",
+                "down",
+                hunk_index - 1,
+                DiffHunkExpansionType.DOWN,
+                hunk_index,
+            )
         elif expansion == DiffHunkExpansionType.SHORT:
-            add_btn("↕", "Expand all", "up", hunk_index)
+            add_btn(
+                "↕", "Expand all", "up", hunk_index, DiffHunkExpansionType.SHORT, hunk_index
+            )
         elif expansion == DiffHunkExpansionType.BOTH:
-            add_btn("▼", "Expand down", "down", hunk_index - 1)
-            add_btn("▲", "Expand up", "up", hunk_index)
+            add_btn(
+                "▼",
+                "Expand down",
+                "down",
+                hunk_index - 1,
+                DiffHunkExpansionType.DOWN,
+                hunk_index,
+            )
+            add_btn("▲", "Expand up", "up", hunk_index, DiffHunkExpansionType.UP, hunk_index)
         return box
 
     def _line_body(self, line: DiffLine) -> str:

@@ -190,6 +190,24 @@ def test_diff_no_file_blankslate_matches_desktop() -> None:
     assert diff_no_file_blankslate(has_files=False) == ""
 
 
+def test_last_expanded_hunk_focus_key_matches_desktop() -> None:
+    from github_desktop.models import DiffHunkExpansionType
+    from github_desktop.ui.diff_view import (
+        closest_expansion_focus_key,
+        focusAfterLastExpandedHunkChange,
+        last_expanded_hunk_key,
+    )
+
+    assert last_expanded_hunk_key(2, DiffHunkExpansionType.UP) == "2-Up"
+    assert last_expanded_hunk_key(0, DiffHunkExpansionType.DOWN) == "0-Down"
+    keys = ["0-Up", "3-Down", "5-Up"]
+    assert closest_expansion_focus_key(keys, 3, DiffHunkExpansionType.DOWN) == "3-Down"
+    assert closest_expansion_focus_key(keys, 4, DiffHunkExpansionType.UP) == "5-Up"
+    assert closest_expansion_focus_key(keys, 6, DiffHunkExpansionType.UP) == "5-Up"
+    assert closest_expansion_focus_key([], 0, DiffHunkExpansionType.UP) is None
+    assert focusAfterLastExpandedHunkChange is closest_expansion_focus_key
+
+
 def test_author_input_and_diff_options_linux_copy() -> None:
     from github_desktop.models import Author
     from github_desktop.ui.author_input import (

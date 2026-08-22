@@ -1679,5 +1679,8 @@ def test_window_actions_cover_menus() -> None:
         "No file selected",
         "diff_no_file_blankslate",
         "changesetData.files",
+        "lastExpandedHunk",
+        "focusAfterLastExpandedHunkChange",
+        "hunkExpansionRefs",
     ]:
         assert phrase in src
