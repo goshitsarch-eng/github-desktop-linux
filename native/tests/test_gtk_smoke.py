@@ -647,6 +647,26 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             from github_desktop.ui.dialogs import show_add_repository
 
             show_add_repository(win, store, str(git_repo))
+            from github_desktop.ui.dialogs import (
+                add_existing_bare_repository_aria_live,
+                add_existing_not_a_git_repository_aria_live,
+                add_existing_unsafe_repository_aria_live,
+            )
+
+            add_dlg = getattr(win, "_add_repository_dialog", None)
+            assert add_dlg is not None
+            add_dlg._add_apply_kind("missing")
+            assert getattr(add_dlg._add_missing_row, "_aria_live_message", "") == (
+                add_existing_not_a_git_repository_aria_live()
+            )
+            add_dlg._add_apply_kind("bare")
+            assert getattr(add_dlg._add_bare_row, "_aria_live_message", "") == (
+                add_existing_bare_repository_aria_live()
+            )
+            add_dlg._add_apply_kind("unsafe")
+            assert getattr(add_dlg._add_unsafe_row, "_aria_live_message", "") == (
+                add_existing_unsafe_repository_aria_live()
+            )
             from unittest.mock import patch
 
             from github_desktop.models import Account

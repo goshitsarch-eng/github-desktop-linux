@@ -104,6 +104,39 @@ COULD_NOT_FIND_DEFAULT_BRANCH = "Could not find a default branch to compare agai
 SELECT_A_BASE_BRANCH_ABOVE = "Select a base branch above."
 
 
+def add_existing_bare_repository_aria_live() -> str:
+    """Desktop `buildBareRepositoryError` `screenReaderMessage`."""
+    return (
+        "This directory appears to be a bare repository. "
+        "Bare repositories are not currently supported."
+    )
+
+
+def add_existing_unsafe_repository_aria_live() -> str:
+    """Desktop `buildRepositoryUnsafeError` `screenReaderMessage`."""
+    return (
+        "The Git repository appears to be owned by another user on your machine. "
+        "Adding untrusted repositories may automatically execute files in the repository. "
+        "If you trust the owner of the directory you can add an exception for this directory "
+        "in order to continue."
+    )
+
+
+def add_existing_not_a_git_repository_aria_live() -> str:
+    """Desktop `buildNotAGitRepositoryError` `screenReaderMessage`."""
+    return (
+        "This directory does not appear to be a Git repository. "
+        "Would you like to create a repository here instead?"
+    )
+
+
+screenReaderMessage = add_existing_not_a_git_repository_aria_live
+buildBareRepositoryError = add_existing_bare_repository_aria_live
+buildRepositoryUnsafeError = add_existing_unsafe_repository_aria_live
+buildNotAGitRepositoryError = add_existing_not_a_git_repository_aria_live
+IAccessibleMessage = True
+
+
 def pull_request_merge_status_text(kind: ComputedAction | None) -> str:
     """Desktop `PullRequestMergeStatus` footer copy (Linux)."""
     if kind is None:
@@ -1310,6 +1343,19 @@ def show_thank_you(parent: Gtk.Window, payload: dict[str, Any] | None = None) ->
     dialog.present(parent)
 
 
+def _apply_add_existing_aria(widget: Gtk.Widget, message: str, *, tracked: object) -> None:
+    """Desktop add-existing-repository InputError `ariaLiveMessage`."""
+    prev = getattr(widget, "_aria_tracked", object())
+    widget._aria_live_message = message  # type: ignore[attr-defined]
+    widget._aria_tracked = tracked  # type: ignore[attr-defined]
+    try:
+        widget.update_property([Gtk.AccessibleProperty.LABEL], [message])
+        if prev != tracked:
+            widget.announce(message, Gtk.AccessibleAnnouncementPriority.MEDIUM)
+    except Exception:
+        pass
+
+
 def show_add_repository(parent: Gtk.Window, store: AppStore, initial: str) -> None:
     dialog = Adw.Dialog()
     dialog.set_content_width(520)
@@ -1382,6 +1428,34 @@ def show_add_repository(parent: Gtk.Window, store: AppStore, initial: str) -> No
         bare_row.set_visible(kind == "bare")
         unsafe_row.set_visible(kind == "unsafe")
         add_btn.set_sensitive(kind == "regular")
+        if kind == "missing":
+            _apply_add_existing_aria(
+                missing_row,
+                add_existing_not_a_git_repository_aria_live(),
+                tracked="missing",
+            )
+            bare_row._aria_tracked = None  # type: ignore[attr-defined]
+            unsafe_row._aria_tracked = None  # type: ignore[attr-defined]
+        elif kind == "bare":
+            _apply_add_existing_aria(
+                bare_row,
+                add_existing_bare_repository_aria_live(),
+                tracked="bare",
+            )
+            missing_row._aria_tracked = None  # type: ignore[attr-defined]
+            unsafe_row._aria_tracked = None  # type: ignore[attr-defined]
+        elif kind == "unsafe":
+            _apply_add_existing_aria(
+                unsafe_row,
+                add_existing_unsafe_repository_aria_live(),
+                tracked="unsafe",
+            )
+            missing_row._aria_tracked = None  # type: ignore[attr-defined]
+            bare_row._aria_tracked = None  # type: ignore[attr-defined]
+        else:
+            missing_row._aria_tracked = None  # type: ignore[attr-defined]
+            bare_row._aria_tracked = None  # type: ignore[attr-defined]
+            unsafe_row._aria_tracked = None  # type: ignore[attr-defined]
 
     def apply_probe() -> bool:
         debounce["id"] = 0
@@ -1442,6 +1516,12 @@ def show_add_repository(parent: Gtk.Window, store: AppStore, initial: str) -> No
     page.add(group)
     toolbar.set_content(page)
     dialog.set_child(toolbar)
+    dialog._add_missing_row = missing_row  # type: ignore[attr-defined]
+    dialog._add_bare_row = bare_row  # type: ignore[attr-defined]
+    dialog._add_unsafe_row = unsafe_row  # type: ignore[attr-defined]
+    dialog._add_apply_kind = apply_kind  # type: ignore[attr-defined]
+    if parent is not None:
+        parent._add_repository_dialog = dialog  # type: ignore[attr-defined]
     refresh()
     dialog.present(parent)
 

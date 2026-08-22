@@ -41,6 +41,36 @@ def test_map_status_and_path_label() -> None:
     assert path_label("keep.txt", FileStatus(kind=AppFileStatusKind.MODIFIED)) == "keep.txt"
 
 
+def test_add_existing_repository_aria_live_matches_desktop() -> None:
+    from github_desktop.ui.dialogs import (
+        IAccessibleMessage,
+        add_existing_bare_repository_aria_live,
+        add_existing_not_a_git_repository_aria_live,
+        add_existing_unsafe_repository_aria_live,
+        buildBareRepositoryError,
+        buildNotAGitRepositoryError,
+        buildRepositoryUnsafeError,
+        screenReaderMessage,
+    )
+
+    assert add_existing_bare_repository_aria_live() == (
+        "This directory appears to be a bare repository. "
+        "Bare repositories are not currently supported."
+    )
+    assert add_existing_not_a_git_repository_aria_live() == (
+        "This directory does not appear to be a Git repository. "
+        "Would you like to create a repository here instead?"
+    )
+    unsafe = add_existing_unsafe_repository_aria_live()
+    assert unsafe.startswith("The Git repository appears to be owned by another user on your machine.")
+    assert "If you trust the owner of the directory you can add an exception" in unsafe
+    assert screenReaderMessage is add_existing_not_a_git_repository_aria_live
+    assert buildBareRepositoryError is add_existing_bare_repository_aria_live
+    assert buildRepositoryUnsafeError is add_existing_unsafe_repository_aria_live
+    assert buildNotAGitRepositoryError is add_existing_not_a_git_repository_aria_live
+    assert IAccessibleMessage is True
+
+
 def test_format_bytes_unfixed_matches_desktop_two_up() -> None:
     assert format_bytes(1024, 1) == "1.0 KiB"
     assert format_bytes(1024, 2, False) == "1 KiB"
