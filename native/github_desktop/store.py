@@ -7085,14 +7085,17 @@ class AppStore:
                 self.sign_in_error = "Failed to exchange OAuth code"
                 self.emit()
                 return
-            self._add_account(result)
-            self.oauth_state = None
-            self.sign_in_step = SignInStep.SUCCESS
-            self._finish_credential_sign_in(result)
-            self.close_popup()
-            if self.welcome_step is not None:
-                self.welcome_step = WelcomeStep.CONFIGURE_GIT
-            self.retry_last_remote_action()
+            try:
+                self._add_account(result)
+                self.oauth_state = None
+                self.sign_in_step = SignInStep.SUCCESS
+                self._finish_credential_sign_in(result)
+                self.close_popup()
+                if self.welcome_step is not None:
+                    self.welcome_step = WelcomeStep.CONFIGURE_GIT
+                self.retry_last_remote_action()
+            except Exception as err:
+                self.sign_in_error = str(err)
             self.emit()
 
         # `_run_ui` exchanges on a worker when a Gtk.Application is live, then

@@ -324,6 +324,24 @@ def test_complete_oauth_exchanges_matching_state(isolated_config, monkeypatch) -
     assert store.sign_in_error is None
 
 
+def test_complete_oauth_reports_account_save_failure(isolated_config, monkeypatch) -> None:
+    store = AppStore()
+    store.welcome_step = None
+    store.sign_in_step = SignInStep.AUTHENTICATION
+    store.oauth_state = "expected-csrf"
+    account = Account(login="octocat", endpoint="https://api.github.com", token="tok")
+    monkeypatch.setattr("github_desktop.store.exchange_code_for_account", lambda endpoint, code: account)
+    monkeypatch.setattr(
+        store,
+        "_save_accounts",
+        lambda: (_ for _ in ()).throw(OSError("config directory is not writable")),
+    )
+    store.complete_oauth("good-code", "expected-csrf")
+    assert store.sign_in_error == "config directory is not writable"
+    assert store.sign_in_step == SignInStep.AUTHENTICATION
+    assert store.oauth_state == "expected-csrf"
+
+
 def test_complete_oauth_marshals_completion_through_run_ui(isolated_config, monkeypatch) -> None:
     """Browser sign-in must not emit()/mutate UI state on a raw worker Thread."""
     store = AppStore()
