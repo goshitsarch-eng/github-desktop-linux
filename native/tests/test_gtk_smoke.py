@@ -323,6 +323,12 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             assert hasattr(win, "_repo_content")
             assert hasattr(win, "_missing_page")
             assert hasattr(win, "_tutorial_panel")
+            from github_desktop.ui.autocompletion import GENERATING_COMMIT_DETAILS
+
+            win._announce_generating_commit_details(True)
+            assert getattr(win._generate_btn, "_aria_live_message", "") == GENERATING_COMMIT_DETAILS
+            win._announce_generating_commit_details(False)
+            assert getattr(win._generate_btn, "_aria_live_message", "") == ""
             win._tutorial_panel.refresh(TutorialStep.PICK_EDITOR, "GNOME Text Editor")
             from github_desktop.models import Remote
 
