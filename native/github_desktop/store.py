@@ -7460,6 +7460,8 @@ class AppStore:
 
     def create_pull_request_from_preview(self, repo: Repository, base_branch: str | None = None) -> None:
         """Desktop Start PR Create: re-run the push gate, then `_openCreatePullRequestInBrowser`."""
+        self.stats.increment("createPullRequestCount")
+        self.stats.increment("createPullRequestFromPreviewCount")
         self._create_pull_request_flow(repo, preview=False, base_branch=base_branch)
 
     def create_pull_request(self, repo: Repository, title: str, base: str, body: str = "", draft: bool = False) -> None:

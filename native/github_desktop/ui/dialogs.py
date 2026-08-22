@@ -97,6 +97,45 @@ from .menus import (
 )
 from .multi_commit import show_multi_commit, show_warn_force_push
 
+# Desktop `open-pull-request-dialog.tsx` / `pull-request-merge-status.tsx`.
+THERE_ARE_NO_CHANGES = "There are no changes."
+COULD_NOT_FIND_DEFAULT_BRANCH = "Could not find a default branch to compare against."
+SELECT_A_BASE_BRANCH_ABOVE = "Select a base branch above."
+
+
+def pull_request_merge_status_text(kind: ComputedAction | None) -> str:
+    """Desktop `PullRequestMergeStatus` footer copy (Linux)."""
+    if kind is None:
+        return ""
+    if kind == ComputedAction.LOADING:
+        return "Checking mergeability… Don’t worry, you can still create the pull request."
+    if kind == ComputedAction.INVALID:
+        return "Error checking merge status. Unable to merge unrelated histories in this repository"
+    if kind == ComputedAction.CLEAN:
+        return "Able to merge. These branches can be automatically merged."
+    if kind == ComputedAction.CONFLICTS:
+        return "Can't automatically merge. Don’t worry, you can still create the pull request."
+    return ""
+
+
+def open_pull_request_no_changes_body(*, has_merge_base: bool, base: str, current: str) -> str:
+    """Desktop `renderNoChanges` body under `There are no changes.`"""
+    if has_merge_base:
+        return f"{base} is up to date with all commits from {current}."
+    return f"{base} and {current} are entirely different commit histories."
+
+
+def open_pull_request_ok_label(*, has_pull_request: bool) -> str:
+    """Desktop Linux `{View|Create} pull request`."""
+    return "View pull request" if has_pull_request else "Create pull request"
+
+
+def open_pull_request_ok_title(*, has_pull_request: bool, enterprise: bool = False) -> str:
+    """Desktop `okButtonTitle`: `{View|Create} pull request on GitHub[ Enterprise].`"""
+    verb = "View" if has_pull_request else "Create"
+    suffix = " Enterprise" if enterprise else ""
+    return f"{verb} pull request on GitHub{suffix}."
+
 
 def _alert(
     parent: Gtk.Window,
@@ -4016,6 +4055,7 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     details.append(stats)
     merge_info = Gtk.Label(wrap=True, xalign=0)
     merge_info.add_css_class("merge-info")
+    merge_info.add_css_class("pull-request-merge-status")
     details.append(merge_info)
     root.append(details)
 
@@ -4057,10 +4097,21 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     )
     root.append(paned)
 
+    empty_page = Adw.StatusPage()
+    empty_page.add_css_class("open-pull-request-message")
+    empty_page.set_visible(False)
+    root.append(empty_page)
+
     # GitHub's /pull/new form includes "Create as draft"; Desktop preview only opens that page.
     actions = Gtk.Box(spacing=8)
-    create_btn = Gtk.Button(label="Create pull request")
+    create_btn = Gtk.Button(label=open_pull_request_ok_label(has_pull_request=False))
     create_btn.add_css_class("suggested-action")
+    create_btn.set_tooltip_text(
+        open_pull_request_ok_title(
+            has_pull_request=False,
+            enterprise=bool(repo.github and not is_dotcom_endpoint(repo.github.endpoint)),
+        )
+    )
     actions.append(create_btn)
     root.append(actions)
 
@@ -4148,16 +4199,40 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
         base_name = selected["name"] or default
         commit_word = "commit" if n == 1 else "commits"
         merge_into.set_text(f"Merge {n} {commit_word} into {base_name} from {current}.")
-        if getattr(st, "pr_preview_loading", False):
+        has_pr = bool(st.current_pull_request)
+        enterprise = bool(repo.github and not is_dotcom_endpoint(repo.github.endpoint))
+        create_btn.set_label(open_pull_request_ok_label(has_pull_request=has_pr))
+        create_btn.set_tooltip_text(
+            open_pull_request_ok_title(has_pull_request=has_pr, enterprise=enterprise)
+        )
+        create_btn.set_sensitive(has_pr or bool(st.pr_commits))
+
+        def show_empty(title: str, body: str) -> None:
+            empty_page.set_title(title)
+            empty_page.set_description(body)
+            empty_page.set_visible(True)
+            paned.set_visible(False)
+
+        def show_files() -> None:
+            empty_page.set_visible(False)
+            paned.set_visible(True)
+
+        def apply_merge_status(kind: ComputedAction | None) -> None:
+            merge_info.set_text(pull_request_merge_status_text(kind))
+
+        if not base_name:
+            selected["merge_token"] = int(selected["merge_token"]) + 1
+            stats.set_text("")
+            apply_merge_status(None)
+            show_empty(COULD_NOT_FIND_DEFAULT_BRANCH, SELECT_A_BASE_BRANCH_ABOVE)
+        elif getattr(st, "pr_preview_loading", False):
             selected["merge_token"] = int(selected["merge_token"]) + 1
             stats.set_text("Loading preview…")
-            merge_info.set_text("")
+            apply_merge_status(ComputedAction.LOADING)
+            show_files()
         elif n == 0:
-            selected["merge_token"] = int(selected["merge_token"]) + 1
-            stats.set_text("No commits to merge into the base branch")
-            merge_info.set_text("")
-        else:
-            stats.set_text(f"{files_n} files · {added} added lines, {deleted} removed lines")
+            stats.set_text("")
+            show_empty(THERE_ARE_NO_CHANGES, open_pull_request_no_changes_body(has_merge_base=True, base=base_name, current=current))
             from ..git.ops import determine_mergeability
 
             ours = next((b.tip_sha for b in st.branches if b.name == (st.pr_base_branch or default)), None)
@@ -4165,9 +4240,51 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
             token = int(selected["merge_token"]) + 1
             selected["merge_token"] = token
             if ours and theirs:
-                merge_info.set_text(
-                    "Checking mergeability… Don’t worry, you can still create the pull request."
-                )
+                apply_merge_status(ComputedAction.LOADING)
+
+                def work_empty() -> MergeTreeResult:
+                    try:
+                        return determine_mergeability(repo.path, ours, theirs)
+                    except Exception:
+                        return MergeTreeResult(kind=ComputedAction.INVALID)
+
+                def done_empty(exc: BaseException | None, result: MergeTreeResult | None = None) -> None:
+                    if selected["merge_token"] != token:
+                        return
+                    status = result
+                    if exc or status is None:
+                        apply_merge_status(ComputedAction.INVALID)
+                        show_empty(
+                            THERE_ARE_NO_CHANGES,
+                            open_pull_request_no_changes_body(
+                                has_merge_base=False, base=base_name, current=current
+                            ),
+                        )
+                        return
+                    apply_merge_status(status.kind)
+                    show_empty(
+                        THERE_ARE_NO_CHANGES,
+                        open_pull_request_no_changes_body(
+                            has_merge_base=status.kind != ComputedAction.INVALID,
+                            base=base_name,
+                            current=current,
+                        ),
+                    )
+
+                store._run(work_empty, done_empty)
+            else:
+                apply_merge_status(None)
+        else:
+            stats.set_text(f"{files_n} files · {added} added lines, {deleted} removed lines")
+            show_files()
+            from ..git.ops import determine_mergeability
+
+            ours = next((b.tip_sha for b in st.branches if b.name == (st.pr_base_branch or default)), None)
+            theirs = st.status.current_tip if st.status else None
+            token = int(selected["merge_token"]) + 1
+            selected["merge_token"] = token
+            if ours and theirs:
+                apply_merge_status(ComputedAction.LOADING)
 
                 def work() -> MergeTreeResult:
                     try:
@@ -4180,21 +4297,13 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
                         return
                     status = result
                     if exc or status is None:
-                        merge_info.set_text("Unable to merge unrelated histories into this base branch.")
+                        apply_merge_status(ComputedAction.INVALID)
                         return
-                    if status.kind == ComputedAction.CONFLICTS:
-                        noun = "file" if status.conflicted_files == 1 else "files"
-                        merge_info.set_text(
-                            f"Can't automatically merge. {status.conflicted_files} conflicted {noun}."
-                        )
-                    elif status.kind == ComputedAction.INVALID:
-                        merge_info.set_text("Unable to merge unrelated histories into this base branch.")
-                    else:
-                        merge_info.set_text("Able to merge automatically.")
+                    apply_merge_status(status.kind)
 
                 store._run(work, done)
             else:
-                merge_info.set_text("")
+                apply_merge_status(None)
         while True:
             row = file_list.get_first_child()
             if row is None:
@@ -4216,12 +4325,6 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
             )
         else:
             viewer.render(None)
-        if st.current_pull_request:
-            create_btn.set_label("View pull request")
-            create_btn.set_sensitive(True)
-        else:
-            create_btn.set_label("Create pull request")
-            create_btn.set_sensitive(bool(st.pr_commits))
 
     def on_file(_l, row) -> None:
         file = getattr(row, "_file", None)

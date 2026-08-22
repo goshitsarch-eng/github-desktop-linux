@@ -266,6 +266,9 @@ def test_create_pr_from_preview_opens_browser_with_base(isolated_config, git_rep
     store.state_for(repo).ahead_behind = AheadBehind(ahead=0, behind=0)
     store.create_pull_request_from_preview(repo, "develop")
     assert any("/pull/new/" in url and "develop" in url for url in opened)
+    measures = store.stats.get_daily_measures()
+    assert measures.get("createPullRequestFromPreviewCount", 0) >= 1
+    assert measures.get("createPullRequestCount", 0) >= 1
 
 
 def test_hide_whitespace_settings_are_split(isolated_config, git_repo: Path) -> None:

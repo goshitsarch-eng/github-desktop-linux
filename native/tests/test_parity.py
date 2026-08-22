@@ -1607,5 +1607,12 @@ def test_window_actions_cover_menus() -> None:
         "isLoadingSlow",
         "loading-indicator",
         "propSnapshot",
+        "There are no changes.",
+        "Could not find a default branch to compare against",
+        "These branches can be automatically merged",
+        "Error checking merge status",
+        "PullRequestMergeStatus",
+        "mergesInitiatedFromComparison",
+        "createPullRequestFromPreviewCount",
     ]:
         assert phrase in src

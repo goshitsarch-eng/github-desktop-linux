@@ -773,6 +773,45 @@ def test_seamless_diff_switcher_loading_helpers() -> None:
     assert isLoadingSlow(False, 999) is False
 
 
+def test_open_pull_request_copy_matches_desktop() -> None:
+    from github_desktop.models import ComputedAction
+    from github_desktop.ui.dialogs import (
+        COULD_NOT_FIND_DEFAULT_BRANCH,
+        SELECT_A_BASE_BRANCH_ABOVE,
+        THERE_ARE_NO_CHANGES,
+        open_pull_request_no_changes_body,
+        open_pull_request_ok_label,
+        open_pull_request_ok_title,
+        pull_request_merge_status_text,
+    )
+
+    assert THERE_ARE_NO_CHANGES == "There are no changes."
+    assert COULD_NOT_FIND_DEFAULT_BRANCH.startswith("Could not find a default branch")
+    assert SELECT_A_BASE_BRANCH_ABOVE == "Select a base branch above."
+    assert open_pull_request_no_changes_body(
+        has_merge_base=True, base="main", current="topic"
+    ) == "main is up to date with all commits from topic."
+    assert open_pull_request_no_changes_body(
+        has_merge_base=False, base="main", current="topic"
+    ) == "main and topic are entirely different commit histories."
+    assert pull_request_merge_status_text(ComputedAction.LOADING).startswith("Checking mergeability")
+    assert "These branches can be automatically merged." in pull_request_merge_status_text(
+        ComputedAction.CLEAN
+    )
+    assert pull_request_merge_status_text(ComputedAction.CLEAN).startswith("Able to merge.")
+    assert "Error checking merge status." in pull_request_merge_status_text(ComputedAction.INVALID)
+    conflicts = pull_request_merge_status_text(ComputedAction.CONFLICTS)
+    assert "Can't automatically merge." in conflicts
+    assert "still create the pull request" in conflicts
+    assert open_pull_request_ok_label(has_pull_request=False) == "Create pull request"
+    assert open_pull_request_ok_label(has_pull_request=True) == "View pull request"
+    assert open_pull_request_ok_title(has_pull_request=False) == "Create pull request on GitHub."
+    assert (
+        open_pull_request_ok_title(has_pull_request=True, enterprise=True)
+        == "View pull request on GitHub Enterprise."
+    )
+
+
 def test_get_hunk_handle_label_matches_desktop() -> None:
     from github_desktop.git.diff import DiffRange, DiffRangeType
     from github_desktop.ui.diff_view import get_hunk_handle_label, is_only_one_check_in_row

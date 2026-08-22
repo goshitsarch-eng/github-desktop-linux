@@ -5050,6 +5050,7 @@ class MainWindow(Adw.ApplicationWindow):
         if kind == MultiCommitOperationKind.REBASE:
             self.store.rebase_branch(repo, compare)
         else:
+            self.store.stats.increment("mergesInitiatedFromComparison")
             self.store.merge_branch(repo, compare, squash=(kind == MultiCommitOperationKind.SQUASH))
         self.store.compare_to_branch(repo, None)
 

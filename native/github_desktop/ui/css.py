@@ -429,6 +429,13 @@ window:not(.underline-links) link {
 .seamless-diff-switcher.loading.has-diff.slow .diff-switcher-content {
   opacity: 0.2;
 }
+/* Desktop `open-pull-request` empty message + footer merge status */
+.open-pull-request-message {
+  padding: 16px;
+}
+.pull-request-merge-status {
+  opacity: 0.9;
+}
 """
 
 _provider: Gtk.CssProvider | None = None
