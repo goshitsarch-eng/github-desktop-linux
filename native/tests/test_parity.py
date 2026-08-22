@@ -1688,5 +1688,9 @@ def test_window_actions_cover_menus() -> None:
         "Input cleared",
         "displayClearButton",
         "input_cleared_aria_live",
+        "Did you know about submodules?",
+        "appears to be a subfolder Git repository",
+        "create_repository_exists_aria_live",
+        "create_repository_subfolder_aria_live",
     ]:
         assert phrase in src

@@ -644,6 +644,16 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             from github_desktop.ui.dialogs import show_create_repository
 
             show_create_repository(win, store, "")
+            from github_desktop.create_repo import create_repository_sanitized_name_aria_live
+
+            create_dlg = getattr(win, "_create_repository_dialog", None)
+            assert create_dlg is not None
+            create_dlg._create_name_row.set_text("My Repo")
+            create_dlg._create_refresh_hints()
+            assert create_dlg._create_sanitized_row.get_visible()
+            assert getattr(create_dlg._create_sanitized_row, "_aria_live_message", "") == (
+                create_repository_sanitized_name_aria_live("My-Repo")
+            )
             from github_desktop.ui.dialogs import show_add_repository
 
             show_add_repository(win, store, str(git_repo))

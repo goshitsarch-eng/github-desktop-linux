@@ -1446,10 +1446,57 @@ def show_add_repository(parent: Gtk.Window, store: AppStore, initial: str) -> No
     dialog.present(parent)
 
 
+def _apply_input_description_aria(widget: Gtk.Widget, message: str, *, tracked: object) -> None:
+    """Desktop InputWarning/InputError AriaLiveContainer `ariaLiveMessage`.
+
+    Visual LABEL updates immediately. `announce` waits 1s after trackedUserInput
+    changes, matching `aria-live-container.tsx` (immediate under pytest).
+    """
+    prev = getattr(widget, "_aria_tracked", object())
+    widget._aria_live_message = message  # type: ignore[attr-defined]
+    widget._aria_tracked = tracked  # type: ignore[attr-defined]
+    try:
+        widget.update_property([Gtk.AccessibleProperty.LABEL], [message])
+    except Exception:
+        pass
+    source = getattr(widget, "_aria_announce_source", 0)
+    if source:
+        try:
+            GLib.source_remove(source)
+        except Exception:
+            pass
+        widget._aria_announce_source = 0  # type: ignore[attr-defined]
+    if not message or prev == tracked:
+        return
+
+    def fire() -> bool:
+        widget._aria_announce_source = 0  # type: ignore[attr-defined]
+        live = getattr(widget, "_aria_live_message", message)
+        if not live:
+            return False
+        try:
+            widget.announce(live, Gtk.AccessibleAnnouncementPriority.MEDIUM)
+        except Exception:
+            pass
+        return False
+
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        fire()
+        return
+    try:
+        widget._aria_announce_source = GLib.timeout_add(1000, fire)  # type: ignore[attr-defined]
+    except Exception:
+        fire()
+
+
 def show_create_repository(parent: Gtk.Window, store: AppStore, initial: str) -> None:
     from ..create_repo import (
         NO_GITIGNORE,
         NO_LICENSE,
+        create_repository_exists_aria_live,
+        create_repository_readme_overwrite_aria_live,
+        create_repository_sanitized_name_aria_live,
+        create_repository_subfolder_aria_live,
         gitignore_names,
         license_templates,
         sanitized_repository_name,
@@ -1581,15 +1628,38 @@ def show_create_repository(parent: Gtk.Window, store: AppStore, initial: str) ->
         clean = sanitized_repository_name(raw) if raw else ""
         if raw and clean != raw:
             sanitized_row.set_title(f"Will be created as {clean}")
+            sanitized_row.set_subtitle(
+                "Spaces and invalid characters have been replaced by hyphens."
+            )
             sanitized_row.set_visible(True)
+            _apply_input_description_aria(
+                sanitized_row,
+                create_repository_sanitized_name_aria_live(clean),
+                tracked=clean,
+            )
         else:
             sanitized_row.set_visible(False)
+            sanitized_row._aria_tracked = None  # type: ignore[attr-defined]
         full = resolved_path()
         readme_exists = bool(raw) and readme.get_active() and os.path.isfile(os.path.join(full, "README.md"))
         readme_warn.set_visible(readme_exists)
+        if readme_exists:
+            _apply_input_description_aria(
+                readme_warn,
+                create_repository_readme_overwrite_aria_live(),
+                tracked=True,
+            )
+        else:
+            readme_warn._aria_tracked = None  # type: ignore[attr-defined]
         if not raw:
+            if classify_debounce["id"]:
+                GLib.source_remove(classify_debounce["id"])
+                classify_debounce["id"] = 0
+            classify_token["n"] += 1
             exists_row.set_visible(False)
+            exists_row._aria_tracked = None  # type: ignore[attr-defined]
             subfolder_row.set_visible(False)
+            subfolder_row._aria_tracked = None  # type: ignore[attr-defined]
             path_group.set_description("")
             create_btn.set_sensitive(False)
             return
@@ -1607,7 +1677,33 @@ def show_create_repository(parent: Gtk.Window, store: AppStore, initial: str) ->
                     return
                 is_repo, is_sub = result
                 exists_row.set_visible(is_repo)
-                subfolder_row.set_visible(is_sub and not is_repo)
+                if is_repo:
+                    exists_row.set_title(
+                        f"The directory {full} appears to be a Git repository."
+                    )
+                    exists_row.set_subtitle(
+                        "Would you like to add this repository instead?"
+                    )
+                    _apply_input_description_aria(
+                        exists_row,
+                        create_repository_exists_aria_live(full),
+                        tracked=full,
+                    )
+                else:
+                    exists_row._aria_tracked = None  # type: ignore[attr-defined]
+                show_sub = is_sub and not is_repo
+                subfolder_row.set_visible(show_sub)
+                if show_sub:
+                    subfolder_row.set_title(
+                        f"The directory {full} appears to be a subfolder of a Git repository."
+                    )
+                    _apply_input_description_aria(
+                        subfolder_row,
+                        create_repository_subfolder_aria_live(full),
+                        tracked=full,
+                    )
+                else:
+                    subfolder_row._aria_tracked = None  # type: ignore[attr-defined]
                 if not is_repo:
                     path_group.set_description(f"The repository will be created at {full}.")
                 else:
@@ -1678,6 +1774,13 @@ def show_create_repository(parent: Gtk.Window, store: AppStore, initial: str) ->
     page.add(path_group)
     toolbar.set_content(page)
     dialog.set_child(toolbar)
+    dialog._create_name_row = name_row  # type: ignore[attr-defined]
+    dialog._create_sanitized_row = sanitized_row  # type: ignore[attr-defined]
+    dialog._create_exists_row = exists_row  # type: ignore[attr-defined]
+    dialog._create_subfolder_row = subfolder_row  # type: ignore[attr-defined]
+    dialog._create_refresh_hints = refresh_hints  # type: ignore[attr-defined]
+    if parent is not None:
+        parent._create_repository_dialog = dialog  # type: ignore[attr-defined]
     refresh_hints()
     dialog.present(parent)
 

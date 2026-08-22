@@ -20,6 +20,33 @@ def test_sanitized_repository_name_matches_desktop() -> None:
     assert sanitized_repository_name("") == ""
 
 
+def test_create_repository_aria_live_matches_desktop() -> None:
+    from github_desktop.create_repo import (
+        create_repository_exists_aria_live,
+        create_repository_readme_overwrite_aria_live,
+        create_repository_sanitized_name_aria_live,
+        create_repository_subfolder_aria_live,
+    )
+
+    path = "/home/user/code/demo"
+    assert create_repository_exists_aria_live(path) == (
+        "The directory /home/user/code/demo appears to be a Git repository. "
+        "Would you like to add this repository instead?"
+    )
+    assert create_repository_subfolder_aria_live(path) == (
+        "The directory /home/user/code/demo appears to be a subfolder Git repository. "
+        "Did you know about submodules?"
+    )
+    assert create_repository_sanitized_name_aria_live("My-Repo") == (
+        "Will be created as My-Repo. "
+        "Spaces and invalid characters have been replaced by hyphens."
+    )
+    assert create_repository_readme_overwrite_aria_live() == (
+        "This directory contains a README.md file already. Checking "
+        "this box will result in the existing file being overwritten."
+    )
+
+
 def test_write_default_readme_includes_empty_description(tmp_path: Path) -> None:
     write_default_readme(str(tmp_path), "Demo", "")
     text = (tmp_path / "README.md").read_text(encoding="utf-8")
