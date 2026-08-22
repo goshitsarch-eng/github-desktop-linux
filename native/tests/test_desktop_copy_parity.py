@@ -630,8 +630,11 @@ def test_commit_autocompletion_matches_desktop() -> None:
     from github_desktop.ui.autocompletion import (
         SUMMARY_LENGTH_HINT,
         UNREACHABLE_COMMITS_LEARN_MORE,
+        announce_autocompletion_suggestions,
+        autocompletion_suggestions_aria_live,
         completion_insert_text,
         completion_matches,
+        suggestionsMessage,
         summary_length_hint,
         token_before_cursor,
         unreachable_commits_message,
@@ -663,6 +666,25 @@ def test_commit_autocompletion_matches_desktop() -> None:
     assert "not in the ancestry path" in unreachable_commits_message(unreachable_tab=True, count=2)
     assert "Learn more" not in unreachable_commits_message(unreachable_tab=False, count=1)
     assert "unreachable-commits.md" in UNREACHABLE_COMMITS_LEARN_MORE
+    assert autocompletion_suggestions_aria_live(0) is None
+    assert autocompletion_suggestions_aria_live(1) == "1 suggestion"
+    assert autocompletion_suggestions_aria_live(2) == "2 suggestions"
+    assert suggestionsMessage is autocompletion_suggestions_aria_live
+    tracker: dict = {}
+    assert announce_autocompletion_suggestions(None, 0, rangeText="#", tracker=tracker) is None
+    assert (
+        announce_autocompletion_suggestions(None, 3, rangeText="#12", tracker=tracker)
+        == "3 suggestions"
+    )
+    assert announce_autocompletion_suggestions(None, 3, rangeText="#12", tracker=tracker) is None
+    assert (
+        announce_autocompletion_suggestions(None, 3, rangeText="#1", tracker=tracker)
+        == "3 suggestions"
+    )
+    assert (
+        announce_autocompletion_suggestions(None, 1, rangeText="#1", tracker=tracker)
+        == "1 suggestion"
+    )
 
 
 def test_commit_warning_links_and_status_message() -> None:

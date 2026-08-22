@@ -303,11 +303,14 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             assert empty.get_name() == "diff"
             assert not isinstance(empty, Adw.StatusPage)
             from github_desktop.ui.text_box import INPUT_CLEARED, search_entry
+            from github_desktop.ui.autocompletion import announce_autocompletion_suggestions
 
             cleared = search_entry()
             cleared.set_text("branch")
             cleared.set_text("")
             assert getattr(cleared, "_input_cleared_message", "") == INPUT_CLEARED
+            assert announce_autocompletion_suggestions(win._summary, 1, rangeText="#42") == "1 suggestion"
+            assert getattr(win._summary, "_suggestions_message", "") == "1 suggestion"
             viewer.render(BinaryDiff(), path="photo.bin")
             from github_desktop.models import ImageDiff, ImageDiffType
 

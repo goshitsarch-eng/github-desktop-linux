@@ -13,7 +13,12 @@ from gi.repository import Gdk, Gtk
 
 from ..email import legacy_stealth_email_for_user
 from ..models import Author, parse_co_authors
-from .autocompletion import SEARCH_FOR_USER, fill_coauthor_store
+from .autocompletion import (
+    SEARCH_FOR_USER,
+    announce_autocompletion_suggestions,
+    fill_coauthor_store,
+    widget_should_announce_suggestions,
+)
 
 # Desktop `AuthorInput` label is always "Co-Authors"; placeholder is "@username".
 CO_AUTHORS_LABEL = "Co-Authors"
@@ -162,6 +167,7 @@ class AuthorInput(Gtk.Box):
         self._authors: list[Author] = []
         self._updating = False
         self._last_action_description: str | None = None
+        self._suggestions_tracker: dict[str, object] = {}
         # display, kind, username, name, email
         self.store = Gtk.ListStore(str, str, str, str, str)
         self._chips = Gtk.FlowBox()
@@ -219,7 +225,7 @@ class AuthorInput(Gtk.Box):
         exclude = self._exclude_login() if self._exclude_login is not None else None
         endpoint = self._get_endpoint() if self._get_endpoint is not None else ""
         already = [author.username for author in self._authors if author.username]
-        fill_coauthor_store(
+        count = fill_coauthor_store(
             self.store,
             state,
             query=query,
@@ -228,6 +234,13 @@ class AuthorInput(Gtk.Box):
             exclude_usernames=already,
             endpoint=endpoint,
         )
+        if widget_should_announce_suggestions(self.entry):
+            announce_autocompletion_suggestions(
+                self.entry,
+                count,
+                rangeText=query,
+                tracker=self._suggestions_tracker,
+            )
 
     def commit_pending(self) -> None:
         text = self.entry.get_text().strip().strip(",")
