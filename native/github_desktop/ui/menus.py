@@ -89,6 +89,63 @@ def git_config_popover_copy(*, local: bool) -> str:
 
 YOUR_ACCOUNT_EMAILS = "Your Account Emails"
 UPDATE_EMAIL_LABEL = "Update email"
+IGNORE_LABEL = "Ignore"
+VIEW_COMMIT_AUTHOR_INFORMATION = "View commit author information"
+COMMIT_MAY_BE_MISATTRIBUTED = "Commit may be misattributed. View warning."
+EMAIL_ADDRESS_IS_DISALLOWED = "Email address is disallowed. View warning."
+THIS_COMMIT_WILL_BE_MISATTRIBUTED = "This commit will be misattributed"
+THIS_EMAIL_ADDRESS_IS_DISALLOWED = "This email address is disallowed"
+LEARN_MORE_ABOUT_COMMIT_ATTRIBUTION = "Learn more about commit attribution"
+
+
+def commit_message_avatar_warning_type(
+    *,
+    email: str | None,
+    repo_rules_enabled: bool,
+    email_failures_status: str,
+    misattributed: bool,
+) -> str:
+    """Desktop `CommitMessageAvatarWarningType`."""
+    if email:
+        if repo_rules_enabled and email_failures_status != "pass":
+            return "disallowedEmail"
+        if misattributed:
+            return "misattribution"
+    return "none"
+
+
+def commit_message_avatar_aria_label(warning_type: str) -> str:
+    """Desktop `CommitMessageAvatar` button `ariaLabel`."""
+    if warning_type == "misattribution":
+        return COMMIT_MAY_BE_MISATTRIBUTED
+    if warning_type == "disallowedEmail":
+        return EMAIL_ADDRESS_IS_DISALLOWED
+    return VIEW_COMMIT_AUTHOR_INFORMATION
+
+
+def commit_message_avatar_email_leading_text(email: str) -> str:
+    """Desktop `CommitMessageAvatar.renderWarningPopover` `sharedHeader`."""
+    return f"The email in your global Git config ({email})"
+
+
+def commit_message_avatar_choose_local_email_copy(*, has_emails: bool) -> str:
+    also = " also" if has_emails else ""
+    return (
+        f"You can{also} choose an email local to this repository from the repository settings."
+    )
+
+
+def committing_as_title(*, name: str | None, email: str | None) -> str:
+    """Desktop `CommitMessageAvatar.getCommittingAsTitle`."""
+    if not name and not email:
+        return "Unknown user"
+    if name:
+        return f"Committing as {name}"
+    return f"Committing with {email}"
+
+
+CommitMessageAvatarWarningType = commit_message_avatar_warning_type
+getCommittingAsTitle = committing_as_title
 
 
 GENERATE_COMMIT_MESSAGE_WITH_COPILOT = "Generate commit message with Copilot"

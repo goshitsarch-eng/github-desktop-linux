@@ -184,6 +184,55 @@ def test_author_input_and_diff_options_linux_copy() -> None:
     assert "press backspace or delete to remove" in author_handle_aria_label(searching)
 
 
+def test_commit_message_avatar_warning_type_and_aria() -> None:
+    from github_desktop.ui.menus import (
+        commit_message_avatar_aria_label,
+        commit_message_avatar_choose_local_email_copy,
+        commit_message_avatar_email_leading_text,
+        commit_message_avatar_warning_type,
+        committing_as_title,
+    )
+
+    assert commit_message_avatar_warning_type(
+        email="dev@example.com",
+        repo_rules_enabled=True,
+        email_failures_status="fail",
+        misattributed=True,
+    ) == "disallowedEmail"
+    assert commit_message_avatar_warning_type(
+        email="dev@example.com",
+        repo_rules_enabled=True,
+        email_failures_status="bypass",
+        misattributed=False,
+    ) == "disallowedEmail"
+    assert commit_message_avatar_warning_type(
+        email="dev@example.com",
+        repo_rules_enabled=False,
+        email_failures_status="fail",
+        misattributed=True,
+    ) == "misattribution"
+    assert commit_message_avatar_warning_type(
+        email="dev@example.com",
+        repo_rules_enabled=False,
+        email_failures_status="pass",
+        misattributed=False,
+    ) == "none"
+    assert commit_message_avatar_aria_label("none") == "View commit author information"
+    assert commit_message_avatar_aria_label("misattribution") == (
+        "Commit may be misattributed. View warning."
+    )
+    assert commit_message_avatar_aria_label("disallowedEmail") == (
+        "Email address is disallowed. View warning."
+    )
+    assert commit_message_avatar_email_leading_text("a@b.com") == (
+        "The email in your global Git config (a@b.com)"
+    )
+    assert "also choose" in commit_message_avatar_choose_local_email_copy(has_emails=True)
+    assert committing_as_title(name="Ada", email="a@b.com") == "Committing as Ada"
+    assert committing_as_title(name=None, email="a@b.com") == "Committing with a@b.com"
+    assert committing_as_title(name=None, email=None) == "Unknown user"
+
+
 def test_unknown_author_live_search_and_user_hits() -> None:
     from types import SimpleNamespace
 

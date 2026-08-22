@@ -1517,5 +1517,18 @@ def test_window_actions_cover_menus() -> None:
         "toggleRuleFailurePopover",
         "isRuleFailurePopoverOpen",
         "repoRulesEnabled",
+        "disallowedEmail",
+        "misattribution",
+        "View commit author information",
+        "Commit may be misattributed",
+        "Email address is disallowed",
+        "warningType",
+        "emailRuleFailures",
+        "getCommittingAsTitle",
+        "renderWarningPopover",
+        "renderGitConfigPopover",
+        "Learn more about commit attribution",
+        "The email in your global Git config",
+        "isGitConfigLocal",
     ]:
         assert phrase in src

@@ -152,6 +152,16 @@ from .menus import (
     view_on_github_label,
     widget_is_or_inside,
     YOUR_ACCOUNT_EMAILS,
+    UPDATE_EMAIL_LABEL,
+    IGNORE_LABEL,
+    LEARN_MORE_ABOUT_COMMIT_ATTRIBUTION,
+    THIS_COMMIT_WILL_BE_MISATTRIBUTED,
+    THIS_EMAIL_ADDRESS_IS_DISALLOWED,
+    commit_message_avatar_aria_label,
+    commit_message_avatar_choose_local_email_copy,
+    commit_message_avatar_email_leading_text,
+    commit_message_avatar_warning_type,
+    committing_as_title,
     git_config_popover_copy,
     open_git_settings_label,
 )
@@ -4905,15 +4915,26 @@ class MainWindow(Adw.ApplicationWindow):
         self._repo_list_menu(widget, repo)
 
     def _refresh_author_avatar(self, repo) -> None:
+        """Desktop `CommitMessageAvatar` (`renderWarningPopover` / `renderGitConfigPopover`)."""
         if not hasattr(self, "_author_avatar_host"):
             return
-        from ..email import is_attributable_email_for, lookup_preferred_email
+        from ..email import COMMIT_ATTRIBUTION_DOCS, is_attributable_email_for, lookup_preferred_email
+        from ..git.ops import get_config_value
+        from ..github.repo_rules import use_repo_rules_logic
 
         name, email = self.store.author_identity(repo)
         account = self.store.account_for_repo(repo)
         state = self.store.state_for(repo)
         email_failures = state.repo_rules.commit_author_email_patterns.get_failed_rules(email or "")
-        disallowed = email_failures.status == "fail"
+        emailRuleFailures = email_failures
+        misattributed = bool(account and email and not is_attributable_email_for(account, email))
+        repo_rules_enabled = use_repo_rules_logic(account, repo)
+        warningType = commit_message_avatar_warning_type(
+            email=email,
+            repo_rules_enabled=repo_rules_enabled,
+            email_failures_status=emailRuleFailures.status,
+            misattributed=misattributed,
+        )
         clear_box(self._author_avatar_host)
         avatar = Avatar(
             name or (account.login if account else "Git"),
@@ -4925,79 +4946,115 @@ class MainWindow(Adw.ApplicationWindow):
             endpoint=account.endpoint if account else None,
         )
         self._author_avatar_host.append(avatar)
-        misattributed = bool(account and email and not is_attributable_email_for(account, email))
         self._author_btn.remove_css_class("author-warning")
         self._author_btn.remove_css_class("author-error")
-        if disallowed:
-            self._author_btn.add_css_class("author-error")
-            self._author_warn.set_text("This email address is disallowed. View warning.")
-            self._author_warn.set_visible(True)
-        elif misattributed:
-            self._author_btn.add_css_class("author-warning")
-            self._author_warn.set_text("This email address doesn't match your GitHub account. Commits may not be attributed to you.")
-            self._author_warn.set_visible(True)
-        else:
+        is_error = warningType == "disallowedEmail" and emailRuleFailures.status == "fail"
+        if warningType != "none":
+            self._author_btn.add_css_class("author-error" if is_error else "author-warning")
+        if hasattr(self, "_author_warn"):
             self._author_warn.set_visible(False)
-        self._author_btn.set_tooltip_text(f"{name or 'Unknown'} <{email or 'no email'}>")
+        aria = commit_message_avatar_aria_label(warningType)
+        self._author_btn.set_tooltip_text(aria)
+        try:
+            self._author_btn.update_property([Gtk.AccessibleProperty.LABEL], [aria])
+        except Exception:
+            pass
         clear_box(self._author_popover_box)
-        heading_text = "Commit author"
-        if disallowed:
-            heading_text = "This email address is disallowed"
-        elif misattributed:
-            heading_text = "This commit will be misattributed"
+        if warningType == "disallowedEmail":
+            heading_text = THIS_EMAIL_ADDRESS_IS_DISALLOWED
+        elif warningType == "misattribution":
+            heading_text = THIS_COMMIT_WILL_BE_MISATTRIBUTED
+        else:
+            heading_text = committing_as_title(name=name, email=email)
         heading = Gtk.Label(label=heading_text, xalign=0)
         heading.add_css_class("heading")
         self._author_popover_box.append(heading)
-        self._author_popover_box.append(Gtk.Label(label=f"{name or ''} <{email or ''}>", xalign=0, wrap=True))
-        if disallowed:
-            total = len(email_failures.failed) + len(email_failures.bypassed)
+        branch = state.status.current_branch if state.status else None
+        if warningType == "disallowedEmail" and repo.github and branch:
+            self._author_popover_box.append(
+                self._repo_rules_failure_list(
+                    commit_message_avatar_email_leading_text(email or ""),
+                    emailRuleFailures,
+                    repo.github,
+                    branch,
+                )
+            )
+        elif warningType == "misattribution":
+            enterprise_suffix = " Enterprise" if account and account.is_enterprise else ""
+            user_name = f" for {name}" if name else ""
             warn = Gtk.Label(
                 label=(
-                    f"The email in your global Git config ({email}) fails {total} "
-                    f"rule{'s' if total != 1 else ''}."
+                    f"The email in your global Git config ({email}) doesn't match your "
+                    f"GitHub{enterprise_suffix} account{user_name}. "
+                    "This email address doesn't match your GitHub account. "
+                    "Commits may not be attributed to you."
                 ),
                 wrap=True,
                 xalign=0,
             )
             warn.add_css_class("warning")
             self._author_popover_box.append(warn)
-            from ..github.repo_rules import rulesets_url_for_branch
-
-            branch = state.status.current_branch if state.status else None
-            uri = rulesets_url_for_branch(repo.github, branch) if repo.github else None
-            if uri:
-                link = Gtk.LinkButton(uri=uri, label="View repository rulesets")
-                link.set_halign(Gtk.Align.START)
-                self._author_popover_box.append(link)
-        elif misattributed:
-            warn = Gtk.Label(
-                label="This commit may not be attributed to your GitHub account. Choose an email below or update Git config.",
-                wrap=True,
-                xalign=0,
+            learn = Gtk.LinkButton(uri=COMMIT_ATTRIBUTION_DOCS, label="Learn more")
+            learn.set_tooltip_text(LEARN_MORE_ABOUT_COMMIT_ATTRIBUTION)
+            learn.set_halign(Gtk.Align.START)
+            self._author_popover_box.append(learn)
+        else:
+            if name and email:
+                self._author_popover_box.append(Gtk.Label(label=f"Email: {email}", xalign=0, wrap=True))
+            isGitConfigLocal = False
+            try:
+                isGitConfigLocal = bool(
+                    get_config_value(repo.path, "user.name", local_only=True)
+                    or get_config_value(repo.path, "user.email", local_only=True)
+                )
+            except Exception:
+                isGitConfigLocal = False
+            is_local = isGitConfigLocal
+            self._author_popover_box.append(
+                Gtk.Label(label=git_config_popover_copy(local=is_local), wrap=True, xalign=0)
             )
-            warn.add_css_class("warning")
-            self._author_popover_box.append(warn)
-        self._author_popover_box.append(
-            Gtk.Label(label=git_config_popover_copy(local=False), wrap=True, xalign=0)
-        )
         emails = list(account.email_addresses) if account else []
         if account:
             preferred = lookup_preferred_email(account)
             if preferred not in emails:
                 emails.insert(0, preferred)
-        if emails:
+        has_emails = bool(emails)
+        if warningType != "none" and has_emails:
             emails_heading = Gtk.Label(label=YOUR_ACCOUNT_EMAILS, xalign=0)
             emails_heading.add_css_class("heading")
             self._author_popover_box.append(emails_heading)
-        for item in emails:
-            btn = Gtk.Button(label=item)
-            btn.add_css_class("flat")
-            btn.connect("clicked", lambda _b, addr=item: self._use_author_email(repo, addr))
-            self._author_popover_box.append(btn)
-        git_btn = Gtk.Button(label=open_git_settings_label())
-        git_btn.connect("clicked", lambda *_: (self._author_popover.popdown(), show_preferences(self, self.store, PreferencesTab.GIT)))
-        self._author_popover_box.append(git_btn)
-        repo_btn = Gtk.Button(label="Open repository Git config")
+            for item in emails:
+                btn = Gtk.Button(label=item)
+                btn.add_css_class("flat")
+                btn.connect("clicked", lambda _b, addr=item: self._use_author_email(repo, addr))
+                self._author_popover_box.append(btn)
+        choose = Gtk.Label(
+            label=commit_message_avatar_choose_local_email_copy(has_emails=has_emails),
+            wrap=True,
+            xalign=0,
+        )
+        choose.add_css_class("dim-label")
+        self._author_popover_box.append(choose)
+        row = Gtk.Box(spacing=6)
+        ignore = Gtk.Button(label=IGNORE_LABEL)
+        ignore.connect("clicked", lambda *_: self._author_popover.popdown())
+        row.append(ignore)
+        if warningType != "none" and has_emails:
+            update = Gtk.Button(label=UPDATE_EMAIL_LABEL)
+            update.add_css_class("suggested-action")
+            update.connect("clicked", lambda *_: self._use_author_email(repo, emails[0]))
+            row.append(update)
+        elif warningType == "none":
+            git_btn = Gtk.Button(label=open_git_settings_label())
+            git_btn.add_css_class("suggested-action")
+            git_btn.connect(
+                "clicked",
+                lambda *_: (self._author_popover.popdown(), show_preferences(self, self.store, PreferencesTab.GIT)),
+            )
+            row.append(git_btn)
+        self._author_popover_box.append(row)
+        repo_btn = Gtk.Button(label="repository settings")
+        repo_btn.add_css_class("flat")
         repo_btn.connect(
             "clicked",
             lambda *_: (
@@ -5206,12 +5263,6 @@ class MainWindow(Adw.ApplicationWindow):
                 )
             )
         if repo.github:
-            if email:
-                email_fail = state.repo_rules.commit_author_email_patterns.get_failed_rules(email)
-                if email_fail.status != "pass":
-                    action_rows.append(
-                        self._repo_rules_failure_list("The email in your Git config", email_fail, repo.github, branch)
-                    )
             if unpublished and branch:
                 name_fail = state.repo_rules.branch_name_patterns.get_failed_rules(branch)
                 if name_fail.status != "pass":
