@@ -104,6 +104,101 @@ COULD_NOT_FIND_DEFAULT_BRANCH = "Could not find a default branch to compare agai
 SELECT_A_BASE_BRANCH_ABOVE = "Select a base branch above."
 
 
+def _apply_custom_integration_aria(widget: Gtk.Widget, message: str, *, tracked: object) -> None:
+    """Desktop CustomIntegrationForm InputError `ariaLiveMessage`.
+
+    Visual LABEL updates immediately. `announce` waits 1s after trackedUserInput
+    changes, matching `aria-live-container.tsx` (immediate under pytest).
+    """
+    prev = getattr(widget, "_aria_tracked", object())
+    widget._aria_live_message = message  # type: ignore[attr-defined]
+    widget._aria_tracked = tracked  # type: ignore[attr-defined]
+    try:
+        widget.update_property([Gtk.AccessibleProperty.LABEL], [message])
+    except Exception:
+        pass
+    source = getattr(widget, "_aria_announce_source", 0)
+    if source:
+        try:
+            GLib.source_remove(source)
+        except Exception:
+            pass
+        widget._aria_announce_source = 0  # type: ignore[attr-defined]
+    if not message or prev == tracked:
+        return
+
+    def fire() -> bool:
+        widget._aria_announce_source = 0  # type: ignore[attr-defined]
+        live = getattr(widget, "_aria_live_message", message)
+        if not live:
+            return False
+        try:
+            widget.announce(live, Gtk.AccessibleAnnouncementPriority.MEDIUM)
+        except Exception:
+            pass
+        return False
+
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        fire()
+        return
+    try:
+        widget._aria_announce_source = GLib.timeout_add(1000, fire)  # type: ignore[attr-defined]
+    except Exception:
+        fire()
+
+
+def _wire_custom_integration_errors(
+    path_row: Adw.EntryRow,
+    args_row: Adw.EntryRow,
+    path_err: Gtk.Label,
+    args_err: Gtk.Label,
+    *,
+    path_error_id: str = "custom-integration-path-error",
+    args_error_id: str = "custom-integration-args-error",
+) -> None:
+    """Validate path/arguments like Desktop `CustomIntegrationForm` and announce errors."""
+    from ..custom_integration import (
+        custom_integration_args_aria_live,
+        custom_integration_path_aria_live,
+    )
+
+    path_err.set_name(path_error_id)
+    args_err.set_name(args_error_id)
+    # Desktop TextBox `ariaDescribedBy={`${id}-custom-integration-path-error`}`.
+    try:
+        path_row.update_relation([Gtk.AccessibleRelation.DESCRIBED_BY], [path_err])
+        args_row.update_relation([Gtk.AccessibleRelation.DESCRIBED_BY], [args_err])
+    except Exception:
+        pass
+
+    def refresh_path(*_a: object) -> None:
+        # Desktop only warns after a path change (`showNonValidPathWarning`);
+        # we never call this on init, so empty/invalid paths warn after edit.
+        path = path_row.get_text().strip()
+        msg = custom_integration_path_aria_live(path)
+        path_err.set_text(msg or "")
+        path_err.set_visible(bool(msg))
+        try:
+            path_row.update_property([Gtk.AccessibleProperty.DESCRIPTION], [msg or ""])
+        except Exception:
+            pass
+        _apply_custom_integration_aria(path_err, msg or "", tracked=path)
+
+    def refresh_args(*_a: object) -> None:
+        args = args_row.get_text()
+        msg = custom_integration_args_aria_live(args)
+        args_err.set_text(msg or "")
+        args_err.set_visible(bool(msg))
+        try:
+            args_row.update_property([Gtk.AccessibleProperty.DESCRIPTION], [msg or ""])
+        except Exception:
+            pass
+        _apply_custom_integration_aria(args_err, msg or "", tracked=args)
+
+    path_row.connect("notify::text", refresh_path)
+    args_row.connect("notify::text", refresh_args)
+
+
 def pull_request_merge_status_text(kind: ComputedAction | None) -> str:
     """Desktop `PullRequestMergeStatus` footer copy (Linux)."""
     if kind is None:
@@ -3361,8 +3456,16 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
 
     ed_choose.connect("clicked", choose_editor)
     ed_path.add_suffix(ed_choose)
+    ed_path_err = Gtk.Label(wrap=True, xalign=0)
+    ed_path_err.add_css_class("error")
+    ed_path_err.add_css_class("custom-integration-form-error")
+    ed_path_err.set_visible(False)
     ed_args = Adw.EntryRow(title="Arguments")
     ed_args.set_text(s.custom_editor_args or TARGET_PATH_ARGUMENT)
+    ed_args_err = Gtk.Label(wrap=True, xalign=0)
+    ed_args_err.add_css_class("error")
+    ed_args_err.add_css_class("custom-integration-form-error")
+    ed_args_err.set_visible(False)
     ed_hint = Gtk.Label(
         label=f"Use {TARGET_PATH_ARGUMENT} where the file or repository path should appear.",
         wrap=True,
@@ -3371,7 +3474,9 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
     ed_hint.add_css_class("dim-label")
     ed_group.add(editor_row)
     ed_group.add(ed_path)
+    ed_group.add(ed_path_err)
     ed_group.add(ed_args)
+    ed_group.add(ed_args_err)
     ed_group.add(ed_hint)
     sh_group = Adw.PreferencesGroup(title="Shell")
     shells = get_available_shells()
@@ -3405,8 +3510,16 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
 
     sh_choose.connect("clicked", choose_shell)
     sh_path.add_suffix(sh_choose)
+    sh_path_err = Gtk.Label(wrap=True, xalign=0)
+    sh_path_err.add_css_class("error")
+    sh_path_err.add_css_class("custom-integration-form-error")
+    sh_path_err.set_visible(False)
     sh_args = Adw.EntryRow(title="Arguments")
     sh_args.set_text(s.custom_shell_args or TARGET_PATH_ARGUMENT)
+    sh_args_err = Gtk.Label(wrap=True, xalign=0)
+    sh_args_err.add_css_class("error")
+    sh_args_err.add_css_class("custom-integration-form-error")
+    sh_args_err.set_visible(False)
     sh_hint = Gtk.Label(
         label=f"Use {TARGET_PATH_ARGUMENT} where the working directory should appear.",
         wrap=True,
@@ -3415,7 +3528,9 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
     sh_hint.add_css_class("dim-label")
     sh_group.add(shell_row)
     sh_group.add(sh_path)
+    sh_group.add(sh_path_err)
     sh_group.add(sh_args)
+    sh_group.add(sh_args_err)
     sh_group.add(sh_hint)
 
     def sync_custom_rows(*_a: Any) -> None:
@@ -3423,13 +3538,33 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
         ed_path.set_visible(custom_ed)
         ed_args.set_visible(custom_ed)
         ed_hint.set_visible(custom_ed)
+        ed_path_err.set_visible(custom_ed and ed_path_err.get_text() != "")
+        ed_args_err.set_visible(custom_ed and ed_args_err.get_text() != "")
         custom_sh = shell_row.get_selected() >= len(shells)
         sh_path.set_visible(custom_sh)
         sh_args.set_visible(custom_sh)
         sh_hint.set_visible(custom_sh)
+        sh_path_err.set_visible(custom_sh and sh_path_err.get_text() != "")
+        sh_args_err.set_visible(custom_sh and sh_args_err.get_text() != "")
 
     editor_row.connect("notify::selected", sync_custom_rows)
     shell_row.connect("notify::selected", sync_custom_rows)
+    _wire_custom_integration_errors(
+        ed_path,
+        ed_args,
+        ed_path_err,
+        ed_args_err,
+        path_error_id="custom-editor-custom-integration-path-error",
+        args_error_id="custom-editor-custom-integration-args-error",
+    )
+    _wire_custom_integration_errors(
+        sh_path,
+        sh_args,
+        sh_path_err,
+        sh_args_err,
+        path_error_id="custom-shell-custom-integration-path-error",
+        args_error_id="custom-shell-custom-integration-args-error",
+    )
     sync_custom_rows()
     integrations.add(ed_group)
     integrations.add(sh_group)
