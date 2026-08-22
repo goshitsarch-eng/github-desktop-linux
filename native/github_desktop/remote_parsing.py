@@ -297,6 +297,22 @@ def urls_match(url1: str, url2: str) -> bool:
     )
 
 
+def does_repository_match_url(repo: Repository, url: str) -> bool:
+    """Desktop Dispatcher `doesRepositoryMatchUrl`: htmlURL / parent htmlURL via `urlsMatch`."""
+    github = repo.github
+    if github is None:
+        return False
+    if github.html_url and urls_match(github.html_url, url):
+        return True
+    parent = github.parent
+    if parent is not None and parent.html_url and urls_match(parent.html_url, url):
+        return True
+    return False
+
+
+doesRepositoryMatchUrl = does_repository_match_url
+
+
 def url_matches_clone_url(url: str, github: GitHubRepository | None) -> bool:
     """Desktop `urlMatchesCloneURL`."""
     if github is None or not github.clone_url:

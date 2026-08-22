@@ -22,6 +22,7 @@ from github_desktop.models import (
 )
 from github_desktop.popup_manager import PopupManager
 from github_desktop.remote_parsing import (
+    does_repository_match_url,
     match_existing_repository,
     match_github_repository,
     parse_repository_identifier,
@@ -113,6 +114,61 @@ def test_urls_match_and_repository_matching() -> None:
     repo = Repository(id=1, path="/tmp/foo", name="foo")
     assert match_existing_repository([repo], "/tmp/foo") is repo
     assert match_existing_repository([repo], "/tmp/bar") is None
+
+
+def test_does_repository_match_url_includes_hostname() -> None:
+    """Desktop Dispatcher.doesRepositoryMatchUrl / urlsMatch: host + owner + name."""
+    dotcom = Repository(
+        id=1,
+        path="/tmp/dotcom-project",
+        name="project",
+        github=GitHubRepository(
+            name="project",
+            owner="acme",
+            html_url="https://github.com/acme/project",
+            clone_url="https://github.com/acme/project.git",
+        ),
+    )
+    ghe = Repository(
+        id=2,
+        path="/tmp/ghe-project",
+        name="project",
+        github=GitHubRepository(
+            name="project",
+            owner="acme",
+            html_url="https://ghe.example.com/acme/project",
+            clone_url="https://ghe.example.com/acme/project.git",
+            endpoint="https://ghe.example.com/api/v3",
+        ),
+    )
+    parent = GitHubRepository(
+        name="project",
+        owner="acme",
+        html_url="https://github.com/acme/project",
+        clone_url="https://github.com/acme/project.git",
+    )
+    fork = Repository(
+        id=3,
+        path="/tmp/fork-project",
+        name="project",
+        github=GitHubRepository(
+            name="project",
+            owner="me",
+            html_url="https://github.com/me/project",
+            clone_url="https://github.com/me/project.git",
+            fork=True,
+            parent=parent,
+        ),
+    )
+    assert does_repository_match_url(dotcom, "https://github.com/acme/project")
+    assert does_repository_match_url(dotcom, "https://github.com/acme/project.git")
+    assert not does_repository_match_url(dotcom, "https://ghe.example.com/acme/project")
+    assert does_repository_match_url(ghe, "https://ghe.example.com/acme/project")
+    assert not does_repository_match_url(ghe, "https://github.com/acme/project")
+    assert does_repository_match_url(fork, "https://github.com/me/project")
+    assert does_repository_match_url(fork, "https://github.com/acme/project")
+    assert not does_repository_match_url(fork, "https://ghe.example.com/acme/project")
+    assert not does_repository_match_url(Repository(id=4, path="/tmp/bare", name="bare"), "https://github.com/acme/project")
 
 
 def test_is_valid_notification_pull_request_review() -> None:
