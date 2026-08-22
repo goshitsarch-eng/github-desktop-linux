@@ -53,11 +53,15 @@ from ..models import (
 )
 from ..clamp import clamp
 from ..push_pull import (
+    FORCE_PUSH_ACTION,
     PUSH_PULL_BUTTON_STATE_ID,
     describe_push_pull,
     format_commit_relative_time,
     format_last_fetched,
     network_progress_chrome,
+    next_action_in_progress,
+    push_pull_complete_aria_live,
+    push_pull_loading_aria_live,
     HANG_ON,
 )
 from ..settings import (
@@ -654,7 +658,7 @@ class MainWindow(Adw.ApplicationWindow):
         add("show-branches", self._show_branches_foldout)
         add("go-to-commit-message", self._go_to_commit_message)
         add("push", self._push_from_menu)
-        add("force-push", lambda: self._repo_op(self.store.confirm_or_force_push))
+        add("force-push", self._force_push_from_menu)
         add("pull", lambda: self._repo_op(self.store.pull_repo))
         add("fetch", lambda: self._repo_op(self.store.fetch_repo))
         add("remove-repository", lambda: self.store.show_popup(PopupType.REMOVE_REPOSITORY))
@@ -819,9 +823,15 @@ class MainWindow(Adw.ApplicationWindow):
         if not repo:
             return
         if self.store.current_branch_force_push_state(repo) == ForcePushBranchState.RECOMMENDED:
+            self._mark_force_push_in_progress()
             self.store.confirm_or_force_push(repo)
             return
         self.store.push_repo(repo)
+
+    def _force_push_from_menu(self) -> None:
+        """Desktop dropdown `forcePushWithLease` / Repository Force Push."""
+        self._mark_force_push_in_progress()
+        self._repo_op(self.store.confirm_or_force_push)
 
     def _delete_branch(self) -> None:
         repo = self.store.selected_repository
@@ -1640,7 +1650,11 @@ class MainWindow(Adw.ApplicationWindow):
         self._push_btn.connect("clicked", self._on_push_pull)
         self._push_live = Gtk.Label()
         self._push_live.set_name(PUSH_PULL_BUTTON_STATE_ID)
+        self._push_live.add_css_class("sr-only")
         self._push_live.set_visible(False)
+        self.actionInProgress = None
+        self.screenReaderStateMessage = None
+        self._push_pull_progress_active = False
         try:
             self._push_live.update_property(
                 [Gtk.AccessibleProperty.LIVE],
@@ -2767,13 +2781,13 @@ class MainWindow(Adw.ApplicationWindow):
                 )
                 if hasattr(self, "_cloning_title") and self.store.selected_cloning is not None:
                     self._show_cloning(cloning)
+            self._announce_push_pull_complete()
             return
         title = self.store.progress_title or kind.title()
         description = self.store.progress_description or HANG_ON
-        if len(title) > 42:
-            title = truncate_with_ellipsis(title, 39)
+        chrome_title = truncate_with_ellipsis(title, 39) if len(title) > 42 else title
         label, subtitle, tooltip = network_progress_chrome(
-            title=title,
+            title=chrome_title,
             description=description,
             value=self.store.progress_value,
         )
@@ -2791,6 +2805,8 @@ class MainWindow(Adw.ApplicationWindow):
                 )
                 if hasattr(self, "_cloning_title") and self.store.selected_cloning is not None:
                     self._show_cloning(cloning)
+            return
+        self._note_push_pull_progress(kind, title, self.store.progress_description)
 
     def _remote_name(self, state) -> str | None:
         status = state.status
@@ -2847,16 +2863,6 @@ class MainWindow(Adw.ApplicationWindow):
         if hasattr(self, "_ahead_label"):
             self._ahead_label.set_text(ahead_behind)
             self._ahead_label.set_visible(bool(ahead_behind) and not spinning)
-        if hasattr(self, "_push_live"):
-            live = f"{label} {subtitle or ''}".strip()
-            self._push_live.set_text(live)
-            try:
-                self._push_live.update_property(
-                    [Gtk.AccessibleProperty.LABEL],
-                    [live],
-                )
-            except Exception:
-                pass
         if hasattr(self, "_push_spinner") and hasattr(self, "_push_icon"):
             if spinning:
                 self._push_icon.set_visible(False)
@@ -2869,6 +2875,41 @@ class MainWindow(Adw.ApplicationWindow):
                     self._push_icon.set_from_icon_name(icon)
                 self._push_icon.set_visible(True)
         self._push_btn.set_sensitive(sensitive)
+
+    def _set_push_live(self, message: str) -> None:
+        """Desktop PushPullButton `screenReaderStateMessage` / `#push-pull-button-state`."""
+        self.screenReaderStateMessage = message
+        if not hasattr(self, "_push_live"):
+            return
+        self._push_live.set_text(message)
+        try:
+            self._push_live.update_property(
+                [Gtk.AccessibleProperty.LABEL],
+                [message],
+            )
+        except Exception:
+            pass
+
+    def _note_push_pull_progress(self, kind: str, title: str, description: str) -> None:
+        """Desktop `setScreenReaderLoadingStateMessage` while push/pull/fetch (or generic refresh) runs."""
+        if kind not in {"push", "pull", "fetch", "generic"}:
+            return
+        self.actionInProgress = next_action_in_progress(self.actionInProgress, kind)
+        self._push_pull_progress_active = True
+        self._set_push_live(push_pull_loading_aria_live(title, description or None))
+
+    def _announce_push_pull_complete(self) -> None:
+        """Desktop `${actionInProgress ?? 'Pull, push, or fetch'} complete` when progress clears."""
+        if not getattr(self, "_push_pull_progress_active", False):
+            return
+        self._push_pull_progress_active = False
+        message = push_pull_complete_aria_live(self.actionInProgress)
+        self.actionInProgress = None
+        self._set_push_live(message)
+
+    def _mark_force_push_in_progress(self) -> None:
+        """Desktop `forcePushWithLease` sets `actionInProgress: 'force push'` before the dialog."""
+        self.actionInProgress = FORCE_PUSH_ACTION
 
     def _set_branch_toolbar(self, title: str, description: str, tooltip: str, *, sensitive: bool = True) -> None:
         """Desktop `BranchDropdown` title + Linux `Current branch` subtitle."""
@@ -2985,6 +3026,7 @@ class MainWindow(Adw.ApplicationWindow):
             pull_with_rebase=bool(getattr(state, "pull_with_rebase", False)),
         )
         if presentation.action == "force-push":
+            self._mark_force_push_in_progress()
             self.store.confirm_or_force_push(repo)
         elif presentation.action == "push":
             self.store.push_repo(repo)

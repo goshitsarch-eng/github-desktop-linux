@@ -516,6 +516,39 @@ def test_refresh_after_push_pull_shows_fast_forwarding(isolated_config, git_repo
     assert store.progress_kind is None
 
 
+def test_push_pull_complete_aria_live_matches_desktop() -> None:
+    from github_desktop.push_pull import (
+        FORCE_PUSH_ACTION,
+        HANG_ON,
+        PULL_PUSH_OR_FETCH,
+        isPullPushFetchProgress,
+        is_pull_push_fetch_progress,
+        next_action_in_progress,
+        push_pull_complete_aria_live,
+        push_pull_loading_aria_live,
+    )
+
+    assert PULL_PUSH_OR_FETCH == "Pull, push, or fetch"
+    assert push_pull_complete_aria_live(None) == "Pull, push, or fetch complete"
+    assert push_pull_complete_aria_live("push") == "push complete"
+    assert push_pull_complete_aria_live("pull") == "pull complete"
+    assert push_pull_complete_aria_live("fetch") == "fetch complete"
+    assert push_pull_complete_aria_live(FORCE_PUSH_ACTION) == "force push complete"
+    assert push_pull_loading_aria_live("Pushing to origin") == f"Pushing to origin {HANG_ON}"
+    assert push_pull_loading_aria_live("Pushing to origin", "Counting objects") == (
+        "Pushing to origin Counting objects"
+    )
+    assert is_pull_push_fetch_progress("push")
+    assert is_pull_push_fetch_progress("pull")
+    assert is_pull_push_fetch_progress("fetch")
+    assert not is_pull_push_fetch_progress("generic")
+    assert not is_pull_push_fetch_progress("clone")
+    assert isPullPushFetchProgress is is_pull_push_fetch_progress
+    assert next_action_in_progress(None, "push") == "push"
+    assert next_action_in_progress("force push", "push") == "force push"
+    assert next_action_in_progress(None, "generic") is None
+
+
 def test_fetch_remotes_after_push_matches_desktop(isolated_config, git_repo: Path, monkeypatch) -> None:
     import inspect
 

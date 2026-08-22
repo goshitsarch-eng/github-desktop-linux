@@ -641,6 +641,22 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             assert not store.state_for(repos[0]).filter_new
             assert not win._hidden_changes_warning.get_visible()
             store.clear_changes_filter(repos[0])
+            from github_desktop.push_pull import (
+                push_pull_complete_aria_live,
+                push_pull_loading_aria_live,
+            )
+
+            store.progress_kind = "push"
+            store.progress_title = "Pushing to origin"
+            store.progress_description = ""
+            win._update_network_progress()
+            assert win._push_live.get_text() == push_pull_loading_aria_live("Pushing to origin")
+            assert win.actionInProgress == "push"
+            assert win.screenReaderStateMessage == push_pull_loading_aria_live("Pushing to origin")
+            store.progress_kind = None
+            win._update_network_progress()
+            assert win._push_live.get_text() == push_pull_complete_aria_live("push")
+            assert win.actionInProgress is None
             from github_desktop.ui.dialogs import show_create_repository
 
             show_create_repository(win, store, "")
