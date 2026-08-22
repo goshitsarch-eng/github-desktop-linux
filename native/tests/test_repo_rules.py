@@ -139,6 +139,7 @@ def test_commit_message_dialog_hides_message_failures_inline() -> None:
         "This branch requires signed commits. Configure commit.gpgsign to push.",
     ]
     assert inline_commit_rule_warning_lines(lines) == lines[1:]
+    assert inline_commit_rule_warning_lines(lines, hide_email=True) == [lines[2]]
     fail = RepoRulesMetadataFailures(failed=[RepoRulesMetadataFailure("must start with feat", 1)])
     assert (
         show_commit_message_rule_failure_hint(

@@ -4996,9 +4996,12 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
     summary.set_max_length(MaxSummaryLength)
     summary.set_hexpand(True)
     issue_store = install_entry_completion(summary)
+    from .commit_message_avatar import CommitMessageAvatar
     from .rule_failure_popover import RuleFailurePopover
 
     summary_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+    avatar = CommitMessageAvatar(store, parent)
+    summary_row.append(avatar.renderAvatar())
     summary_row.append(summary)
     rule_popover = RuleFailurePopover(summary)
     rule_popover.attach_to_row(summary_row)
@@ -5131,6 +5134,7 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
             failures=msg_fail,
         )
         rule_popover.update(repo, branch, msg_fail, show_rule_hint)
+        avatar.refresh(repo)
         hint = None if show_rule_hint else summary_length_hint(
             summary.get_text(), store.settings.show_commit_length_warning
         )
@@ -5139,7 +5143,7 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
             length_warn.set_visible(True)
         else:
             length_warn.set_visible(False)
-        inline = inline_commit_rule_warning_lines(lines)
+        inline = inline_commit_rule_warning_lines(lines, hide_email=True)
         if inline:
             rules_warn.set_text("\n".join(inline))
             rules_warn.set_visible(True)

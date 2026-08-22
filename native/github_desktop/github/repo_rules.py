@@ -163,9 +163,19 @@ def show_commit_message_rule_failure_hint(
     return bool(repo_rules_enabled and branch and github and failures.status != "pass")
 
 
-def inline_commit_rule_warning_lines(lines: list[str]) -> list[str]:
-    """Keep non-message rule copy inline; message failures live in the popover."""
-    return [line for line in lines if not line.startswith("The commit message ")]
+def inline_commit_rule_warning_lines(
+    lines: list[str], *, hide_email: bool = False
+) -> list[str]:
+    """Keep non-message rule copy inline; message/email failures live in popovers."""
+    hideEmail = hide_email
+    out: list[str] = []
+    for line in lines:
+        if line.startswith("The commit message "):
+            continue
+        if hideEmail and line.startswith("The commit author email "):
+            continue
+        out.append(line)
+    return out
 
 
 def use_repo_rules_logic(account: Account | None, repository: Repository) -> bool:

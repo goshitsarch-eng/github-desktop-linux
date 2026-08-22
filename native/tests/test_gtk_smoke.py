@@ -320,6 +320,13 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             show_rerun_checks(win, store, {"failed_only": True, "checks": []})
             stack = AvatarStack([("Ada Lovelace", "ada@example.com"), ("Grace Hopper", "grace@example.com")], size=24)
             assert stack.get_first_child() is not None
+            from github_desktop.ui.commit_message_avatar import CommitMessageAvatar
+
+            avatar = CommitMessageAvatar(store, win)
+            avatar.refresh(repos[0])
+            assert avatar.renderAvatar() is avatar.widget
+            assert avatar.renderWarningPopover() is not None
+            assert avatar.renderGitConfigPopover() is not None
             sample_run = RefCheck(id=1, name="build", description="Failed after 1m", status="completed", conclusion="failure")
             show_checks(win, store, {"error": "1 check failed in your pull request", "title": "Demo PR", "checks": [sample_run]})
             show_pull_request_review(

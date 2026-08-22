@@ -897,6 +897,35 @@ class AppStore:
     refreshAfterCheckout = refresh_after_checkout
     fastForwardBranches = fast_forward_branches_for_repo
 
+    def fetch_remotes(
+        self,
+        repo: Repository,
+        remotes: Sequence[Remote],
+        *,
+        background_task: bool = False,
+        progress: Callable[[str, float], None] | None = None,
+    ) -> None:
+        """Desktop `gitStore.fetchRemotes` — fetch each remote, then update HEAD.
+
+        Fetch errors are logged and skipped so a post-push fetch failure does not
+        fail the outer push (Desktop nests `performFailableOperation`).
+        """
+        if not remotes:
+            return
+        for remote in remotes:
+            env = self.env_for_repo(repo, remote.url, background=background_task)
+            try:
+                fetch(repo.path, remote.name, env=env, progress=progress)
+            except GitError as exc:
+                log.debug("fetch remote %s failed: %s", remote.name, exc)
+                continue
+            try:
+                update_remote_head(repo.path, remote.name, env=env)
+            except GitError as exc:
+                log.debug("update remote HEAD failed: %s", exc)
+
+    fetchRemotes = fetch_remotes
+
     def _network_progress_cb(
         self,
         kind: str,
@@ -5214,6 +5243,12 @@ class AppStore:
                 force_with_lease=force,
                 set_upstream=not status.current_upstream_branch,
                 env=env,
+                progress=self._network_progress_cb("push", f"Pushing to {remote.name}"),
+            )
+            # Desktop: gitStore.fetchRemotes([safeRemote]) before fastForwardBranches.
+            self.fetch_remotes(
+                repo,
+                [remote],
                 progress=self._network_progress_cb("push", f"Pushing to {remote.name}"),
             )
             self.fast_forward_branches_for_repo(repo)

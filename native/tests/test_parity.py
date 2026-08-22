@@ -231,6 +231,9 @@ def test_window_actions_cover_menus() -> None:
     from github_desktop.ui import rule_failure_popover as rule_failure_popover_mod
 
     src += open(rule_failure_popover_mod.__file__, encoding="utf-8").read()
+    from github_desktop.ui import commit_message_avatar as commit_message_avatar_mod
+
+    src += open(commit_message_avatar_mod.__file__, encoding="utf-8").read()
     from github_desktop import thank_you, custom_integration
     from github_desktop.git import progress as git_progress
 
@@ -1542,5 +1545,8 @@ def test_window_actions_cover_menus() -> None:
         "showInputLabels",
         "show_commit_message_rule_failure_hint",
         "inline_commit_rule_warning_lines",
+        "renderAvatar",
+        "fetchRemotes",
+        "hideEmail",
     ]:
         assert phrase in src

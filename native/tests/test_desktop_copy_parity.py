@@ -433,6 +433,31 @@ def test_refresh_after_push_pull_shows_fast_forwarding(isolated_config, git_repo
     assert store.progress_kind is None
 
 
+def test_fetch_remotes_after_push_matches_desktop(isolated_config, git_repo: Path, monkeypatch) -> None:
+    import inspect
+
+    from github_desktop.models import Remote
+    from github_desktop.store import AppStore
+
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    fetched: list[str] = []
+
+    def fake_fetch(path: str, remote: str, **_kwargs) -> None:
+        fetched.append(remote)
+
+    monkeypatch.setattr("github_desktop.store.fetch", fake_fetch)
+    monkeypatch.setattr("github_desktop.store.update_remote_head", lambda *_a, **_k: None)
+    store.fetchRemotes(repo, [Remote(name="origin", url="https://example.com/r.git")])
+    assert fetched == ["origin"]
+    src = inspect.getsource(AppStore.push_repo)
+    assert "fetch_remotes" in src
+    assert "fast_forward_branches_for_repo" in src
+    assert src.index("fetch_remotes") < src.index("fast_forward_branches_for_repo")
+
+
 def test_clone_list_empty_copy() -> None:
     class Account:
         login = "hubot"
