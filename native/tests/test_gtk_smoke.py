@@ -457,7 +457,7 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             file_rows = []
             child = win._file_list.get_first_child()
             while child is not None:
-                if isinstance(child, Gtk.ListBoxRow) and getattr(child, "_file", None) is not None:
+                if getattr(child, "_file", None) is not None:
                     file_rows.append(child)
                 child = child.get_next_sibling()
             assert len(file_rows) >= 2
