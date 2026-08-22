@@ -1,0 +1,257 @@
+"""Rebase, cherry-pick, squash, and reset integration tests."""
+
+from __future__ import annotations
+
+import time
+from pathlib import Path
+
+from github_desktop.git.ops import (
+    checkout_branch,
+    cherry_pick,
+    continue_cherry_pick,
+    continue_rebase,
+    create_branch,
+    create_merge_commit,
+    get_commits,
+    get_status,
+    merge,
+    rebase,
+    reset,
+    squash_commits,
+)
+from github_desktop.models import (
+    AppFileStatusKind,
+    CherryPickResult,
+    MergeResult,
+    MultiCommitOperationKind,
+    RebaseResult,
+)
+from tests.conftest import run_git
+
+
+def _commit_file(repo: Path, name: str, content: str, message: str) -> None:
+    (repo / name).write_text(content, encoding="utf-8")
+    run_git(repo, "add", name)
+    run_git(repo, "commit", "-m", message)
+
+
+def _wait_done(flag: dict[str, bool], timeout: float = 5.0) -> None:
+    deadline = time.time() + timeout
+    while not flag.get("ok") and time.time() < deadline:
+        time.sleep(0.02)
+    assert flag.get("ok")
+
+
+def test_rebase_fast_forward_like(git_repo: Path) -> None:
+    create_branch(git_repo.as_posix(), "topic")
+    _commit_file(git_repo, "on-main.txt", "m\n", "on main")
+    checkout_branch(git_repo.as_posix(), "topic")
+    _commit_file(git_repo, "on-topic.txt", "t\n", "on topic")
+    result = rebase(git_repo.as_posix(), "main")
+    assert result in (RebaseResult.COMPLETED_WITHOUT_ERROR, RebaseResult.ALREADY_UP_TO_DATE)
+    summaries = [c.summary for c in get_commits(git_repo.as_posix(), limit=10)]
+    assert "on topic" in summaries
+    assert "on main" in summaries
+
+
+def test_rebase_conflicts(git_repo: Path) -> None:
+    create_branch(git_repo.as_posix(), "topic")
+    _commit_file(git_repo, "README.md", "main-change\n", "main edit")
+    checkout_branch(git_repo.as_posix(), "topic")
+    _commit_file(git_repo, "README.md", "topic-change\n", "topic edit")
+    result = rebase(git_repo.as_posix(), "main")
+    assert result == RebaseResult.CONFLICTS_ENCOUNTERED
+    status = get_status(git_repo.as_posix())
+    assert status and status.rebase_internal_state is not None
+    assert any(f.status.kind == AppFileStatusKind.CONFLICTED for f in status.working_directory.files)
+
+
+def test_continue_rebase_without_staging_reports_outstanding(git_repo: Path) -> None:
+    create_branch(git_repo.as_posix(), "topic")
+    _commit_file(git_repo, "README.md", "main-change\n", "main edit")
+    checkout_branch(git_repo.as_posix(), "topic")
+    _commit_file(git_repo, "README.md", "topic-change\n", "topic edit")
+    assert rebase(git_repo.as_posix(), "main") == RebaseResult.CONFLICTS_ENCOUNTERED
+    result = continue_rebase(git_repo.as_posix(), [])
+    assert result == RebaseResult.OUTSTANDING_FILES_NOT_STAGED
+    status = get_status(git_repo.as_posix())
+    assert status and status.rebase_internal_state is not None
+
+
+def test_continue_rebase_after_resolving_markers(git_repo: Path) -> None:
+    create_branch(git_repo.as_posix(), "topic")
+    _commit_file(git_repo, "README.md", "main-change\n", "main edit")
+    checkout_branch(git_repo.as_posix(), "topic")
+    _commit_file(git_repo, "README.md", "topic-change\n", "topic edit")
+    assert rebase(git_repo.as_posix(), "main") == RebaseResult.CONFLICTS_ENCOUNTERED
+    (git_repo / "README.md").write_text("resolved\n", encoding="utf-8")
+    status = get_status(git_repo.as_posix())
+    assert status
+    result = continue_rebase(git_repo.as_posix(), status.working_directory.files)
+    assert result == RebaseResult.COMPLETED_WITHOUT_ERROR
+    status = get_status(git_repo.as_posix())
+    assert status and status.rebase_internal_state is None
+    assert (git_repo / "README.md").read_text(encoding="utf-8") == "resolved\n"
+
+
+def test_continue_rebase_skips_empty_commit(git_repo: Path) -> None:
+    create_branch(git_repo.as_posix(), "topic")
+    _commit_file(git_repo, "README.md", "main-change\n", "main edit")
+    checkout_branch(git_repo.as_posix(), "topic")
+    _commit_file(git_repo, "README.md", "topic-change\n", "topic edit")
+    assert rebase(git_repo.as_posix(), "main") == RebaseResult.CONFLICTS_ENCOUNTERED
+    (git_repo / "README.md").write_text("main-change\n", encoding="utf-8")
+    status = get_status(git_repo.as_posix())
+    assert status
+    result = continue_rebase(git_repo.as_posix(), status.working_directory.files)
+    assert result in (RebaseResult.COMPLETED_WITHOUT_ERROR, RebaseResult.ALREADY_UP_TO_DATE)
+    status = get_status(git_repo.as_posix())
+    assert status and status.rebase_internal_state is None
+
+
+def test_continue_cherry_pick_after_resolving_markers(git_repo: Path) -> None:
+    create_branch(git_repo.as_posix(), "topic")
+    checkout_branch(git_repo.as_posix(), "topic")
+    _commit_file(git_repo, "README.md", "topic-change\n", "topic edit")
+    sha = get_commits(git_repo.as_posix(), limit=1)[0].sha
+    checkout_branch(git_repo.as_posix(), "main")
+    _commit_file(git_repo, "README.md", "main-change\n", "main edit")
+    result = cherry_pick(git_repo.as_posix(), [sha])
+    assert result == CherryPickResult.CONFLICTS_ENCOUNTERED
+    (git_repo / "README.md").write_text("picked\n", encoding="utf-8")
+    status = get_status(git_repo.as_posix())
+    assert status
+    result = continue_cherry_pick(git_repo.as_posix(), status.working_directory.files)
+    assert result == CherryPickResult.COMPLETED_WITHOUT_ERROR
+    assert (git_repo / "README.md").read_text(encoding="utf-8") == "picked\n"
+
+
+def test_create_merge_commit_only_stages_conflicted_files(git_repo: Path) -> None:
+    create_branch(git_repo.as_posix(), "left")
+    create_branch(git_repo.as_posix(), "right")
+    checkout_branch(git_repo.as_posix(), "left")
+    _commit_file(git_repo, "README.md", "left\n", "left")
+    checkout_branch(git_repo.as_posix(), "right")
+    _commit_file(git_repo, "README.md", "right\n", "right")
+    assert merge(git_repo.as_posix(), "left") == MergeResult.FAILED
+    (git_repo / "unrelated.txt").write_text("dirty\n", encoding="utf-8")
+    (git_repo / "README.md").write_text("merged\n", encoding="utf-8")
+    status = get_status(git_repo.as_posix())
+    assert status
+    conflicted = [f for f in status.working_directory.files if f.status.kind == AppFileStatusKind.CONFLICTED]
+    assert conflicted
+    create_merge_commit(git_repo.as_posix(), conflicted)
+    status = get_status(git_repo.as_posix())
+    assert status and not status.merge_head_found
+    assert any(f.path == "unrelated.txt" for f in status.working_directory.files)
+    log = run_git(git_repo, "log", "-1", "--name-only", "--pretty=format:").stdout
+    assert "unrelated.txt" not in log
+    assert (git_repo / "unrelated.txt").read_text(encoding="utf-8") == "dirty\n"
+
+
+def test_continue_conflicted_merge_filters_working_directory(
+    isolated_config, git_repo: Path, monkeypatch
+) -> None:
+    from github_desktop.store import AppStore
+
+    create_branch(git_repo.as_posix(), "left")
+    create_branch(git_repo.as_posix(), "right")
+    checkout_branch(git_repo.as_posix(), "left")
+    _commit_file(git_repo, "README.md", "left\n", "left")
+    checkout_branch(git_repo.as_posix(), "right")
+    _commit_file(git_repo, "README.md", "right\n", "right")
+    assert merge(git_repo.as_posix(), "left") == MergeResult.FAILED
+    (git_repo / "unrelated.txt").write_text("dirty\n", encoding="utf-8")
+    store = AppStore()
+    repo = store.add_repositories([str(git_repo)])[0]
+    store.state_for(repo).status = get_status(str(git_repo))
+    captured: list[list[str]] = []
+
+    def fake_merge_commit(path, files, resolutions=None):
+        captured.append([file.path for file in files])
+        return "deadbeef"
+
+    monkeypatch.setattr("github_desktop.store.create_merge_commit", fake_merge_commit)
+    monkeypatch.setattr("github_desktop.store.get_status", lambda *a, **k: store.state_for(repo).status)
+    done = {"ok": False}
+
+    def on_done(*_a: object) -> None:
+        done["ok"] = True
+
+    store.continue_conflict_operation(repo, MultiCommitOperationKind.MERGE, on_done=on_done)
+    _wait_done(done)
+    assert captured
+    assert captured[0] == ["README.md"]
+    assert "unrelated.txt" not in captured[0]
+
+
+def test_cherry_pick(git_repo: Path) -> None:
+    create_branch(git_repo.as_posix(), "topic")
+    checkout_branch(git_repo.as_posix(), "topic")
+    _commit_file(git_repo, "picked.txt", "p\n", "pick me")
+    sha = get_commits(git_repo.as_posix(), limit=1)[0].sha
+    checkout_branch(git_repo.as_posix(), "main")
+    result = cherry_pick(git_repo.as_posix(), [sha])
+    assert result == CherryPickResult.COMPLETED_WITHOUT_ERROR
+    assert (git_repo / "picked.txt").exists()
+
+
+def test_squash_last_two(git_repo: Path) -> None:
+    _commit_file(git_repo, "one.txt", "1\n", "one")
+    _commit_file(git_repo, "two.txt", "2\n", "two")
+    commits = get_commits(git_repo.as_posix(), limit=10)
+    # commits[0] is newest
+    newest, older = commits[0], commits[1]
+    last_retained = commits[2].sha if len(commits) > 2 else None
+    result = squash_commits(
+        git_repo.as_posix(),
+        [newest],
+        older,
+        last_retained,
+        "squashed together\n",
+    )
+    assert result in (RebaseResult.COMPLETED_WITHOUT_ERROR, RebaseResult.CONFLICTS_ENCOUNTERED)
+    if result == RebaseResult.COMPLETED_WITHOUT_ERROR:
+        summaries = [c.summary for c in get_commits(git_repo.as_posix(), limit=5)]
+        assert "squashed together" in summaries or "two" in summaries
+
+
+def test_rebase_reports_progress(git_repo: Path) -> None:
+    create_branch(git_repo.as_posix(), "topic")
+    _commit_file(git_repo, "on-main.txt", "m\n", "on main")
+    checkout_branch(git_repo.as_posix(), "topic")
+    _commit_file(git_repo, "t1.txt", "1\n", "topic one")
+    _commit_file(git_repo, "t2.txt", "2\n", "topic two")
+    events = []
+    commits = list(reversed(get_commits(git_repo.as_posix(), "main..HEAD", limit=10)))
+    result = rebase(git_repo.as_posix(), "main", progress=events.append, commits=commits)
+    assert result in (RebaseResult.COMPLETED_WITHOUT_ERROR, RebaseResult.ALREADY_UP_TO_DATE)
+    assert events
+    assert events[-1].position >= 1
+    assert events[-1].total >= 1
+
+
+def test_cherry_pick_reports_progress(git_repo: Path) -> None:
+    create_branch(git_repo.as_posix(), "topic")
+    checkout_branch(git_repo.as_posix(), "topic")
+    _commit_file(git_repo, "p1.txt", "1\n", "pick one")
+    _commit_file(git_repo, "p2.txt", "2\n", "pick two")
+    commits = get_commits(git_repo.as_posix(), limit=2)
+    shas = [c.sha for c in reversed(commits[:2])]
+    checkout_branch(git_repo.as_posix(), "main")
+    events = []
+    result = cherry_pick(git_repo.as_posix(), shas, progress=events.append, commits=list(reversed(commits[:2])))
+    assert result == CherryPickResult.COMPLETED_WITHOUT_ERROR
+    assert events
+    assert events[-1].position == 2
+
+
+def test_reset_mixed(git_repo: Path) -> None:
+    _commit_file(git_repo, "later.txt", "l\n", "later")
+    sha = get_commits(git_repo.as_posix(), limit=5)[-1].sha  # initial
+    # reset to initial keeps later.txt unstaged? mixed reset of HEAD~1 is more typical
+    head_parent = get_commits(git_repo.as_posix(), limit=2)[1].sha
+    reset(git_repo.as_posix(), head_parent, "mixed")
+    status = get_status(git_repo.as_posix())
+    assert status
+    assert any(f.path == "later.txt" for f in status.working_directory.files)

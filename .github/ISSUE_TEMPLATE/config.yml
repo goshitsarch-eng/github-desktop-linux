@@ -2,10 +2,14 @@ blank_issues_enabled: false
 contact_links:
   - name: Installation and known issues
     url: https://github.com/goshitsarch-eng/github-desktop-linux/blob/main/docs/installation.md
-    about: Review installation, OAuth integration, updates, and troubleshooting before opening an issue.
+    about:
+      Review installation, OAuth integration, updates, and troubleshooting
+      before opening an issue.
   - name: GitHub Support
     url: https://support.github.com/
     about: Get help with GitHub.com accounts, billing, and services.
   - name: Upstream GitHub Desktop issues
     url: https://github.com/desktop/desktop/issues
-    about: Report issues reproducible in official Windows or macOS GitHub Desktop releases.
+    about:
+      Report issues reproducible in official Windows or macOS GitHub Desktop
+      releases.

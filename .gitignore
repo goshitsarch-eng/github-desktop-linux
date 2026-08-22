@@ -53,3 +53,9 @@ Thumbs.db
 
 # Misc
 tslint-rules/
+
+# Native GTK app
+native/**/__pycache__/
+native/.pytest_cache/
+native/build/
+*.pyc

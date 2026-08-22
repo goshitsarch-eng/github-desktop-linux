@@ -1,6 +1,6 @@
 name: ⭐ Feature request
 description: Suggest an improvement to this Linux fork
-title: "[Feature]: "
+title: '[Feature]: '
 labels:
   - enhancement
 body:
@@ -19,7 +19,8 @@ body:
     id: solution
     attributes:
       label: Proposed solution
-      description: Describe the desired behavior and why it belongs in this fork.
+      description:
+        Describe the desired behavior and why it belongs in this fork.
     validations:
       required: true
   - type: textarea
@@ -39,5 +40,7 @@ body:
       options:
         - label: I searched existing issues for this request.
           required: true
-        - label: This request concerns this Linux fork rather than GitHub.com support.
+        - label:
+            This request concerns this Linux fork rather than GitHub.com
+            support.
           required: true
