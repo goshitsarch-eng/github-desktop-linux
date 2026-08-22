@@ -63,6 +63,7 @@ from ..store import AppStore
 from ..text_tokens import MaxSummaryLength
 from ..version import APP_NAME, __version__
 from .avatar import Avatar
+from .length_hint import SummaryLengthHint
 from .autocompletion import (
     UNREACHABLE_COMMITS_LEARN_MORE,
     TextViewCompleter,
@@ -5000,16 +5001,15 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
     from .rule_failure_popover import RuleFailurePopover
 
     summary_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+    summary_row.add_css_class("summary")
     avatar = CommitMessageAvatar(store, parent)
     summary_row.append(avatar.renderAvatar())
     summary_row.append(summary)
     rule_popover = RuleFailurePopover(summary)
     rule_popover.attach_to_row(summary_row)
+    length_hint = SummaryLengthHint()
+    summary_row.append(length_hint.renderSummaryLengthHint())
     box.append(summary_row)
-    length_warn = Gtk.Label(xalign=0, wrap=True)
-    length_warn.add_css_class("warning")
-    length_warn.set_visible(False)
-    box.append(length_warn)
     access_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
     access_box.set_visible(False)
     box.append(access_box)
@@ -5134,11 +5134,11 @@ def show_commit_message_dialog(parent: Gtk.Window, store: AppStore, payload: dic
         hint = None if show_rule_hint else summary_length_hint(
             summary.get_text(), store.settings.show_commit_length_warning
         )
-        if hint:
-            length_warn.set_text(hint)
-            length_warn.set_visible(True)
+        length_hint.set_active_hint(bool(hint))
+        if hint or show_rule_hint:
+            summary_row.add_css_class("with-trailing-icon")
         else:
-            length_warn.set_visible(False)
+            summary_row.remove_css_class("with-trailing-icon")
         fill_commit_warning_box(
             access_box,
             branch_protections_repo_rules_commit_warning_markups(

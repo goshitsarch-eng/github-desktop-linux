@@ -1158,3 +1158,29 @@ def test_tutorial_nudge_arrows_match_desktop() -> None:
     apply_nudge_arrow_classes(publish, should_nudge=True, direction="up", base=False)
     assert publish.classes == set()
 
+
+def test_summary_length_hint_lightbulb_matches_desktop() -> None:
+    from github_desktop.text_tokens import IdealSummaryLength
+    from github_desktop.ui.autocompletion import SUMMARY_LENGTH_HINT, summary_length_hint
+    from github_desktop.ui.length_hint import (
+        LENGTH_HINT,
+        LENGTH_HINT_TOOLTIP,
+        OPEN_SUMMARY_LENGTH_INFO,
+        SUMMARY_LENGTH_HINT_DESCRIPTION,
+        SUMMARY_LENGTH_HINT_TITLE,
+        show_summary_length_hint,
+    )
+
+    assert IdealSummaryLength == 50
+    assert summary_length_hint("x" * 51, True) == SUMMARY_LENGTH_HINT
+    assert summary_length_hint("x" * 50, True) is None
+    assert SUMMARY_LENGTH_HINT_TITLE in SUMMARY_LENGTH_HINT
+    assert SUMMARY_LENGTH_HINT_DESCRIPTION in SUMMARY_LENGTH_HINT
+    assert OPEN_SUMMARY_LENGTH_INFO == "Open Summary Length Info"
+    assert LENGTH_HINT == "length-hint"
+    assert LENGTH_HINT_TOOLTIP == "length-hint-tooltip"
+    assert show_summary_length_hint("x" * 51, True, rule_hint=False) is True
+    assert show_summary_length_hint("x" * 51, True, rule_hint=True) is False
+    assert show_summary_length_hint("short", True, rule_hint=False) is False
+    assert show_summary_length_hint("x" * 51, False, rule_hint=False) is False
+

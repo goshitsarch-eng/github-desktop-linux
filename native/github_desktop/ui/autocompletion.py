@@ -16,13 +16,10 @@ from gi.repository import GLib, Gtk
 
 from .emoji import emoji_map, matching_shortcodes
 
+from .length_hint import SUMMARY_LENGTH_HINT, summary_length_hint
+
 # Desktop `DefaultMaxHits` in `ui/autocompletion/common.ts`.
 DefaultMaxHits = 25
-
-SUMMARY_LENGTH_HINT = (
-    "Great commit summaries contain fewer than 50 characters. "
-    "Place extra information in the description field."
-)
 
 UNREACHABLE_COMMITS_LEARN_MORE = (
     "https://github.com/desktop/desktop/blob/development/docs/learn-more/unreachable-commits.md"
@@ -63,12 +60,6 @@ def completion_insert_text(display: str) -> str:
         code = token.strip(":")
         return emoji_map().get(code) or token
     return token
-
-
-def summary_length_hint(text: str, enabled: bool) -> str | None:
-    if enabled and len(text) > 50:
-        return SUMMARY_LENGTH_HINT
-    return None
 
 
 def write_access_warning(repo: Any) -> str | None:

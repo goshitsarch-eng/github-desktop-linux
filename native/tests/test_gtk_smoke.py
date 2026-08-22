@@ -297,6 +297,23 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             assert not win._branch_btn.has_css_class("nudge-arrow-up")
             assert not win._push_btn.has_css_class("nudge-arrow-up")
             assert not win._summary.has_css_class("nudge-arrow-left")
+            from github_desktop.ui.length_hint import (
+                LENGTH_HINT,
+                SummaryLengthHint,
+            )
+
+            assert isinstance(win._length_hint, SummaryLengthHint)
+            assert win._length_hint.has_css_class(LENGTH_HINT)
+            assert not win._length_hint.get_visible()
+            win._summary.set_text("x" * 51)
+            win._update_commit_warnings()
+            assert win._length_hint.get_visible()
+            assert win._summary_row.has_css_class("with-trailing-icon")
+            assert win._length_hint.renderSummaryLengthHint() is win._length_hint
+            assert win._length_hint.ariaLiveMessage()
+            win._summary.set_text("short")
+            win._update_commit_warnings()
+            assert not win._length_hint.get_visible()
             win._tutorial_panel.refresh(TutorialStep.PICK_EDITOR, "GNOME Text Editor")
             win._commit_summary.bind([], None)
             win._find()

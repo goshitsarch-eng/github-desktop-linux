@@ -234,6 +234,9 @@ def test_window_actions_cover_menus() -> None:
     from github_desktop.ui import commit_message_avatar as commit_message_avatar_mod
 
     src += open(commit_message_avatar_mod.__file__, encoding="utf-8").read()
+    from github_desktop.ui import length_hint as length_hint_mod
+
+    src += open(length_hint_mod.__file__, encoding="utf-8").read()
     from github_desktop import thank_you, custom_integration
     from github_desktop.git import progress as git_progress
 
@@ -1574,5 +1577,13 @@ def test_window_actions_cover_menus() -> None:
         "nudge-arrow-up",
         "nudge-arrow-left",
         "publishBranchButton",
+        "ToggledtippedContent",
+        "renderSummaryLengthHint",
+        "Open Summary Length Info",
+        "length-hint",
+        "length-hint-tooltip",
+        "ariaLiveMessage",
+        "isToggleTip",
+        "IdealSummaryLength",
     ]:
         assert phrase in src

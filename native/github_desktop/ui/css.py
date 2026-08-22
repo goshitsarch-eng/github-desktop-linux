@@ -392,6 +392,17 @@ window:not(.underline-links) link {
 .nudge-arrow.nudge-arrow-left {
   outline-color: #2188FF;
 }
+/* Desktop `_commit-message.scss` `.length-hint` / `_tooltips.scss` `.length-hint-tooltip` */
+.length-hint {
+  min-width: 16px;
+  min-height: 16px;
+}
+.length-hint-tooltip .title {
+  font-weight: 600;
+}
+.length-hint-tooltip .description {
+  opacity: 0.7;
+}
 """
 
 _provider: Gtk.CssProvider | None = None
