@@ -323,6 +323,13 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             assert hasattr(win, "_repo_content")
             assert hasattr(win, "_missing_page")
             assert hasattr(win, "_tutorial_panel")
+            from github_desktop.ui.window import reorderingMessage
+
+            assert hasattr(win, "_reorder_status")
+            intro = reorderingMessage(1)
+            win._set_reordering_message(intro)
+            assert getattr(win._reorder_status, "_aria_live_message", "") == intro
+            win._set_reordering_message("")
             win._tutorial_panel.refresh(TutorialStep.PICK_EDITOR, "GNOME Text Editor")
             from github_desktop.models import Remote
 
