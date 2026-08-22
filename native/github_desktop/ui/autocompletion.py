@@ -264,6 +264,17 @@ def get_button_title(
 isCommittingStatusMessage = committing_just_now_message
 getButtonTitle = get_button_title
 
+# Desktop Copilot button AriaLiveContainer / generatingCommitDetailsMessage.
+GENERATING_COMMIT_DETAILS = "Generating commit details…"
+
+
+def generating_commit_details_aria_live(isGeneratingCommitMessage: bool) -> str:
+    """Desktop Copilot `AriaLiveContainer` message while generating."""
+    return GENERATING_COMMIT_DETAILS if isGeneratingCommitMessage else ""
+
+
+generatingCommitDetailsMessage = generating_commit_details_aria_live
+
 
 def unreachable_commits_message(*, unreachable_tab: bool, count: int) -> str:
     commits = "commits" if count != 1 else "commit"

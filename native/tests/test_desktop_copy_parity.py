@@ -1066,6 +1066,16 @@ def test_enable_commit_message_generation_requires_flag_and_entitlement() -> Non
         is_copilot_desktop_enabled=True,
     )
     assert enable_commit_message_generation(entitled) is True
+    from github_desktop.ui.autocompletion import (
+        GENERATING_COMMIT_DETAILS,
+        generatingCommitDetailsMessage,
+        generating_commit_details_aria_live,
+    )
+
+    assert generating_commit_details_aria_live(True) == GENERATING_COMMIT_DETAILS
+    assert generating_commit_details_aria_live(True) == "Generating commit details…"
+    assert generating_commit_details_aria_live(False) == ""
+    assert generatingCommitDetailsMessage is generating_commit_details_aria_live
 
 
 def test_push_protection_bypass_uses_secret_scanning_path() -> None:

@@ -1688,5 +1688,7 @@ def test_window_actions_cover_menus() -> None:
         "Input cleared",
         "displayClearButton",
         "input_cleared_aria_live",
+        "generating_commit_details_aria_live",
+        "generatingCommitDetailsMessage",
     ]:
         assert phrase in src
