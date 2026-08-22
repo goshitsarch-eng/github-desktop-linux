@@ -111,11 +111,9 @@ def _apply_ref_name_aria(widget: Gtk.Widget, message: str, *, tracked: object) -
     prev = getattr(widget, "_aria_tracked", object())
     widget._aria_live_message = message  # type: ignore[attr-defined]
     widget._aria_tracked = tracked  # type: ignore[attr-defined]
-    if not message:
-        return
     try:
         widget.update_property([Gtk.AccessibleProperty.LABEL], [message])
-        if prev != tracked:
+        if message and prev != tracked:
             widget.announce(message, Gtk.AccessibleAnnouncementPriority.MEDIUM)
     except Exception:
         pass
