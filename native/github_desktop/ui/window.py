@@ -51,7 +51,13 @@ from ..models import (
     is_valid_tutorial_step,
 )
 from ..clamp import clamp
-from ..push_pull import describe_push_pull, format_commit_relative_time, format_last_fetched
+from ..push_pull import (
+    describe_push_pull,
+    format_commit_relative_time,
+    format_last_fetched,
+    network_progress_chrome,
+    HANG_ON,
+)
 from ..settings import (
     defaultBranchDropdownWidth,
     defaultCommitSummaryWidth,
@@ -2581,19 +2587,23 @@ class MainWindow(Adw.ApplicationWindow):
                     self._show_cloning(cloning)
             return
         title = self.store.progress_title or kind.title()
-        pct = int(self.store.progress_value * 100)
+        description = self.store.progress_description or HANG_ON
         if len(title) > 42:
             title = truncate_with_ellipsis(title, 39)
-        if pct:
-            self._set_push_chrome(f"{title} {pct}%", None, sensitive=False, spinning=True)
-        else:
-            self._set_push_chrome(title, None, sensitive=False, spinning=True)
+        label, subtitle, tooltip = network_progress_chrome(
+            title=title,
+            description=description,
+            value=self.store.progress_value,
+        )
+        self._set_push_chrome(label, subtitle, sensitive=False, spinning=True)
+        self._push_btn.set_tooltip_text(tooltip)
         if hasattr(self, "_push_menu_btn"):
             self._push_menu_btn.set_sensitive(False)
             self._push_menu_btn.set_visible(False)
         if kind == "clone":
             cloning = self.store.selected_cloning or (self.store.cloning[0] if self.store.cloning else None)
             if cloning is not None:
+                pct = int(self.store.progress_value * 100)
                 self._set_repo_toolbar_title(
                     repository_toolbar_title(cloning_name=cloning.name, cloning_percent=pct or None)
                 )
@@ -2693,6 +2703,8 @@ class MainWindow(Adw.ApplicationWindow):
             checkout=checkout,
             checkout_title=self.store.progress_title if checkout else "",
             checkout_value=self.store.progress_value if checkout else 0.0,
+            checkout_target=self.store.progress_target if checkout else "",
+            checkout_description=self.store.progress_description if checkout else "",
             rebasing_target=rebasing,
         )
         self._set_branch_toolbar(title, description, tooltip, sensitive=sensitive)
@@ -3934,7 +3946,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._undo_summary.set_text(commit.summary or "Empty commit message")
         busy = bool(
             state.is_committing
-            or self.store.progress_kind in {"push", "pull", "fetch", "checkout"}
+            or self.store.progress_kind in {"push", "pull", "fetch", "checkout", "generic"}
         )
         self._undo_btn.set_sensitive(not busy)
         self._undo_btn.set_tooltip_text(

@@ -343,16 +343,22 @@ def branch_toolbar_chrome(
     checkout: bool = False,
     checkout_title: str = "",
     checkout_value: float = 0.0,
+    checkout_target: str = "",
+    checkout_description: str = "",
     rebasing_target: str | None = None,
 ) -> tuple[str, str, str, bool]:
     """Desktop Linux `BranchDropdown.render` (title, description, tooltip, sensitive)."""
     if checkout:
         raw = checkout_title or "Checking out"
-        target = raw
-        description = "Checking out"
-        if raw.startswith("Checking out "):
+        if checkout_target:
+            target = checkout_target
+        elif raw.startswith("Checking out "):
             target = raw[len("Checking out "):]
-        elif raw == REFRESHING_REPOSITORY or raw.startswith("Refreshing "):
+        else:
+            target = raw
+        if checkout_description:
+            description = checkout_description
+        elif raw.startswith("Checking out ") or raw == REFRESHING_REPOSITORY or raw.startswith("Refreshing "):
             description = "Checking out"
         else:
             description = raw

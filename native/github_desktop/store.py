@@ -261,10 +261,16 @@ from .models import (
     retry_action_from_legacy,
     retry_action_name,
     sanitize_ref_name,
+    shorten_sha,
 )
 from .notifications import show_notification
 from .paths import accounts_path, repositories_path
 from .protocol import OAuthAction, OpenRepositoryAction, URLAction, parse_app_url
+from .push_pull import (
+    CHECKING_OUT,
+    FAST_FORWARDING_BRANCHES,
+    REFRESHING_REPOSITORY,
+)
 from .remote_parsing import (
     account_for_remote,
     github_from_remote,
@@ -480,6 +486,8 @@ class AppStore:
         self.progress_kind: str | None = None
         self.progress_title: str = ""
         self.progress_value: float = 0.0
+        self.progress_description: str = ""
+        self.progress_target: str = ""
         self._progress_only_emit: bool = False
         self._last_progress_emit: float = 0.0
         self._seen_notifications: set[str] = set()
@@ -751,15 +759,30 @@ class AppStore:
             except Exception:
                 log.exception("listener failed")
 
-    def _set_network_progress(self, kind: str | None, title: str = "", value: float = 0.0) -> None:
+    def _set_network_progress(
+        self,
+        kind: str | None,
+        title: str = "",
+        value: float = 0.0,
+        description: str | None = None,
+        target: str | None = None,
+        *,
+        force: bool = False,
+    ) -> None:
         self.progress_kind = kind
         self.progress_title = title
         self.progress_value = value
+        if description is not None:
+            self.progress_description = description
+        if target is not None:
+            self.progress_target = target
         if kind is None:
+            self.progress_description = ""
+            self.progress_target = ""
             self._progress_only_emit = False
             return
         now = time.monotonic()
-        if now - self._last_progress_emit < 0.12:
+        if not force and now - self._last_progress_emit < 0.12:
             self.progress_kind = kind
             return
         self._last_progress_emit = now
@@ -783,11 +806,113 @@ class AppStore:
         self.progress_kind = None
         self.progress_title = ""
         self.progress_value = 0.0
+        self.progress_description = ""
+        self.progress_target = ""
         self._progress_only_emit = False
 
-    def _network_progress_cb(self, kind: str, title: str) -> Callable[[str, float], None]:
+    def update_checkout_progress(
+        self,
+        title: str = "",
+        value: float = 0.0,
+        *,
+        description: str = "",
+        target: str = "",
+        kind: str | None = "checkout",
+    ) -> None:
+        """Desktop `updateCheckoutProgress` (Linux `Refreshing repository` title)."""
+        if kind is None:
+            self._clear_network_progress()
+            self.emit()
+            return
+        self._set_network_progress(
+            kind,
+            title,
+            value,
+            description=description,
+            target=target,
+            force=True,
+        )
+
+    def update_push_pull_fetch_progress(
+        self,
+        kind: str | None,
+        title: str = "",
+        value: float = 0.0,
+        description: str = "",
+    ) -> None:
+        """Desktop `updatePushPullFetchProgress`."""
+        if kind is None:
+            self._clear_network_progress()
+            self.emit()
+            return
+        self._set_network_progress(kind, title, value, description=description, force=True)
+
+    def refresh_after_checkout(self, repo: Repository, commitish: str) -> None:
+        """Desktop `refreshAfterCheckout`: keep checkout progress at 100% while refreshing."""
+        self.update_checkout_progress(
+            REFRESHING_REPOSITORY,
+            1.0,
+            description=CHECKING_OUT,
+            target=commitish,
+        )
+
+        def after(_exc: BaseException | None = None) -> None:
+            self.update_checkout_progress(kind=None)
+
+        self.refresh_repository(repo, on_complete=after)
+
+    def _refresh_after_push_pull_fetch(
+        self,
+        repo: Repository,
+        on_complete: Callable[..., None] | None = None,
+    ) -> None:
+        """Desktop post-push/pull/fetch: `Refreshing repository` / `Fast-forwarding branches`."""
+        self.update_push_pull_fetch_progress(
+            "generic",
+            REFRESHING_REPOSITORY,
+            0.9,
+            description=FAST_FORWARDING_BRANCHES,
+        )
+
+        def after(_exc: BaseException | None = None) -> None:
+            self.update_push_pull_fetch_progress(None)
+            if on_complete is not None:
+                try:
+                    on_complete()
+                except TypeError:
+                    on_complete(_exc)
+
+        self.refresh_repository(repo, on_complete=after)
+
+    def fast_forward_branches_for_repo(self, repo: Repository) -> None:
+        """Desktop `fastForwardBranches` — log and continue on failure."""
+        try:
+            eligible = get_branches_differing_from_upstream(repo.path)
+            fast_forward_branches(repo.path, eligible)
+        except GitError as exc:
+            log.debug("Branch fast-forwarding failed: %s", exc)
+
+    updateCheckoutProgress = update_checkout_progress
+    updatePushPullFetchProgress = update_push_pull_fetch_progress
+    refreshAfterCheckout = refresh_after_checkout
+    fastForwardBranches = fast_forward_branches_for_repo
+
+    def _network_progress_cb(
+        self,
+        kind: str,
+        title: str,
+        *,
+        target: str = "",
+        description: str = "",
+    ) -> Callable[[str, float], None]:
         def cb(text: str, percent: float) -> None:
-            self._set_network_progress(kind, text or title, percent)
+            self._set_network_progress(
+                kind,
+                text or title,
+                percent,
+                description=description or None,
+                target=target or None,
+            )
 
         return cb
 
@@ -2026,9 +2151,18 @@ class AppStore:
 
         self._run(work, done)
 
-    def refresh_repository(self, repo: Repository | None = None) -> None:
+    def refresh_repository(
+        self,
+        repo: Repository | None = None,
+        on_complete: Callable[..., None] | None = None,
+    ) -> None:
         repo = repo or self.selected_repository
         if not repo:
+            if on_complete is not None:
+                try:
+                    on_complete(None)
+                except TypeError:
+                    on_complete()
             return
         state = self.state_for(repo)
         previous_files = list(state.status.working_directory.files) if state.status else []
@@ -2282,125 +2416,132 @@ class AppStore:
             return payload
 
         def done(exc: BaseException | None, result: dict | None = None) -> None:
-            state.loading = False
-            data = result or {}
-            kind = data.get("kind")
-            if kind is not None and kind != "regular":
-                repo.is_missing = True
-                repo.unsafe = kind == "unsafe"
-                self.emit()
-                return
-            if exc:
-                state.error = str(exc)
-                self.emit()
-                return
-            repo.is_missing = False
-            repo.unsafe = False
-            status = data.get("status")
-            if status and previous_files:
-                old_sel = {f.path: f.selection for f in previous_files}
-                from .models import WorkingDirectoryStatus
+            try:
+                state.loading = False
+                data = result or {}
+                kind = data.get("kind")
+                if kind is not None and kind != "regular":
+                    repo.is_missing = True
+                    repo.unsafe = kind == "unsafe"
+                    self.emit()
+                    return
+                if exc:
+                    state.error = str(exc)
+                    self.emit()
+                    return
+                repo.is_missing = False
+                repo.unsafe = False
+                status = data.get("status")
+                if status and previous_files:
+                    old_sel = {f.path: f.selection for f in previous_files}
+                    from .models import WorkingDirectoryStatus
 
-                merged = []
-                for f in status.working_directory.files:
-                    if f.path in old_sel:
-                        merged.append(f.with_selection(old_sel[f.path]))
-                    else:
-                        merged.append(f)
-                from functools import cmp_to_key
+                    merged = []
+                    for f in status.working_directory.files:
+                        if f.path in old_sel:
+                            merged.append(f.with_selection(old_sel[f.path]))
+                        else:
+                            merged.append(f)
+                    from functools import cmp_to_key
 
-                from .compare import case_insensitive_compare
+                    from .compare import case_insensitive_compare
 
-                merged.sort(key=cmp_to_key(lambda a, b: case_insensitive_compare(a.path, b.path)))
-                status.working_directory = WorkingDirectoryStatus.from_files(merged)
-            state.status = status
-            state.commits = data.get("commits") or []
-            state.has_more_commits = bool(data.get("has_more_commits"))
-            state.branches = data.get("branches") or []
-            state.remotes = data.get("remotes") or []
-            if "author_name" in data or "author_email" in data:
-                state.author_name = data.get("author_name")
-                state.author_email = data.get("author_email")
-                self.author_name = state.author_name
-                self.author_email = state.author_email
-            if "remote_head" in data:
-                state.remote_head = data.get("remote_head")
-            if "default_remote_name" in data:
-                state.default_remote_name = data.get("default_remote_name")
-            if "init_default_branch" in data:
-                state.init_default_branch = data.get("init_default_branch")
-            state.tags = data.get("tags") or {}
-            prev_stash_sha = state.stashes[0].stash_sha if state.stashes else None
-            state.stashes = data.get("stashes") or []
-            state.stash_count = data.get("stash_count") or 0
-            new_stash_sha = state.stashes[0].stash_sha if state.stashes else None
-            if prev_stash_sha != new_stash_sha:
-                state.stash_load_state = StashedChangesLoadStates.NOT_LOADED
-                state.stashed_files = []
-                state.selected_stashed_file = None
-            state.recent_branches = list(data.get("recent_branches") or [])
-            if state.recent_branches:
-                self.settings.recent_branches[repo.path] = list(state.recent_branches)
-            state.ahead_behind = data.get("ahead_behind")
-            state.pull_requests = data.get("pull_requests") or []
-            state.current_pull_request = data.get("current_pull_request")
-            state.diff_comments = data.get("diff_comments") or []
-            state.issues = data.get("issues") or []
-            state.check_runs = data.get("check_runs") or []
-            state.mentions = data.get("mentions") or []
-            state.mentionables = data.get("mentionables") or []
-            if "mentionables_etag" in data:
-                state.mentionables_etag = data.get("mentionables_etag")
-            if "mentionables_fetched_at" in data:
-                state.mentionables_fetched_at = float(data.get("mentionables_fetched_at") or 0.0)
-            if "last_pr_updated_at" in data:
-                state.last_pr_updated_at = data.get("last_pr_updated_at")
-            if "last_pr_refresh" in data:
-                state.last_pr_refresh = data.get("last_pr_refresh")
-            if "issues_last_updated_at" in data:
-                state.issues_last_updated_at = data.get("issues_last_updated_at")
-            state.local_commit_shas = data.get("local_commit_shas") or []
-            if "local_tags_to_push" in data:
-                state.local_tags_to_push = list(data.get("local_tags_to_push") or [])
-            if "repo_rules" in data:
-                state.repo_rules = data["repo_rules"]
-            if "protected_branches" in data:
-                state.protected_branches = list(data.get("protected_branches") or [])
-            if "current_branch_protected" in data:
-                state.current_branch_protected = bool(data.get("current_branch_protected"))
-            if "pull_with_rebase" in data:
-                state.pull_with_rebase = bool(data.get("pull_with_rebase"))
-            if "last_fetched" in data:
-                state.last_fetched = data.get("last_fetched")
-            if status:
-                state.changed_files_count = len(status.working_directory.files)
-            pending_rewrite = state.pending_force_push_before
-            if pending_rewrite:
-                state.pending_force_push_before = None
-                self.add_branch_to_force_push_list(repo, pending_rewrite)
-            if data.get("github"):
-                repo.github = data["github"]
-                self._save_repositories()
-            mismatch = data.get("upstream_mismatch")
-            if mismatch and repo.path not in self._shown_upstream_popup:
-                self._shown_upstream_popup.add(repo.path)
-                self.show_popup(PopupType.UPSTREAM_ALREADY_EXISTS, **mismatch)
-            if previous_selected and status:
-                state.selected_file = next((f for f in status.working_directory.files if f.path == previous_selected), None)
-            if state.selected_file is None and status and status.working_directory.files:
-                state.selected_file = status.working_directory.files[0]
-            if previous_commit:
-                state.selected_commit = next((c for c in state.commits if c.sha == previous_commit), None)
-            if state.stashed_visible and state.stashes:
+                    merged.sort(key=cmp_to_key(lambda a, b: case_insensitive_compare(a.path, b.path)))
+                    status.working_directory = WorkingDirectoryStatus.from_files(merged)
+                state.status = status
+                state.commits = data.get("commits") or []
+                state.has_more_commits = bool(data.get("has_more_commits"))
+                state.branches = data.get("branches") or []
+                state.remotes = data.get("remotes") or []
+                if "author_name" in data or "author_email" in data:
+                    state.author_name = data.get("author_name")
+                    state.author_email = data.get("author_email")
+                    self.author_name = state.author_name
+                    self.author_email = state.author_email
+                if "remote_head" in data:
+                    state.remote_head = data.get("remote_head")
+                if "default_remote_name" in data:
+                    state.default_remote_name = data.get("default_remote_name")
+                if "init_default_branch" in data:
+                    state.init_default_branch = data.get("init_default_branch")
+                state.tags = data.get("tags") or {}
+                prev_stash_sha = state.stashes[0].stash_sha if state.stashes else None
+                state.stashes = data.get("stashes") or []
+                state.stash_count = data.get("stash_count") or 0
+                new_stash_sha = state.stashes[0].stash_sha if state.stashes else None
+                if prev_stash_sha != new_stash_sha:
+                    state.stash_load_state = StashedChangesLoadStates.NOT_LOADED
+                    state.stashed_files = []
+                    state.selected_stashed_file = None
+                state.recent_branches = list(data.get("recent_branches") or [])
+                if state.recent_branches:
+                    self.settings.recent_branches[repo.path] = list(state.recent_branches)
+                state.ahead_behind = data.get("ahead_behind")
+                state.pull_requests = data.get("pull_requests") or []
+                state.current_pull_request = data.get("current_pull_request")
+                state.diff_comments = data.get("diff_comments") or []
+                state.issues = data.get("issues") or []
+                state.check_runs = data.get("check_runs") or []
+                state.mentions = data.get("mentions") or []
+                state.mentionables = data.get("mentionables") or []
+                if "mentionables_etag" in data:
+                    state.mentionables_etag = data.get("mentionables_etag")
+                if "mentionables_fetched_at" in data:
+                    state.mentionables_fetched_at = float(data.get("mentionables_fetched_at") or 0.0)
+                if "last_pr_updated_at" in data:
+                    state.last_pr_updated_at = data.get("last_pr_updated_at")
+                if "last_pr_refresh" in data:
+                    state.last_pr_refresh = data.get("last_pr_refresh")
+                if "issues_last_updated_at" in data:
+                    state.issues_last_updated_at = data.get("issues_last_updated_at")
+                state.local_commit_shas = data.get("local_commit_shas") or []
+                if "local_tags_to_push" in data:
+                    state.local_tags_to_push = list(data.get("local_tags_to_push") or [])
+                if "repo_rules" in data:
+                    state.repo_rules = data["repo_rules"]
+                if "protected_branches" in data:
+                    state.protected_branches = list(data.get("protected_branches") or [])
+                if "current_branch_protected" in data:
+                    state.current_branch_protected = bool(data.get("current_branch_protected"))
+                if "pull_with_rebase" in data:
+                    state.pull_with_rebase = bool(data.get("pull_with_rebase"))
+                if "last_fetched" in data:
+                    state.last_fetched = data.get("last_fetched")
+                if status:
+                    state.changed_files_count = len(status.working_directory.files)
+                pending_rewrite = state.pending_force_push_before
+                if pending_rewrite:
+                    state.pending_force_push_before = None
+                    self.add_branch_to_force_push_list(repo, pending_rewrite)
+                if data.get("github"):
+                    repo.github = data["github"]
+                    self._save_repositories()
+                mismatch = data.get("upstream_mismatch")
+                if mismatch and repo.path not in self._shown_upstream_popup:
+                    self._shown_upstream_popup.add(repo.path)
+                    self.show_popup(PopupType.UPSTREAM_ALREADY_EXISTS, **mismatch)
+                if previous_selected and status:
+                    state.selected_file = next((f for f in status.working_directory.files if f.path == previous_selected), None)
+                if state.selected_file is None and status and status.working_directory.files:
+                    state.selected_file = status.working_directory.files[0]
+                if previous_commit:
+                    state.selected_commit = next((c for c in state.commits if c.sha == previous_commit), None)
+                if state.stashed_visible and state.stashes:
+                    self._advance_tutorial(repo, state)
+                    self.load_stash_files(repo)
+                    return
+                if state.selected_file and self.section == RepositorySectionTab.CHANGES:
+                    self._load_working_diff(repo, state)
                 self._advance_tutorial(repo, state)
-                self.load_stash_files(repo)
-                return
-            if state.selected_file and self.section == RepositorySectionTab.CHANGES:
-                self._load_working_diff(repo, state)
-            self._advance_tutorial(repo, state)
-            self._finish_pending_open(repo)
-            self._persist_github_api_cache(repo, state)
-            self.emit()
+                self._finish_pending_open(repo)
+                self._persist_github_api_cache(repo, state)
+                self.emit()
+            finally:
+                if on_complete is not None:
+                    try:
+                        on_complete(exc)
+                    except TypeError:
+                        on_complete()
 
         self._run_ui(work, done)
 
@@ -4637,16 +4778,27 @@ class AppStore:
             checkout_commit(
                 repo.path,
                 sha,
-                progress=self._network_progress_cb("checkout", f"Checking out {sha[:7]}"),
+                progress=self._network_progress_cb(
+                    "checkout",
+                    f"Checking out {shorten_sha(sha)}",
+                    target=shorten_sha(sha),
+                    description=CHECKING_OUT,
+                ),
             )
 
         def done(exc: BaseException | None) -> None:
-            self._clear_network_progress()
             if exc:
                 self.show_popup(PopupType.ERROR, error=str(exc))
-                return
-            self.show_banner(Banner(BannerType.DETACHED_HEAD))
-            self.refresh_repository(repo)
+            else:
+                self.show_banner(Banner(BannerType.DETACHED_HEAD))
+            self.refresh_after_checkout(repo, shorten_sha(sha))
+
+        self.update_checkout_progress(
+            f"Checking out {shorten_sha(sha)}",
+            0.0,
+            description=CHECKING_OUT,
+            target=shorten_sha(sha),
+        )
 
         self._run(work, done)
 
@@ -5064,35 +5216,44 @@ class AppStore:
                 env=env,
                 progress=self._network_progress_cb("push", f"Pushing to {remote.name}"),
             )
+            self.fast_forward_branches_for_repo(repo)
             return {"kind": "ok", "branch": status.current_branch}
 
         def done(exc: BaseException | None, result: dict | None = None) -> None:
-            self._clear_network_progress()
             kind = (result or {}).get("kind") if not exc else None
             if kind == "publish":
+                self._clear_network_progress()
                 self.show_popup(PopupType.PUBLISH_REPOSITORY)
                 return
             if kind == "needs_pull":
+                self._clear_network_progress()
                 self.show_popup(PopupType.PUSH_NEEDS_PULL)
                 return
             if kind == "noop":
+                self._clear_network_progress()
                 return
             if exc:
+                self._clear_network_progress()
                 self._retry_action = RetryAction(type=RetryActionType.PUSH, repo_id=repo.id, force=force)
                 self._handle_remote_error(repo, exc)
-            else:
-                if force:
-                    self.drop_current_branch_from_force_push_list(repo)
-                state.local_tags_to_push = []
-                clear_tags_to_push(self.settings, repo)
-                self.persist_settings()
-                self.refresh_repository(repo)
-                branch = (result or {}).get("branch") or ""
+                self.emit()
+                return
+
+            if force:
+                self.drop_current_branch_from_force_push_list(repo)
+            state.local_tags_to_push = []
+            clear_tags_to_push(self.settings, repo)
+            self.persist_settings()
+            branch = (result or {}).get("branch") or ""
+
+            def after_refresh() -> None:
                 show_notification("Push complete", f"Pushed {branch}", enabled=self.settings.notifications_enabled)
                 self.stats.record_push(self.account_for_repo(repo), force_with_lease=force)
                 if on_success:
                     on_success()
-            self.emit()
+                self.emit()
+
+            self._refresh_after_push_pull_fetch(repo, on_complete=after_refresh)
 
         self._run(work, done)
 
@@ -5107,27 +5268,24 @@ class AppStore:
                 return {"kind": "noop", "tags": []}
             env = self.env_for_repo(repo, remote.url)
             pull(repo.path, remote.name, env=env, progress=self._network_progress_cb("pull", f"Pulling {remote.name}"))
-            try:
-                eligible = get_branches_differing_from_upstream(repo.path)
-                fast_forward_branches(repo.path, eligible)
-            except GitError as exc:
-                log.debug("Branch fast-forwarding failed: %s", exc)
+            self.fast_forward_branches_for_repo(repo)
             return {"kind": "ok", "tags": self._tags_to_push(repo, remote)}
 
         def done(exc: BaseException | None, result: dict | None = None) -> None:
-            self._clear_network_progress()
             kind = (result or {}).get("kind") if not exc else None
             if kind == "noop":
+                self._clear_network_progress()
                 return
             tags = (result or {}).get("tags")
             if exc:
+                self._clear_network_progress()
                 self._retry_action = RetryAction(type=RetryActionType.PULL, repo_id=repo.id)
                 self._handle_remote_error(repo, exc)
-            else:
-                if tags is not None:
-                    self.set_local_tags_to_push(repo, tags)
-                self.refresh_repository(repo)
-            self.emit()
+                self.emit()
+                return
+            if tags is not None:
+                self.set_local_tags_to_push(repo, tags)
+            self._refresh_after_push_pull_fetch(repo, on_complete=self.emit)
 
         self._run(work, done)
 
@@ -5270,11 +5428,7 @@ class AppStore:
                     fetch(repo.path, other.name, env=self.env_for_repo(repo, other.url, background=quiet))
                 except GitError as exc:
                     log.debug("upstream fetch failed: %s", exc)
-            try:
-                eligible = get_branches_differing_from_upstream(repo.path)
-                fast_forward_branches(repo.path, eligible)
-            except GitError as exc:
-                log.debug("Branch fast-forwarding failed: %s", exc)
+            self.fast_forward_branches_for_repo(repo)
             self._prune_merged_branches(repo)
             if quiet and repo.github:
                 self._update_background_fetch_interval(repo)
@@ -5283,10 +5437,10 @@ class AppStore:
         def done(exc: BaseException | None, result: dict | None = None) -> None:
             if quiet:
                 self._background_fetch_in_flight = False
-            else:
-                self._clear_network_progress()
             kind = (result or {}).get("kind") if not exc else None
             if kind == "noop":
+                if not quiet:
+                    self._clear_network_progress()
                 self.emit()
                 return
             tags = (result or {}).get("tags")
@@ -5294,13 +5448,18 @@ class AppStore:
                 if quiet:
                     log.debug("background fetch failed: %s", exc)
                 else:
+                    self._clear_network_progress()
                     self._retry_action = RetryAction(type=RetryActionType.FETCH, repo_id=repo.id)
                     self._handle_remote_error(repo, exc)
-            else:
-                if tags is not None:
-                    self.set_local_tags_to_push(repo, tags)
+                self.emit()
+                return
+            if tags is not None:
+                self.set_local_tags_to_push(repo, tags)
+            if quiet:
                 self.refresh_repository(repo)
-            self.emit()
+                self.emit()
+                return
+            self._refresh_after_push_pull_fetch(repo, on_complete=self.emit)
 
         self._run(work, done)
 
@@ -5458,14 +5617,23 @@ class AppStore:
         should_stash = has_changes and strategy == UncommittedChangesStrategy.STASH_ON_CURRENT_BRANCH
         current = status.current_branch if status else "unknown"
         title = f"Checking out {branch.name}"
+        self.update_checkout_progress(title, 0.0, description=CHECKING_OUT, target=branch.name)
 
         def work() -> None:
             if should_stash:
                 self.stash_and_drop_previous(repo, current or "unknown")
-            checkout_branch(repo.path, branch, progress=self._network_progress_cb("checkout", title))
+            checkout_branch(
+                repo.path,
+                branch,
+                progress=self._network_progress_cb(
+                    "checkout",
+                    title,
+                    target=branch.name,
+                    description=CHECKING_OUT,
+                ),
+            )
 
         def done(exc: BaseException | None) -> None:
-            self._clear_network_progress()
             if exc:
                 if isinstance(exc, GitError) and exc.is_local_changes_overwritten:
                     self._popup_local_changes_overwritten(
@@ -5473,15 +5641,15 @@ class AppStore:
                         RetryAction(type=RetryActionType.CHECKOUT, repo_id=repo.id, branch=name),
                         overwritten_files_from_error(f"{exc.stderr}\n{exc.stdout}"),
                     )
-                    return
-                self.show_popup(PopupType.ERROR, error=str(exc))
-                return
-            self.remember_branch(repo, name)
-            self.refresh_repository(repo)
-            gh = github_for_contribution(repo) or repo.github
-            default_name = gh.default_branch if gh is not None else self.settings.default_branch
-            if name != default_name:
-                self.stats.record_non_default_branch_checkout()
+                else:
+                    self.show_popup(PopupType.ERROR, error=str(exc))
+            else:
+                self.remember_branch(repo, name)
+                gh = github_for_contribution(repo) or repo.github
+                default_name = gh.default_branch if gh is not None else self.settings.default_branch
+                if name != default_name:
+                    self.stats.record_non_default_branch_checkout()
+            self.refresh_after_checkout(repo, branch.name)
 
         self._run(work, done)
 
@@ -5501,8 +5669,7 @@ class AppStore:
         def done(exc: BaseException | None, result: object = None) -> None:
             if exc:
                 log.debug("checkout named branch failed: %s", exc)
-                return
-            self.refresh_repository(repo)
+            self.refresh_after_checkout(repo, name)
 
         self._run_ui(work, done)
 
@@ -5524,10 +5691,21 @@ class AppStore:
         name = branch.name_without_remote if branch.type == BranchType.REMOTE else branch.name
         current = self.state_for(repo).status.current_branch if self.state_for(repo).status else name
         retry = RetryAction(type=RetryActionType.CHECKOUT, repo_id=repo.id, branch=name)
+        title = f"Checking out {branch.name}"
+        self.update_checkout_progress(title, 0.0, description=CHECKING_OUT, target=branch.name)
 
         def work() -> str | tuple[str, list[str]]:
             try:
-                checkout_branch(repo.path, branch)
+                checkout_branch(
+                    repo.path,
+                    branch,
+                    progress=self._network_progress_cb(
+                        "checkout",
+                        title,
+                        target=branch.name,
+                        description=CHECKING_OUT,
+                    ),
+                )
                 return "ok"
             except GitError as exc:
                 if not exc.is_local_changes_overwritten:
@@ -5537,7 +5715,16 @@ class AppStore:
                         "overwritten",
                         overwritten_files_from_error(f"{exc.stderr}\n{exc.stdout}\n{exc}"),
                     )
-                checkout_branch(repo.path, branch)
+                checkout_branch(
+                    repo.path,
+                    branch,
+                    progress=self._network_progress_cb(
+                        "checkout",
+                        title,
+                        target=branch.name,
+                        description=CHECKING_OUT,
+                    ),
+                )
                 entry = get_last_desktop_stash_entry_for_branch(repo.path, name)
                 if entry:
                     stash_pop(repo.path, entry.name)
@@ -5546,22 +5733,32 @@ class AppStore:
         def done(exc: BaseException | None, result: object = None) -> None:
             if exc:
                 self.show_popup(PopupType.ERROR, error=str(exc))
-                return
-            if isinstance(result, tuple) and result and result[0] == "overwritten":
+            elif isinstance(result, tuple) and result and result[0] == "overwritten":
                 self._popup_local_changes_overwritten(repo, retry, list(result[1]))
-                return
-            self.remember_branch(repo, name)
-            self.refresh_repository(repo)
+            else:
+                self.remember_branch(repo, name)
+            self.refresh_after_checkout(repo, branch.name)
 
         self._run_ui(work, done)
 
     def stash_then_checkout(self, repo: Repository, target: str) -> None:
         """Stash the current branch, then check out ``target`` (Desktop overwrite-stash confirm)."""
         current = self.state_for(repo).status.current_branch if self.state_for(repo).status else "unknown"
+        title = f"Checking out {target}"
+        self.update_checkout_progress(title, 0.0, description=CHECKING_OUT, target=target)
 
         def work() -> None:
             self.stash_and_drop_previous(repo, current or "unknown")
-            checkout_branch(repo.path, target)
+            checkout_branch(
+                repo.path,
+                target,
+                progress=self._network_progress_cb(
+                    "checkout",
+                    title,
+                    target=target,
+                    description=CHECKING_OUT,
+                ),
+            )
 
         def done(exc: BaseException | None, result: object = None) -> None:
             if exc:
@@ -5571,11 +5768,11 @@ class AppStore:
                         RetryAction(type=RetryActionType.CHECKOUT, repo_id=repo.id, branch=target),
                         overwritten_files_from_error(f"{exc.stderr}\n{exc.stdout}"),
                     )
-                    return
-                self.show_popup(PopupType.ERROR, error=str(exc))
-                return
-            self.remember_branch(repo, target)
-            self.refresh_repository(repo)
+                else:
+                    self.show_popup(PopupType.ERROR, error=str(exc))
+            else:
+                self.remember_branch(repo, target)
+            self.refresh_after_checkout(repo, target)
 
         self._run_ui(work, done)
 
@@ -5824,17 +6021,28 @@ class AppStore:
         no_track: bool = False,
     ) -> None:
         name = sanitize_ref_name(name)
+        title = f"Checking out {name}"
+        self.update_checkout_progress(title, 0.0, description=CHECKING_OUT, target=name)
 
         def work() -> None:
             create_branch(repo.path, name, start_point, no_track=no_track)
-            checkout_branch(repo.path, name)
+            checkout_branch(
+                repo.path,
+                name,
+                progress=self._network_progress_cb(
+                    "checkout",
+                    title,
+                    target=name,
+                    description=CHECKING_OUT,
+                ),
+            )
 
         def done(exc: BaseException | None, result: object = None) -> None:
             if exc:
                 self.show_popup(PopupType.ERROR, error=str(exc))
-                return
-            self.remember_branch(repo, name)
-            self.refresh_repository(repo)
+            else:
+                self.remember_branch(repo, name)
+            self.refresh_after_checkout(repo, name)
 
         self._run_ui(work, done)
 

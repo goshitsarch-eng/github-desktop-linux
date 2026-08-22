@@ -14,6 +14,12 @@ ICON_PULL = "go-down-symbolic"
 ICON_FETCH = "view-refresh-symbolic"
 ICON_FORCE_PUSH = "go-up-symbolic"
 
+# Desktop Linux `refreshAfterCheckout` / push-pull refresh (Darwin: Refreshing Repository).
+REFRESHING_REPOSITORY = "Refreshing repository"
+FAST_FORWARDING_BRANCHES = "Fast-forwarding branches"
+CHECKING_OUT = "Checking out"
+HANG_ON = "Hang on…"
+
 
 @dataclass(frozen=True)
 class PushPullPresentation:
@@ -111,3 +117,19 @@ def describe_push_pull(
     return PushPullPresentation(
         f"Fetch {remote_name}", "fetch", (), remote_name=remote_name, icon=ICON_FETCH
     )
+
+
+def network_progress_chrome(
+    *,
+    title: str,
+    description: str = "",
+    value: float = 0.0,
+) -> tuple[str, str, str]:
+    """Desktop `PushPullButton.progressButton`: label, description, tooltip."""
+    subtitle = description or HANG_ON
+    percent = int(round(value * 100)) if value > 0 else 0
+    label = f"{title} {percent}%" if percent else title
+    return label, subtitle, subtitle
+
+
+progressButton = network_progress_chrome

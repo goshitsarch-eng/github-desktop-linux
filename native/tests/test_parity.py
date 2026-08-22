@@ -1530,5 +1530,11 @@ def test_window_actions_cover_menus() -> None:
         "Learn more about commit attribution",
         "The email in your global Git config",
         "isGitConfigLocal",
+        "refreshAfterCheckout",
+        "updatePushPullFetchProgress",
+        "Fast-forwarding branches",
+        "Hang on…",
+        "progressButton",
+        "fastForwardBranches",
     ]:
         assert phrase in src

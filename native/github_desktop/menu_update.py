@@ -499,7 +499,7 @@ def menu_snapshot_from_store(
             stash_entry = stash_fn(repo, status.current_branch) if callable(stash_fn) else None
         rebase = bool(status is not None and status.rebase_internal_state)
         kind = getattr(store, "progress_kind", None)
-        network = kind in {"push", "pull", "fetch"}
+        network = kind in {"push", "pull", "fetch", "generic"}
     else:
         selected = None
     repos = list(getattr(store, "repositories", []) or [])

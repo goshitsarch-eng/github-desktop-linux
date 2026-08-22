@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from github_desktop.git.progress import format_bytes
@@ -344,11 +346,91 @@ def test_branch_toolbar_linux_copy_matches_desktop() -> None:
     assert sensitive is False
     title, description, tooltip, sensitive = branch_toolbar_chrome(rebasing_target="topic")
     assert (title, description, tooltip, sensitive) == ("topic", "Rebasing branch", "Rebasing topic", False)
-    title, description, _, _ = branch_toolbar_chrome(
+    title, description, tooltip, _ = branch_toolbar_chrome(
         checkout=True, checkout_title="Refreshing repository", checkout_value=1
     )
     assert title == "Refreshing repository"
     assert description == "Checking out (100%)"
+    title, description, tooltip, _ = branch_toolbar_chrome(
+        checkout=True,
+        checkout_title="Refreshing repository",
+        checkout_value=1,
+        checkout_target="main",
+        checkout_description="Checking out",
+    )
+    assert title == "main"
+    assert description == "Checking out (100%)"
+    assert tooltip == "Checking out main"
+
+
+def test_refresh_after_checkout_matches_desktop(isolated_config, git_repo: Path) -> None:
+    from github_desktop.push_pull import CHECKING_OUT, REFRESHING_REPOSITORY
+    from github_desktop.store import AppStore
+
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    seen: list[tuple] = []
+
+    def fake_refresh(_repo, on_complete=None):
+        seen.append(
+            (
+                store.progress_kind,
+                store.progress_title,
+                store.progress_description,
+                store.progress_value,
+                store.progress_target,
+            )
+        )
+        if on_complete is not None:
+            on_complete(None)
+
+    store.refresh_repository = fake_refresh  # type: ignore[method-assign]
+    store.refreshAfterCheckout(repo, "main")
+    assert seen == [("checkout", REFRESHING_REPOSITORY, CHECKING_OUT, 1.0, "main")]
+    assert store.progress_kind is None
+    assert store.progress_title == ""
+    assert store.progress_target == ""
+
+
+def test_refresh_after_push_pull_shows_fast_forwarding(isolated_config, git_repo: Path) -> None:
+    from github_desktop.push_pull import (
+        FAST_FORWARDING_BRANCHES,
+        HANG_ON,
+        REFRESHING_REPOSITORY,
+        network_progress_chrome,
+        progressButton,
+    )
+    from github_desktop.store import AppStore
+
+    label, subtitle, tooltip = network_progress_chrome(
+        title=REFRESHING_REPOSITORY,
+        description=FAST_FORWARDING_BRANCHES,
+        value=0.9,
+    )
+    assert label == "Refreshing repository 90%"
+    assert subtitle == FAST_FORWARDING_BRANCHES
+    assert tooltip == FAST_FORWARDING_BRANCHES
+    hang_label, hang_sub, hang_tip = progressButton(title="Pushing to origin")
+    assert hang_label == "Pushing to origin"
+    assert hang_sub == hang_tip == HANG_ON
+
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    seen: list[tuple] = []
+
+    def fake_refresh(_repo, on_complete=None):
+        seen.append((store.progress_kind, store.progress_title, store.progress_description))
+        if on_complete is not None:
+            on_complete(None)
+
+    store.refresh_repository = fake_refresh  # type: ignore[method-assign]
+    store._refresh_after_push_pull_fetch(repo)
+    assert seen == [("generic", REFRESHING_REPOSITORY, FAST_FORWARDING_BRANCHES)]
+    assert store.progress_kind is None
 
 
 def test_clone_list_empty_copy() -> None:
