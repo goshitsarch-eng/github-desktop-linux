@@ -59,11 +59,21 @@ def diff_search_result_message(index: int, total: int, query: str) -> str:
 
 # Desktop `ariaLiveMessage: 'Expanded'` after expand hunk / expand whole file.
 DIFF_EXPANDED_ARIA_LIVE = "Expanded"
+# Desktop `selected-commits.tsx` renderDiff: don't show both empty messages.
+NO_FILE_SELECTED = "No file selected"
 
 
 def diff_expanded_aria_live() -> str:
     """Desktop `ariaLiveMessage: 'Expanded'` after expand hunk / expand whole file."""
     return DIFF_EXPANDED_ARIA_LIVE
+
+
+def diff_no_file_blankslate(*, has_files: bool) -> str:
+    """Desktop History Diff when `file == null`.
+
+    `changesetData.files.length === 0` → empty string; otherwise `No file selected`.
+    """
+    return NO_FILE_SELECTED if has_files else ""
 
 
 def diff_options_label() -> str:
@@ -502,6 +512,7 @@ class DiffViewer(Gtk.Box):
         comments: list | None = None,
         ask_discard_confirm: bool = True,
         loading: bool | None = None,
+        has_files: bool = True,
     ) -> None:
         # Desktop `propSnapshot`: keep the previous Diff painted until the next one is ready.
         if is_seamless_file_loading(diff, path, loading=loading):
@@ -533,7 +544,19 @@ class DiffViewer(Gtk.Box):
         self._hide_whitespace = hide_whitespace
         self._side_by_side = side_by_side
         if diff is None:
-            self._inner.append(Adw.StatusPage(title="No file selected", icon_name="document-symbolic"))
+            message = diff_no_file_blankslate(has_files=has_files)
+            if message:
+                self._inner.append(
+                    Adw.StatusPage(title=message, icon_name="document-symbolic")
+                )
+            else:
+                empty = Gtk.Box()
+                empty.set_name("diff")
+                empty.add_css_class("panel")
+                empty.add_css_class("blankslate")
+                empty.set_hexpand(True)
+                empty.set_vexpand(True)
+                self._inner.append(empty)
             return
         kind = getattr(diff, "kind", None)
         if kind == DiffType.BINARY:

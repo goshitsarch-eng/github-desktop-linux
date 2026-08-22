@@ -291,6 +291,15 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             assert viewer._aria_live.get_text() == "Expanded"
             viewer.render(None, path="")
             assert viewer.isLoadingDiff is False
+            from github_desktop.ui.diff_view import NO_FILE_SELECTED, diff_no_file_blankslate
+
+            assert diff_no_file_blankslate(has_files=True) == NO_FILE_SELECTED
+            viewer.render(None, path="", has_files=False)
+            empty = viewer._inner.get_first_child()
+            assert empty is not None
+            assert empty.has_css_class("blankslate")
+            assert empty.get_name() == "diff"
+            assert not isinstance(empty, Adw.StatusPage)
             viewer.render(BinaryDiff(), path="photo.bin")
             from github_desktop.models import ImageDiff, ImageDiffType
 

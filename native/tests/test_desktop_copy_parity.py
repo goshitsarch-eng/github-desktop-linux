@@ -182,6 +182,14 @@ def test_commit_list_empty_copy_matches_desktop() -> None:
     )
 
 
+def test_diff_no_file_blankslate_matches_desktop() -> None:
+    from github_desktop.ui.diff_view import NO_FILE_SELECTED, diff_no_file_blankslate
+
+    assert NO_FILE_SELECTED == "No file selected"
+    assert diff_no_file_blankslate(has_files=True) == "No file selected"
+    assert diff_no_file_blankslate(has_files=False) == ""
+
+
 def test_author_input_and_diff_options_linux_copy() -> None:
     from github_desktop.models import Author
     from github_desktop.ui.author_input import (

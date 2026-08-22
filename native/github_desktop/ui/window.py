@@ -4021,7 +4021,7 @@ class MainWindow(Adw.ApplicationWindow):
                 self._hist_detail_stack.set_visible_child_name("detail")
         if non_contig or no_commit:
             if hasattr(self, "_hist_diff_view"):
-                self._hist_diff_view.render(None)
+                self._hist_diff_view.render(None, has_files=False)
             return
         repo = self.store.selected_repository
         commit = state.selected_commit
@@ -4289,7 +4289,8 @@ class MainWindow(Adw.ApplicationWindow):
         if not hasattr(self, "_hist_diff_view"):
             return
         path = state.selected_commit_files[0].path if state.selected_commit_files else ""
-        has_files = bool(state.selected_commit_files)
+        changeset = getattr(state, "changeset", None)
+        has_files = bool(changeset.files) if changeset is not None else bool(state.selected_commit_files)
         loading = state.selected_commit is not None and state.current_diff is None and has_files
         self._hist_diff_view.render(
             state.current_diff,
@@ -4302,6 +4303,7 @@ class MainWindow(Adw.ApplicationWindow):
             tab_size=self.store.settings.tab_size,
             comments=list(state.diff_comments),
             loading=loading,
+            has_files=has_files,
         )
 
     def _on_line_toggle(self, path: str, index: int, included: bool) -> None:

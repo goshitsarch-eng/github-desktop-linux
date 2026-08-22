@@ -1676,5 +1676,8 @@ def test_window_actions_cover_menus() -> None:
         "Your branch is up to date with the compared branch",
         "NoCommitSelected",
         "No commits to list",
+        "No file selected",
+        "diff_no_file_blankslate",
+        "changesetData.files",
     ]:
         assert phrase in src
