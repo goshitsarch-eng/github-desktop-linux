@@ -1614,5 +1614,14 @@ def test_window_actions_cover_menus() -> None:
         "PullRequestMergeStatus",
         "mergesInitiatedFromComparison",
         "createPullRequestFromPreviewCount",
+        "There are no steps to display for this check.",
+        "View check details",
+        "CICheckRunNoStepItem",
+        "areNoSteps",
+        "actionJobSteps",
+        "ci-check-run-no-steps",
+        "onViewCheckExternally",
+        'increment("viewsCheckOnline")',
+        'increment("opensCheckRunsPopover")',
     ]:
         assert phrase in src

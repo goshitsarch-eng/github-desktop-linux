@@ -436,6 +436,17 @@ window:not(.underline-links) link {
 .pull-request-merge-status {
   opacity: 0.9;
 }
+/* Desktop `_ci-check-run-no-steps.scss` */
+.ci-check-run-no-steps {
+  padding: 16px;
+}
+.ci-check-run-no-steps .blankslate-image {
+  opacity: 0.55;
+  min-width: 64px;
+}
+.ci-steps-container.no-steps {
+  min-height: 150px;
+}
 """
 
 _provider: Gtk.CssProvider | None = None

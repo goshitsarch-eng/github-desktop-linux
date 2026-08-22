@@ -206,3 +206,8 @@ def test_get_latest_pr_workflow_runs_logs_for_check_run() -> None:
     mapped = get_latest_pr_workflow_runs_logs_for_check_run(FakeAPI(), "o", "r", [check])
     assert mapped[0].html_url == "https://github.com/o/r/actions/runs/9/job/5"
     assert mapped[0].steps[0].name == "Set up job"
+    assert mapped[0].actionJobSteps is not None
+    from github_desktop.github.ci_checks import are_no_check_steps, view_check_details_url
+
+    assert are_no_check_steps(mapped[0]) is False
+    assert view_check_details_url(mapped[0]).endswith("/job/5")

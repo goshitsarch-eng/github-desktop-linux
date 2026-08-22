@@ -20,6 +20,10 @@ SUCCESSISH_CONCLUSIONS = ("success", "neutral", "skipped")
 RERUNNABLE_MAX_AGE = timedelta(days=30)
 MAX_JOB_LOG_CHARS = 512 * 1024
 
+# Desktop `CICheckRunNoStepItem` (`app/src/ui/check-runs/ci-check-run-no-steps.tsx`).
+THERE_ARE_NO_STEPS = "There are no steps to display for this check."
+VIEW_CHECK_DETAILS = "View check details"
+
 
 def to_sentence(parts: Sequence[str]) -> str:
     if not parts:
@@ -331,6 +335,27 @@ def checks_header_state(runs: Sequence[RefCheck], *, loading: bool = False) -> t
     if not runs:
         return "No checks for this branch", ""
     return "Some checks were not successful", "failure"
+
+
+def are_no_check_steps(check: RefCheck) -> bool:
+    """Desktop `checkRun.actionJobSteps === undefined`."""
+    return check.actionJobSteps is None
+
+
+areNoSteps = are_no_check_steps
+
+
+def view_check_details_url(
+    check: RefCheck,
+    repo_html_url: str | None = None,
+    pr_number: int | None = None,
+) -> str | None:
+    """Desktop `onViewCheckDetails` / `onViewOnGitHub` URL, with PR checks fallback."""
+    if check.html_url:
+        return check.html_url
+    if repo_html_url and pr_number:
+        return f"{str(repo_html_url).rstrip('/')}/pull/{int(pr_number)}"
+    return None
 
 
 def group_check_runs_by_workflow(runs: Sequence[RefCheck]) -> dict[str, list[RefCheck]]:

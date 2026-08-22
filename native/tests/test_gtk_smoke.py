@@ -409,6 +409,29 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             assert avatar.renderGitConfigPopover() is not None
             sample_run = RefCheck(id=1, name="build", description="Failed after 1m", status="completed", conclusion="failure")
             show_checks(win, store, {"error": "1 check failed in your pull request", "title": "Demo PR", "checks": [sample_run]})
+            from github_desktop.github.ci_checks import THERE_ARE_NO_STEPS, VIEW_CHECK_DETAILS, areNoSteps
+            from github_desktop.ui.checks import CICheckRunNoStepItem, _run_expander
+
+            assert areNoSteps(sample_run)
+            blank = CICheckRunNoStepItem(html_url="https://github.com/example/repo/runs/1")
+            assert blank.has_css_class("ci-check-run-no-steps")
+            copy_box = blank.get_first_child()
+            assert copy_box.get_first_child().get_text() == THERE_ARE_NO_STEPS
+            details_btn = copy_box.get_first_child().get_next_sibling()
+            assert details_btn.get_child().get_first_child().get_text() == VIEW_CHECK_DETAILS
+            expander = _run_expander(sample_run)
+            assert expander.has_css_class("no-steps")
+            from github_desktop.models import CheckStep
+
+            stepped = RefCheck(
+                id=2,
+                name="linux",
+                description="Successful in 1m",
+                status="completed",
+                conclusion="success",
+                steps=[CheckStep(name="Set up job", number=1, status="completed", conclusion="success")],
+            )
+            assert not _run_expander(stepped).has_css_class("no-steps")
             show_pull_request_review(
                 win,
                 store,

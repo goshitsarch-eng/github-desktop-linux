@@ -12,6 +12,9 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gtk, Pango
 
 from ..github.ci_checks import (
+    THERE_ARE_NO_STEPS,
+    VIEW_CHECK_DETAILS,
+    areNoSteps,
     check_run_step_url,
     checks_header_state,
     failing_checks,
@@ -21,6 +24,7 @@ from ..github.ci_checks import (
     get_combined_status_summary,
     group_check_runs_by_workflow,
     is_failure,
+    view_check_details_url,
 )
 from ..endpoint_capabilities import (
     supports_rerunning_checks,
@@ -35,6 +39,94 @@ from .menus import view_on_github_label
 def _view_on_github_label(repo) -> str:
     enterprise = bool(repo and getattr(repo, "github", None) and not is_dotcom_endpoint(repo.github.endpoint))
     return view_on_github_label(enterprise=enterprise)
+
+
+def _check_details_context(
+    store: AppStore | None,
+    repo,
+    payload: dict[str, Any] | None,
+) -> tuple[str | None, int | None]:
+    payload = payload or {}
+    pr = payload.get("pull_request") if isinstance(payload.get("pull_request"), dict) else {}
+    number = pr.get("number") or payload.get("number")
+    repo_html = payload.get("repository_html_url")
+    if repo is not None and getattr(repo, "github", None) is not None:
+        repo_html = repo_html or repo.github.html_url
+    if number is None and store is not None and repo is not None:
+        current = store.state_for(repo).current_pull_request
+        if current is not None:
+            number = current.number
+    try:
+        pr_number = int(number) if number is not None else None
+    except (TypeError, ValueError):
+        pr_number = None
+    return repo_html, pr_number
+
+
+def onViewCheckExternally(
+    run: RefCheck,
+    *,
+    store: AppStore | None = None,
+    repo=None,
+    payload: dict[str, Any] | None = None,
+    increment_views: bool = False,
+) -> None:
+    """Desktop `onViewCheckExternally` / `onViewCheckDetails`."""
+    repo_html, pr_number = _check_details_context(store, repo, payload)
+    url = view_check_details_url(run, repo_html_url=repo_html, pr_number=pr_number)
+    if not url:
+        return
+    if increment_views and store is not None:
+        store.stats.increment("viewsCheckOnline")
+    open_external(url)
+
+
+class CICheckRunNoStepItem(Gtk.Box):
+    """Desktop `CICheckRunNoStepItem` empty-steps blankslate."""
+
+    def __init__(
+        self,
+        *,
+        on_view_check_externally: Callable[[], None] | None = None,
+        html_url: str | None = None,
+        store: AppStore | None = None,
+        increment_views: bool = False,
+    ) -> None:
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
+        self.add_css_class("ci-check-run-no-steps")
+        self.set_hexpand(True)
+        self.onViewCheckExternally = on_view_check_externally
+        copy_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        copy_box.set_valign(Gtk.Align.CENTER)
+        copy_box.set_hexpand(True)
+        message = Gtk.Label(label=THERE_ARE_NO_STEPS, wrap=True, xalign=0)
+        copy_box.append(message)
+
+        def view(*_a: object) -> None:
+            if self.onViewCheckExternally is not None:
+                self.onViewCheckExternally()
+                return
+            if not html_url:
+                return
+            if increment_views and store is not None:
+                store.stats.increment("viewsCheckOnline")
+            open_external(html_url)
+
+        button = Gtk.Button()
+        button.add_css_class("button-with-icon")
+        button.add_css_class("flat")
+        inner = Gtk.Box(spacing=6)
+        inner.append(Gtk.Label(label=VIEW_CHECK_DETAILS))
+        inner.append(Gtk.Image.new_from_icon_name("web-browser-symbolic"))
+        button.set_child(inner)
+        button.connect("clicked", view)
+        copy_box.append(button)
+        self.append(copy_box)
+        illustration = Gtk.Image.new_from_icon_name("view-paged-symbolic")
+        illustration.set_pixel_size(72)
+        illustration.set_valign(Gtk.Align.CENTER)
+        illustration.add_css_class("blankslate-image")
+        self.append(illustration)
 
 
 DONUT_COLORS = {
@@ -168,13 +260,22 @@ def _step_row_widget(step: CheckStep) -> Adw.ActionRow:
     return row
 
 
-def _open_step(run: RefCheck, step: CheckStep, payload: dict[str, Any] | None = None) -> None:
+def _open_step(
+    run: RefCheck,
+    step: CheckStep,
+    payload: dict[str, Any] | None = None,
+    *,
+    store: AppStore | None = None,
+    increment_views: bool = False,
+) -> None:
     payload = payload or {}
     pr = payload.get("pull_request") if isinstance(payload.get("pull_request"), dict) else {}
     repo_html = payload.get("repository_html_url")
     number = pr.get("number") or payload.get("number")
     url = check_run_step_url(run, step, repo_html, int(number) if number else None)
     if url:
+        if increment_views and store is not None:
+            store.stats.increment("viewsCheckJobStepOnline")
         open_external(url)
 
 
@@ -186,6 +287,7 @@ def _run_expander(
     payload: dict[str, Any] | None = None,
     on_rerun_one: Callable[[RefCheck], None] | None = None,
     expanded: bool = False,
+    increment_views: bool = False,
 ) -> Adw.ExpanderRow:
     status = run.conclusion or run.status or "unknown"
     subtitle = run.description or status
@@ -198,8 +300,13 @@ def _run_expander(
     if run.html_url:
         open_btn = Gtk.Button(icon_name="web-browser-symbolic")
         open_btn.add_css_class("flat")
-        open_btn.set_tooltip_text("View check on GitHub")
-        open_btn.connect("clicked", lambda *_ , url=run.html_url: open_external(url))
+        open_btn.set_tooltip_text(f"View {run.name} on GitHub")
+        open_btn.connect(
+            "clicked",
+            lambda *_ , r=run: onViewCheckExternally(
+                r, store=store, repo=repo, payload=payload, increment_views=increment_views
+            ),
+        )
         row.add_suffix(open_btn)
     if on_rerun_one:
         rerun_one = Gtk.Button(icon_name="view-refresh-symbolic")
@@ -212,19 +319,37 @@ def _run_expander(
         logs_btn.add_css_class("flat")
         logs_btn.connect("clicked", lambda *_ , r=run: show_job_logs(logs_btn.get_root(), store, repo, r))
         row.add_suffix(logs_btn)
-    steps = run.steps or []
-    if steps:
-        for step in steps:
+    if areNoSteps(run):
+        row.add_css_class("no-steps")
+        steps_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        steps_box.add_css_class("ci-steps-container")
+        steps_box.add_css_class("no-steps")
+        steps_box.append(
+            CICheckRunNoStepItem(
+                on_view_check_externally=lambda r=run: onViewCheckExternally(
+                    r, store=store, repo=repo, payload=payload, increment_views=increment_views
+                ),
+                html_url=run.html_url,
+                store=store,
+                increment_views=increment_views,
+            )
+        )
+        row.add_row(steps_box)
+    else:
+        for step in run.steps or []:
             step_row = _step_row_widget(step)
             if step.number:
                 link = Gtk.Button(icon_name="web-browser-symbolic")
                 link.add_css_class("flat")
                 link.set_tooltip_text(f"View {step.name} on GitHub")
-                link.connect("clicked", lambda *_ , rn=run, st=step: _open_step(rn, st, payload or {}))
+                link.connect(
+                    "clicked",
+                    lambda *_ , rn=run, st=step: _open_step(
+                        rn, st, payload or {}, store=store, increment_views=increment_views
+                    ),
+                )
                 step_row.add_suffix(link)
             row.add_row(step_row)
-    else:
-        row.add_row(Adw.ActionRow(title="No job steps loaded yet", subtitle="Open the check on GitHub for details."))
     for note in run.annotations or []:
         loc = f"{note.path}:{note.start_line}" if note.path else note.annotation_level
         row.add_row(Adw.ActionRow(title=note.title or note.message[:80], subtitle=f"{note.annotation_level} · {loc}"))
@@ -238,6 +363,7 @@ def _grouped_list(
     repo=None,
     payload: dict[str, Any] | None = None,
     on_rerun_one: Callable[[RefCheck], None] | None = None,
+    increment_views: bool = False,
 ) -> Gtk.Box:
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     groups = group_check_runs_by_workflow(list(runs))
@@ -259,6 +385,7 @@ def _grouped_list(
                     payload=payload,
                     on_rerun_one=on_rerun_one,
                     expanded=run.id == first_failure_id,
+                    increment_views=increment_views,
                 )
             )
         box.append(group_box)
@@ -296,6 +423,7 @@ def present_checks_popover(anchor: Gtk.Widget, store: AppStore) -> None:
     scroller.set_child(holder)
     popover.set_child(scroller)
     popover.popup()
+    store.stats.increment("opensCheckRunsPopover")
     rebuild()
     store.load_check_steps(repo, on_done=rebuild)
 
@@ -329,7 +457,15 @@ def _popover_body(
 
     endpoint = repo.github.endpoint if repo and getattr(repo, "github", None) else ""
     individual = supports_rerunning_individual_or_failed_checks(endpoint)
-    box.append(_grouped_list(runs, store=store, repo=repo, on_rerun_one=rerun_one if individual else None))
+    box.append(
+        _grouped_list(
+            runs,
+            store=store,
+            repo=repo,
+            on_rerun_one=rerun_one if individual else None,
+            increment_views=True,
+        )
+    )
     failed = failing_checks(runs)
     actions = Gtk.Box(spacing=8)
     if failed and individual:
@@ -412,17 +548,39 @@ def show_checks(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) ->
             actions = Gtk.Box(spacing=6)
             if run.html_url:
                 view = Gtk.Button(label=_view_on_github_label(repo))
-                view.connect("clicked", lambda *_ , u=run.html_url: open_external(u))
+                view.connect(
+                    "clicked",
+                    lambda *_ , r=run: onViewCheckExternally(r, store=store, repo=repo, payload=payload),
+                )
                 actions.append(view)
             if repo:
                 logs = Gtk.Button(label="View logs")
                 logs.connect("clicked", lambda *_ , r=run: show_job_logs(parent, store, repo, r))
                 actions.append(logs)
                 rerun = Gtk.Button(label="Re-run job")
-                rerun.connect("clicked", lambda *_ , r=run: store.show_popup(PopupType.CI_CHECK_RUN_RERUN, checks=[r], failed_only=False))
+                rerun.connect(
+                    "clicked",
+                    lambda *_ , r=run: (
+                        store.stats.increment("checksFailedDialogRerunChecksCount"),
+                        store.show_popup(PopupType.CI_CHECK_RUN_RERUN, checks=[r], failed_only=False),
+                    ),
+                )
                 actions.append(rerun)
             child.append(actions)
-            if run.steps:
+            steps_holder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            steps_holder.add_css_class("ci-check-run-job-steps-container")
+            if areNoSteps(run):
+                steps_holder.add_css_class("no-steps")
+                steps_holder.append(
+                    CICheckRunNoStepItem(
+                        on_view_check_externally=lambda r=run: onViewCheckExternally(
+                            r, store=store, repo=repo, payload=payload
+                        ),
+                        html_url=run.html_url,
+                        store=store,
+                    )
+                )
+            else:
                 steps_box = Gtk.ListBox()
                 steps_box.add_css_class("boxed-list")
                 for step in run.steps:
@@ -433,9 +591,8 @@ def show_checks(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) ->
                         link.connect("clicked", lambda *_ , rn=run, st=step: _open_step(rn, st, payload))
                         step_row.add_suffix(link)
                     steps_box.append(step_row)
-                child.append(steps_box)
-            else:
-                child.append(Gtk.Label(label="No job steps loaded yet. Open this check on GitHub for logs.", xalign=0, wrap=True))
+                steps_holder.append(steps_box)
+            child.append(steps_holder)
             for note in run.annotations or []:
                 loc = f"{note.path}:{note.start_line}" if note.path else ""
                 child.append(Adw.ActionRow(title=note.title or note.message[:80], subtitle=f"{note.annotation_level} · {loc}".strip(" ·")))
@@ -470,6 +627,7 @@ def show_checks(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) ->
         rerun.add_css_class("suggested-action")
 
         def do_rerun(*_a: Any) -> None:
+            store.stats.increment("checksFailedDialogRerunChecksCount")
             store.show_popup(PopupType.CI_CHECK_RUN_RERUN, checks=runs, failed_only=True)
             dialog.close()
 
@@ -483,7 +641,14 @@ def show_checks(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) ->
         )
         switch = Gtk.Button(label=switch_label)
         switch.add_css_class("suggested-action")
-        switch.connect("clicked", lambda *_: (store.switch_to_pull_request(payload), dialog.close()))
+        switch.connect(
+            "clicked",
+            lambda *_: (
+                store.stats.increment("checksFailedDialogSwitchToPullRequestCount"),
+                store.switch_to_pull_request(payload),
+                dialog.close(),
+            ),
+        )
         buttons.append(switch)
     html = payload.get("html_url") or payload.get("url") or (pr.get("html_url") if pr else "")
     if html:
@@ -517,6 +682,7 @@ def show_checks(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) ->
     toolbar.set_content(box)
     dialog.set_child(toolbar)
     dialog.present(parent)
+    store.stats.increment("checksFailedDialogOpenCount")
     if repo:
         store.load_check_steps(repo, on_done=lambda: (selected.__setitem__("run", selected["run"]), render_right()))
 
@@ -589,6 +755,7 @@ def show_rerun_checks(parent: Gtk.Window, store: AppStore, payload: dict[str, An
         confirm.set_sensitive(bool(rerunnable))
 
         def do_rerun(*_a: Any) -> None:
+            store.stats.increment("rerunsChecks")
             cb = payload.get("on_rerun")
             if cb:
                 cb()

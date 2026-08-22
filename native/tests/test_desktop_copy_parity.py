@@ -812,6 +812,42 @@ def test_open_pull_request_copy_matches_desktop() -> None:
     )
 
 
+def test_ci_check_run_no_steps_copy_matches_desktop() -> None:
+    from github_desktop.github.ci_checks import (
+        THERE_ARE_NO_STEPS,
+        VIEW_CHECK_DETAILS,
+        areNoSteps,
+        are_no_check_steps,
+        view_check_details_url,
+    )
+    from github_desktop.models import CheckStep, RefCheck
+
+    assert THERE_ARE_NO_STEPS == "There are no steps to display for this check."
+    assert VIEW_CHECK_DETAILS == "View check details"
+    empty = RefCheck(id=1, name="build", description="", status="completed", conclusion="failure")
+    assert empty.actionJobSteps is None
+    assert are_no_check_steps(empty) is True
+    assert areNoSteps is are_no_check_steps
+    assert view_check_details_url(empty) is None
+    empty.html_url = "https://github.com/o/r/runs/1"
+    assert view_check_details_url(empty) == "https://github.com/o/r/runs/1"
+    empty.html_url = None
+    assert (
+        view_check_details_url(empty, repo_html_url="https://github.com/o/r", pr_number=12)
+        == "https://github.com/o/r/pull/12"
+    )
+    with_steps = RefCheck(
+        id=2,
+        name="linux",
+        description="",
+        status="completed",
+        conclusion="success",
+        steps=[CheckStep(name="Set up job", number=1, status="completed", conclusion="success")],
+    )
+    assert with_steps.actionJobSteps is not None
+    assert are_no_check_steps(with_steps) is False
+
+
 def test_get_hunk_handle_label_matches_desktop() -> None:
     from github_desktop.git.diff import DiffRange, DiffRangeType
     from github_desktop.ui.diff_view import get_hunk_handle_label, is_only_one_check_in_row

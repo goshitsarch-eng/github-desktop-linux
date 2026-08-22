@@ -1844,6 +1844,11 @@ class RefCheck:
     annotations: list[CheckAnnotation] = field(default_factory=list)
     logs: str | None = None
 
+    @property
+    def actionJobSteps(self) -> list[CheckStep] | None:
+        """Desktop `IRefCheck.actionJobSteps` — undefined when this check has no Actions job steps."""
+        return self.steps or None
+
 
 @dataclass
 class StashEntry:
