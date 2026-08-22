@@ -16,7 +16,7 @@ from ..push_pull import format_commit_relative_time
 from ..shells import open_external
 from .markdown import issue_base_from_html_url, sandboxed_markdown_label
 from .menus import attach_right_click, clear_box, copy_text, show_context_menu, view_on_github_label
-from .text_box import search_entry
+from .text_box import announce_filter_list_results, search_entry
 
 
 def generate_branch_context_menu_items(
@@ -288,6 +288,8 @@ class BranchesFoldout(Gtk.Popover):
         name = self._stack.get_visible_child_name() or "branches"
         tab = BranchesTab.PULL_REQUESTS.value if name == "prs" else BranchesTab.BRANCHES.value
         self._on_tab(tab)
+        if hasattr(self, "_search") and getattr(self._search, "_filter_value_changed", False):
+            self._refilter()
 
     def popup_and_focus(self) -> None:
         self.popup()
@@ -334,6 +336,7 @@ class BranchesFoldout(Gtk.Popover):
         )
         if not prs:
             self._pr_list.append(self._pr_empty_state(bool(needle)))
+            self._announce_filter_list_live(len(filtered), 0)
             return
         for pr in prs:
             when = _relative_iso(pr.created_at)
@@ -381,6 +384,15 @@ class BranchesFoldout(Gtk.Popover):
                 except Exception:
                     pass
             self._pr_list.append(row)
+        self._announce_filter_list_live(len(filtered), len(prs))
+
+    def _announce_filter_list_live(self, branch_count: int, pr_count: int) -> None:
+        """Desktop SectionFilterList `${count} result(s)` for the visible Branches/PR tab."""
+        if not hasattr(self, "_search"):
+            return
+        name = self._stack.get_visible_child_name() or "branches"
+        count = pr_count if name == "prs" else branch_count
+        announce_filter_list_results(self._search, count, context=name)
 
     def _pr_empty_state(self, is_search: bool) -> Gtk.Widget:
         """Desktop `NoPullRequests` blank slate."""

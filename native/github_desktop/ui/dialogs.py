@@ -79,7 +79,7 @@ from .author_input import AuthorInput, bind_store_exact_match
 from .checks import show_checks, show_rerun_checks
 from .copy_button import COPY_THE_FULL_SHA, CopyButton
 from .diff_view import DiffViewer
-from .text_box import search_entry
+from .text_box import announce_filter_list_results, search_entry
 from .menus import (
     TrashNameLabel,
     attach_paned_keyboard_resize,
@@ -1715,12 +1715,12 @@ def _render_grouped_clone_list(
     default_dir: str = "",
     empty_title: str,
     on_pick: Callable[[Any], None] | None = None,
-) -> None:
+) -> int:
     from ..clone_groups import group_cloneable_repositories
     from ..fuzzy_find import filter_items
 
     _clear_listbox(listbox)
-    any_shown = False
+    shown = 0
     query = needle.strip()
     for title, items in group_cloneable_repositories(list(repos), login):
         filtered = filter_items(
@@ -1730,6 +1730,7 @@ def _render_grouped_clone_list(
         )
         if not filtered:
             continue
+        shown += len(filtered)
         header = Adw.ActionRow(title=title)
         header.set_sensitive(False)
         listbox.append(header)
@@ -1751,9 +1752,9 @@ def _render_grouped_clone_list(
 
             row.connect("activated", pick)
             listbox.append(row)
-            any_shown = True
-    if not any_shown:
+    if shown == 0:
         listbox.append(Adw.ActionRow(title=empty_title))
+    return shown
 
 
 def _clone_list_empty_title(account, needle: str) -> str:
@@ -2012,7 +2013,7 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
             return
         needle = gh_filter.get_text().strip()
         empty = _clone_list_empty_title(account, needle)
-        _render_grouped_clone_list(
+        count = _render_grouped_clone_list(
             repo_list,
             loaded,
             account.login if account else "",
@@ -2023,6 +2024,7 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
             default_dir=default_dir,
             empty_title=empty,
         )
+        announce_filter_list_results(gh_filter, count)
 
     def fill_github(*_a: Any, force: bool = False) -> None:
         account = selected_account()
@@ -2056,7 +2058,7 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
             return
         needle = ent_filter.get_text().strip()
         empty = _clone_list_empty_title(account, needle)
-        _render_grouped_clone_list(
+        count = _render_grouped_clone_list(
             ent_list,
             loaded_ent,
             account.login if account else "",
@@ -2067,6 +2069,7 @@ def show_clone_repository(parent: Gtk.Window, store: AppStore, payload: dict[str
             default_dir=default_dir,
             empty_title=empty,
         )
+        announce_filter_list_results(ent_filter, count)
 
     def fill_enterprise(*_a: Any, force: bool = False) -> None:
         account = selected_account(True)

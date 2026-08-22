@@ -1688,5 +1688,10 @@ def test_window_actions_cover_menus() -> None:
         "Input cleared",
         "displayClearButton",
         "input_cleared_aria_live",
+        "filter_list_results_aria_live",
+        "filterValueChanged",
+        "resultsPluralized",
+        "onFilterListResultsChanged",
+        "postNoResultsMessage",
     ]:
         assert phrase in src

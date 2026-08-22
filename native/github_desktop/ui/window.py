@@ -121,7 +121,7 @@ from .dialogs import (
 )
 from .diff_view import DiffViewer
 from .history import ExpandableCommitSummary
-from .text_box import search_entry
+from .text_box import announce_filter_list_results, search_entry
 from .menus import (
     CopyFilePathLabel,
     CopyRelativeFilePathLabel,
@@ -1088,7 +1088,7 @@ class MainWindow(Adw.ApplicationWindow):
             _clear_listbox(listbox)
             listbox.append(Adw.ActionRow(title=_clone_list_loading_title(account)))
             return
-        _render_grouped_clone_list(
+        count = _render_grouped_clone_list(
             listbox,
             repos,
             account.login,
@@ -1096,6 +1096,8 @@ class MainWindow(Adw.ApplicationWindow):
             empty_title=_clone_list_empty_title(account, needle),
             on_pick=self._on_empty_clone_pick,
         )
+        if hasattr(self, "_empty_clone_filter"):
+            announce_filter_list_results(self._empty_clone_filter, count)
 
     def _on_empty_clone_pick(self, gh) -> None:
         self._empty_selected_repo = gh
@@ -3116,6 +3118,8 @@ class MainWindow(Adw.ApplicationWindow):
             shown += 1
         if needle and shown == 0:
             self._repo_list.append(self._repo_filter_empty_row())
+        if hasattr(self, "_repo_filter"):
+            announce_filter_list_results(self._repo_filter, shown)
 
     def _on_new_repository_button_click(self, widget: Gtk.Widget, *_args: object) -> None:
         """Desktop `onNewRepositoryButtonClick`."""
@@ -3223,7 +3227,7 @@ class MainWindow(Adw.ApplicationWindow):
                     btn.set_active(want)
         all_files = list(state.status.working_directory.files) if state.status else []
         filters = file_list_filter_state_from_view(state)
-        from ..filter_changes import count_active_filter_options, has_active_filters
+        from ..filter_changes import count_active_filter_options, get_no_results_message, has_active_filters
 
         if self.store.settings.show_changes_filter:
             files = filter_changed_files(all_files, filters)
@@ -3273,6 +3277,14 @@ class MainWindow(Adw.ApplicationWindow):
         if repo:
             self._update_commit_placeholder(repo, state)
         self._update_copilot_button(state)
+        if self.store.settings.show_changes_filter and hasattr(self, "_filter"):
+            post = get_no_results_message(filters) if not files else None
+            announce_filter_list_results(
+                self._filter,
+                len(files),
+                post_no_results=post,
+                items_filtered=len(files) != len(all_files),
+            )
 
     def _on_repository_filter_text(self, *_args: object) -> None:
         """Desktop `onRepositoryFilterTextChanged` / `_setRepositoryFilterText`."""
@@ -5173,6 +5185,8 @@ class MainWindow(Adw.ApplicationWindow):
             row.tip_sha = branch.tip_sha
             self._compare_list.append(row)
             shown += 1
+        if hasattr(self, "_compare_search"):
+            announce_filter_list_results(self._compare_search, len(ranked))
 
     def _on_compare_row(self, _list: Gtk.ListBox, row: Gtk.ListBoxRow) -> None:
         repo = self.store.selected_repository
