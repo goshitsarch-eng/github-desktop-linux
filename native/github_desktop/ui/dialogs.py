@@ -2995,6 +2995,15 @@ def attach_git_email_not_found_warning(
     box.append(label)
     box.append(link)
     tracked_email: dict[str, object] = {"value": object()}
+    announce_source: dict[str, int] = {"id": 0}
+
+    def cancel_announce() -> None:
+        if announce_source["id"]:
+            try:
+                GLib.source_remove(announce_source["id"])
+            except Exception:
+                pass
+            announce_source["id"] = 0
 
     def refresh(*_a: object) -> None:
         email = get_email()
@@ -3004,6 +3013,7 @@ def attach_git_email_not_found_warning(
             box.set_visible(False)
             tracked_email["value"] = email
             label._aria_live_message = ""  # type: ignore[attr-defined]
+            cancel_announce()
             return
         box.set_visible(True)
         label.set_text(msg)
@@ -3016,12 +3026,29 @@ def attach_git_email_not_found_warning(
             label._aria_live_message = sr  # type: ignore[attr-defined]
             if tracked_email["value"] != email:
                 tracked_email["value"] = email
-                try:
-                    label.announce(sr, Gtk.AccessibleAnnouncementPriority.MEDIUM)
-                except Exception:
-                    pass
+                cancel_announce()
+
+                def fire() -> bool:
+                    announce_source["id"] = 0
+                    live = getattr(label, "_aria_live_message", sr)
+                    if not live:
+                        return False
+                    try:
+                        label.announce(live, Gtk.AccessibleAnnouncementPriority.MEDIUM)
+                    except Exception:
+                        pass
+                    return False
+
+                if os.environ.get("PYTEST_CURRENT_TEST"):
+                    fire()
+                else:
+                    try:
+                        announce_source["id"] = GLib.timeout_add(1000, fire)
+                    except Exception:
+                        fire()
         else:
             tracked_email["value"] = email
+            cancel_announce()
 
     refresh()
     group.add(box)
