@@ -410,6 +410,12 @@ window:not(.underline-links) link {
 .multiple-selection .blankslate-image {
   opacity: 0.55;
 }
+/* Desktop `copy-button.tsx` */
+.copy-button {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 2px;
+}
 """
 
 _provider: Gtk.CssProvider | None = None

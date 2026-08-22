@@ -481,3 +481,11 @@ def test_select_working_files_clears_diff_for_multiple(isolated_config, git_repo
     assert state.current_diff is None
     store.select_working_files(repo, [a])
     assert store.state_for(repo).selected_file_ids == [a.id]
+
+
+def test_copy_the_full_sha_label() -> None:
+    from github_desktop.ui.copy_button import COPY_THE_FULL_SHA, copy_the_full_sha_label
+
+    assert copy_the_full_sha_label() == COPY_THE_FULL_SHA
+    assert copy_the_full_sha_label("previous") == "Copy the full previous SHA"
+    assert copy_the_full_sha_label("new") == "Copy the full new SHA"

@@ -237,6 +237,9 @@ def test_window_actions_cover_menus() -> None:
     from github_desktop.ui import length_hint as length_hint_mod
 
     src += open(length_hint_mod.__file__, encoding="utf-8").read()
+    from github_desktop.ui import copy_button as copy_button_mod
+
+    src += open(copy_button_mod.__file__, encoding="utf-8").read()
     from github_desktop import thank_you, custom_integration
     from github_desktop.git import progress as git_progress
 
@@ -1589,5 +1592,12 @@ def test_window_actions_cover_menus() -> None:
         "selectedFileIDs",
         "{count} files selected",
         "selectWorkingDirectoryFiles",
+        "CopyButton",
+        "Copied!",
+        "copy-button",
+        "copyContent",
+        "showCopied",
+        "openTooltipOnClick",
+        "Copy the full SHA",
     ]:
         assert phrase in src

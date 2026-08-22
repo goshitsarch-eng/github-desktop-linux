@@ -13,14 +13,13 @@ from gi.repository import Gtk
 from ..models import ChangesetData, Commit, GitHubRepository
 from ..shells import open_external
 from .avatar import AvatarStack, users_from_commits
-from .menus import copy_text
+from .copy_button import COPY_THE_FULL_SHA, CopyButton
 
 
 class ExpandableCommitSummary(Gtk.Box):
-    def __init__(self, *, on_copy_sha: Callable[[str], None] | None = None) -> None:
+    def __init__(self) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.add_css_class("expandable-commit-summary")
-        self._on_copy_sha = on_copy_sha or (lambda sha: copy_text(sha))
         self._summary = Gtk.Label(xalign=0)
         self._summary.add_css_class("commit-summary")
         self._summary.set_wrap(True)
@@ -40,8 +39,8 @@ class ExpandableCommitSummary(Gtk.Box):
         self._toggle.add_css_class("flat")
         self._toggle.set_halign(Gtk.Align.START)
         self._toggle.connect("clicked", self._on_toggle)
-        self._sha_btn = Gtk.Button(label="Copy SHA")
-        self._sha_btn.add_css_class("flat")
+        self._sha_btn = CopyButton(aria_label=COPY_THE_FULL_SHA)
+        self._sha_btn.set_visible(False)
         self._unreachable_btn = Gtk.Button(label="")
         self._unreachable_btn.add_css_class("flat")
         self._unreachable_btn.set_visible(False)
@@ -53,7 +52,7 @@ class ExpandableCommitSummary(Gtk.Box):
         actions.append(self._sha_btn)
         actions.append(self._reachable_btn)
         actions.append(self._unreachable_btn)
-        self._sha_btn.connect("clicked", lambda *_: self._sha and self._on_copy_sha(self._sha))
+        # Desktop `renderCommitRef` CopyButton — hidden for multi-commit selection.
         self._on_unreachable: Callable[[], None] | None = None
         self._on_highlight: Callable[[list[str]], None] | None = None
         self._unreachable_btn.connect("clicked", lambda *_: self._on_unreachable and self._on_unreachable())
@@ -106,10 +105,13 @@ class ExpandableCommitSummary(Gtk.Box):
             self._unreachable_btn.set_visible(False)
             self._reachable_btn.set_visible(False)
             self._sha = ""
+            self._sha_btn.set_visible(False)
             self._set_avatar(users_from_commits(commits, github))
             return
         primary = commits[0]
         self._sha = primary.sha
+        self._sha_btn.set_copy_content(primary.sha)
+        self._sha_btn.set_visible(len(commits) == 1)
         self._body_text = primary.body
         self._set_avatar(users_from_commits(commits, github))
         if len(commits) == 1:

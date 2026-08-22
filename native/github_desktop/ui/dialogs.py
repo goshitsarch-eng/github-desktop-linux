@@ -77,6 +77,7 @@ from .autocompletion import (
 )
 from .author_input import AuthorInput, bind_store_exact_match
 from .checks import show_checks, show_rerun_checks
+from .copy_button import COPY_THE_FULL_SHA, CopyButton
 from .diff_view import DiffViewer
 from .menus import (
     TrashNameLabel,
@@ -4463,9 +4464,6 @@ def show_push_protection(parent: Gtk.Window, store: AppStore, payload: dict[str,
     descriptions = [getattr(secret, "description", None) or getattr(secret, "secret_type", None) or "Secret" for secret in secrets]
     bypassed: dict[str, Gtk.Widget] = {}
 
-    def copy_sha(sha: str) -> None:
-        parent.get_clipboard().set(sha)
-
     def render_location(loc) -> Gtk.Box:
         row = Gtk.Box(spacing=6)
         sha = getattr(loc, "commit_sha", "") or ""
@@ -4474,10 +4472,7 @@ def show_push_protection(parent: Gtk.Window, store: AppStore, payload: dict[str,
         sha_lbl.add_css_class("monospace")
         row.append(sha_lbl)
         if sha:
-            copy_btn = Gtk.Button(label="Copy")
-            copy_btn.add_css_class("flat")
-            copy_btn.set_tooltip_text("Copy the full SHA")
-            copy_btn.connect("clicked", lambda *_ , value=sha: copy_sha(value))
+            copy_btn = CopyButton(copy_content=sha, aria_label=COPY_THE_FULL_SHA)
             row.append(copy_btn)
         path = getattr(loc, "path", "") or ""
         line = getattr(loc, "line_number", 0) or 0

@@ -314,6 +314,22 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             win._summary.set_text("short")
             win._update_commit_warnings()
             assert not win._length_hint.get_visible()
+            from github_desktop.ui.copy_button import (
+                COPIED,
+                COPY_BUTTON,
+                COPY_THE_FULL_SHA,
+                CopyButton,
+            )
+
+            copy_btn = CopyButton(copy_content="deadbeef", aria_label=COPY_THE_FULL_SHA)
+            assert copy_btn.has_css_class(COPY_BUTTON)
+            assert copy_btn.get_tooltip_text() == COPY_THE_FULL_SHA
+            assert copy_btn.showCopied is False
+            copy_btn._on_copy()
+            assert copy_btn.showCopied is True
+            assert copy_btn.get_tooltip_text() == COPIED
+            assert copy_btn.ariaLiveMessage() == COPIED
+            assert win._commit_summary._sha_btn.has_css_class(COPY_BUTTON)
             win._tutorial_panel.refresh(TutorialStep.PICK_EDITOR, "GNOME Text Editor")
             win._commit_summary.bind([], None)
             win._find()

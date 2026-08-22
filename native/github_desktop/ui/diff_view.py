@@ -37,6 +37,7 @@ from ..models import (
 )
 from ..settings import tabSizeDefault
 from .menus import MenuItem, attach_right_click, clear_box, copy_text, show_context_menu
+from .copy_button import CopyButton, copy_the_full_sha_label
 from .syntax import markup_for_diff_line
 
 # Desktop Linux `DiffOptions` button/header: `Diff ${__DARWIN__ ? 'Settings' : 'Options'}`.
@@ -714,12 +715,9 @@ class DiffViewer(Gtk.Box):
         self._inner.append(box)
 
     def _append_sha_copy(self, box: Gtk.Box, sha: str, which: str | None) -> None:
-        infix = f" {which}" if which else ""
         row = Gtk.Box(spacing=8)
         row.append(Gtk.Label(label=shorten_sha(sha), xalign=0))
-        copy = Gtk.Button(label=f"Copy the full{infix} SHA")
-        copy.add_css_class("flat")
-        copy.connect("clicked", lambda *_a, value=sha: copy_text(value))
+        copy = CopyButton(copy_content=sha, aria_label=copy_the_full_sha_label(which))
         row.append(copy)
         box.append(row)
 
