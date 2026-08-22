@@ -102,6 +102,7 @@ from .autocompletion import (
     install_entry_completion,
     populate_completion_store,
     summary_length_hint,
+    widget_should_announce_suggestions,
     token_before_cursor,
 )
 from .length_hint import SummaryLengthHint
@@ -5092,12 +5093,13 @@ class MainWindow(Adw.ApplicationWindow):
             token,
             exclude_login=self._completion_exclude_login(),
         )
-        announce_autocompletion_suggestions(
-            self._summary,
-            count,
-            rangeText=token,
-            tracker=self._summary_suggestions_tracker,
-        )
+        if widget_should_announce_suggestions(self._summary):
+            announce_autocompletion_suggestions(
+                self._summary,
+                count,
+                rangeText=token,
+                tracker=self._summary_suggestions_tracker,
+            )
         if token.startswith("#"):
             self.store.refresh_issues(repo)
 

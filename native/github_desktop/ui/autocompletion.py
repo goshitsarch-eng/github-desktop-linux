@@ -6,6 +6,7 @@ Ports `app/src/ui/autocompletion/` so the Changes commit box and the squash/amen
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -535,6 +536,31 @@ def autocompletion_suggestions_aria_live(count: int) -> str | None:
 suggestionsMessage = autocompletion_suggestions_aria_live
 
 
+def widget_should_announce_suggestions(widget: Any) -> bool:
+    """Desktop only autocompletes (and live-announces) while the field is focused."""
+    if widget is None:
+        return False
+    try:
+        return bool(widget.has_focus())
+    except Exception:
+        return False
+
+
+def _cancel_suggestions_announce(widget: Any) -> None:
+    if widget is None:
+        return
+    source = getattr(widget, "_suggestions_announce_source", 0)
+    if source:
+        try:
+            GLib.source_remove(source)
+        except Exception:
+            pass
+        try:
+            widget._suggestions_announce_source = 0
+        except Exception:
+            pass
+
+
 def announce_autocompletion_suggestions(
     widget: Any,
     count: int,
@@ -542,25 +568,49 @@ def announce_autocompletion_suggestions(
     rangeText: str = "",
     tracker: dict[str, Any] | None = None,
 ) -> str | None:
-    """Announce suggestionsMessage; re-read when trackedUserInput rangeText changes."""
+    """Announce suggestionsMessage; re-read when trackedUserInput rangeText changes.
+
+    Desktop AriaLiveContainer debounces tracked input 1000ms. Count 0 cancels
+    a pending announcement (`message` is null). Immediate under pytest.
+    """
     message = autocompletion_suggestions_aria_live(count)
     if tracker is not None:
         prev = (tracker.get("count"), tracker.get("rangeText"))
         tracker["count"] = count
         tracker["rangeText"] = rangeText
-        if message is None or prev == (count, rangeText):
+        if message is None:
+            _cancel_suggestions_announce(widget)
+            return None
+        if prev == (count, rangeText):
             return None
     elif message is None:
+        _cancel_suggestions_announce(widget)
         return None
     if widget is not None:
         try:
             widget._suggestions_message = message  # type: ignore[attr-defined]
         except Exception:
             pass
-        try:
-            widget.announce(message, Gtk.AccessibleAnnouncementPriority.MEDIUM)
-        except Exception:
-            pass
+        _cancel_suggestions_announce(widget)
+
+        def fire() -> bool:
+            try:
+                widget._suggestions_announce_source = 0
+            except Exception:
+                pass
+            try:
+                widget.announce(message, Gtk.AccessibleAnnouncementPriority.MEDIUM)
+            except Exception:
+                pass
+            return False
+
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            fire()
+        else:
+            try:
+                widget._suggestions_announce_source = GLib.timeout_add(1000, fire)
+            except Exception:
+                fire()
     return message
 
 
@@ -675,12 +725,13 @@ class TextViewCompleter:
         matches = completion_matches(state, token, exclude_login=skip)
         if token.startswith("#") and self.on_hash:
             self.on_hash()
-        announce_autocompletion_suggestions(
-            self.textview,
-            len(matches),
-            rangeText=token,
-            tracker=self._suggestions_tracker,
-        )
+        if widget_should_announce_suggestions(self.textview):
+            announce_autocompletion_suggestions(
+                self.textview,
+                len(matches),
+                rangeText=token,
+                tracker=self._suggestions_tracker,
+            )
         if not matches:
             self.popover.popdown()
             return

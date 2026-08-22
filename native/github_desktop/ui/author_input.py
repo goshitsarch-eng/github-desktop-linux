@@ -17,6 +17,7 @@ from .autocompletion import (
     SEARCH_FOR_USER,
     announce_autocompletion_suggestions,
     fill_coauthor_store,
+    widget_should_announce_suggestions,
 )
 
 # Desktop `AuthorInput` label is always "Co-Authors"; placeholder is "@username".
@@ -233,12 +234,13 @@ class AuthorInput(Gtk.Box):
             exclude_usernames=already,
             endpoint=endpoint,
         )
-        announce_autocompletion_suggestions(
-            self.entry,
-            count,
-            rangeText=query,
-            tracker=self._suggestions_tracker,
-        )
+        if widget_should_announce_suggestions(self.entry):
+            announce_autocompletion_suggestions(
+                self.entry,
+                count,
+                rangeText=query,
+                tracker=self._suggestions_tracker,
+            )
 
     def commit_pending(self) -> None:
         text = self.entry.get_text().strip().strip(",")
