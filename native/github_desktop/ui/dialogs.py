@@ -1447,16 +1447,46 @@ def show_add_repository(parent: Gtk.Window, store: AppStore, initial: str) -> No
 
 
 def _apply_input_description_aria(widget: Gtk.Widget, message: str, *, tracked: object) -> None:
-    """Desktop InputWarning/InputError AriaLiveContainer `ariaLiveMessage`."""
+    """Desktop InputWarning/InputError AriaLiveContainer `ariaLiveMessage`.
+
+    Visual LABEL updates immediately. `announce` waits 1s after trackedUserInput
+    changes, matching `aria-live-container.tsx` (immediate under pytest).
+    """
     prev = getattr(widget, "_aria_tracked", object())
     widget._aria_live_message = message  # type: ignore[attr-defined]
     widget._aria_tracked = tracked  # type: ignore[attr-defined]
     try:
         widget.update_property([Gtk.AccessibleProperty.LABEL], [message])
-        if prev != tracked:
-            widget.announce(message, Gtk.AccessibleAnnouncementPriority.MEDIUM)
     except Exception:
         pass
+    source = getattr(widget, "_aria_announce_source", 0)
+    if source:
+        try:
+            GLib.source_remove(source)
+        except Exception:
+            pass
+        widget._aria_announce_source = 0  # type: ignore[attr-defined]
+    if not message or prev == tracked:
+        return
+
+    def fire() -> bool:
+        widget._aria_announce_source = 0  # type: ignore[attr-defined]
+        live = getattr(widget, "_aria_live_message", message)
+        if not live:
+            return False
+        try:
+            widget.announce(live, Gtk.AccessibleAnnouncementPriority.MEDIUM)
+        except Exception:
+            pass
+        return False
+
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        fire()
+        return
+    try:
+        widget._aria_announce_source = GLib.timeout_add(1000, fire)  # type: ignore[attr-defined]
+    except Exception:
+        fire()
 
 
 def show_create_repository(parent: Gtk.Window, store: AppStore, initial: str) -> None:
@@ -1622,6 +1652,10 @@ def show_create_repository(parent: Gtk.Window, store: AppStore, initial: str) ->
         else:
             readme_warn._aria_tracked = None  # type: ignore[attr-defined]
         if not raw:
+            if classify_debounce["id"]:
+                GLib.source_remove(classify_debounce["id"])
+                classify_debounce["id"] = 0
+            classify_token["n"] += 1
             exists_row.set_visible(False)
             exists_row._aria_tracked = None  # type: ignore[attr-defined]
             subfolder_row.set_visible(False)
