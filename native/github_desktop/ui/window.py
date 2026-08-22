@@ -52,6 +52,7 @@ from ..models import (
 )
 from ..clamp import clamp
 from ..push_pull import (
+    PUSH_PULL_BUTTON_STATE_ID,
     describe_push_pull,
     format_commit_relative_time,
     format_last_fetched,
@@ -1583,8 +1584,24 @@ class MainWindow(Adw.ApplicationWindow):
         push_inner.append(self._push_icon)
         push_inner.append(self._push_spinner)
         push_inner.append(push_labels)
+        self._ahead_label = Gtk.Label()
+        self._ahead_label.add_css_class("ahead-behind")
+        self._ahead_label.set_valign(Gtk.Align.CENTER)
+        self._ahead_label.set_visible(False)
+        push_inner.append(self._ahead_label)
         self._push_btn.set_child(push_inner)
         self._push_btn.connect("clicked", self._on_push_pull)
+        self._push_live = Gtk.Label()
+        self._push_live.set_name(PUSH_PULL_BUTTON_STATE_ID)
+        self._push_live.set_visible(False)
+        try:
+            self._push_live.update_property(
+                [Gtk.AccessibleProperty.LIVE],
+                [Gtk.AccessibleLive.POLITE],
+            )
+        except Exception:
+            pass
+        push_inner.append(self._push_live)
         self._push_menu_btn = Gtk.MenuButton()
         self._push_menu_btn.set_icon_name("pan-down-symbolic")
         self._push_menu_btn.set_tooltip_text("Fetch and force push")
@@ -1605,10 +1622,6 @@ class MainWindow(Adw.ApplicationWindow):
             )
         else:
             header.pack_end(self._push_box)
-
-        self._ahead_label = Gtk.Label()
-        self._ahead_label.add_css_class("ahead-behind")
-        header.pack_end(self._ahead_label)
 
         self._checks_btn = Gtk.Button(icon_name="emblem-ok-symbolic")
         self._checks_btn.set_tooltip_text("Pull request checks")
@@ -2650,6 +2663,7 @@ class MainWindow(Adw.ApplicationWindow):
         sensitive: bool = True,
         icon: str | None = None,
         spinning: bool = False,
+        ahead_behind: str = "",
     ) -> None:
         if hasattr(self, "_push_action_label"):
             self._push_action_label.set_text(label)
@@ -2661,6 +2675,19 @@ class MainWindow(Adw.ApplicationWindow):
                 self._push_fetched_label.set_visible(True)
             else:
                 self._push_fetched_label.set_visible(False)
+        if hasattr(self, "_ahead_label"):
+            self._ahead_label.set_text(ahead_behind)
+            self._ahead_label.set_visible(bool(ahead_behind) and not spinning)
+        if hasattr(self, "_push_live"):
+            live = f"{label} {subtitle or ''}".strip()
+            self._push_live.set_text(live)
+            try:
+                self._push_live.update_property(
+                    [Gtk.AccessibleProperty.LABEL],
+                    [live],
+                )
+            except Exception:
+                pass
         if hasattr(self, "_push_spinner") and hasattr(self, "_push_icon"):
             if spinning:
                 self._push_icon.set_visible(False)
@@ -2722,11 +2749,12 @@ class MainWindow(Adw.ApplicationWindow):
             return
         status = state.status
         fetched = format_last_fetched(getattr(state, "last_fetched", None))
-        self._push_btn.set_tooltip_text(fetched)
-        if hasattr(self, "_push_menu_btn"):
-            self._push_menu_btn.set_tooltip_text(fetched)
+        repo = self.store.selected_repository
         if not status:
             self._set_push_chrome("Fetch origin", fetched, sensitive=True, icon="view-refresh-symbolic")
+            self._push_btn.set_tooltip_text(fetched)
+            if hasattr(self, "_push_menu_btn"):
+                self._push_menu_btn.set_tooltip_text(fetched)
             self._set_push_menu((), "origin")
             return
         ab = status.branch_ahead_behind
@@ -2741,13 +2769,20 @@ class MainWindow(Adw.ApplicationWindow):
             tag_count=len(tags),
             force_push=self.store.current_branch_force_push_state(),
             pull_with_rebase=bool(getattr(state, "pull_with_rebase", False)),
+            last_fetched=fetched,
+            rebase_in_progress=bool(getattr(status, "rebase_internal_state", None)),
+            is_github=bool(repo is not None and repo.github),
         )
         self._set_push_chrome(
             presentation.label,
-            fetched,
+            presentation.description,
             sensitive=presentation.sensitive,
             icon=presentation.icon,
+            ahead_behind=presentation.ahead_behind,
         )
+        self._push_btn.set_tooltip_text(presentation.description)
+        if hasattr(self, "_push_menu_btn"):
+            self._push_menu_btn.set_tooltip_text(presentation.description)
         self._set_push_menu(presentation.menu_items, presentation.remote_name)
 
     def _on_push_pull(self, *_args: object) -> None:
@@ -4631,12 +4666,6 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             self._checks_btn.set_icon_name("emblem-system-symbolic")
             self._checks_btn.set_tooltip_text("No checks")
-        ab = state.ahead_behind
-        if hasattr(self, "_ahead_label"):
-            if ab and (ab.ahead or ab.behind):
-                self._ahead_label.set_text(f"↑{ab.ahead} ↓{ab.behind}")
-            else:
-                self._ahead_label.set_text("")
 
     def _on_checks(self, *_args: object) -> None:
         present_checks_popover(self._checks_btn, self.store)

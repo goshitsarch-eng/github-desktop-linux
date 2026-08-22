@@ -625,14 +625,17 @@ def test_push_pull_presentation_matches_desktop() -> None:
         has_upstream=True,
         ahead=2,
         behind=3,
-        tag_count=0,
+        tag_count=1,
         force_push=ForcePushBranchState.AVAILABLE,
         pull_with_rebase=True,
+        last_fetched="Last fetched just now",
     )
     assert pull.action == "pull"
-    assert pull.label == "Pull 3 with rebase"
+    assert pull.label == "Pull origin with rebase"
     assert pull.menu_items == ("fetch", "force-push")
     assert pull.icon == "go-down-symbolic"
+    assert pull.description == "Last fetched just now"
+    assert pull.ahead_behind == "↑3 ↓3"
 
     force = describe_push_pull(
         remote_name="origin",
@@ -643,10 +646,28 @@ def test_push_pull_presentation_matches_desktop() -> None:
         behind=1,
         tag_count=0,
         force_push=ForcePushBranchState.RECOMMENDED,
+        last_fetched="Never fetched",
     )
     assert force.action == "force-push"
+    assert force.label == "Force push origin"
     assert force.menu_items == ("fetch",)
     assert force.icon == "go-up-symbolic"
+    assert force.description == "Never fetched"
+    assert force.ahead_behind == "↑1 ↓1"
+
+    push = describe_push_pull(
+        remote_name="origin",
+        current_branch="main",
+        current_tip="abc",
+        has_upstream=True,
+        ahead=4,
+        behind=0,
+        tag_count=2,
+        force_push=ForcePushBranchState.NOT_AVAILABLE,
+    )
+    assert push.action == "push"
+    assert push.label == "Push origin"
+    assert push.ahead_behind == "↑6"
 
     publish = describe_push_pull(
         remote_name=None,
@@ -659,8 +680,62 @@ def test_push_pull_presentation_matches_desktop() -> None:
         force_push=ForcePushBranchState.NOT_AVAILABLE,
     )
     assert publish.label == "Publish repository"
+    assert publish.description == "Publish this repository to GitHub"
     assert publish.menu_items == ()
     assert publish.icon == "network-transmit-symbolic"
+
+    unborn = describe_push_pull(
+        remote_name="origin",
+        current_branch="main",
+        current_tip=None,
+        has_upstream=False,
+        ahead=0,
+        behind=0,
+        tag_count=0,
+        force_push=ForcePushBranchState.NOT_AVAILABLE,
+    )
+    assert unborn.label == "Publish branch"
+    assert unborn.sensitive is False
+    assert unborn.description == "Cannot publish: no commits"
+
+    detached = describe_push_pull(
+        remote_name="origin",
+        current_branch=None,
+        current_tip="abc",
+        has_upstream=False,
+        ahead=0,
+        behind=0,
+        tag_count=0,
+        force_push=ForcePushBranchState.NOT_AVAILABLE,
+        rebase_in_progress=False,
+    )
+    assert detached.description == "Cannot publish detached HEAD"
+    rebase = describe_push_pull(
+        remote_name="origin",
+        current_branch=None,
+        current_tip="abc",
+        has_upstream=False,
+        ahead=0,
+        behind=0,
+        tag_count=0,
+        force_push=ForcePushBranchState.NOT_AVAILABLE,
+        rebase_in_progress=True,
+    )
+    assert rebase.description == "Rebase in progress"
+
+    unpublished = describe_push_pull(
+        remote_name="origin",
+        current_branch="topic",
+        current_tip="abc",
+        has_upstream=False,
+        ahead=0,
+        behind=0,
+        tag_count=0,
+        force_push=ForcePushBranchState.NOT_AVAILABLE,
+        is_github=False,
+    )
+    assert unpublished.label == "Publish branch"
+    assert unpublished.description == "Publish this branch to the remote"
 
 
 def test_last_fetched_and_merge_commit_preflight(git_repo: Path) -> None:

@@ -1548,5 +1548,11 @@ def test_window_actions_cover_menus() -> None:
         "renderAvatar",
         "fetchRemotes",
         "hideEmail",
+        "renderAheadBehind",
+        "numTagsToPush",
+        "Publish this branch to GitHub",
+        "Cannot publish: no commits",
+        "Cannot publish detached HEAD",
+        "push-pull-button-state",
     ]:
         assert phrase in src
