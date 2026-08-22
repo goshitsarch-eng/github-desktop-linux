@@ -79,6 +79,30 @@ def no_pull_requests_cta_sentence(*, is_on_default_branch: bool) -> str:
     return f"{prefix}{link}{suffix}"
 
 
+# Desktop `PullRequestList` AriaLiveContainer `screenReaderStateMessage`.
+HANG_TIGHT_LOADING_PULL_REQUESTS = "Hang Tight. Loading pull requests as fast as I can!"
+
+
+def pull_request_list_found_message(count: int) -> str:
+    """Desktop `{numPullRequests} pull request(s) found`."""
+    plural = "s" if count != 1 else ""
+    return f"{count} pull request{plural} found"
+
+
+def pull_request_list_screen_reader_message(
+    *,
+    loading_started: bool,
+    loading_complete: bool,
+    count: int,
+) -> str | None:
+    """Desktop `componentDidUpdate` screenReaderStateMessage, or None."""
+    if loading_started:
+        return HANG_TIGHT_LOADING_PULL_REQUESTS
+    if loading_complete:
+        return pull_request_list_found_message(count)
+    return None
+
+
 def group_branches(
     branches: list[Branch],
     *,
@@ -177,6 +201,18 @@ class BranchesFoldout(Gtk.Popover):
         self._search.set_placeholder_text("Find a branch…")
         self._search.connect("search-changed", lambda *_: self._refilter())
         root.append(self._search)
+        self._pr_live = Gtk.Label(label="")
+        self._pr_live.add_css_class("sr-only")
+        self._pr_live.set_visible(False)
+        try:
+            self._pr_live.update_property(
+                [Gtk.AccessibleProperty.LIVE],
+                [Gtk.AccessibleLive.POLITE],
+            )
+        except Exception:
+            pass
+        root.append(self._pr_live)
+        self.screenReaderStateMessage: str | None = None
 
         switcher = Adw.ViewSwitcher()
         self._stack = Adw.ViewStack()
@@ -272,8 +308,15 @@ class BranchesFoldout(Gtk.Popover):
         self._github = has_github
         self._repository_name = repository_name
         self._on_default_branch = is_on_default_branch
+        loading_started = (not self._prs_loading) and prs_loading
+        loading_complete = self._prs_loading and (not prs_loading)
         self._prs_loading = prs_loading
         self._enterprise = enterprise
+        self._announce_pr_list_state(
+            loading_started=loading_started,
+            loading_complete=loading_complete,
+            count=len(pull_requests),
+        )
         self._search.set_placeholder_text("Find a branch or pull request…")
         wanted = "prs" if selected_tab == BranchesTab.PULL_REQUESTS.value else "branches"
         if selected_tab is not None and self._stack.get_visible_child_name() != wanted:
@@ -281,6 +324,24 @@ class BranchesFoldout(Gtk.Popover):
             self._stack.set_visible_child_name(wanted)
             self._updating_tab = False
         self._refilter()
+
+    def _announce_pr_list_state(
+        self,
+        *,
+        loading_started: bool,
+        loading_complete: bool,
+        count: int,
+    ) -> None:
+        message = pull_request_list_screen_reader_message(
+            loading_started=loading_started,
+            loading_complete=loading_complete,
+            count=count,
+        )
+        self.screenReaderStateMessage = message
+        if not hasattr(self, "_pr_live") or not message:
+            return
+        self._pr_live.set_text("")
+        self._pr_live.set_text(message)
 
     def _on_visible_tab(self, *_args: object) -> None:
         if self._updating_tab or self._on_tab is None:

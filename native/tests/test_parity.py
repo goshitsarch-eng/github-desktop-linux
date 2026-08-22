@@ -1688,5 +1688,9 @@ def test_window_actions_cover_menus() -> None:
         "Input cleared",
         "displayClearButton",
         "input_cleared_aria_live",
+        "Hang Tight. Loading pull requests as fast as I can!",
+        "pull request{plural} found",
+        "screenReaderStateMessage",
+        "pull_request_list_screen_reader_message",
     ]:
         assert phrase in src
