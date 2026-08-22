@@ -1029,7 +1029,12 @@ def test_build_expand_menu_item_matches_desktop() -> None:
 
 
 def test_keyboard_reorder_copy() -> None:
-    from github_desktop.ui.window import keyboard_reorder_insert_message, keyboard_reorder_intro_message
+    from github_desktop.ui.window import (
+        keyboard_reorder_insert_message,
+        keyboard_reorder_intro_message,
+        reorderingMessage,
+        updateKeyboardReorderingMessage,
+    )
 
     assert keyboard_reorder_intro_message(1) == (
         "Use the Up and Down arrow keys to choose a new location for the selected commit, "
@@ -1042,6 +1047,11 @@ def test_keyboard_reorder_copy() -> None:
     assert keyboard_reorder_insert_message(2, 5, 5) == (
         "Press Enter to insert the selected commits after commit 5 or Escape to cancel."
     )
+    assert reorderingMessage is updateKeyboardReorderingMessage
+    assert reorderingMessage(0) == ""
+    assert reorderingMessage(1) == keyboard_reorder_intro_message(1)
+    assert reorderingMessage(1, 0, 5) == keyboard_reorder_insert_message(1, 0, 5)
+    assert reorderingMessage(2, 5, 5) == keyboard_reorder_insert_message(2, 5, 5)
 
 
 def test_enable_commit_message_generation_requires_flag_and_entitlement() -> None:

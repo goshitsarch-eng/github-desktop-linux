@@ -248,6 +248,27 @@ def keyboard_reorder_insert_message(count: int, row: int, total: int) -> str:
     )
 
 
+def reordering_message(
+    count: int,
+    insertion_index: int | None = None,
+    total: int = 0,
+) -> str:
+    """Desktop CommitList `reorderingMessage` / `updateKeyboardReorderingMessage`.
+
+    Intro copy while `insertionIndexPath` is null; insert copy after the user
+    moves the insertion point with the arrow keys.
+    """
+    if count <= 0:
+        return ""
+    if insertion_index is None:
+        return keyboard_reorder_intro_message(count)
+    return keyboard_reorder_insert_message(count, insertion_index, total)
+
+
+reorderingMessage = reordering_message
+updateKeyboardReorderingMessage = reordering_message
+
+
 NO_HISTORY = "No history"
 NO_COMMITS_TO_LIST = "No commits to list"
 NO_COMMIT_SELECTED = "No commit selected"
@@ -4704,7 +4725,7 @@ class MainWindow(Adw.ApplicationWindow):
         visible = self._visible_history_commits()
         shas = [c.sha for c in visible]
         first = next((shas.index(c.sha) for c in commits if c.sha in shas), 0)
-        self._keyboard_reorder = {"commits": list(commits), "insert_index": first}
+        self._keyboard_reorder = {"commits": list(commits), "insert_index": first, "moved": False}
         if hasattr(self, "_commit_list"):
             self._commit_list.grab_focus()
         self._sync_keyboard_reorder_chrome()
@@ -4754,9 +4775,45 @@ class MainWindow(Adw.ApplicationWindow):
             current = int(self._keyboard_reorder["insert_index"])
             current = current - 1 if keyval == 65362 else current + 1
             self._keyboard_reorder["insert_index"] = max(0, min(maximum, current))
+            self._keyboard_reorder["moved"] = True
             self._sync_keyboard_reorder_chrome()
             return True
         return False
+
+    def _set_reordering_message(self, message: str) -> None:
+        """Desktop CommitList AriaLiveContainer `reorderingMessage` (debounced 500ms)."""
+        if not hasattr(self, "_reorder_status"):
+            return
+        prev = getattr(self._reorder_status, "_aria_live_message", object())
+        self._reorder_status.set_text(message)
+        if prev == message:
+            return
+        self._reorder_status._aria_live_message = message  # type: ignore[attr-defined]
+        timeout = int(getattr(self, "_reordering_live_timeout", 0) or 0)
+        if timeout:
+            GLib.source_remove(timeout)
+            self._reordering_live_timeout = 0
+        self._pending_reordering_message = message
+        if not message:
+            return
+
+        def flush() -> bool:
+            self._reordering_live_timeout = 0
+            text = getattr(self, "_pending_reordering_message", "") or ""
+            if not text:
+                return False
+            try:
+                self._reorder_status.announce(
+                    text, Gtk.AccessibleAnnouncementPriority.MEDIUM
+                )
+            except Exception:
+                pass
+            return False
+
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            flush()
+            return
+        self._reordering_live_timeout = GLib.timeout_add(500, flush)
 
     def _sync_keyboard_reorder_chrome(self) -> None:
         data = self._keyboard_reorder
@@ -4769,11 +4826,15 @@ class MainWindow(Adw.ApplicationWindow):
         insert_index = int(data["insert_index"]) if data else 0
         if active and data is not None:
             count = len(data["commits"])
-            self._reorder_status.set_text(
-                keyboard_reorder_insert_message(count, insert_index, len(visible))
-                if visible
-                else keyboard_reorder_intro_message(count)
+            moved = bool(data.get("moved")) and bool(visible)
+            message = reordering_message(
+                count,
+                insertion_index=insert_index if moved else None,
+                total=len(visible),
             )
+            self._set_reordering_message(message)
+        elif hasattr(self, "_reorder_status") and self._reorder_status.get_text():
+            self._set_reordering_message("")
         child = self._commit_list.get_first_child() if hasattr(self, "_commit_list") else None
         index = 0
         while child is not None:
