@@ -48,6 +48,8 @@ from ..models import (
     accounts_for_publish_tab,
     default_publish_tab,
     enable_commit_message_generation,
+    get_warning_message_as_string,
+    ref_name_error_aria_live,
     uncommitted_changes_strategy_choices,
 )
 from ..clamp import clamp
@@ -102,6 +104,21 @@ from .multi_commit import show_multi_commit, show_warn_force_push
 THERE_ARE_NO_CHANGES = "There are no changes."
 COULD_NOT_FIND_DEFAULT_BRANCH = "Could not find a default branch to compare against."
 SELECT_A_BASE_BRANCH_ABOVE = "Select a base branch above."
+
+
+def _apply_ref_name_aria(widget: Gtk.Widget, message: str, *, tracked: object) -> None:
+    """Desktop RefNameTextBox InputError/InputWarning `ariaLiveMessage`."""
+    prev = getattr(widget, "_aria_tracked", object())
+    widget._aria_live_message = message  # type: ignore[attr-defined]
+    widget._aria_tracked = tracked  # type: ignore[attr-defined]
+    if not message:
+        return
+    try:
+        widget.update_property([Gtk.AccessibleProperty.LABEL], [message])
+        if prev != tracked:
+            widget.announce(message, Gtk.AccessibleAnnouncementPriority.MEDIUM)
+    except Exception:
+        pass
 
 
 def pull_request_merge_status_text(kind: ComputedAction | None) -> str:
@@ -2398,10 +2415,12 @@ def show_create_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, A
             create.set_sensitive(False)
             warn.set_visible(False)
             remote_warn.set_visible(False)
+            _apply_ref_name_aria(warn, "", tracked=raw)
             return
         if not name:
             warn.set_text(f"{raw} is not a valid name.")
             warn.set_visible(True)
+            _apply_ref_name_aria(warn, ref_name_error_aria_live(raw), tracked=raw)
             create.set_sensitive(False)
             remote_warn.set_visible(False)
             return
@@ -2410,6 +2429,7 @@ def show_create_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, A
         if exists:
             warn.set_text(f"A branch named {name} already exists.")
             warn.set_visible(True)
+            _apply_ref_name_aria(warn, "", tracked=raw)
             create.set_sensitive(False)
             remote_warn.set_visible(False)
             return
@@ -2427,6 +2447,7 @@ def show_create_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, A
             if rules.creation_restricted is True or name_fail.status == "fail":
                 warn.set_text(f"Branch name '{name}' is restricted by repo rules.")
                 warn.set_visible(True)
+                _apply_ref_name_aria(warn, "", tracked=raw)
                 create.set_sensitive(False)
                 return
             if rules.creation_restricted == "bypass" or name_fail.status == "bypass":
@@ -2434,6 +2455,7 @@ def show_create_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, A
                     f"Branch name '{name}' is restricted by repo rules, but you can bypass them. Proceed with caution!"
                 )
                 warn.set_visible(True)
+                _apply_ref_name_aria(warn, "", tracked=raw)
                 create.set_sensitive(True)
                 return
         if sanitized_hint:
@@ -2441,8 +2463,10 @@ def show_create_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, A
                 f"Will be created as {name}. Spaces and invalid characters have been replaced by hyphens."
             )
             warn.set_visible(True)
+            _apply_ref_name_aria(warn, get_warning_message_as_string(name), tracked=raw)
         else:
             warn.set_visible(False)
+            _apply_ref_name_aria(warn, "", tracked=raw)
         create.set_sensitive(True)
 
     def submit(*_a: object) -> None:
@@ -2467,6 +2491,8 @@ def show_create_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, A
     create.connect("clicked", submit)
     render_start()
     refresh_warning()
+    parent._create_branch_name = name_row
+    parent._create_branch_warn = warn
     dialog.present(parent)
 
 
@@ -2510,8 +2536,30 @@ def show_rename_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, A
     name_row = Adw.EntryRow(title="Name")
     name_row.set_text(current or "")
     box.append(name_row)
+    warn = Gtk.Label(wrap=True, xalign=0)
+    warn.add_css_class("warning")
+    warn.set_visible(False)
+    box.append(warn)
     toolbar.set_content(box)
     dialog.set_child(toolbar)
+
+    def refresh_warning(*_a: object) -> None:
+        raw = name_row.get_text().strip()
+        name = sanitize_ref_name(raw) if raw else ""
+        if not raw or name == raw:
+            warn.set_visible(False)
+            _apply_ref_name_aria(warn, "", tracked=raw)
+            return
+        if not name:
+            warn.set_text(f"{raw} is not a valid name.")
+            warn.set_visible(True)
+            _apply_ref_name_aria(warn, ref_name_error_aria_live(raw), tracked=raw)
+            return
+        warn.set_text(
+            f"Will be created as {name}. Spaces and invalid characters have been replaced by hyphens."
+        )
+        warn.set_visible(True)
+        _apply_ref_name_aria(warn, get_warning_message_as_string(name), tracked=raw)
 
     def submit(*_a: object) -> None:
         new = sanitize_ref_name(name_row.get_text().strip())
@@ -2519,6 +2567,8 @@ def show_rename_branch(parent: Gtk.Window, store: AppStore, payload: dict[str, A
             dialog.close()
             store.rename_current_branch(repo, current, new)
 
+    name_row.connect("notify::text", refresh_warning)
+    refresh_warning()
     rename.connect("clicked", submit)
     dialog.present(parent)
 
@@ -3467,6 +3517,34 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
     sync_other()
     branch_row = Adw.EntryRow(title="Default branch name")
     branch_row.set_text(store.settings.default_branch or "")
+    branch_warn = Gtk.Label(wrap=True, xalign=0)
+    branch_warn.add_css_class("warning")
+    branch_warn.set_visible(False)
+
+    def refresh_default_branch(*_a: object) -> None:
+        from ..models import sanitize_ref_name
+
+        raw = branch_row.get_text()
+        name = sanitize_ref_name(raw) if raw.strip() else ""
+        if not raw.strip() or name == raw:
+            branch_warn.set_visible(False)
+            _apply_ref_name_aria(branch_warn, "", tracked=raw)
+            return
+        if not name:
+            branch_warn.set_text(f"{raw} is not a valid name.")
+            branch_warn.set_visible(True)
+            _apply_ref_name_aria(branch_warn, ref_name_error_aria_live(raw), tracked=raw)
+            return
+        branch_warn.set_text(
+            f"Will be saved as {name}. Spaces and invalid characters have been replaced by hyphens."
+        )
+        branch_warn.set_visible(True)
+        _apply_ref_name_aria(
+            branch_warn,
+            get_warning_message_as_string(name, "saved"),
+            tracked=raw,
+        )
+
     git_group.add(name_row)
     git_group.add(_author_name_error_row(name_row))
     git_group.add(email_row)
@@ -3483,6 +3561,9 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
     email_row.connect("notify::selected", lambda *_a: refresh_email_warning())
     other_email.connect("notify::text", lambda *_a: refresh_email_warning())
     git_group.add(branch_row)
+    git_group.add(branch_warn)
+    branch_row.connect("notify::text", refresh_default_branch)
+    refresh_default_branch()
     clone_row = Adw.EntryRow(title="Clone default directory")
     clone_row.set_text(get_default_dir(s))
     git_group.add(clone_row)
@@ -3746,7 +3827,9 @@ def show_preferences(parent: Gtk.Window, store: AppStore, tab: PreferencesTab | 
                 model = email_row.get_model()
                 email = model.get_string(idx) if model is not None else other_email.get_text().strip()
             name = name_row.get_text()
-            branch = branch_row.get_text().strip() or None
+            from ..models import sanitize_ref_name
+
+            branch = sanitize_ref_name(branch_row.get_text().strip()) or None
 
             def save_user() -> None:
                 store.save_git_user(name, email, branch, on_done=finished)
@@ -3910,17 +3993,23 @@ def show_create_tag(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]
         err = create_tag_error(name, local_tags)
         if not name and raw.strip():
             err = f"{raw} is not a valid name."
+            live = ref_name_error_aria_live(raw)
+            error.remove_css_class("warning")
+            error.add_css_class("error")
         elif raw != name and name and not err:
             err = (
                 f"Will be created as {name}. Spaces and invalid characters have been replaced by hyphens."
             )
+            live = get_warning_message_as_string(name)
             error.remove_css_class("error")
             error.add_css_class("warning")
         else:
+            live = ""
             error.remove_css_class("warning")
             error.add_css_class("error")
         error.set_text(err or "")
         error.set_visible(bool(err))
+        _apply_ref_name_aria(error, live, tracked=raw)
         ok.set_sensitive(bool(name) and (create_tag_error(name, local_tags) is None))
         matches = filtered_tags(name)
         child = previous_box.get_first_child()

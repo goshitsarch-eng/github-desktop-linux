@@ -558,6 +558,10 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
 
             CompletenessDonut({"success": 2, "failure": 1, "in_progress": 1})
             show_create_branch(win, store, {})
+            win._create_branch_name.set_text("???")
+            assert getattr(win._create_branch_warn, "_aria_live_message", "").startswith("Error:")
+            win._create_branch_name.set_text("release 1")
+            assert getattr(win._create_branch_warn, "_aria_live_message", "").startswith("Warning:")
             show_delete_branch(win, store, {"branch": "main"})
             show_acknowledgements(win)
             show_copilot_disclaimer(win, store)

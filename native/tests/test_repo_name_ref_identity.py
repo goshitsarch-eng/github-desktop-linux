@@ -53,6 +53,17 @@ def test_sanitized_ref_name_matches_desktop() -> None:
     assert sanitize_ref_name("branch--name") == "branch--name"
     assert sanitize_ref_name("release 1") == "release-1"
     assert sanitized_ref_name("foo:bar") == "foo-bar"
+    from github_desktop.models import getWarningMessageAsString, ref_name_error_aria_live
+
+    assert ref_name_error_aria_live("???") == "Error: ??? is not a valid name."
+    assert getWarningMessageAsString("release-1") == (
+        "Warning: Will be created  as release-1. "
+        "Spaces and invalid characters have been replaced by hyphens."
+    )
+    assert getWarningMessageAsString("main", "saved") == (
+        "Warning: Will be saved as main. "
+        "Spaces and invalid characters have been replaced by hyphens."
+    )
     assert not ref_has_invalid_chars("")
     assert not ref_has_invalid_chars("this-is/fine")
     assert ref_has_invalid_chars("foo:bar")
