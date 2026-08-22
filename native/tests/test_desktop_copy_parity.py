@@ -777,11 +777,18 @@ def test_open_pull_request_copy_matches_desktop() -> None:
     from github_desktop.models import ComputedAction
     from github_desktop.ui.dialogs import (
         COULD_NOT_FIND_DEFAULT_BRANCH,
+        LINES_CHANGED_SR_ONLY,
         SELECT_A_BASE_BRANCH_ABOVE,
         THERE_ARE_NO_CHANGES,
+        open_pull_request_added_lines,
+        open_pull_request_commit_word,
+        open_pull_request_lines_changed,
+        open_pull_request_merge_prefix,
+        open_pull_request_merge_suffix,
         open_pull_request_no_changes_body,
         open_pull_request_ok_label,
         open_pull_request_ok_title,
+        open_pull_request_removed_lines,
         pull_request_merge_status_text,
     )
 
@@ -810,6 +817,15 @@ def test_open_pull_request_copy_matches_desktop() -> None:
         open_pull_request_ok_title(has_pull_request=True, enterprise=True)
         == "View pull request on GitHub Enterprise."
     )
+    assert open_pull_request_commit_word(1) == "commit"
+    assert open_pull_request_commit_word(2) == "commits"
+    assert open_pull_request_merge_prefix(1) == "Merge 1 commit into "
+    assert open_pull_request_merge_prefix(3) == "Merge 3 commits into "
+    assert open_pull_request_merge_suffix("topic") == " from topic."
+    assert LINES_CHANGED_SR_ONLY == "Lines changed:"
+    assert open_pull_request_added_lines(12) == "12 added lines"
+    assert open_pull_request_removed_lines(4) == "4 removed lines"
+    assert open_pull_request_lines_changed(added=12, deleted=4) == "12 added lines, 4 removed lines"
 
 
 def test_ci_check_run_no_steps_copy_matches_desktop() -> None:

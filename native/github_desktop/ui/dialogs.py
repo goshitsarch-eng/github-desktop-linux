@@ -137,6 +137,39 @@ def open_pull_request_ok_title(*, has_pull_request: bool, enterprise: bool = Fal
     return f"{verb} pull request on GitHub{suffix}."
 
 
+def open_pull_request_commit_word(count: int) -> str:
+    """Desktop `commit${commitCount > 1 ? 's' : ''}`."""
+    return "commit" if count == 1 else "commits"
+
+
+def open_pull_request_merge_prefix(count: int) -> str:
+    """Desktop `Merge {commits} into ` before `BranchSelect`."""
+    return f"Merge {count} {open_pull_request_commit_word(count)} into "
+
+
+def open_pull_request_merge_suffix(current: str) -> str:
+    """Desktop ` from {currentBranch}.` after `BranchSelect`."""
+    return f" from {current}."
+
+
+LINES_CHANGED_SR_ONLY = "Lines changed:"
+
+
+def open_pull_request_added_lines(added: int) -> str:
+    """Desktop `{linesAdded} added lines`."""
+    return f"{added} added lines"
+
+
+def open_pull_request_removed_lines(deleted: int) -> str:
+    """Desktop `{linesDeleted} removed lines`."""
+    return f"{deleted} removed lines"
+
+
+def open_pull_request_lines_changed(*, added: int, deleted: int) -> str:
+    """Desktop `{linesAdded} added lines, {linesDeleted} removed lines`."""
+    return f"{open_pull_request_added_lines(added)}, {open_pull_request_removed_lines(deleted)}"
+
+
 CREATE_WITHOUT_PUSHING = "Create without pushing"
 
 
@@ -4082,25 +4115,17 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     root.set_margin_top(8)
     root.set_margin_bottom(8)
     details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-    merge_into = Gtk.Label(wrap=True, xalign=0)
+    # Desktop `OpenPullRequestDialogHeader`: `Merge {N commit(s)} into ` + `BranchSelect` + ` from {current}.`
+    merge_into = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
     merge_into.add_css_class("base-branch-details")
-    details.append(merge_into)
-    stats = Gtk.Label(xalign=0, hexpand=True)
-    stats.add_css_class("lines-added-deleted")
-    details.append(stats)
-    merge_info = Gtk.Label(wrap=True, xalign=0)
-    merge_info.add_css_class("merge-info")
-    merge_info.add_css_class("pull-request-merge-status")
-    details.append(merge_info)
-    root.append(details)
-
+    merge_prefix = Gtk.Label(wrap=True, xalign=0)
+    merge_prefix.set_valign(Gtk.Align.CENTER)
+    merge_into.append(merge_prefix)
     base_btn = Gtk.MenuButton()
     base_btn.set_halign(Gtk.Align.START)
+    base_btn.set_valign(Gtk.Align.CENTER)
     base_label = Gtk.Label(label=selected["name"] or "Base")
-    base_child = Gtk.Box(spacing=6)
-    base_child.append(Gtk.Label(label="Base"))
-    base_child.append(base_label)
-    base_btn.set_child(base_child)
+    base_btn.set_child(base_label)
     popover = Gtk.Popover()
     list_wrap = Gtk.ScrolledWindow()
     list_wrap.set_min_content_height(220)
@@ -4110,7 +4135,31 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
     list_wrap.set_child(base_list)
     popover.set_child(list_wrap)
     base_btn.set_popover(popover)
-    root.append(base_btn)
+    merge_into.append(base_btn)
+    merge_suffix = Gtk.Label(wrap=True, xalign=0)
+    merge_suffix.set_valign(Gtk.Align.CENTER)
+    merge_into.append(merge_suffix)
+    details.append(merge_into)
+    stats_row = Gtk.Box(spacing=0)
+    stats_row.add_css_class("lines-added-deleted")
+    lines_sr = Gtk.Label(label=LINES_CHANGED_SR_ONLY)
+    lines_sr.add_css_class("sr-only")
+    stats_row.append(lines_sr)
+    lines_added = Gtk.Label(xalign=0)
+    lines_added.add_css_class("lines-added")
+    stats_row.append(lines_added)
+    stats_comma = Gtk.Label(label=", ")
+    stats_comma.set_visible(False)
+    stats_row.append(stats_comma)
+    lines_deleted = Gtk.Label(xalign=0, hexpand=True)
+    lines_deleted.add_css_class("lines-deleted")
+    stats_row.append(lines_deleted)
+    details.append(stats_row)
+    merge_info = Gtk.Label(wrap=True, xalign=0)
+    merge_info.add_css_class("merge-info")
+    merge_info.add_css_class("pull-request-merge-status")
+    details.append(merge_info)
+    root.append(details)
 
     paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
     paned.set_resize_start_child(False)
@@ -4230,10 +4279,25 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
         n = len(st.pr_commits)
         added = cs.lines_added if cs else 0
         deleted = cs.lines_deleted if cs else 0
-        files_n = len(st.pr_files)
         base_name = selected["name"] or default
-        commit_word = "commit" if n == 1 else "commits"
-        merge_into.set_text(f"Merge {n} {commit_word} into {base_name} from {current}.")
+        merge_prefix.set_text(open_pull_request_merge_prefix(n))
+        merge_suffix.set_text(open_pull_request_merge_suffix(current))
+
+        def set_header_stats(*, loading: bool = False, empty: bool = False) -> None:
+            if empty:
+                lines_added.set_text("")
+                stats_comma.set_visible(False)
+                lines_deleted.set_text("")
+                return
+            if loading:
+                lines_added.set_text("Loading preview…")
+                stats_comma.set_visible(False)
+                lines_deleted.set_text("")
+                return
+            lines_added.set_text(open_pull_request_added_lines(added))
+            stats_comma.set_visible(True)
+            lines_deleted.set_text(open_pull_request_removed_lines(deleted))
+
         has_pr = bool(st.current_pull_request)
         enterprise = bool(repo.github and not is_dotcom_endpoint(repo.github.endpoint))
         create_btn.set_label(open_pull_request_ok_label(has_pull_request=has_pr))
@@ -4257,16 +4321,16 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
 
         if not base_name:
             selected["merge_token"] = int(selected["merge_token"]) + 1
-            stats.set_text("")
+            set_header_stats(empty=True)
             apply_merge_status(None)
             show_empty(COULD_NOT_FIND_DEFAULT_BRANCH, SELECT_A_BASE_BRANCH_ABOVE)
         elif getattr(st, "pr_preview_loading", False):
             selected["merge_token"] = int(selected["merge_token"]) + 1
-            stats.set_text("Loading preview…")
+            set_header_stats(loading=True)
             apply_merge_status(ComputedAction.LOADING)
             show_files()
         elif n == 0:
-            stats.set_text("")
+            set_header_stats(empty=True)
             show_empty(THERE_ARE_NO_CHANGES, open_pull_request_no_changes_body(has_merge_base=True, base=base_name, current=current))
             from ..git.ops import determine_mergeability
 
@@ -4310,7 +4374,7 @@ def show_start_pr(parent: Gtk.Window, store: AppStore) -> None:
             else:
                 apply_merge_status(None)
         else:
-            stats.set_text(f"{files_n} files · {added} added lines, {deleted} removed lines")
+            set_header_stats()
             show_files()
             from ..git.ops import determine_mergeability
 

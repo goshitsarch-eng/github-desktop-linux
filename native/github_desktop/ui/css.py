@@ -446,6 +446,19 @@ window:not(.underline-links) link {
 .seamless-diff-switcher.loading.has-diff.slow .diff-switcher-content {
   opacity: 0.2;
 }
+/* Desktop `_open-pull-request-header.scss` */
+.base-branch-details {
+  padding: 4px 0;
+}
+.lines-added-deleted {
+  font-size: 0.85rem;
+}
+.lines-added-deleted .lines-added {
+  color: @success_color;
+}
+.lines-added-deleted .lines-deleted {
+  color: @error_color;
+}
 /* Desktop `open-pull-request` empty message + footer merge status */
 .open-pull-request-message {
   padding: 16px;

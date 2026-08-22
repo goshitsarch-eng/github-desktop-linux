@@ -1661,5 +1661,10 @@ def test_window_actions_cover_menus() -> None:
         "from the current branch?",
         "renderCallToAction",
         "NoPullRequests",
+        "Lines changed:",
+        "BranchSelect",
+        "open_pull_request_merge_prefix",
+        "added lines, ",
+        "removed lines",
     ]:
         assert phrase in src
