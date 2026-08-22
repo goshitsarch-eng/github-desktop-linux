@@ -1668,5 +1668,7 @@ def test_window_actions_cover_menus() -> None:
         "removed lines",
         "No repository selected",
         "NoRepositorySelected",
+        "ariaLiveMessage: 'Expanded'",
+        "diff_expanded_aria_live",
     ]:
         assert phrase in src

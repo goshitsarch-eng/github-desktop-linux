@@ -57,6 +57,15 @@ def diff_search_result_message(index: int, total: int, query: str) -> str:
     return f'Result {index} of {total} for "{query}"'
 
 
+# Desktop `ariaLiveMessage: 'Expanded'` after expand hunk / expand whole file.
+DIFF_EXPANDED_ARIA_LIVE = "Expanded"
+
+
+def diff_expanded_aria_live() -> str:
+    """Desktop `ariaLiveMessage: 'Expanded'` after expand hunk / expand whole file."""
+    return DIFF_EXPANDED_ARIA_LIVE
+
+
 def diff_options_label() -> str:
     """Desktop Linux `DiffOptions` aria-label / popover header."""
     return DIFF_OPTIONS_LABEL
@@ -322,6 +331,18 @@ class DiffViewer(Gtk.Box):
         self._loading_indicator = indicator
         self._loading_spinner = spinner
         self.append(overlay)
+        self._aria_live = Gtk.Label(label="")
+        self._aria_live.add_css_class("sr-only")
+        self._aria_live.set_visible(False)
+        try:
+            self._aria_live.update_property(
+                [Gtk.AccessibleProperty.LIVE],
+                [Gtk.AccessibleLive.POLITE],
+            )
+        except Exception:
+            pass
+        self.append(self._aria_live)
+        self._aria_live_message = ""
         self._path = ""
         self._show_checks = True
         self._tab_size = tabSizeDefault
@@ -384,6 +405,28 @@ class DiffViewer(Gtk.Box):
     def isLoadingSlow(self) -> bool:
         """Desktop SeamlessDiffSwitcher `isLoadingSlow`."""
         return self._is_loading_slow
+
+    @property
+    def ariaLiveMessage(self) -> str:
+        """Desktop SideBySideDiff `ariaLiveMessage` (expand + search)."""
+        return self._aria_live_message
+
+    def _announce_expanded(self) -> None:
+        """Desktop `ariaLiveMessage: 'Expanded'` after expand hunk / expand whole file."""
+        message = diff_expanded_aria_live()
+        self._aria_live_message = message
+        self._aria_live.set_text("")
+        self._aria_live.set_text(message)
+
+    def _on_expand_whole_clicked(self) -> None:
+        if self.on_expand_whole:
+            self.on_expand_whole()
+        self._announce_expanded()
+
+    def _on_expand_hunk_clicked(self, hunk_index: int, kind: str) -> None:
+        if self.on_expand_hunk:
+            self.on_expand_hunk(hunk_index, kind)
+        self._announce_expanded()
 
     def _if_ready(self, callback: Callable | None, *args: object) -> None:
         """Desktop SeamlessDiffSwitcher noops include/discard/open while `isLoadingDiff`."""
@@ -618,7 +661,7 @@ class DiffViewer(Gtk.Box):
         if expandable and self.on_expand_whole:
             whole = Gtk.Button(label="Expand whole file")
             whole.add_css_class("flat")
-            whole.connect("clicked", lambda *_: self.on_expand_whole and self.on_expand_whole())
+            whole.connect("clicked", lambda *_: self._on_expand_whole_clicked())
             self._toolbar.append(whole)
         if can_collapse and self.on_collapse:
             collapse = Gtk.Button(label="Collapse expanded lines")
@@ -1071,7 +1114,7 @@ class DiffViewer(Gtk.Box):
             btn.add_css_class("flat")
             btn.add_css_class("diff-expand")
             btn.set_tooltip_text(tooltip)
-            btn.connect("clicked", lambda *_: self.on_expand_hunk and self.on_expand_hunk(index, kind))
+            btn.connect("clicked", lambda *_: self._on_expand_hunk_clicked(index, kind))
             box.append(btn)
 
         if expansion == DiffHunkExpansionType.UP:
@@ -1589,7 +1632,7 @@ class DiffViewer(Gtk.Box):
             if label == "Collapse expanded lines":
                 items.append((label, lambda: self.on_collapse and self.on_collapse(), enabled))
             else:
-                items.append((label, lambda: self.on_expand_whole and self.on_expand_whole(), enabled))
+                items.append((label, self._on_expand_whole_clicked, enabled))
         show_context_menu(self, items)
 
     def _select_all_text(self) -> None:
@@ -1633,16 +1676,16 @@ class DiffViewer(Gtk.Box):
                     )
                 )
         if expansion == DiffHunkExpansionType.UP:
-            items.append(("Expand up", lambda: self.on_expand_hunk and self.on_expand_hunk(hunk_index, "up"), True))
+            items.append(("Expand up", lambda: self._on_expand_hunk_clicked(hunk_index, "up"), True))
         elif expansion == DiffHunkExpansionType.DOWN:
-            items.append(("Expand down", lambda: self.on_expand_hunk and self.on_expand_hunk(hunk_index - 1, "down"), True))
+            items.append(("Expand down", lambda: self._on_expand_hunk_clicked(hunk_index - 1, "down"), True))
         elif expansion == DiffHunkExpansionType.SHORT:
-            items.append(("Expand all", lambda: self.on_expand_hunk and self.on_expand_hunk(hunk_index, "up"), True))
+            items.append(("Expand all", lambda: self._on_expand_hunk_clicked(hunk_index, "up"), True))
         elif expansion == DiffHunkExpansionType.BOTH:
-            items.append(("Expand up", lambda: self.on_expand_hunk and self.on_expand_hunk(hunk_index, "up"), True))
-            items.append(("Expand down", lambda: self.on_expand_hunk and self.on_expand_hunk(hunk_index - 1, "down"), True))
+            items.append(("Expand up", lambda: self._on_expand_hunk_clicked(hunk_index, "up"), True))
+            items.append(("Expand down", lambda: self._on_expand_hunk_clicked(hunk_index - 1, "down"), True))
         if self.on_expand_whole:
-            items.append(("Expand whole file", lambda: self.on_expand_whole and self.on_expand_whole(), True))
+            items.append(("Expand whole file", self._on_expand_whole_clicked, True))
         show_context_menu(self, items)
 
     def _render_image(self, diff: ImageDiff, mode: str) -> None:
