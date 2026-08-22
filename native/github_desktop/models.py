@@ -2165,6 +2165,26 @@ def sanitized_ref_name(name: str) -> str:
     return sanitize_ref_name(name)
 
 
+def ref_name_error_aria_live(proposedValue: str) -> str:
+    """Desktop RefNameTextBox InputError `ariaLiveMessage`."""
+    return f"Error: {proposedValue} is not a valid name."
+
+
+def get_warning_message_as_string(
+    sanitizedValue: str,
+    warningMessageVerb: str | None = None,
+) -> str:
+    """Desktop RefNameTextBox `getWarningMessageAsString` aria-live copy."""
+    verb = "created " if warningMessageVerb is None else warningMessageVerb
+    return (
+        f"Warning: Will be {verb} as {sanitizedValue}. "
+        "Spaces and invalid characters have been replaced by hyphens."
+    )
+
+
+getWarningMessageAsString = get_warning_message_as_string
+
+
 def test_for_invalid_chars(name: str) -> bool:
     """Desktop `testForInvalidChars`."""
     return _INVALID_REF_NAME_RE.search(name) is not None

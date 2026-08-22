@@ -1688,5 +1688,8 @@ def test_window_actions_cover_menus() -> None:
         "Input cleared",
         "displayClearButton",
         "input_cleared_aria_live",
+        "getWarningMessageAsString",
+        "warningMessageVerb",
+        "Error: {proposedValue} is not a valid name.",
     ]:
         assert phrase in src
