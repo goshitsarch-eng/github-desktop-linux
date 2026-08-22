@@ -26,6 +26,8 @@ CANNOT_PUBLISH_NO_COMMITS = "Cannot publish: no commits"
 CANNOT_PUBLISH_DETACHED_HEAD = "Cannot publish detached HEAD"
 REBASE_IN_PROGRESS = "Rebase in progress"
 PUSH_PULL_BUTTON_STATE_ID = "push-pull-button-state"
+PULL_PUSH_OR_FETCH = "Pull, push, or fetch"
+FORCE_PUSH_ACTION = "force push"
 
 
 @dataclass(frozen=True)
@@ -204,3 +206,30 @@ def network_progress_chrome(
 
 
 progressButton = network_progress_chrome
+
+
+def is_pull_push_fetch_progress(kind: str | None) -> bool:
+    """Desktop PushPullButton `isPullPushFetchProgress` (`push` / `pull` / `fetch`)."""
+    return kind in {"push", "pull", "fetch"}
+
+
+def next_action_in_progress(current: str | None, kind: str | None) -> str | None:
+    """Keep the first push/pull/fetch kind, including Desktop `force push`."""
+    if current is None and is_pull_push_fetch_progress(kind):
+        return kind
+    return current
+
+
+def push_pull_loading_aria_live(title: str, description: str | None = None) -> str:
+    """Desktop `${title} ${description ?? 'Hang on…'}` while progress is in flight."""
+    return f"{title} {description or HANG_ON}"
+
+
+def push_pull_complete_aria_live(action_in_progress: str | None = None) -> str:
+    """Desktop `${actionInProgress ?? 'Pull, push, or fetch'} complete`."""
+    return f"{action_in_progress or PULL_PUSH_OR_FETCH} complete"
+
+
+isPullPushFetchProgress = is_pull_push_fetch_progress
+actionInProgress = next_action_in_progress
+screenReaderStateMessage = push_pull_loading_aria_live
