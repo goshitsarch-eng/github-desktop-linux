@@ -115,6 +115,7 @@ def test_open_pull_request_gates_unpublished_branch(isolated_config, git_repo: P
     assert store.popup is not None
     assert store.popup.type == PopupType.PUSH_BRANCH_COMMITS
     assert store.popup.payload.get("unpublished") is True
+    assert "branch" in store.popup.payload
 
 
 def test_create_pull_request_opens_browser(isolated_config, git_repo: Path, monkeypatch) -> None:

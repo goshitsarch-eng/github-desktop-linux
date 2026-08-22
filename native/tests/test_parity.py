@@ -1629,5 +1629,14 @@ def test_window_actions_cover_menus() -> None:
         "loading-check-runs",
         "loadingActionWorkflows",
         "LoadingCheckRuns",
+        "Your branch must be published before opening a pull request.",
+        "Would you like to publish",
+        "now and open a pull request?",
+        "that haven't been pushed to the remote yet.",
+        "Would you like to push your changes to",
+        "before creating your pull request?",
+        "PushBranchCommits",
+        "renderPublishView",
+        "unPushedCommits",
     ]:
         assert phrase in src

@@ -863,6 +863,35 @@ def test_ci_check_loading_copy_matches_desktop() -> None:
     assert loading_check_runs_copy(steps=True) == (STAND_BY, CHECK_RUN_STEPS_INCOMING)
 
 
+def test_push_branch_commits_copy_matches_desktop() -> None:
+    from github_desktop.ui.dialogs import (
+        CREATE_WITHOUT_PUSHING,
+        pluralize,
+        push_branch_commits_body,
+        push_branch_commits_heading,
+        push_branch_commits_ok_label,
+        renderPublishView,
+    )
+
+    assert renderPublishView(None) is True
+    assert renderPublishView(2) is False
+    assert pluralize(1, "local commit") == "1 local commit"
+    assert pluralize(2, "local commit") == "2 local commits"
+    assert push_branch_commits_heading(unpublished=True) == "Publish branch?"
+    assert push_branch_commits_heading(unpublished=False) == "Push local changes?"
+    assert push_branch_commits_ok_label(unpublished=True) == "Publish branch"
+    assert push_branch_commits_ok_label(unpublished=False) == "Push commits"
+    assert CREATE_WITHOUT_PUSHING == "Create without pushing"
+    published = push_branch_commits_body(unpublished=True, branch="topic")
+    assert published.startswith("Your branch must be published before opening a pull request.")
+    assert "Would you like to publish topic now and open a pull request?" in published
+    ahead = push_branch_commits_body(unpublished=False, unpushed=1, branch="topic")
+    assert "You have 1 local commit that haven't been pushed to the remote yet." in ahead
+    assert "Would you like to push your changes to topic before creating your pull request?" in ahead
+    ahead_many = push_branch_commits_body(unpublished=False, unpushed=3, branch="feature")
+    assert "You have 3 local commits that haven't been pushed to the remote yet." in ahead_many
+
+
 def test_get_hunk_handle_label_matches_desktop() -> None:
     from github_desktop.git.diff import DiffRange, DiffRangeType
     from github_desktop.ui.diff_view import get_hunk_handle_label, is_only_one_check_in_row

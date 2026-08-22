@@ -137,6 +137,46 @@ def open_pull_request_ok_title(*, has_pull_request: bool, enterprise: bool = Fal
     return f"{verb} pull request on GitHub{suffix}."
 
 
+CREATE_WITHOUT_PUSHING = "Create without pushing"
+
+
+def pluralize(number_of_commits: int, unit: str) -> str:
+    """Desktop `pluralize` in `push-branch-commits.tsx`."""
+    if number_of_commits == 1:
+        return f"{number_of_commits} {unit}"
+    return f"{number_of_commits} {unit}s"
+
+
+def renderPublishView(unPushedCommits: int | None) -> bool:
+    """Desktop `renderPublishView(unPushedCommits)` — true when the branch is unpublished."""
+    return unPushedCommits is None
+
+
+def push_branch_commits_heading(*, unpublished: bool) -> str:
+    """Desktop Linux `Publish branch?` / `Push local changes?`."""
+    return "Publish branch?" if unpublished else "Push local changes?"
+
+
+def push_branch_commits_ok_label(*, unpublished: bool) -> str:
+    """Desktop Linux `Publish branch` / `Push commits`."""
+    return "Publish branch" if unpublished else "Push commits"
+
+
+def push_branch_commits_body(*, unpublished: bool, unpushed: int = 0, branch: str = "") -> str:
+    """Desktop `PushBranchCommits` dialog body (title + message paragraphs)."""
+    name = branch.strip() or "this branch"
+    if unpublished:
+        return (
+            "Your branch must be published before opening a pull request.\n\n"
+            f"Would you like to publish {name} now and open a pull request?"
+        )
+    local_commits = pluralize(unpushed, "local commit")
+    return (
+        f"You have {local_commits} that haven't been pushed to the remote yet.\n\n"
+        f"Would you like to push your changes to {name} before creating your pull request?"
+    )
+
+
 def _alert(
     parent: Gtk.Window,
     heading: str,
@@ -936,15 +976,10 @@ def show_saml_reauth(parent: Gtk.Window, store: AppStore, payload: dict[str, Any
 def show_push_branch_commits(parent: Gtk.Window, store: AppStore, payload: dict[str, Any]) -> None:
     unpublished = bool(payload.get("unpublished"))
     unpushed = int(payload.get("unpushed") or 0)
-    if unpublished:
-        heading = "Publish branch?"
-        body = "This branch hasn't been published yet. Publish it to create a pull request."
-        confirm = "Publish branch"
-    else:
-        heading = "Push local changes?"
-        noun = "commit" if unpushed == 1 else "commits"
-        body = f"You have {unpushed} unpushed {noun}. Push them before creating a pull request?"
-        confirm = "Push commits"
+    branch = str(payload.get("branch") or "")
+    heading = push_branch_commits_heading(unpublished=unpublished)
+    body = push_branch_commits_body(unpublished=unpublished, unpushed=unpushed, branch=branch)
+    confirm = push_branch_commits_ok_label(unpublished=unpublished)
 
     def confirm_cb() -> None:
         cb = payload.get("on_confirm")
@@ -958,7 +993,7 @@ def show_push_branch_commits(parent: Gtk.Window, store: AppStore, payload: dict[
     dialog = Adw.AlertDialog(heading=heading, body=body)
     dialog.add_response("cancel", "Cancel")
     if not unpublished:
-        dialog.add_response("skip", "Create without pushing")
+        dialog.add_response("skip", CREATE_WITHOUT_PUSHING)
     dialog.add_response("ok", confirm)
     dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
     dialog.set_default_response("ok")

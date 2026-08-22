@@ -23,7 +23,7 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
     from github_desktop.store import AppStore
     from github_desktop.theme import apply_theme
     from github_desktop.ui.css import load_css
-    from github_desktop.ui.dialogs import show_about, show_preferences, show_release_notes, show_pull_request_review, show_checks
+    from github_desktop.ui.dialogs import show_about, show_preferences, show_release_notes, show_pull_request_review, show_checks, show_push_branch_commits
     from github_desktop.ui.window import MainWindow
 
     errors: list[str] = []
@@ -392,6 +392,8 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
                 prs_page = win._branches_foldout._stack.get_child_by_name("prs")
                 assert win._branches_foldout._stack.get_page(prs_page).get_title() == "Pull requests"
             show_release_notes(win)
+            show_push_branch_commits(win, store, {"unpublished": True, "branch": "topic"})
+            show_push_branch_commits(win, store, {"unpublished": False, "unpushed": 2, "branch": "topic"})
             show_checks(win, store, {"error": "CI failed", "title": "Demo PR"})
             from github_desktop.ui.checks import show_rerun_checks
             from github_desktop.models import RefCheck

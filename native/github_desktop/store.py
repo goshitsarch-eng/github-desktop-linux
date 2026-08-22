@@ -7440,10 +7440,12 @@ class AppStore:
         state = self.state_for(repo)
         ahead_behind = state.ahead_behind
         continue_pr = lambda: self._after_push_for_pull_request(repo, preview, base_branch)
+        branch = (state.status.current_branch if state.status else None) or ""
         if ahead_behind is None:
             self.show_popup(
                 PopupType.PUSH_BRANCH_COMMITS,
                 unpublished=True,
+                branch=branch,
                 on_confirm=lambda: self.push_repo(repo, on_success=continue_pr),
             )
             return
@@ -7452,6 +7454,7 @@ class AppStore:
                 PopupType.PUSH_BRANCH_COMMITS,
                 unpublished=False,
                 unpushed=ahead_behind.ahead,
+                branch=branch,
                 on_confirm=lambda: self.push_repo(repo, on_success=continue_pr),
                 on_skip=continue_pr,
             )
