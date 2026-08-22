@@ -31,6 +31,7 @@ from ..models import (
     RepositorySectionTab,
     RepositorySettingsTab,
     StashedChangesLoadStates,
+    SelectionType,
     TutorialStep,
     WelcomeStep,
     WorkingDirectoryFileChange,
@@ -156,6 +157,7 @@ from .menus import (
     ADD_EXISTING_REPOSITORY_FROM_LOCAL_DRIVE,
     CLONE_REPOSITORY_FROM_INTERNET,
     CREATE_NEW_REPOSITORY_ON_LOCAL_DRIVE,
+    NO_REPOSITORY_SELECTED,
     REPOSITORY_TOOLBAR_DESCRIPTION,
     repository_toolbar_title,
     BRANCH_TOOLBAR_DESCRIPTION,
@@ -1572,18 +1574,17 @@ class MainWindow(Adw.ApplicationWindow):
             pass
         self._sync_branch_foldout_width()
         if enable_resizing_toolbar_buttons():
-            header.pack_start(
-                wrap_toolbar_resizable(
-                    self._branch_btn,
-                    self._on_branch_dropdown_resized,
-                    self._reset_branch_dropdown_width,
-                    width=int(clamp(self.store.branch_dropdown_constraints)),
-                    description="Current branch dropdown button",
-                    constraints=self._branch_resize_limits,
-                )
+            self._branch_toolbar = wrap_toolbar_resizable(
+                self._branch_btn,
+                self._on_branch_dropdown_resized,
+                self._reset_branch_dropdown_width,
+                width=int(clamp(self.store.branch_dropdown_constraints)),
+                description="Current branch dropdown button",
+                constraints=self._branch_resize_limits,
             )
         else:
-            header.pack_start(self._branch_btn)
+            self._branch_toolbar = self._branch_btn
+        header.pack_start(self._branch_toolbar)
 
         self._push_box = Gtk.Box()
         self._push_box.add_css_class("linked")
@@ -1633,18 +1634,17 @@ class MainWindow(Adw.ApplicationWindow):
         self._push_box.append(self._push_menu_btn)
         self._push_menu_btn.connect("notify::active", self._on_push_menu_active)
         if enable_resizing_toolbar_buttons():
-            header.pack_end(
-                wrap_toolbar_resizable(
-                    self._push_box,
-                    self.store.set_push_pull_button_width,
-                    self._reset_push_pull_button_width,
-                    width=int(clamp(self.store.push_pull_constraints)),
-                    description="Push pull button",
-                    constraints=self._push_resize_limits,
-                )
+            self._push_toolbar = wrap_toolbar_resizable(
+                self._push_box,
+                self.store.set_push_pull_button_width,
+                self._reset_push_pull_button_width,
+                width=int(clamp(self.store.push_pull_constraints)),
+                description="Push pull button",
+                constraints=self._push_resize_limits,
             )
         else:
-            header.pack_end(self._push_box)
+            self._push_toolbar = self._push_box
+        header.pack_end(self._push_toolbar)
 
         self._checks_btn = Gtk.Button(icon_name="emblem-ok-symbolic")
         self._checks_btn.set_tooltip_text("Pull request checks")
@@ -1699,9 +1699,11 @@ class MainWindow(Adw.ApplicationWindow):
         self._repo_content = Gtk.Stack()
         self._missing_page = self._build_missing()
         self._cloning_page = self._build_cloning()
+        self._none_page = self._build_no_repository_selected()
         self._repo_content.add_named(self._work_area, "content")
         self._repo_content.add_named(self._missing_page, "missing")
         self._repo_content.add_named(self._cloning_page, "cloning")
+        self._repo_content.add_named(self._none_page, "none")
         toolbar.set_content(self._repo_content)
         self._split.set_content(toolbar)
         return self._split
@@ -1759,6 +1761,22 @@ class MainWindow(Adw.ApplicationWindow):
         box.append(self._cloning_detail)
         page.set_child(box)
         return page
+
+    def _build_no_repository_selected(self) -> Gtk.Widget:
+        """Desktop `NoRepositorySelected`: `.panel.blankslate` when `selectedState` is null."""
+        page = Adw.StatusPage(title=NO_REPOSITORY_SELECTED)
+        page.add_css_class("panel")
+        page.add_css_class("blankslate")
+        page.add_css_class("no-repository-selected")
+        self._no_repository_selected = page
+        return page
+
+    def _sync_repository_toolbar_buttons(self) -> None:
+        """Desktop BranchDropdown / PushPullButton only render for `SelectionType.Repository`."""
+        show = self.store.selected_state_type == SelectionType.REPOSITORY
+        for widget in (getattr(self, "_branch_toolbar", None), getattr(self, "_push_toolbar", None)):
+            if widget is not None:
+                widget.set_visible(show)
 
     def _show_cloning(self, cloning) -> None:
         title = f"Cloning {cloning.name}"
@@ -2542,6 +2560,7 @@ class MainWindow(Adw.ApplicationWindow):
             if hasattr(self, "_repo_content"):
                 self._show_cloning(cloning)
                 self._repo_content.set_visible_child_name("cloning")
+            self._sync_repository_toolbar_buttons()
             self._refresh_repo_list()
             return
         repo = self.store.selected_repository
@@ -2553,6 +2572,11 @@ class MainWindow(Adw.ApplicationWindow):
                     has_repositories=bool(self.store.repositories),
                 )
             )
+            self.set_title(APP_NAME)
+            if hasattr(self, "_repo_content"):
+                self._repo_content.set_visible_child_name("none")
+            self._sync_repository_toolbar_buttons()
+            self._refresh_repo_list()
             return
         self._set_repo_toolbar_title(repository_toolbar_title(selected_name=repo.display_name))
         self.set_title(f"{repo.display_name} — {APP_NAME}")
@@ -2561,9 +2585,11 @@ class MainWindow(Adw.ApplicationWindow):
             if repo.is_missing:
                 self._show_missing(repo)
                 self._repo_content.set_visible_child_name("missing")
+                self._sync_repository_toolbar_buttons()
                 self._refresh_repo_list()
                 return
             self._repo_content.set_visible_child_name("content")
+        self._sync_repository_toolbar_buttons()
         state = self.store.state_for(repo)
         self._refresh_branch_toolbar(state)
         default_branch = self.store.find_default_branch_for(repo)

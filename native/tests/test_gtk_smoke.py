@@ -553,6 +553,12 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             store.select_cloning(cloning.id)
             win._refresh_repo()
             assert win._repo_content.get_visible_child_name() == "cloning"
+            store.select_repository(None)
+            win._refresh_repo()
+            assert win._repo_content.get_visible_child_name() == "none"
+            assert win._no_repository_selected.get_title() == "No repository selected"
+            assert win._no_repository_selected.has_css_class("blankslate")
+            assert win._no_repository_selected.has_css_class("panel")
             store.select_repository(repos[0].id)
             (git_repo / "second.txt").write_text("two\n", encoding="utf-8")
             from github_desktop.git.ops import get_status as refresh_status

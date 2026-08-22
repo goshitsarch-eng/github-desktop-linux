@@ -1666,5 +1666,7 @@ def test_window_actions_cover_menus() -> None:
         "open_pull_request_merge_prefix",
         "added lines, ",
         "removed lines",
+        "No repository selected",
+        "NoRepositorySelected",
     ]:
         assert phrase in src

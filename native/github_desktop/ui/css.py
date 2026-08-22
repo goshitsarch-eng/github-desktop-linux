@@ -420,6 +420,10 @@ window:not(.underline-links) link {
 .length-hint-tooltip .description {
   opacity: 0.7;
 }
+/* Desktop `app.tsx` `NoRepositorySelected` `.panel.blankslate` */
+.panel.blankslate.no-repository-selected {
+  padding: 24px;
+}
 /* Desktop `multiple-selection.tsx` `.panel.blankslate` */
 .multiple-selection.blankslate {
   padding: 24px;

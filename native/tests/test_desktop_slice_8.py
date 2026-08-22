@@ -185,6 +185,14 @@ def test_clone_selects_cloning_repository_view(isolated_config, monkeypatch) -> 
     store.abort_clone(cloning.id)
     assert store.selected_cloning is None
     assert store.cloning == []
+    assert store.selected_state_type is None
+
+
+def test_selected_state_type_none_without_repository(isolated_config) -> None:
+    store = AppStore()
+    store.welcome_step = None
+    assert store.selected_repository is None
+    assert store.selected_state_type is None
 
 
 def test_cloning_repository_name() -> None:

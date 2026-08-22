@@ -135,6 +135,10 @@ def test_linux_no_repositories_and_toolbar_labels_match_desktop() -> None:
     assert repository_toolbar_title(selected_name="desktop") == "desktop"
     assert repository_toolbar_title(cloning_name="desktop") == "Cloning desktop…"
     assert repository_toolbar_title(cloning_name="desktop", cloning_percent=40) == "Cloning desktop… 40%"
+    from github_desktop.ui.menus import NO_REPOSITORY_SELECTED, NoRepositorySelected
+
+    assert NO_REPOSITORY_SELECTED == "No repository selected"
+    assert NoRepositorySelected == "No repository selected"
 
 
 def test_author_input_and_diff_options_linux_copy() -> None:

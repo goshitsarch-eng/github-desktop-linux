@@ -1372,11 +1372,14 @@ class AppStore:
         return next((item for item in self.cloning if item.id == self.selected_cloning_id), None)
 
     @property
-    def selected_state_type(self) -> SelectionType:
+    def selected_state_type(self) -> SelectionType | None:
+        """Desktop `getSelectedState().type`, or `None` when `selectedState` is null."""
         if self.selected_cloning is not None:
             return SelectionType.CLONING
         repo = self.selected_repository
-        if repo is not None and repo.is_missing:
+        if repo is None:
+            return None
+        if repo.is_missing:
             return SelectionType.MISSING
         return SelectionType.REPOSITORY
 

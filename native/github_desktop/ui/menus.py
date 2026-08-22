@@ -379,6 +379,10 @@ def branch_toolbar_chrome(
 
 renderBranchDropdown = branch_toolbar_chrome
 
+# Desktop `NoRepositorySelected` (`app.tsx`) blankslate copy.
+NO_REPOSITORY_SELECTED = "No repository selected"
+NoRepositorySelected = NO_REPOSITORY_SELECTED
+
 
 def repository_toolbar_title(
     *,
