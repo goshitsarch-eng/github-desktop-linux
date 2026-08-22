@@ -1649,5 +1649,10 @@ def test_window_actions_cover_menus() -> None:
         'get_combined_status_summary(steps, "step")',
         "job-rerun",
         "view-check-externally",
+        'No results for "',
+        'Result {index} of {total} for "',
+        "diff_search_no_results",
+        "diff_search_result_message",
+        "ariaLiveMessage",
     ]:
         assert phrase in src

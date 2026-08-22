@@ -268,6 +268,15 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             assert viewer._inner.get_first_child() is kept
             viewer.render(sample, path="README.md", selection=selection, side_by_side=False)
             assert viewer.isLoadingDiff is False
+            from github_desktop.ui.diff_view import diff_search_no_results, diff_search_result_message
+
+            viewer.start_search()
+            viewer._run_search("zzzznotfound", "next")
+            assert viewer._search_count.get_text() == diff_search_no_results("zzzznotfound")
+            viewer._run_search("hello", "next")
+            assert viewer._search_count.get_text().startswith("Result ")
+            assert 'for "hello"' in viewer._search_count.get_text()
+            viewer.close_search()
             viewer.render(None, path="")
             assert viewer.isLoadingDiff is False
             viewer.render(BinaryDiff(), path="photo.bin")
@@ -279,8 +288,6 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             )
             viewer.render(ImageDiff(previous=png, current=png), path="a.png", image_mode=ImageDiffType.SWIPE.value)
             viewer.render(ImageDiff(previous=None, current=png), path="new.png")
-            viewer.start_search()
-            viewer.close_search()
             assert hasattr(win, "_stash_viewer")
             assert hasattr(win, "_commit_summary")
             assert hasattr(win, "_history_filter")

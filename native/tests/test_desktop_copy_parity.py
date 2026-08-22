@@ -1333,6 +1333,14 @@ def test_summary_length_hint_lightbulb_matches_desktop() -> None:
     assert show_summary_length_hint("x" * 51, False, rule_hint=False) is False
 
 
+def test_diff_search_aria_live_copy_matches_desktop() -> None:
+    from github_desktop.ui.diff_view import diff_search_no_results, diff_search_result_message
+
+    assert diff_search_no_results("foo") == 'No results for "foo"'
+    assert diff_search_result_message(1, 3, "bar") == 'Result 1 of 3 for "bar"'
+    assert diff_search_result_message(3, 3, "bar") == 'Result 3 of 3 for "bar"'
+
+
 def test_hidden_changes_warning_copy_matches_desktop() -> None:
     from github_desktop.filter_changes import (
         HIDDEN_CHANGES_WILL_BE_COMMITTED,

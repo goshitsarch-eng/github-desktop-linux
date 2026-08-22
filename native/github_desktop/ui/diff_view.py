@@ -47,6 +47,16 @@ DIFF_OPTIONS_LABEL = "Diff Options"
 SlowDiffLoadingThreshold = 150
 
 
+def diff_search_no_results(query: str) -> str:
+    """Desktop AriaLiveContainer `ariaLiveMessage`: `No results for "{searchQuery}"`."""
+    return f'No results for "{query}"'
+
+
+def diff_search_result_message(index: int, total: int, query: str) -> str:
+    """Desktop AriaLiveContainer `ariaLiveMessage`: `Result N of M for "{searchQuery}"` (1-based)."""
+    return f'Result {index} of {total} for "{query}"'
+
+
 def diff_options_label() -> str:
     """Desktop Linux `DiffOptions` aria-label / popover header."""
     return DIFF_OPTIONS_LABEL
@@ -757,10 +767,12 @@ class DiffViewer(Gtk.Box):
             self._search_cursor = len(matches) - 1 if direction == "previous" and matches else 0
         self._last_search_query = query
         if not matches:
-            self._search_count.set_text("No results")
+            self._search_count.set_text(diff_search_no_results(query))
             self._apply_search_highlight()
             return
-        self._search_count.set_text(f"{self._search_cursor + 1} of {len(matches)}")
+        self._search_count.set_text(
+            diff_search_result_message(self._search_cursor + 1, len(matches), query)
+        )
         self._apply_search_highlight()
         index = matches[self._search_cursor]
         if self._list_view is not None:
