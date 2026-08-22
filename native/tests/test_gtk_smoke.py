@@ -653,6 +653,7 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
             store.progress_title = "Pushing to origin"
             store.progress_description = ""
             win._update_network_progress()
+            assert win._push_live.get_visible() is True
             assert win._push_live.get_text() == push_pull_loading_aria_live("Pushing to origin")
             assert win.actionInProgress == "push"
             assert win.screenReaderStateMessage == push_pull_loading_aria_live("Pushing to origin")

@@ -1651,7 +1651,16 @@ class MainWindow(Adw.ApplicationWindow):
         self._push_live = Gtk.Label()
         self._push_live.set_name(PUSH_PULL_BUTTON_STATE_ID)
         self._push_live.add_css_class("sr-only")
-        self._push_live.set_visible(False)
+        # Desktop `.sr-only` stays in the a11y tree; `set_visible(False)` would
+        # drop loading/complete announcements from assistive technology.
+        self._push_live.set_visible(True)
+        self._push_live.set_size_request(1, 1)
+        self._push_live.set_hexpand(False)
+        self._push_live.set_vexpand(False)
+        try:
+            self._push_live.set_overflow(Gtk.Overflow.HIDDEN)
+        except Exception:
+            pass
         self.actionInProgress = None
         self.screenReaderStateMessage = None
         self._push_pull_progress_active = False
@@ -2881,6 +2890,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.screenReaderStateMessage = message
         if not hasattr(self, "_push_live"):
             return
+        self._push_live.set_visible(True)
         self._push_live.set_text(message)
         try:
             self._push_live.update_property(
