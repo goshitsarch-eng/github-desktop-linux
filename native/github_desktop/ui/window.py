@@ -41,11 +41,12 @@ from ..models import (
     get_untracked_files,
     has_conflicted_files,
     is_dotcom_endpoint,
-    is_partially_committable_submodule,
     is_uncommittable_submodule,
     map_status,
     name_of,
     path_label,
+    changed_file_include_state,
+    path_screen_reader_message_for_file,
     commit_summary_placeholder,
     submodule_include_tooltip,
     enable_commit_message_generation,
@@ -548,6 +549,7 @@ class MainWindow(Adw.ApplicationWindow):
             self._sync_menu_state()
             return
         if self._light_update:
+            self._refresh_changed_file_path_messages()
             return
         if self.store.welcome_step is not None:
             self._refresh_welcome()
@@ -3562,12 +3564,10 @@ class MainWindow(Adw.ApplicationWindow):
         row = Gtk.ListBoxRow()
         box = Gtk.Box(spacing=8)
         check = Gtk.CheckButton()
-        kind = file.selection.get_selection_type()
         uncommittable = is_uncommittable_submodule(file)
-        partial_sub = is_partially_committable_submodule(file)
-        include = False if uncommittable else (kind != DiffSelectionType.NONE)
-        check.set_active(include)
-        check.set_inconsistent((kind == DiffSelectionType.PARTIAL) or (partial_sub and include))
+        include_state = changed_file_include_state(file)
+        check.set_active(include_state is not False)
+        check.set_inconsistent(include_state is None)
         repo = self.store.selected_repository
         state = self.store.state_for(repo) if repo else None
         busy = bool(state and (state.is_committing or state.is_generating_commit_message))
@@ -3594,9 +3594,47 @@ class MainWindow(Adw.ApplicationWindow):
             box.append(ours)
             box.append(theirs)
         row.set_child(box)
-        row._file = file  # type: ignore[attr-defined]
+        self._apply_path_screen_reader_message(row, file)
+        try:
+            for hidden in (label, badge):
+                hidden.set_accessible_role(Gtk.AccessibleRole.PRESENTATION)
+                hidden.update_state([Gtk.AccessibleState.HIDDEN], [True])
+        except Exception:
+            pass
         attach_right_click(row, lambda *_ , r=row: self._file_item_menu(r))
         return row
+
+    def _apply_path_screen_reader_message(
+        self, row: Gtk.Widget, file: WorkingDirectoryFileChange
+    ) -> None:
+        """Desktop ChangedFile `pathScreenReaderMessage` on the existing list row."""
+        row._file = file  # type: ignore[attr-defined]
+        message = path_screen_reader_message_for_file(file)
+        row._path_screen_reader_message = message  # type: ignore[attr-defined]
+        try:
+            row.update_property([Gtk.AccessibleProperty.LABEL], [message])
+        except Exception:
+            pass
+
+    def _refresh_changed_file_path_messages(self) -> None:
+        """Update row labels after include/line selection when `_light_update` skips a rebuild."""
+        repo = self.store.selected_repository
+        files_by_path: dict[str, WorkingDirectoryFileChange] = {}
+        if repo:
+            state = self.store.state_for(repo)
+            if state.status:
+                files_by_path = {item.path: item for item in state.status.working_directory.files}
+        index = 0
+        while True:
+            row = self._file_list.get_row_at_index(index)
+            if row is None:
+                break
+            current = getattr(row, "_file", None)
+            if current is not None:
+                self._apply_path_screen_reader_message(
+                    row, files_by_path.get(current.path, current)
+                )
+            index += 1
 
     def _toggle_file(self, path: str, included: bool) -> None:
         if self._building:
