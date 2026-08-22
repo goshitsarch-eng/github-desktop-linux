@@ -1688,5 +1688,8 @@ def test_window_actions_cover_menus() -> None:
         "Input cleared",
         "displayClearButton",
         "input_cleared_aria_live",
+        "screenReaderMessage",
+        "buildNotAGitRepositoryError",
+        "If you trust the owner of the directory you can",
     ]:
         assert phrase in src
