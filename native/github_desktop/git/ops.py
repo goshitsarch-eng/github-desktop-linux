@@ -78,6 +78,7 @@ from ..models import (
     WorkingDirectoryStatus,
     format_as_local_ref,
     get_old_path_or_default,
+    html_url_from_endpoint,
 )
 from .delimiter import create_for_each_ref_parser, create_log_parser
 from .diff import (
@@ -1480,8 +1481,18 @@ def env_for_remote_operation(remote_url: str) -> dict[str, str]:
     return env
 
 
-def get_fallback_url_for_proxy_resolve(repo: str | None = None, remote_url: str | None = None) -> str:
-    """Desktop `getFallbackUrlForProxyResolve`."""
+def get_fallback_url_for_proxy_resolve(
+    repo: str | None = None,
+    remote_url: str | None = None,
+    github_endpoint: str | None = None,
+) -> str:
+    """Desktop `getFallbackUrlForProxyResolve` / `getHTMLURL`.
+
+    Prefer the GitHub repository HTML URL (from ``github_endpoint``), then the
+    current remote URL, then the first configured remote, then github.com.
+    """
+    if github_endpoint:
+        return html_url_from_endpoint(github_endpoint)
     if remote_url:
         return remote_url
     if repo:
@@ -1492,6 +1503,10 @@ def get_fallback_url_for_proxy_resolve(repo: str | None = None, remote_url: str 
         except Exception:
             pass
     return "https://github.com"
+
+
+getFallbackUrlForProxyResolve = get_fallback_url_for_proxy_resolve
+envForRemoteOperation = env_for_remote_operation
 
 
 def create_branch(repo: str, name: str, start_point: str | None = None, no_track: bool = False) -> None:
@@ -1539,6 +1554,8 @@ def checkout_branch(
     """Desktop `checkoutBranch`: remotes use `-b nameWithoutRemote` plus submodules."""
     branch = name if isinstance(name, Branch) else None
     args = ["checkout"]
+    if env is None:
+        env = env_for_remote_operation(get_fallback_url_for_proxy_resolve(repo))
     kwargs: dict = {"name": "checkoutBranch", "env": env}
     if progress:
         args.append("--progress")
@@ -1567,6 +1584,8 @@ def checkout_commit(
     env: dict[str, str] | None = None,
 ) -> None:
     args = ["checkout"]
+    if env is None:
+        env = env_for_remote_operation(get_fallback_url_for_proxy_resolve(repo))
     kwargs: dict = {"name": "checkoutCommit", "env": env}
     if progress:
         args.append("--progress")
@@ -2275,6 +2294,9 @@ def revert(
     if mainline is not None:
         args.extend(["-m", str(mainline)])
     args.extend(["--no-edit", sha])
+    # Desktop only injects `envForRemoteOperation` when a progress callback is set.
+    if env is None and progress is not None:
+        env = env_for_remote_operation(get_fallback_url_for_proxy_resolve(repo))
     kwargs: dict = {"env": env, "name": "revert"}
     if progress:
         kwargs["progress"] = _progress_adapter(progress)

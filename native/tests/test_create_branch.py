@@ -140,6 +140,11 @@ def test_git_rebase_and_auth_env_helpers() -> None:
     assert combined["GIT_TERMINAL_PROMPT"] == "0"
     assert get_fallback_url_for_proxy_resolve(remote_url="https://example.com/repo.git") == "https://example.com/repo.git"
     assert get_fallback_url_for_proxy_resolve() == "https://github.com"
+    assert get_fallback_url_for_proxy_resolve(github_endpoint="https://api.github.com") == "https://github.com"
+    assert get_fallback_url_for_proxy_resolve(
+        github_endpoint="https://ghe.example.com/api/v3",
+        remote_url="https://ignored.example/repo.git",
+    ) == "https://ghe.example.com"
 
 
 def test_get_description_for_error_matches_desktop() -> None:

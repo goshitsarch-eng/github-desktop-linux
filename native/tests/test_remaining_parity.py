@@ -1786,3 +1786,87 @@ def test_confirm_or_force_push_gates_and_skips_dialog(isolated_config, git_repo:
     assert pushed == [True]
 
 
+def test_publish_repository_pushes_default_branch_first(isolated_config, git_repo: Path, monkeypatch) -> None:
+    from github_desktop.github.api import GitHubAPI
+    from github_desktop.models import Account, GitHubRepository
+
+    run_git(git_repo, "checkout", "-b", "feature")
+    (git_repo / "feature.txt").write_text("feature\n", encoding="utf-8")
+    run_git(git_repo, "add", "feature.txt")
+    run_git(git_repo, "commit", "-m", "feature")
+
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    created = GitHubRepository(
+        name="hello",
+        owner="octocat",
+        html_url="https://github.com/octocat/hello",
+        clone_url="https://github.com/octocat/hello.git",
+        default_branch="main",
+    )
+    pushed: list[str] = []
+    monkeypatch.setattr(GitHubAPI, "create_repository", lambda self, *a, **k: created)
+    monkeypatch.setattr("github_desktop.store.push", lambda path, remote, branch, *a, **k: pushed.append(branch))
+    monkeypatch.setattr(store, "_run", lambda work, done: (work(), done(None)))
+    monkeypatch.setattr(store, "refresh_repository", lambda *a, **k: None)
+    account = Account(login="octocat", endpoint="https://api.github.com", token="t")
+    store.publish_repository(repo, "hello", "", False, None, account)
+    assert pushed == ["main", "feature"]
+    assert AppStore._publishRepository is AppStore.publish_repository
+
+
+def test_publish_repository_skips_push_when_detached(isolated_config, git_repo: Path, monkeypatch) -> None:
+    from github_desktop.github.api import GitHubAPI
+    from github_desktop.models import Account, GitHubRepository
+
+    sha = run_git(git_repo, "rev-parse", "HEAD").stdout.strip()
+    run_git(git_repo, "checkout", "--detach", sha)
+
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    created = GitHubRepository(
+        name="hello",
+        owner="octocat",
+        html_url="https://github.com/octocat/hello",
+        clone_url="https://github.com/octocat/hello.git",
+        default_branch="main",
+    )
+    pushed: list[str] = []
+    monkeypatch.setattr(GitHubAPI, "create_repository", lambda self, *a, **k: created)
+    monkeypatch.setattr("github_desktop.store.push", lambda path, remote, branch, *a, **k: pushed.append(branch))
+    monkeypatch.setattr(store, "_run", lambda work, done: (work(), done(None)))
+    monkeypatch.setattr(store, "refresh_repository", lambda *a, **k: None)
+    account = Account(login="octocat", endpoint="https://api.github.com", token="t")
+    store.publish_repository(repo, "hello", "", False, None, account)
+    assert pushed == []
+
+
+def test_publish_repository_on_default_pushes_once(isolated_config, git_repo: Path, monkeypatch) -> None:
+    from github_desktop.github.api import GitHubAPI
+    from github_desktop.models import Account, GitHubRepository
+
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    created = GitHubRepository(
+        name="hello",
+        owner="octocat",
+        html_url="https://github.com/octocat/hello",
+        clone_url="https://github.com/octocat/hello.git",
+        default_branch="main",
+    )
+    pushed: list[str] = []
+    monkeypatch.setattr(GitHubAPI, "create_repository", lambda self, *a, **k: created)
+    monkeypatch.setattr("github_desktop.store.push", lambda path, remote, branch, *a, **k: pushed.append(branch))
+    monkeypatch.setattr(store, "_run", lambda work, done: (work(), done(None)))
+    monkeypatch.setattr(store, "refresh_repository", lambda *a, **k: None)
+    account = Account(login="octocat", endpoint="https://api.github.com", token="t")
+    store.publish_repository(repo, "hello", "", False, None, account)
+    assert pushed == ["main"]
+
+

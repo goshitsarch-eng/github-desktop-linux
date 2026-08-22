@@ -1559,5 +1559,8 @@ def test_window_actions_cover_menus() -> None:
         "upstreamRemote",
         "remotesToFetch",
         "resetSubmodulePaths",
+        "checkoutEnv",
+        "_publishRepository",
+        "getHTMLURL",
     ]:
         assert phrase in src

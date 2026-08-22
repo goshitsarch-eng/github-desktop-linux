@@ -74,6 +74,8 @@ from .git import (
     get_boolean_config_value,
     get_config_value,
     get_default_branch,
+    env_for_remote_operation,
+    get_fallback_url_for_proxy_resolve,
     get_files_diff_text,
     get_global_config_path,
     get_global_config_value,
@@ -2154,16 +2156,51 @@ class AppStore:
             else:
                 add_remote(repo.path, "origin", created.clone_url)
             env = self.env_for_url(created.clone_url, account, trampoline_path=repo.path)
-            status = get_status(repo.path)
-            branch = (status.current_branch if status else None) or get_default_branch()
-            progress(f"Pushing repository to {account.friendly_endpoint}", 0.7)
-            try:
-                push(repo.path, "origin", branch, None, set_upstream=True, env=env)
-            except GitError:
-                # empty repo is ok
-                pass
             repo.github = created
             self._save_repositories()
+            status = get_status(repo.path)
+            # Desktop `_publishRepository`: skip unborn / detached HEAD; push
+            # `defaultBranch` first when publishing from a different local branch.
+            if status is not None and status.current_branch and status.current_tip:
+                branches = get_branches(repo.path)
+                remotes = get_remotes(repo.path)
+                default_remote = find_default_remote(remotes)
+                init_default = created.default_branch or get_default_branch()
+                default_branch = find_default_branch(
+                    repo,
+                    branches,
+                    default_remote.name if default_remote else "origin",
+                    remote_head=created.default_branch or None,
+                    init_default_branch=init_default,
+                )
+                progress(f"Pushing repository to {account.friendly_endpoint}", 0.7)
+                if (
+                    default_branch is not None
+                    and default_branch.type == BranchType.LOCAL
+                    and default_branch.name != status.current_branch
+                ):
+                    try:
+                        push(
+                            repo.path,
+                            "origin",
+                            default_branch.name,
+                            None,
+                            set_upstream=True,
+                            env=env,
+                        )
+                    except GitError:
+                        pass
+                try:
+                    push(
+                        repo.path,
+                        "origin",
+                        status.current_branch,
+                        None,
+                        set_upstream=True,
+                        env=env,
+                    )
+                except GitError:
+                    pass
             return repo
 
         def done(exc: BaseException | None, _repo: Repository | None = None) -> None:
@@ -2180,6 +2217,9 @@ class AppStore:
             self.emit()
 
         self._run(work, done)
+
+    publishRepository = publish_repository
+    _publishRepository = publish_repository
 
     def refresh_repository(
         self,
@@ -4647,6 +4687,7 @@ class AppStore:
     def revert_commit(self, repo: Repository, commit: Commit) -> None:
         mainline = 1 if commit.is_merge_commit else None
         title = f"Reverting {commit.short_sha}"
+        env = self.checkout_env(repo)
 
         def work() -> None:
             revert(
@@ -4654,6 +4695,7 @@ class AppStore:
                 commit.sha,
                 mainline=mainline,
                 progress=self._network_progress_cb("revert", title),
+                env=env,
             )
 
         def done(exc: BaseException | None) -> None:
@@ -4804,6 +4846,8 @@ class AppStore:
             self.show_popup(PopupType.CONFIRM_CHECKOUT_COMMIT, sha=sha)
             return
 
+        env = self.checkout_env(repo)
+
         def work() -> None:
             checkout_commit(
                 repo.path,
@@ -4814,6 +4858,7 @@ class AppStore:
                     target=shorten_sha(sha),
                     description=CHECKING_OUT,
                 ),
+                env=env,
             )
 
         def done(exc: BaseException | None) -> None:
@@ -5268,6 +5313,25 @@ class AppStore:
     upstreamRemote = upstream_remote
     remotesToFetch = remotes_to_fetch
 
+    def checkout_env(self, repo: Repository) -> dict[str, str]:
+        """Desktop checkout/revert `envForRemoteOperation(getFallbackUrlForProxyResolve)`.
+
+        Cache-only: uses ``repo.github.endpoint`` and ``currentRemote``, never
+        shells out to Git on the GTK thread.
+        """
+        gh = repo.github
+        endpoint = gh.endpoint if gh is not None else None
+        remote = self.current_remote(repo)
+        remote_url = remote.url if remote is not None else None
+        url = get_fallback_url_for_proxy_resolve(
+            None,
+            remote_url=remote_url,
+            github_endpoint=endpoint,
+        )
+        return env_for_remote_operation(url)
+
+    checkoutEnv = checkout_env
+
     def _network_remote(self, repo: Repository, remotes: Sequence[Remote] | None = None, *, prefer_upstream: bool = False) -> Remote | None:
         # Cache-only when remotes are omitted so this is safe on the GTK thread.
         # Push/pull/fetch workers pass remotes collected off-thread.
@@ -5721,6 +5785,7 @@ class AppStore:
         current = status.current_branch if status else "unknown"
         title = f"Checking out {branch.name}"
         self.update_checkout_progress(title, 0.0, description=CHECKING_OUT, target=branch.name)
+        env = self.checkout_env(repo)
 
         def work() -> None:
             if should_stash:
@@ -5734,6 +5799,7 @@ class AppStore:
                     target=branch.name,
                     description=CHECKING_OUT,
                 ),
+                env=env,
             )
 
         def done(exc: BaseException | None) -> None:
@@ -5766,8 +5832,10 @@ class AppStore:
             self.checkout(repo, branch)
             return
 
+        env = self.checkout_env(repo)
+
         def work() -> None:
-            checkout_branch(repo.path, name)
+            checkout_branch(repo.path, name, env=env)
 
         def done(exc: BaseException | None, result: object = None) -> None:
             if exc:
@@ -5796,6 +5864,7 @@ class AppStore:
         retry = RetryAction(type=RetryActionType.CHECKOUT, repo_id=repo.id, branch=name)
         title = f"Checking out {branch.name}"
         self.update_checkout_progress(title, 0.0, description=CHECKING_OUT, target=branch.name)
+        env = self.checkout_env(repo)
 
         def work() -> str | tuple[str, list[str]]:
             try:
@@ -5808,6 +5877,7 @@ class AppStore:
                         target=branch.name,
                         description=CHECKING_OUT,
                     ),
+                    env=env,
                 )
                 return "ok"
             except GitError as exc:
@@ -5827,6 +5897,7 @@ class AppStore:
                         target=branch.name,
                         description=CHECKING_OUT,
                     ),
+                    env=env,
                 )
                 entry = get_last_desktop_stash_entry_for_branch(repo.path, name)
                 if entry:
@@ -5849,6 +5920,7 @@ class AppStore:
         current = self.state_for(repo).status.current_branch if self.state_for(repo).status else "unknown"
         title = f"Checking out {target}"
         self.update_checkout_progress(title, 0.0, description=CHECKING_OUT, target=target)
+        env = self.checkout_env(repo)
 
         def work() -> None:
             self.stash_and_drop_previous(repo, current or "unknown")
@@ -5861,6 +5933,7 @@ class AppStore:
                     target=target,
                     description=CHECKING_OUT,
                 ),
+                env=env,
             )
 
         def done(exc: BaseException | None, result: object = None) -> None:
@@ -5901,11 +5974,12 @@ class AppStore:
         action = payload.get("retry_action")
         kind = payload.get("retry_kind")
         branch = payload.get("branch")
+        env = self.checkout_env(repo)
 
         def work() -> None:
             stash_push(repo.path, current or "unknown")
             if kind == "checkout" and branch and not callable(retry) and action is None:
-                checkout_branch(repo.path, str(branch))
+                checkout_branch(repo.path, str(branch), env=env)
 
         def done(exc: BaseException | None, result: object = None) -> None:
             if exc:
@@ -6033,6 +6107,7 @@ class AppStore:
         remotes = list(state.remotes or [])
         env_url = remotes[0].url if remotes else ""
         env = self.env_for_repo(repo, env_url) if env_url else None
+        checkout_env = self.checkout_env(repo)
         snapshot = branch
         include = include_upstream
 
@@ -6048,7 +6123,7 @@ class AppStore:
                 )
                 return
             if to_checkout is not None:
-                checkout_branch(repo.path, to_checkout)
+                checkout_branch(repo.path, to_checkout, env=checkout_env)
             delete_local_branch(repo.path, snapshot.name)
             if include and snapshot.upstream_remote_name and snapshot.upstream_without_remote:
                 delete_remote_branch(
@@ -6126,6 +6201,7 @@ class AppStore:
         name = sanitize_ref_name(name)
         title = f"Checking out {name}"
         self.update_checkout_progress(title, 0.0, description=CHECKING_OUT, target=name)
+        env = self.checkout_env(repo)
 
         def work() -> None:
             create_branch(repo.path, name, start_point, no_track=no_track)
@@ -6138,6 +6214,7 @@ class AppStore:
                     target=name,
                     description=CHECKING_OUT,
                 ),
+                env=env,
             )
 
         def done(exc: BaseException | None, result: object = None) -> None:
@@ -6167,10 +6244,11 @@ class AppStore:
         if self.check_for_uncommitted_changes(repo, retry):
             return
         name = sanitize_ref_name(name)
+        env = self.checkout_env(repo)
 
         def work() -> None:
             create_branch(repo.path, name, None)
-            checkout_branch(repo.path, name)
+            checkout_branch(repo.path, name, env=env)
 
         def done(exc: BaseException | None, result: object = None) -> None:
             if exc:
@@ -6429,10 +6507,11 @@ class AppStore:
         if self.check_for_uncommitted_changes(repo, retry):
             return
         undo_sha = self._capture_undo(repo)
+        env = self.checkout_env(repo)
 
         def work() -> tuple:
             if target_branch:
-                checkout_branch(repo.path, target_branch)
+                checkout_branch(repo.path, target_branch, env=env)
             commits: list[object] = []
             for sha in shas:
                 found = get_commit(repo.path, sha)
@@ -6696,9 +6775,10 @@ class AppStore:
                 self.checkout(repo, branch)
             else:
                 target = action.branch
+                env = self.checkout_env(repo)
 
                 def work() -> None:
-                    checkout_branch(repo.path, target)
+                    checkout_branch(repo.path, target, env=env)
 
                 def done(exc: BaseException | None, result: object = None) -> None:
                     if exc:

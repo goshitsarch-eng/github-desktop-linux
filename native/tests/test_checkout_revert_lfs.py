@@ -179,3 +179,58 @@ def test_wide_line_classified_as_large_text(git_repo: Path) -> None:
     assert isinstance(diff, LargeTextDiff)
     assert diff.hunks
     assert any(len(line.text) > 5000 for hunk in diff.hunks for line in hunk.lines)
+
+
+def test_checkout_env_prefers_github_html_url(isolated_config, git_repo: Path, monkeypatch) -> None:
+    from github_desktop.models import GitHubRepository
+    from github_desktop.store import AppStore
+
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    repo.github = GitHubRepository(
+        name="hello",
+        owner="octocat",
+        html_url="https://github.com/octocat/hello",
+        clone_url="https://github.com/octocat/hello.git",
+        endpoint="https://api.github.com",
+    )
+    seen: list[str] = []
+    monkeypatch.setattr(
+        "github_desktop.store.env_for_remote_operation",
+        lambda url: seen.append(url) or {"GIT_TERMINAL_PROMPT": "0"},
+    )
+    env = store.checkout_env(repo)
+    assert seen == ["https://github.com"]
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+    assert AppStore.checkoutEnv is AppStore.checkout_env
+
+
+def test_store_checkout_passes_remote_operation_env(isolated_config, git_repo: Path, monkeypatch) -> None:
+    from github_desktop.models import Branch, BranchType, GitHubRepository
+    from github_desktop.store import AppStore
+
+    store = AppStore()
+    store.add_repositories([str(git_repo)])
+    repo = store.selected_repository
+    assert repo is not None
+    repo.github = GitHubRepository(
+        name="hello",
+        owner="octocat",
+        html_url="https://github.com/octocat/hello",
+        clone_url="https://github.com/octocat/hello.git",
+        endpoint="https://api.github.com",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_checkout(path, branch, **kwargs):
+        captured["env"] = kwargs.get("env")
+
+    monkeypatch.setattr("github_desktop.store.checkout_branch", fake_checkout)
+    monkeypatch.setattr(store, "_run", lambda work, done: (work(), done(None)))
+    monkeypatch.setattr(store, "refresh_after_checkout", lambda *a, **k: None)
+    store.checkout(repo, Branch("main", None, "unused", BranchType.LOCAL))
+    env = captured.get("env")
+    assert isinstance(env, dict)
+    assert env.get("GIT_TERMINAL_PROMPT") == "0"
