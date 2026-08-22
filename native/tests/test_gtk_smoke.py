@@ -446,6 +446,7 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
                     prs_loading=True,
                 )
                 assert win._branches_foldout.screenReaderStateMessage == HANG_TIGHT_LOADING_PULL_REQUESTS
+                assert win._branches_foldout._pr_live.get_visible() is True
                 assert win._branches_foldout._pr_live.get_text() == HANG_TIGHT_LOADING_PULL_REQUESTS
                 win._branches_foldout.refresh(
                     [Branch("main", None, "aaa", _BranchType.LOCAL)],

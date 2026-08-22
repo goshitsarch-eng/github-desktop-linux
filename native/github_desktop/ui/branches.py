@@ -203,7 +203,16 @@ class BranchesFoldout(Gtk.Popover):
         root.append(self._search)
         self._pr_live = Gtk.Label(label="")
         self._pr_live.add_css_class("sr-only")
-        self._pr_live.set_visible(False)
+        # Desktop `.sr-only` stays in the a11y tree; `set_visible(False)` would
+        # drop loading/found announcements from assistive technology.
+        self._pr_live.set_visible(True)
+        self._pr_live.set_size_request(1, 1)
+        self._pr_live.set_hexpand(False)
+        self._pr_live.set_vexpand(False)
+        try:
+            self._pr_live.set_overflow(Gtk.Overflow.HIDDEN)
+        except Exception:
+            pass
         try:
             self._pr_live.update_property(
                 [Gtk.AccessibleProperty.LIVE],
@@ -340,6 +349,7 @@ class BranchesFoldout(Gtk.Popover):
         self.screenReaderStateMessage = message
         if not hasattr(self, "_pr_live") or not message:
             return
+        self._pr_live.set_visible(True)
         self._pr_live.set_text("")
         self._pr_live.set_text(message)
 

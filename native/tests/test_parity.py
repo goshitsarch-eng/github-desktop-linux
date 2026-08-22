@@ -1692,5 +1692,6 @@ def test_window_actions_cover_menus() -> None:
         "pull request{plural} found",
         "screenReaderStateMessage",
         "pull_request_list_screen_reader_message",
+        "pull_requests_loading",
     ]:
         assert phrase in src
