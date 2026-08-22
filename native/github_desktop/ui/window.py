@@ -41,11 +41,12 @@ from ..models import (
     get_untracked_files,
     has_conflicted_files,
     is_dotcom_endpoint,
-    is_partially_committable_submodule,
     is_uncommittable_submodule,
     map_status,
     name_of,
     path_label,
+    changed_file_include_state,
+    path_screen_reader_message_for_file,
     commit_summary_placeholder,
     submodule_include_tooltip,
     enable_commit_message_generation,
@@ -3562,12 +3563,10 @@ class MainWindow(Adw.ApplicationWindow):
         row = Gtk.ListBoxRow()
         box = Gtk.Box(spacing=8)
         check = Gtk.CheckButton()
-        kind = file.selection.get_selection_type()
         uncommittable = is_uncommittable_submodule(file)
-        partial_sub = is_partially_committable_submodule(file)
-        include = False if uncommittable else (kind != DiffSelectionType.NONE)
-        check.set_active(include)
-        check.set_inconsistent((kind == DiffSelectionType.PARTIAL) or (partial_sub and include))
+        include_state = changed_file_include_state(file)
+        check.set_active(include_state is not False)
+        check.set_inconsistent(include_state is None)
         repo = self.store.selected_repository
         state = self.store.state_for(repo) if repo else None
         busy = bool(state and (state.is_committing or state.is_generating_commit_message))
@@ -3595,6 +3594,15 @@ class MainWindow(Adw.ApplicationWindow):
             box.append(theirs)
         row.set_child(box)
         row._file = file  # type: ignore[attr-defined]
+        message = path_screen_reader_message_for_file(file)
+        row._path_screen_reader_message = message  # type: ignore[attr-defined]
+        try:
+            row.update_property([Gtk.AccessibleProperty.LABEL], [message])
+            for hidden in (label, badge):
+                hidden.set_accessible_role(Gtk.AccessibleRole.PRESENTATION)
+                hidden.update_state([Gtk.AccessibleState.HIDDEN], [True])
+        except Exception:
+            pass
         attach_right_click(row, lambda *_ , r=row: self._file_item_menu(r))
         return row
 

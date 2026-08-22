@@ -829,6 +829,45 @@ def submodule_include_tooltip(file: WorkingDirectoryFileChange) -> str | None:
     return None
 
 
+def changed_file_include_state(file: WorkingDirectoryFileChange) -> bool | None:
+    """Desktop ChangedFile `include` (`true` / mixed `null` / `false`)."""
+    if is_uncommittable_submodule(file):
+        return False
+    kind = file.selection.get_selection_type()
+    include = kind != DiffSelectionType.NONE
+    if kind == DiffSelectionType.PARTIAL or (
+        is_partially_committable_submodule(file) and include
+    ):
+        return None
+    return include
+
+
+def changed_file_include_text(include: bool | None) -> str:
+    """Desktop ChangedFile `includedText`."""
+    includedText = (
+        "included"
+        if include is True
+        else "partially included"
+        if include is None
+        else "not included"
+    )
+    return includedText
+
+
+def path_screen_reader_message(path: str, status: FileStatus, include: bool | None) -> str:
+    """Desktop ChangedFile `pathScreenReaderMessage` (`path` + `mapStatus` + include)."""
+    return f"{path} {map_status(status)} {changed_file_include_text(include)}"
+
+
+def path_screen_reader_message_for_file(file: WorkingDirectoryFileChange) -> str:
+    return path_screen_reader_message(file.path, file.status, changed_file_include_state(file))
+
+
+pathScreenReaderMessage = path_screen_reader_message
+mapStatus = map_status
+includedText = "included"
+
+
 def commit_summary_placeholder(
     files: Sequence[WorkingDirectoryFileChange],
     *,

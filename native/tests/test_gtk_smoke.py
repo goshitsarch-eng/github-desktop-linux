@@ -602,6 +602,12 @@ def test_gtk_window_preferences_and_theme(isolated_config, git_repo) -> None:
                     file_rows.append(child)
                 child = child.get_next_sibling()
             assert len(file_rows) >= 2
+            from github_desktop.models import path_screen_reader_message_for_file
+
+            for file_row in file_rows:
+                assert getattr(file_row, "_path_screen_reader_message", "") == (
+                    path_screen_reader_message_for_file(file_row._file)
+                )
             win._building = True
             try:
                 win._file_list.unselect_all()

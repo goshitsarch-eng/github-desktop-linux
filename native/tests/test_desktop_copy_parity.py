@@ -41,6 +41,66 @@ def test_map_status_and_path_label() -> None:
     assert path_label("keep.txt", FileStatus(kind=AppFileStatusKind.MODIFIED)) == "keep.txt"
 
 
+def test_path_screen_reader_message_matches_desktop() -> None:
+    from github_desktop.models import (
+        DiffSelection,
+        DiffSelectionType,
+        SubmoduleStatus,
+        WorkingDirectoryFileChange,
+        changed_file_include_state,
+        includedText,
+        mapStatus,
+        pathScreenReaderMessage,
+        path_screen_reader_message,
+        path_screen_reader_message_for_file,
+    )
+
+    modified = FileStatus(kind=AppFileStatusKind.MODIFIED)
+    included = WorkingDirectoryFileChange("src/app.py", modified)
+    assert path_screen_reader_message_for_file(included) == "src/app.py Modified included"
+    excluded = WorkingDirectoryFileChange(
+        "src/app.py",
+        modified,
+        DiffSelection.from_initial_selection(DiffSelectionType.NONE),
+    )
+    assert path_screen_reader_message_for_file(excluded) == "src/app.py Modified not included"
+    partial = WorkingDirectoryFileChange(
+        "src/app.py",
+        modified,
+        DiffSelection(DiffSelectionType.ALL, {0}),
+    )
+    assert changed_file_include_state(partial) is None
+    assert path_screen_reader_message_for_file(partial) == "src/app.py Modified partially included"
+    renamed = FileStatus(kind=AppFileStatusKind.RENAMED, old_path="old.txt")
+    renamed_file = WorkingDirectoryFileChange("new.txt", renamed)
+    assert path_screen_reader_message_for_file(renamed_file) == "new.txt Renamed included"
+    untracked = WorkingDirectoryFileChange("a.txt", FileStatus(kind=AppFileStatusKind.UNTRACKED))
+    assert path_screen_reader_message_for_file(untracked) == "a.txt New included"
+    uncommittable = WorkingDirectoryFileChange(
+        "vendor/lib",
+        FileStatus(
+            kind=AppFileStatusKind.MODIFIED,
+            submodule_status=SubmoduleStatus(modified_changes=True),
+        ),
+    )
+    assert changed_file_include_state(uncommittable) is False
+    assert path_screen_reader_message_for_file(uncommittable) == "vendor/lib Modified not included"
+    partial_sub = WorkingDirectoryFileChange(
+        "vendor/lib",
+        FileStatus(
+            kind=AppFileStatusKind.NEW,
+            submodule_status=SubmoduleStatus(commit_changed=True, modified_changes=True),
+        ),
+    )
+    assert changed_file_include_state(partial_sub) is None
+    assert path_screen_reader_message(
+        "src/app.py", modified, True
+    ) == "src/app.py Modified included"
+    assert pathScreenReaderMessage is path_screen_reader_message
+    assert mapStatus is map_status
+    assert includedText == "included"
+
+
 def test_format_bytes_unfixed_matches_desktop_two_up() -> None:
     assert format_bytes(1024, 1) == "1.0 KiB"
     assert format_bytes(1024, 2, False) == "1 KiB"

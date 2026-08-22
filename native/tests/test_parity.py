@@ -1688,5 +1688,8 @@ def test_window_actions_cover_menus() -> None:
         "Input cleared",
         "displayClearButton",
         "input_cleared_aria_live",
+        "pathScreenReaderMessage",
+        "includedText",
+        "partially included",
     ]:
         assert phrase in src
