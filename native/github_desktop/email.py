@@ -96,3 +96,27 @@ def git_email_attribution_warning(accounts: list[Account], email: str) -> tuple[
         f"This email address does not match {desc}. Your commits will be wrongly attributed.",
         True,
     )
+
+
+# Desktop `GitEmailNotFoundWarning` AriaLiveContainer id.
+GIT_EMAIL_NOT_FOUND_WARNING_FOR_SCREEN_READERS = (
+    "git-email-not-found-warning-for-screen-readers"
+)
+
+
+def build_screen_reader_message(accounts: list[Account], email: str) -> str | None:
+    """Desktop `GitEmailNotFoundWarning.buildScreenReaderMessage`.
+
+    AriaLiveContainer message; trackedUserInput is the git config email.
+    """
+    if not accounts or not (email or "").strip():
+        return None
+    isAttributableEmail = any(is_attributable_email_for(account, email) for account in accounts)
+    verb = "matches" if isAttributableEmail else "does not match"
+    info = "" if isAttributableEmail else "Your commits will be wrongly attributed. "
+    desc = git_email_account_type_description(accounts)
+    return f"This email address {verb} {desc}. {info}"
+
+
+buildScreenReaderMessage = build_screen_reader_message
+git_email_not_found_warning_aria_live = build_screen_reader_message

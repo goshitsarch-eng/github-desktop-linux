@@ -2976,10 +2976,16 @@ def attach_git_email_not_found_warning(
     get_email: Callable[[], str],
 ) -> Callable[[], None]:
     """Desktop `GitEmailNotFoundWarning` under Git Config email fields."""
-    from ..email import COMMIT_ATTRIBUTION_DOCS, git_email_attribution_warning
+    from ..email import (
+        COMMIT_ATTRIBUTION_DOCS,
+        GIT_EMAIL_NOT_FOUND_WARNING_FOR_SCREEN_READERS,
+        git_email_attribution_warning,
+        git_email_not_found_warning_aria_live,
+    )
 
     box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
     box.add_css_class("git-email-not-found-warning")
+    box.set_name(GIT_EMAIL_NOT_FOUND_WARNING_FOR_SCREEN_READERS)
     box.set_margin_top(6)
     box.set_margin_bottom(6)
     label = Gtk.Label(wrap=True, xalign=0)
@@ -2988,11 +2994,26 @@ def attach_git_email_not_found_warning(
     link.set_tooltip_text("Learn more about commit attribution")
     box.append(label)
     box.append(link)
+    tracked_email: dict[str, object] = {"value": object()}
+    announce_source: dict[str, int] = {"id": 0}
+
+    def cancel_announce() -> None:
+        if announce_source["id"]:
+            try:
+                GLib.source_remove(announce_source["id"])
+            except Exception:
+                pass
+            announce_source["id"] = 0
 
     def refresh(*_a: object) -> None:
-        msg, mismatch = git_email_attribution_warning(list(accounts), get_email())
+        email = get_email()
+        msg, mismatch = git_email_attribution_warning(list(accounts), email)
+        sr = git_email_not_found_warning_aria_live(list(accounts), email)
         if not msg:
             box.set_visible(False)
+            tracked_email["value"] = email
+            label._aria_live_message = ""  # type: ignore[attr-defined]
+            cancel_announce()
             return
         box.set_visible(True)
         label.set_text(msg)
@@ -3001,6 +3022,33 @@ def attach_git_email_not_found_warning(
         else:
             label.remove_css_class("warning")
         link.set_visible(mismatch)
+        if sr:
+            label._aria_live_message = sr  # type: ignore[attr-defined]
+            if tracked_email["value"] != email:
+                tracked_email["value"] = email
+                cancel_announce()
+
+                def fire() -> bool:
+                    announce_source["id"] = 0
+                    live = getattr(label, "_aria_live_message", sr)
+                    if not live:
+                        return False
+                    try:
+                        label.announce(live, Gtk.AccessibleAnnouncementPriority.MEDIUM)
+                    except Exception:
+                        pass
+                    return False
+
+                if os.environ.get("PYTEST_CURRENT_TEST"):
+                    fire()
+                else:
+                    try:
+                        announce_source["id"] = GLib.timeout_add(1000, fire)
+                    except Exception:
+                        fire()
+        else:
+            tracked_email["value"] = email
+            cancel_announce()
 
     refresh()
     group.add(box)
