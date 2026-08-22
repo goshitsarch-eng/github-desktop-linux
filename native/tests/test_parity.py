@@ -1691,5 +1691,6 @@ def test_window_actions_cover_menus() -> None:
         "This path does not appear to be a valid executable.",
         "These arguments are not valid.",
         "showNonValidPathWarning",
+        "ariaDescribedBy",
     ]:
         assert phrase in src
