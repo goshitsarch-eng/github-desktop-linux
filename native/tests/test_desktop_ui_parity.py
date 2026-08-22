@@ -187,8 +187,11 @@ def test_thank_you_and_custom_integration() -> None:
     from github_desktop.custom_integration import (
         TARGET_PATH_ARGUMENT,
         command_for_custom_integration,
+        custom_integration_args_aria_live,
+        custom_integration_path_aria_live,
         expand_target_path,
         parse_custom_arguments,
+        parseCustomIntegrationArguments,
     )
     from github_desktop.thank_you import (
         contributions_by_user,
@@ -202,6 +205,22 @@ def test_thank_you_and_custom_integration() -> None:
     expanded = expand_target_path(argv, "/tmp/repo")
     assert "/tmp/repo" in expanded
     assert TARGET_PATH_ARGUMENT not in " ".join(expanded)
+    assert custom_integration_path_aria_live("/no-such-editor") == (
+        "This path does not appear to be a valid executable."
+    )
+    assert (
+        custom_integration_path_aria_live(
+            "/no-such-editor", showNonValidPathWarning=False
+        )
+        is None
+    )
+    assert custom_integration_path_aria_live("/bin/sh") is None
+    assert custom_integration_args_aria_live(TARGET_PATH_ARGUMENT) is None
+    assert custom_integration_args_aria_live("--wait") == (
+        f"Arguments must include the target path placeholder ({TARGET_PATH_ARGUMENT})."
+    )
+    assert custom_integration_args_aria_live('"unterminated') == "These arguments are not valid."
+    assert parseCustomIntegrationArguments(f"--wait {TARGET_PATH_ARGUMENT}")[-1] == TARGET_PATH_ARGUMENT
     note = thank_you_note("3.5.4")
     assert "Thanks so much for all your hard work on GitHub Desktop 3.5.4" in note
     assert "You contributed:" not in note

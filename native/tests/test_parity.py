@@ -1688,5 +1688,8 @@ def test_window_actions_cover_menus() -> None:
         "Input cleared",
         "displayClearButton",
         "input_cleared_aria_live",
+        "This path does not appear to be a valid executable.",
+        "These arguments are not valid.",
+        "showNonValidPathWarning",
     ]:
         assert phrase in src
