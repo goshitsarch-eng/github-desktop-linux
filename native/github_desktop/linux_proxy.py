@@ -227,7 +227,7 @@ def _gsettings_get(schema: str, key: str) -> str | None:
 
 
 def read_gnome_proxy_settings(getter=None) -> SystemProxySettings | None:
-    """Read `org.gnome.system.proxy` via ``gsettings`` (safe off the GTK thread)."""
+    """Read `org.gnome.system.proxy` via ``gsettings`` (safe off the GUI thread)."""
     get = getter or _gsettings_get
     mode_raw = get("org.gnome.system.proxy", "mode")
     if mode_raw is None:

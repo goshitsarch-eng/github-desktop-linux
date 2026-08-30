@@ -205,7 +205,7 @@ def tokens_as_text(tokens: Iterable[Token]) -> str:
 
 
 def tokens_as_markup(tokens: Iterable[Token]) -> str:
-    """Pango markup for history summaries: `#123`, `@user`, and https become links."""
+    """rich-text markup for history summaries: `#123`, `@user`, and https become links."""
     from html import escape
 
     from .ui.emoji import expand_shortcodes
@@ -267,3 +267,15 @@ def wrap_rich_text_commit_message(
         else:
             body = [_ellipsis(), *overflow]
     return WrappedCommitMessage(summary, body)
+
+
+def summary_completeness(summary: str) -> float:
+    """Desktop's commit summary "Completeness indicator", 0.0 to 1.0.
+
+    Fills as the summary approaches the ideal length and stays full past it,
+    so the ring reads as "long enough" rather than "too long".
+    """
+    length = len((summary or "").strip())
+    if length <= 0:
+        return 0.0
+    return min(1.0, length / float(IdealSummaryLength))

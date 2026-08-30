@@ -52,7 +52,7 @@ const options: RedhatOptions = {
   description: 'Simple collaboration from your desktop',
   productDescription:
     'This is the unofficial port of GitHub Desktop for Linux distributions',
-  categories: ['GNOME', 'GTK', 'Development'],
+  categories: ['Development', 'RevisionControl'],
   requires: [
     // dugite-native dependencies
     '(libcurl or libcurl4)',

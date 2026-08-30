@@ -1,4 +1,4 @@
-"""Avatar URL candidates and initials (no GTK). Matches Desktop `getAvatarUrlCandidates`."""
+"""Avatar URL candidates and initials (no toolkit). Matches Desktop `getAvatarUrlCandidates`."""
 
 from __future__ import annotations
 

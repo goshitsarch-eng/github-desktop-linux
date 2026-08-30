@@ -557,7 +557,7 @@ def test_clone_list_empty_copy() -> None:
 
 
 def test_image_two_up_copy() -> None:
-    footer = _image_two_up_footer(None, b"x" * 1024)
+    footer = _image_two_up_footer(0, 0, b"x" * 1024)
     assert footer.startswith("W: 0px | H: 0px | Size: ")
     assert "KiB" in footer
     assert _image_two_up_summary(b"a" * 100, b"a" * 100) == "Diff: No size difference"
@@ -1333,8 +1333,8 @@ def test_get_by_login_matches_desktop_exact_match(isolated_config, monkeypatch) 
 def test_tutorial_nudge_arrows_match_desktop() -> None:
     from github_desktop.models import TutorialStep
     from github_desktop.ui.tutorial import (
-        apply_nudge_arrow_classes,
         nudge_arrow_frame,
+        nudge_arrow_state,
         publishBranchButton,
         shouldNudge,
         shouldNudgeToCommit,
@@ -1380,30 +1380,10 @@ def test_tutorial_nudge_arrows_match_desktop() -> None:
     assert left_opacity == 0.0
     assert left_offset == 65
 
-    class FakeWidget:
-        def __init__(self) -> None:
-            self.classes: set[str] = set()
-
-        def has_css_class(self, name: str) -> bool:
-            return name in self.classes
-
-        def add_css_class(self, name: str) -> None:
-            self.classes.add(name)
-
-        def remove_css_class(self, name: str) -> None:
-            self.classes.discard(name)
-
-    branch = FakeWidget()
-    apply_nudge_arrow_classes(branch, should_nudge=True, direction="up", base=True)
-    assert branch.classes == {"nudge-arrow", "nudge-arrow-up"}
-    apply_nudge_arrow_classes(branch, should_nudge=False, direction="up", base=True)
-    assert branch.classes == {"nudge-arrow"}
-    summary = FakeWidget()
-    apply_nudge_arrow_classes(summary, should_nudge=True, direction="left", base=True)
-    assert summary.classes == {"nudge-arrow", "nudge-arrow-left"}
-    publish = FakeWidget()
-    apply_nudge_arrow_classes(publish, should_nudge=True, direction="up", base=False)
-    assert publish.classes == set()
+    assert nudge_arrow_state(should_nudge=True, direction="up") == "nudge-arrow-up"
+    assert nudge_arrow_state(should_nudge=False, direction="up") == "nudge-arrow"
+    assert nudge_arrow_state(should_nudge=True, direction="left") == "nudge-arrow-left"
+    assert nudge_arrow_state() == "nudge-arrow"
 
 
 def test_summary_length_hint_lightbulb_matches_desktop() -> None:

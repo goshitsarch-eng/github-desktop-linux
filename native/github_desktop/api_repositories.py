@@ -7,6 +7,7 @@ from typing import Any, Callable, Iterator
 
 from .github.api import GitHubAPI
 from .logging import get_logger
+from .mainloop import post_or_call
 from .models import Account, GitHubRepository, account_equals
 
 log = get_logger()
@@ -23,23 +24,8 @@ class AccountRepositories:
 
 
 def _marshal(fn: Callable[[], bool | None]) -> None:
-    """Run ``fn`` on the GTK thread when a Gio.Application exists."""
-
-    def tick() -> bool:
-        fn()
-        return False
-
-    invoked = False
-    try:
-        from gi.repository import Gio, GLib
-
-        if Gio.Application.get_default() is not None:
-            GLib.idle_add(tick)
-            invoked = True
-    except Exception:
-        invoked = False
-    if not invoked:
-        tick()
+    """Run ``fn`` on the GUI thread when a Qt application is running."""
+    post_or_call(fn)
 
 
 def _index_of(account: Account, items: list[tuple[Account, AccountRepositories]]) -> int:

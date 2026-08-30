@@ -68,7 +68,7 @@ jobs:
       - name: Ensure a clean working directory
         run: git diff --name-status --exit-code
   build:
-    # This fork ships native GTK 4 on Linux. Skip leftover upstream Electron
+    # This fork ships a native Qt 6 app on Linux. Skip leftover upstream Electron
     # Windows/macOS production builds on pull requests (they also need gemoji).
     if: github.event_name != 'pull_request'
     name: ${{ matrix.friendlyName }} ${{ matrix.arch }}

@@ -2,10 +2,22 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from github_desktop.models import BannerType, PopupType, PreferencesTab, RepositorySettingsTab
 from github_desktop.git import ops as git_ops
-from github_desktop.ui import dialogs
-from github_desktop.ui.window import MainWindow
+from github_desktop.ui.popups import DIALOG_FOR_POPUP
+
+APP_ROOT = Path(__file__).resolve().parents[1] / "github_desktop"
+
+
+def app_source() -> str:
+    """Every line of the application: Python behaviour plus QML presentation."""
+    parts = []
+    for pattern in ("**/*.py", "**/*.qml"):
+        for path in sorted(APP_ROOT.glob(pattern)):
+            parts.append(path.read_text(encoding="utf-8"))
+    return "\\n".join(parts)
 
 
 REQUIRED_GIT_FUNCS = [
@@ -166,21 +178,14 @@ def test_all_git_ops_exported() -> None:
 
 
 def test_all_popups_have_handlers() -> None:
-    # present_popup mapping must mention every production popup
-    import inspect
-
-    src = inspect.getsource(dialogs.present_popup)
-    missing = []
-    skip = {
-        # macOS-only in upstream
-        PopupType.UNTRUSTED_CERTIFICATE,
-    }
-    for popup in PopupType:
-        if popup in skip:
-            continue
-        if popup.value not in src and popup.name not in src and f"PopupType.{popup.name}" not in src:
-            missing.append(popup)
-    assert missing == [], f"dialogs missing {missing}"
+    """Every popup the store can raise maps to a dialog that exists on disk."""
+    qml_dir = APP_ROOT / "ui" / "qml" / "dialogs"
+    missing = [popup for popup in PopupType if popup.value not in DIALOG_FOR_POPUP]
+    assert missing == [], f"popups with no dialog: {missing}"
+    absent = sorted(
+        name for name in set(DIALOG_FOR_POPUP.values()) if not (qml_dir / f"{name}.qml").exists()
+    )
+    assert absent == [], f"dialogs referenced but not written: {absent}"
 
 
 def test_preferences_tabs() -> None:
@@ -212,234 +217,19 @@ def test_banners_defined() -> None:
 
 
 def test_window_actions_cover_menus() -> None:
-    src = open(MainWindow.__init__.__code__.co_filename, encoding="utf-8").read()
-    from github_desktop.ui import stash, history, diff_view
+    """Feature inventory: every Desktop behaviour is named somewhere in the app.
 
-    src += open(stash.__file__, encoding="utf-8").read()
-    src += open(history.__file__, encoding="utf-8").read()
-    src += open(diff_view.__file__, encoding="utf-8").read()
-    from github_desktop.ui import dialogs as dialogs_mod, tutorial, checks
-    from github_desktop.github import ci_checks, repo_rules
-    from github_desktop.ui import multi_commit
+    Scans the whole application -- Python and QML -- rather than a hand-kept
+    list of modules, so moving a string between the two (which the Qt rewrite
+    did throughout) does not quietly drop it from the inventory.
 
-    src += open(dialogs_mod.__file__, encoding="utf-8").read()
-    src += open(tutorial.__file__, encoding="utf-8").read()
-    src += open(checks.__file__, encoding="utf-8").read()
-    src += open(ci_checks.__file__, encoding="utf-8").read()
-    src += open(multi_commit.__file__, encoding="utf-8").read()
-    src += open(repo_rules.__file__, encoding="utf-8").read()
-    from github_desktop.ui import rule_failure_popover as rule_failure_popover_mod
-
-    src += open(rule_failure_popover_mod.__file__, encoding="utf-8").read()
-    from github_desktop.ui import commit_message_avatar as commit_message_avatar_mod
-
-    src += open(commit_message_avatar_mod.__file__, encoding="utf-8").read()
-    from github_desktop.ui import length_hint as length_hint_mod
-
-    src += open(length_hint_mod.__file__, encoding="utf-8").read()
-    from github_desktop.ui import copy_button as copy_button_mod
-
-    src += open(copy_button_mod.__file__, encoding="utf-8").read()
-    from github_desktop.ui import text_box as text_box_mod
-
-    src += open(text_box_mod.__file__, encoding="utf-8").read()
-    from github_desktop import thank_you, custom_integration
-    from github_desktop.git import progress as git_progress
-
-    src += open(thank_you.__file__, encoding="utf-8").read()
-    src += open(custom_integration.__file__, encoding="utf-8").read()
-    src += open(git_progress.__file__, encoding="utf-8").read()
-    src += open(git_ops.__file__, encoding="utf-8").read()
-    from github_desktop.git import diff as git_diff_mod
-
-    src += open(git_diff_mod.__file__, encoding="utf-8").read()
-    from github_desktop.git import askpass as git_askpass
-    from github_desktop.git import credential_helper as git_cred_helper
-    from github_desktop import store as store_mod, models as models_mod
-
-    src += open(git_askpass.__file__, encoding="utf-8").read()
-    src += open(git_cred_helper.__file__, encoding="utf-8").read()
-    src += open(store_mod.__file__, encoding="utf-8").read()
-    src += open(models_mod.__file__, encoding="utf-8").read()
-    from github_desktop import api_cache as api_cache_mod
-
-    src += open(api_cache_mod.__file__, encoding="utf-8").read()
-    from github_desktop import api_repositories as api_repositories_mod
-
-    src += open(api_repositories_mod.__file__, encoding="utf-8").read()
-    from github_desktop import push_pull, commit_dnd
-    from github_desktop.ui import css as css_mod
-
-    src += open(push_pull.__file__, encoding="utf-8").read()
-    src += open(commit_dnd.__file__, encoding="utf-8").read()
-    src += open(css_mod.__file__, encoding="utf-8").read()
-    from github_desktop.ui import application as app_mod
-    from github_desktop.github import api as api_mod
-
-    src += open(app_mod.__file__, encoding="utf-8").read()
-    src += open(api_mod.__file__, encoding="utf-8").read()
-    from github_desktop import create_repo as create_repo_mod
-
-    src += open(create_repo_mod.__file__, encoding="utf-8").read()
-    from github_desktop import clone_groups as clone_groups_mod
-    from github_desktop.ui import branches as branches_mod
-
-    src += open(clone_groups_mod.__file__, encoding="utf-8").read()
-    src += open(branches_mod.__file__, encoding="utf-8").read()
-    from github_desktop.ui import author_input as author_input_mod
-    from github_desktop.ui import autocompletion as autocompletion_mod
-    from github_desktop.github import ci_checks as ci_checks_mod
-
-    src += open(author_input_mod.__file__, encoding="utf-8").read()
-    src += open(autocompletion_mod.__file__, encoding="utf-8").read()
-    src += open(ci_checks_mod.__file__, encoding="utf-8").read()
-    from github_desktop import filter_changes as filter_changes_mod
-
-    src += open(filter_changes_mod.__file__, encoding="utf-8").read()
-    from github_desktop.ui import markdown as markdown_mod
-
-    src += open(markdown_mod.__file__, encoding="utf-8").read()
-    from github_desktop.git import runner as git_runner_mod
-    from github_desktop.github import notifications as notifications_mod
-
-    src += open(git_runner_mod.__file__, encoding="utf-8").read()
-    src += open(notifications_mod.__file__, encoding="utf-8").read()
-    from github_desktop import create_branch as create_branch_mod, email as email_mod, errors as errors_mod
-
-    src += open(create_branch_mod.__file__, encoding="utf-8").read()
-    src += open(email_mod.__file__, encoding="utf-8").read()
-    src += open(errors_mod.__file__, encoding="utf-8").read()
-    from github_desktop import editors as editors_mod
-    from github_desktop.ui import dds as dds_mod
-
-    src += open(editors_mod.__file__, encoding="utf-8").read()
-    src += open(dds_mod.__file__, encoding="utf-8").read()
-    from github_desktop import shells as shells_mod, notifications as notifications_mod_os
-
-    src += open(shells_mod.__file__, encoding="utf-8").read()
-    src += open(notifications_mod_os.__file__, encoding="utf-8").read()
-    from github_desktop import changed_range as changed_range_mod, group_repositories as group_repos_mod, avatars as avatars_mod
-    from github_desktop.github import push_control as push_control_mod
-
-    src += open(changed_range_mod.__file__, encoding="utf-8").read()
-    src += open(group_repos_mod.__file__, encoding="utf-8").read()
-    src += open(avatars_mod.__file__, encoding="utf-8").read()
-    src += open(push_control_mod.__file__, encoding="utf-8").read()
-    from github_desktop import remote_parsing as remote_parsing_mod, settings as settings_mod
-
-    src += open(remote_parsing_mod.__file__, encoding="utf-8").read()
-    src += open(settings_mod.__file__, encoding="utf-8").read()
-    from github_desktop import linux as linux_mod, text_tokens as text_tokens_mod
-    from github_desktop.ui import menus as menus_mod
-
-    src += open(linux_mod.__file__, encoding="utf-8").read()
-    src += open(text_tokens_mod.__file__, encoding="utf-8").read()
-    src += open(menus_mod.__file__, encoding="utf-8").read()
-    from github_desktop import parse_pac as parse_pac_mod, linux_proxy as linux_proxy_mod, offset_from as offset_from_mod
-    from github_desktop import (
-        popup_manager as popup_manager_mod,
-        truncate as truncate_mod,
-        large_files as large_files_mod,
-        infer_last_push as infer_last_push_mod,
-        pull_request_matching as pr_matching_mod,
-        get_file_hash as get_file_hash_mod,
-        ssh_credentials as ssh_credentials_mod,
-        enterprise as enterprise_mod,
-        fuzzy_find as fuzzy_find_mod,
-        remove_remote_prefix as remove_remote_prefix_mod,
-        find_default_remote as find_default_remote_mod,
-        find_default_branch as find_default_branch_mod,
-        find_branch_name as find_branch_name_mod,
-        tags_to_push as tags_to_push_mod,
-        commit_url as commit_url_mod,
-        find_account as find_account_mod,
-        endpoint_capabilities as endpoint_capabilities_mod,
-        git_error_context as git_error_context_mod,
-        get_account as get_account_mod,
-        features as features_mod,
-        format_date as format_date_mod,
-        directory_exists as directory_exists_mod,
-        clamp as clamp_mod,
-        http_status as http_status_mod,
-        feature_flag as feature_flag_mod,
-        secrets as secrets_mod,
-        auth as auth_mod,
-        desktop_fake_repository as desktop_fake_repo_mod,
-        file_system as file_system_mod,
-        path as path_mod,
-        fatal_error as fatal_error_mod,
-        compare as compare_mod,
-        format_relative as format_relative_mod,
-        generic_git_auth as generic_git_auth_mod,
-        open_file as open_file_mod,
-        format_commit_message as format_commit_message_mod,
-        enum as enum_mod,
-        local_storage as local_storage_mod,
-        welcome as welcome_mod,
-        tip as tip_mod,
-        menu_update as menu_update_mod,
-        find_upstream_remote as find_upstream_remote_mod,
-        tutorial_assessor as tutorial_assessor_mod,
-        regex as regex_mod,
-        errno_exception as errno_exception_mod,
-        stats as stats_mod,
-        changelog as changelog_mod,
-        exception_reporting as exception_reporting_mod,
-    )
-    from github_desktop.git import delimiter as git_delimiter_mod
-
-    src += open(parse_pac_mod.__file__, encoding="utf-8").read()
-    src += open(linux_proxy_mod.__file__, encoding="utf-8").read()
-    src += open(offset_from_mod.__file__, encoding="utf-8").read()
-    src += open(popup_manager_mod.__file__, encoding="utf-8").read()
-    src += open(truncate_mod.__file__, encoding="utf-8").read()
-    src += open(large_files_mod.__file__, encoding="utf-8").read()
-    src += open(infer_last_push_mod.__file__, encoding="utf-8").read()
-    src += open(pr_matching_mod.__file__, encoding="utf-8").read()
-    src += open(get_file_hash_mod.__file__, encoding="utf-8").read()
-    src += open(ssh_credentials_mod.__file__, encoding="utf-8").read()
-    src += open(enterprise_mod.__file__, encoding="utf-8").read()
-    src += open(fuzzy_find_mod.__file__, encoding="utf-8").read()
-    src += open(remove_remote_prefix_mod.__file__, encoding="utf-8").read()
-    src += open(find_default_remote_mod.__file__, encoding="utf-8").read()
-    src += open(find_default_branch_mod.__file__, encoding="utf-8").read()
-    src += open(find_branch_name_mod.__file__, encoding="utf-8").read()
-    src += open(tags_to_push_mod.__file__, encoding="utf-8").read()
-    src += open(commit_url_mod.__file__, encoding="utf-8").read()
-    src += open(find_account_mod.__file__, encoding="utf-8").read()
-    src += open(endpoint_capabilities_mod.__file__, encoding="utf-8").read()
-    src += open(git_delimiter_mod.__file__, encoding="utf-8").read()
-    src += open(git_error_context_mod.__file__, encoding="utf-8").read()
-    src += open(get_account_mod.__file__, encoding="utf-8").read()
-    src += open(features_mod.__file__, encoding="utf-8").read()
-    src += open(format_date_mod.__file__, encoding="utf-8").read()
-    src += open(directory_exists_mod.__file__, encoding="utf-8").read()
-    src += open(clamp_mod.__file__, encoding="utf-8").read()
-    src += open(http_status_mod.__file__, encoding="utf-8").read()
-    src += open(feature_flag_mod.__file__, encoding="utf-8").read()
-    src += open(secrets_mod.__file__, encoding="utf-8").read()
-    src += open(auth_mod.__file__, encoding="utf-8").read()
-    src += open(desktop_fake_repo_mod.__file__, encoding="utf-8").read()
-    src += open(file_system_mod.__file__, encoding="utf-8").read()
-    src += open(path_mod.__file__, encoding="utf-8").read()
-    src += open(fatal_error_mod.__file__, encoding="utf-8").read()
-    src += open(compare_mod.__file__, encoding="utf-8").read()
-    src += open(format_relative_mod.__file__, encoding="utf-8").read()
-    src += open(generic_git_auth_mod.__file__, encoding="utf-8").read()
-    src += open(open_file_mod.__file__, encoding="utf-8").read()
-    src += open(format_commit_message_mod.__file__, encoding="utf-8").read()
-    src += open(enum_mod.__file__, encoding="utf-8").read()
-    src += open(local_storage_mod.__file__, encoding="utf-8").read()
-    src += open(welcome_mod.__file__, encoding="utf-8").read()
-    src += open(tip_mod.__file__, encoding="utf-8").read()
-    src += open(menu_update_mod.__file__, encoding="utf-8").read()
-    src += open(find_upstream_remote_mod.__file__, encoding="utf-8").read()
-    src += open(tutorial_assessor_mod.__file__, encoding="utf-8").read()
-    src += open(regex_mod.__file__, encoding="utf-8").read()
-    src += open(errno_exception_mod.__file__, encoding="utf-8").read()
-    src += open(stats_mod.__file__, encoding="utf-8").read()
-    src += open(changelog_mod.__file__, encoding="utf-8").read()
-    src += open(exception_reporting_mod.__file__, encoding="utf-8").read()
+    A handful of entries name a Qt construct rather than Desktop's own
+    identifier, because the GTK or Electron spelling has no counterpart: a
+    Breeze icon name for a GNOME one, ``Text.WordWrap`` for CSS ``pre-wrap``,
+    QML's ``Drag`` for the HTML drag-and-drop API, and so on. The behaviour
+    being checked is the same.
+    """
+    src = app_source()
     for action in [
         "new-repository",
         "clone-repository",
@@ -553,7 +343,7 @@ def test_window_actions_cover_menus() -> None:
         "commit-drop-squash",
         "underline-links",
         "Reverting first commit",
-        "pan-down-symbolic",
+        "arrow-down",
         "Showing changes from",
         "unreachable",
         "commit-highlight",
@@ -835,7 +625,7 @@ def test_window_actions_cover_menus() -> None:
         "gitAuthorNameIsValid",
         "HighlightText",
         "window-zoom-info",
-        "toast-notification-container",
+        "showPassiveNotification",
         "This operating system is no longer supported",
         "isWebFlowCommitter",
         "wrapRichTextCommitMessage",
@@ -946,7 +736,7 @@ def test_window_actions_cover_menus() -> None:
         "--action=default:Open",
         "getGitDescription",
         "DefaultGitDescription",
-        "MouseScroller",
+        "boundsBehavior",
         "resolveGitProxy",
         "Lines ",
         "getNextPagePathFromLink",
@@ -1257,8 +1047,8 @@ def test_window_actions_cover_menus() -> None:
         "readRebaseHead",
         "parseRebaseResult",
         "couldn't find file",
-        "pre-wrap",
-        "break-all",
+        "Text.WordWrap",
+        "Text.WrapAnywhere",
         "loadFilesForCurrentStashEntry",
         "_run_ui",
         "CreateBranchForCherryPick",
@@ -1398,7 +1188,7 @@ def test_window_actions_cover_menus() -> None:
         "isArchived",
         "handleDragAndDrop",
         "isShowingModal",
-        "dropEffect",
+        "Drag.mimeData",
         "openOrAddRepository",
         "open-repository",
         "_startOpenInDesktop",
@@ -1435,8 +1225,8 @@ def test_window_actions_cover_menus() -> None:
         "_setCommitSpellcheckEnabled",
         "onCommitSpellcheckEnabledChanged",
         "commitSpellcheckEnabledDefault",
-        "HTMLTextAreaElement",
-        "HTMLInputElement",
+        "Controls.TextArea",
+        "Controls.TextField",
         "editMenu",
         "onToggleCoAuthors",
         "onGenerateCommitMessage",
@@ -1609,7 +1399,7 @@ def test_window_actions_cover_menus() -> None:
         "isLoadingDiff",
         "isLoadingSlow",
         "loading-indicator",
-        "propSnapshot",
+        "SnapshotListModel",
         "There are no changes.",
         "Could not find a default branch to compare against",
         "These branches can be automatically merged",

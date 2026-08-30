@@ -988,7 +988,7 @@ class TextDiff:
     max_line_number: int = 0
     has_hidden_bidi_chars: bool = False
     is_binary: bool = False
-    # 1-based line number → Pango markup from the full old/new file (Desktop highlightContents)
+    # 1-based line number → rich-text markup from the full old/new file (Desktop highlightContents)
     old_line_markup: dict[int, str] = field(default_factory=dict)
     new_line_markup: dict[int, str] = field(default_factory=dict)
 

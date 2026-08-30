@@ -5,6 +5,8 @@ project('github-desktop',
 
 python = import('python').find_installation('python3')
 
+# The Python package. The Kirigami QML lives inside it (github_desktop/ui/qml)
+# and is loaded relative to the module, so there is nothing to install twice.
 install_subdir('github_desktop', install_dir: python.get_install_dir())
 
 configure_file(
@@ -25,8 +27,11 @@ install_data(
 install_data('scripts/github-desktop', install_dir: get_option('bindir'), install_mode: 'rwxr-xr-x')
 install_data('scripts/github', install_dir: get_option('bindir'), install_mode: 'rwxr-xr-x')
 
-gnome = import('gnome')
-gnome.post_install(
-  gtk_update_icon_cache: true,
-  update_desktop_database: true,
+# Register the launcher and the x-github-client:// handler with the session.
+# Only the desktop database needs refreshing: the icon is a scalable SVG in
+# hicolor, which both Plasma and every other desktop read directly.
+meson.add_install_script(
+  'sh', '-c',
+  'test -n "$DESTDIR" || update-desktop-database -q ' +
+  get_option('prefix') / get_option('datadir') / 'applications || true',
 )

@@ -1,0 +1,10 @@
+# Small controls shared by the views and the dialogs.
+module components
+AutocompleteField 1.0 AutocompleteField.qml
+CopyButton 1.0 CopyButton.qml
+LoadingIndicator 1.0 LoadingIndicator.qml
+NudgeArrow 1.0 NudgeArrow.qml
+PushPullButton 1.0 PushPullButton.qml
+ResizableToolbarButton 1.0 ResizableToolbarButton.qml
+ToolbarDropButton 1.0 ToolbarDropButton.qml
+TextContextMenu 1.0 TextContextMenu.qml

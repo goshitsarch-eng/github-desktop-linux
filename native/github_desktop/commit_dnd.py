@@ -7,7 +7,7 @@ def commit_drop_kind(y: float, height: float) -> str:
     """Map a drop Y coordinate onto a history row.
 
     Desktop drops *onto* a commit to squash and *between* commits to reorder.
-    GTK only gives us a drop on the row, so the outer 25% of the row is treated
+    Qt only gives us a drop on the row, so the outer 25% of the row is treated
     as an insertion point and the middle as squash-onto.
     """
     if height <= 0:

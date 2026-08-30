@@ -47,7 +47,7 @@ def test_store_and_load_issues_prs_mentionables(isolated_config) -> None:
     )
     store_github_api_cache(
         gh,
-        issues=[(42, "Ship GTK")],
+        issues=[(42, "Ship Kirigami")],
         issues_last_updated_at="2026-01-02T00:00:00Z",
         pull_requests=[pr],
         last_pr_updated_at="2026-01-02T00:00:00Z",
@@ -62,7 +62,7 @@ def test_store_and_load_issues_prs_mentionables(isolated_config) -> None:
 
     state = RepositoryViewState()
     apply_github_api_cache(state, gh)
-    assert state.issues == [(42, "Ship GTK")]
+    assert state.issues == [(42, "Ship Kirigami")]
     assert state.issues_last_updated_at == "2026-01-02T00:00:00Z"
     assert state.pull_requests[0].title == "Fix cache"
     assert state.last_pr_updated_at == "2026-01-02T00:00:00Z"

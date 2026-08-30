@@ -25,6 +25,7 @@ from ..errors import (
 )
 from ..logging import get_logger
 from ..remove_remote_prefix import remove_remote_prefix
+from ..trash import move_to_trash
 from ..models import (
     DESKTOP_STASH_MARKER,
     FORKED_REMOTE_PREFIX,
@@ -2471,14 +2472,12 @@ def move_item_to_trash(path: str) -> bool:
     if not os.path.lexists(path):
         return True
     try:
-        from gi.repository import Gio
-    except Exception:
-        return _delete_working_path(path)
-    try:
-        Gio.File.new_for_path(path).trash(None)
-        return True
-    except Exception:
+        if move_to_trash(path):
+            return True
+    except Exception as exc:
+        log.debug("trash failed for %s: %s", path, exc)
         return False
+    return _delete_working_path(path)
 
 
 def discard_working_files(

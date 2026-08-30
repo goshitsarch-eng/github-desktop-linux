@@ -1,4 +1,4 @@
-"""Syntax highlighting and hunk helpers without GTK."""
+"""Syntax highlighting and hunk helpers, with no toolkit in sight."""
 
 from __future__ import annotations
 

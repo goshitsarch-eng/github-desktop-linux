@@ -1,6 +1,6 @@
 # Known issues
 
-This page covers common problems in the unofficial Linux GTK 4 builds. Start with the [installation guide](installation.md), then search this repository's [issues](https://github.com/goshitsarch-eng/github-desktop-linux/issues) before filing a report.
+This page covers common problems in the unofficial Linux Qt 6 builds. Start with the [installation guide](installation.md), then search this repository's [issues](https://github.com/goshitsarch-eng/github-desktop-linux/issues) before filing a report.
 
 ## Browser sign-in does not return to the app
 
@@ -14,13 +14,31 @@ If the result is empty or names another application, follow [desktop menu and br
 
 Development builds also use `x-github-desktop-dev-auth`. The shipped desktop file lists both handlers.
 
-## Missing GTK 4 or libadwaita
+## Missing Kirigami or PySide6
 
-The app will not start without PyGObject, GTK 4, and libadwaita. Install the packages listed under [runtime requirements](installation.md#runtime-requirements) and retry `github-desktop` from a terminal so import errors are visible.
+The app will not start without PySide6, and it starts to a blank window without
+Kirigami. Install the packages listed under [runtime requirements](installation.md#runtime-requirements)
+and run `github-desktop` from a terminal so the error is visible:
+
+- `GitHub Desktop needs PySide6` — install the PySide6 package for your distribution.
+- `Could not load the Kirigami interface` — install `qml6-module-org-kde-kirigami`
+  (Debian/Ubuntu), `kf6-kirigami` (Fedora) or `kirigami` (Arch).
+
+Kirigami is part of KDE Frameworks 6. Debian and Ubuntu only ship it from Ubuntu 24.10 and
+Debian 13 onwards; older releases need a backport.
 
 ## Credentials are not saved or the keyring repeatedly unlocks
 
-Install `libsecret` / `gir1.2-secret-1` and a Secret Service provider such as GNOME Keyring. Verify that the keyring daemon starts and unlocks with the desktop login session. Configuration is desktop- and distribution-specific; consult the distribution's keyring/PAM documentation rather than editing PAM files blindly.
+On Plasma, make sure `kwalletd6` is running and the wallet is unlocked (System Settings →
+KDE Wallet). Elsewhere, install `secret-tool` (`libsecret-tools` on Debian/Ubuntu,
+`libsecret` on Fedora and Arch) and a Secret Service provider such as GNOME Keyring, and
+check that the daemon unlocks with the login session. Configuration is desktop- and
+distribution-specific; consult the distribution's keyring/PAM documentation rather than
+editing PAM files blindly.
+
+With no keyring at all the app keeps tokens in a `0600` file under the config directory
+rather than refusing to sign in. That is less safe than a wallet: anything running as your
+user can read it.
 
 When reporting this issue, include the desktop environment, display manager, installed Secret Service provider, and whether another application can save a secret.
 

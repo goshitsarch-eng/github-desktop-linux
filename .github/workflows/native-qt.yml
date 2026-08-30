@@ -1,0 +1,73 @@
+name: Native Qt 6
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'native/**'
+      - '.github/workflows/native-qt.yml'
+  pull_request:
+    paths:
+      - 'native/**'
+      - '.github/workflows/native-qt.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: pytest + QML smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Qt runtime libraries and Git
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git git-lfs libegl1 libxkbcommon0 libfontconfig1 \
+            libdbus-1-3 libglib2.0-0 meson ninja-build desktop-file-utils
+      - name: Install PySide6 and pytest
+        run: python3 -m pip install --upgrade PySide6 pytest
+      # Ubuntu 24.04 has no KF6, so this job runs the QML against the stub in
+      # tests/qmlstub. The kirigami job below is the one that proves the real
+      # module works.
+      - name: Run the test suite
+        working-directory: native
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: PYTHONPATH=. python3 -m pytest tests -q
+      - name: Meson DESTDIR install
+        working-directory: native
+        run: |
+          meson setup build --prefix=/usr
+          meson compile -C build
+          DESTDIR="${PWD}/staging" meson install -C build
+          test -f staging/usr/share/applications/io.github.desktop.GitHubDesktop.desktop
+          test -x staging/usr/bin/github-desktop
+          # The Kirigami QML has to ship with the package, not just the .py files.
+          find staging -path '*/github_desktop/ui/qml/Main.qml' | grep -q .
+          find staging -path '*/github_desktop/ui/qml/dialogs/*.qml' | grep -q .
+      - name: Validate the desktop entry
+        working-directory: native
+        run: desktop-file-validate staging/usr/share/applications/io.github.desktop.GitHubDesktop.desktop
+
+  kirigami:
+    name: QML against real Kirigami
+    runs-on: ubuntu-24.04
+    container: fedora:41
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Qt 6, Kirigami and PySide6
+        run: |
+          dnf -y install python3-pyside6 kf6-kirigami qt6-qtdeclarative \
+            qt6-qtquickcontrols2 python3-pytest git git-lfs breeze-icon-theme \
+            --setopt=install_weak_deps=False
+      - name: Run the Qt smoke tests against the real module
+        working-directory: native
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          PYTHONPATH=. python3 -m pytest tests/test_qt_smoke.py -q

@@ -1,4 +1,9 @@
-"""Desktop notifications via Gio / notify-send."""
+"""Desktop notifications over the freedesktop D-Bus spec, with notify-send fallback.
+
+KDE's notification daemon (Plasma) implements ``org.freedesktop.Notifications``
+like every other Linux desktop, so QtDBus is the native path here and
+``notify-send`` covers sessions without a running daemon on the bus.
+"""
 
 from __future__ import annotations
 
@@ -6,11 +11,20 @@ import os
 import shutil
 import subprocess
 import threading
+from typing import Any, Callable
 
 from .linux import spawn
 from .logging import get_logger
+from .mainloop import has_gui, post_or_call
+from .version import APP_ID, APP_NAME
 
 log = get_logger()
+
+NOTIFICATION_BUS_NAME = "org.freedesktop.Notifications"
+NOTIFICATION_BUS_PATH = "/org/freedesktop/Notifications"
+
+_activation_handler: Callable[[str], None] | None = None
+_dbus_notifier: Any = None
 
 NOTIFICATION_SETTINGS_COMMANDS = (
     ("gnome-control-center", "notifications"),
@@ -45,13 +59,8 @@ def get_notifications_permission() -> str:
         return override
     if shutil.which("notify-send"):
         return "granted"
-    try:
-        from gi.repository import Gio
-
-        if Gio.Application.get_default() is not None:
-            return "granted"
-    except Exception:
-        pass
+    if _notifier() is not None:
+        return "granted"
     return "default"
 
 
@@ -95,34 +104,129 @@ def notify_send_command(title: str, body: str, *, with_action: bool = False) -> 
     return cmd
 
 
-def _activate_open_notification(notification_id: str) -> None:
-    def go() -> bool:
-        try:
-            from gi.repository import Gio, GLib
+def set_activation_handler(handler: Callable[[str], None] | None) -> None:
+    """Install the callback run when the user clicks a notification.
 
-            app = Gio.Application.get_default()
-            if app is not None:
-                app.activate_action(
-                    "open-notification",
-                    GLib.Variant.new_string(notification_id or ""),
-                )
+    The Qt application registers its ``open-notification`` route here so this
+    module stays free of any UI import.
+    """
+    global _activation_handler
+    _activation_handler = handler
+
+
+def _activate_open_notification(notification_id: str) -> None:
+    def go() -> None:
+        handler = _activation_handler
+        if handler is None:
+            return
+        try:
+            handler(notification_id or "")
         except Exception as exc:
             log.debug("open-notification activate failed: %s", exc)
-        return False
 
-    try:
-        from gi.repository import Gio, GLib
+    post_or_call(go)
 
-        if Gio.Application.get_default() is not None:
-            GLib.idle_add(go)
+
+class _DBusNotifier:
+    """``org.freedesktop.Notifications`` client with click-through actions.
+
+    Plasma, GNOME, Xfce and the standalone daemons all implement this
+    interface, so one code path covers every session that has a notification
+    server on the bus. Notifications carry a ``default`` action so clicking the
+    popup routes back into the app through :func:`set_activation_handler`.
+    """
+
+    def __init__(self, interface: Any) -> None:
+        self._interface = interface
+        self._ids: dict[int, str] = {}
+
+    def _on_action_invoked(self, dbus_id: int, action_key: str) -> None:
+        if action_key != NOTIFY_SEND_DEFAULT_ACTION:
             return
-    except Exception:
-        pass
-    go()
+        notification_id = self._ids.get(int(dbus_id))
+        if notification_id is not None:
+            _activate_open_notification(notification_id)
+
+    def _on_closed(self, dbus_id: int, _reason: int) -> None:
+        self._ids.pop(int(dbus_id), None)
+
+    def notify(self, title: str, body: str, notification_id: str | None) -> bool:
+        from PySide6.QtDBus import QDBusMessage
+
+        actions = [NOTIFY_SEND_DEFAULT_ACTION, "Open"] if notification_id else []
+        hints = {"desktop-entry": APP_ID}
+        reply = self._interface.call(
+            "Notify",
+            APP_NAME,
+            0,
+            APP_ID,
+            title,
+            body,
+            actions,
+            hints,
+            -1,
+        )
+        if reply.type() == QDBusMessage.MessageType.ErrorMessage:
+            log.debug("D-Bus notification failed: %s", reply.errorMessage())
+            return False
+        arguments = reply.arguments()
+        if notification_id and arguments:
+            try:
+                self._ids[int(arguments[0])] = notification_id
+            except (TypeError, ValueError):
+                pass
+        return True
+
+
+def _notifier() -> _DBusNotifier | None:
+    """Return the shared D-Bus notifier, or None when it is unavailable.
+
+    Requires a live Qt application: QtDBus signal delivery needs an event loop,
+    and without one the notify-send fallback is the honest answer.
+    """
+    global _dbus_notifier
+    if _dbus_notifier is not None:
+        return _dbus_notifier or None
+    if not has_gui():
+        return None
+    try:
+        from PySide6.QtDBus import QDBusConnection, QDBusInterface
+
+        bus = QDBusConnection.sessionBus()
+        if not bus.isConnected():
+            _dbus_notifier = False
+            return None
+        interface = QDBusInterface(
+            NOTIFICATION_BUS_NAME, NOTIFICATION_BUS_PATH, NOTIFICATION_BUS_NAME, bus
+        )
+        if not interface.isValid():
+            _dbus_notifier = False
+            return None
+        notifier = _DBusNotifier(interface)
+        bus.connect(
+            NOTIFICATION_BUS_NAME,
+            NOTIFICATION_BUS_PATH,
+            NOTIFICATION_BUS_NAME,
+            "ActionInvoked",
+            notifier._on_action_invoked,
+        )
+        bus.connect(
+            NOTIFICATION_BUS_NAME,
+            NOTIFICATION_BUS_PATH,
+            NOTIFICATION_BUS_NAME,
+            "NotificationClosed",
+            notifier._on_closed,
+        )
+    except Exception as exc:
+        log.debug("D-Bus notifications unavailable: %s", exc)
+        _dbus_notifier = False
+        return None
+    _dbus_notifier = notifier
+    return notifier
 
 
 def notify_send_fallback(title: str, body: str, notification_id: str | None = None) -> None:
-    """Clickable notify-send stand-in when Gio.Notification is unavailable."""
+    """Clickable notify-send stand-in when the D-Bus daemon is unavailable."""
     if not shutil.which("notify-send"):
         return
     with_action = bool(notification_id)
@@ -158,26 +262,9 @@ def notify_send_fallback(title: str, body: str, notification_id: str | None = No
 def show_notification(title: str, body: str, *, enabled: bool = True, notification_id: str | None = None) -> None:
     if not enabled:
         return
-    try:
-        import gi
-
-        gi.require_version("Gio", "2.0")
-        from gi.repository import Gio, GLib
-
-        app = Gio.Application.get_default()
-        if app is not None:
-            notification = Gio.Notification.new(title)
-            notification.set_body(body)
-            try:
-                notification.set_default_action_and_target_value(
-                    "app.open-notification", GLib.Variant.new_string(notification_id or "")
-                )
-            except Exception:
-                pass
-            app.send_notification(notification_id, notification)
-            return
-    except Exception as exc:
-        log.debug("Gio notification failed: %s", exc)
+    notifier = _notifier()
+    if notifier is not None and notifier.notify(title, body, notification_id):
+        return
     try:
         notify_send_fallback(title, body, notification_id)
     except OSError as exc:

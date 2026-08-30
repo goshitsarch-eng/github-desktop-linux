@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 from .linux import get_architecture
 from .logging import get_logger
+from .mainloop import post_or_call
 from .stats import env_skips_stats_network, get_has_opted_out_of_stats, get_renderer_guid
 from .version import APP_NAME, __version__
 
@@ -104,37 +105,23 @@ def _present_crash_dialog(error: BaseException, *, is_launch_error: bool) -> Non
         f"this issue to the GitHub Desktop issue tracker.\n\n{stack or error}"
     )
     try:
-        import gi
+        from PySide6.QtWidgets import QApplication, QMessageBox
 
-        gi.require_version("Gtk", "4.0")
-        gi.require_version("Adw", "1")
-        from gi.repository import Adw, Gio, GLib
+        app = QApplication.instance()
+        if app is None:
+            raise RuntimeError("no Qt application")
 
-        def present() -> bool:
-            dialog = Adw.AlertDialog(heading="Unrecoverable error", body=message[:4000])
-            dialog.add_response("quit", "Quit")
-            dialog.set_response_appearance("quit", Adw.ResponseAppearance.DESTRUCTIVE)
-            dialog.set_close_response("quit")
-            parent = None
-            app = Gio.Application.get_default()
-            if app is not None:
-                parent = app.get_active_window()
+        def present() -> None:
+            box = QMessageBox()
+            box.setIcon(QMessageBox.Icon.Critical)
+            box.setWindowTitle(APP_NAME)
+            box.setText("Unrecoverable error")
+            box.setInformativeText(message[:4000])
+            box.setStandardButtons(QMessageBox.StandardButton.Close)
+            box.exec()
+            app.quit()
 
-            def on_response(*_args: Any) -> None:
-                if app is not None:
-                    app.quit()
-
-            dialog.connect("response", on_response)
-            if parent is not None:
-                dialog.present(parent)
-            else:
-                dialog.present()
-            return False
-
-        if Gio.Application.get_default() is not None:
-            GLib.idle_add(present)
-        else:
-            present()
+        post_or_call(present)
     except Exception as exc:
         log.error("Failed to show crash dialog: %s", exc)
         print(message, file=sys.stderr)

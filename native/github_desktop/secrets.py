@@ -1,4 +1,9 @@
-"""Secret Service (libsecret) token storage with a file fallback."""
+"""Token storage: KWallet / Secret Service with a file fallback.
+
+Backend selection lives in :mod:`github_desktop.keyring`; this module owns the
+key layout Desktop uses (service + account) and the file store that keeps the
+app usable on a session with no keyring at all.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +12,7 @@ import os
 from pathlib import Path
 
 from .auth import get_key_for_endpoint
+from .keyring import get_backend
 from .logging import get_logger
 from .paths import config_dir
 
@@ -41,81 +47,39 @@ def _write_file(data: dict[str, dict[str, str]]) -> None:
         pass
 
 
-def _secret_schema():
-    try:
-        import gi
-
-        gi.require_version("Secret", "1")
-        from gi.repository import Secret
-
-        return Secret.Schema.new(
-            "io.github.desktop.GitHubDesktop",
-            Secret.SchemaFlags.NONE,
-            {
-                "service": Secret.SchemaAttributeType.STRING,
-                "account": Secret.SchemaAttributeType.STRING,
-            },
-        )
-    except Exception:
-        return None
-
-
-def _use_libsecret() -> bool:
-    if os.environ.get("GITHUB_DESKTOP_FILE_SECRETS") == "1":
-        return False
-    if os.environ.get("PYTEST_CURRENT_TEST"):
-        return False
-    if not os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
-        return False
-    return _secret_schema() is not None
-
-
 def set_password(service: str, account: str, password: str) -> None:
-    if _use_libsecret():
-        schema = _secret_schema()
+    backend = get_backend()
+    if backend is not None:
         try:
-            from gi.repository import Secret
-
-            Secret.password_store_sync(
-                schema,
-                {"service": service, "account": account},
-                Secret.COLLECTION_DEFAULT,
-                f"{service} ({account})",
-                password,
-                None,
-            )
-            return
+            if backend.store(service, account, password):
+                return
         except Exception as exc:
-            log.debug("libsecret store failed, using file: %s", exc)
+            log.debug("%s store failed, using file: %s", backend.name, exc)
     data = _read_file()
     data.setdefault(service, {})[account] = password
     _write_file(data)
 
 
 def get_password(service: str, account: str) -> str | None:
-    if _use_libsecret():
-        schema = _secret_schema()
+    backend = get_backend()
+    if backend is not None:
         try:
-            from gi.repository import Secret
-
-            value = Secret.password_lookup_sync(schema, {"service": service, "account": account}, None)
+            value = backend.lookup(service, account)
             if value:
                 return value
         except Exception as exc:
-            log.debug("libsecret lookup failed: %s", exc)
+            log.debug("%s lookup failed: %s", backend.name, exc)
     data = _read_file()
     return data.get(service, {}).get(account)
 
 
 def delete_password(service: str, account: str) -> None:
-    if _use_libsecret():
-        schema = _secret_schema()
+    backend = get_backend()
+    if backend is not None:
         try:
-            from gi.repository import Secret
-
-            Secret.password_clear_sync(schema, {"service": service, "account": account}, None)
+            backend.clear(service, account)
         except Exception as exc:
-            log.debug("libsecret delete failed: %s", exc)
+            log.debug("%s delete failed: %s", backend.name, exc)
     data = _read_file()
     if service in data and account in data[service]:
         del data[service][account]

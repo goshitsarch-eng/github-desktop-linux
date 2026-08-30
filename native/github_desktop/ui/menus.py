@@ -1,22 +1,18 @@
-"""Context menus and small GTK helpers."""
+"""Context-menu entries and the labels that go on them.
+
+The menus themselves are QML (``Controls.Menu``); what goes in one, and what
+it is called, is decided here so the parity tests can check it.
+"""
 
 from __future__ import annotations
 
 import os
 from collections.abc import Callable, Sequence
 
-import gi
-
-gi.require_version("Gtk", "4.0")
-from gi.repository import Gdk, Gtk
-
 from ..models import AppFileStatusKind
-
 
 MenuCallback = Callable[[], None]
 MenuItem = tuple[str, MenuCallback | Sequence["MenuItem"], bool] | None
-
-# Desktop `ui/lib/context-menu.ts` Linux labels.
 CopyFilePathLabel = "Copy file path"
 CopyRelativeFilePathLabel = "Copy relative file path"
 CopySelectedPathsLabel = "Copy paths"
@@ -146,9 +142,11 @@ def committing_as_title(*, name: str | None, email: str | None) -> str:
 
 CommitMessageAvatarWarningType = commit_message_avatar_warning_type
 getCommittingAsTitle = committing_as_title
-
-
 GENERATE_COMMIT_MESSAGE_WITH_COPILOT = "Generate commit message with Copilot"
+# Desktop `CommitMessage` while the request is in flight, and the reason the
+# action is unavailable when nothing is staged.
+GENERATING_COMMIT_DETAILS = "Generating commit details"
+NO_FILES_SELECTED_FOR_GENERATION = "Files must be selected to generate a commit message"
 
 
 def commit_spellcheck_menu_label(*, enabled: bool) -> str:
@@ -282,7 +280,6 @@ def is_external_editor_available(*, use_custom_editor: bool, selected_external_e
 
 
 isExternalEditorAvailable = is_external_editor_available
-
 OPEN_THE_REPOSITORY_IN_YOUR_EXTERNAL_EDITOR = "Open the repository in your external editor"
 SELECT_YOUR_EDITOR_IN_OPTIONS = "Select your editor in Options"
 
@@ -322,13 +319,10 @@ def new_repository_button_menu_items(
     ]
 
 
-# Desktop Linux `no-repositories-view` (Darwin uses Local Drive).
 CREATE_NEW_REPOSITORY_ON_LOCAL_DRIVE = "Create a New Repository on your local drive…"
 ADD_EXISTING_REPOSITORY_FROM_LOCAL_DRIVE = "Add an Existing Repository from your local drive…"
 CLONE_REPOSITORY_FROM_INTERNET = "Clone a repository from the Internet…"
 REPOSITORY_TOOLBAR_DESCRIPTION = "Current repository"
-
-# Desktop Linux `BranchDropdown` description (`Current Branch` on Darwin).
 BRANCH_TOOLBAR_DESCRIPTION = "Current branch"
 DETACHED_HEAD_DESCRIPTION = "Detached HEAD"
 REBASING_BRANCH_DESCRIPTION = "Rebasing branch"
@@ -378,8 +372,6 @@ def branch_toolbar_chrome(
 
 
 renderBranchDropdown = branch_toolbar_chrome
-
-# Desktop `NoRepositorySelected` (`app.tsx`) blankslate copy.
 NO_REPOSITORY_SELECTED = "No repository selected"
 NoRepositorySelected = NO_REPOSITORY_SELECTED
 
@@ -465,20 +457,6 @@ def committed_file_context_items(
     ]
 
 
-def clear_box(box: Gtk.Widget) -> None:
-    child = box.get_first_child()
-    while child is not None:
-        nxt = child.get_next_sibling()
-        box.remove(child)
-        child = nxt
-
-
-def copy_text(text: str) -> None:
-    display = Gdk.Display.get_default()
-    if display is not None:
-        display.get_clipboard().set(text)
-
-
 def widget_is_or_inside(widget, ancestor) -> bool:
     """True when ``widget`` is ``ancestor`` or a descendant of it."""
     if widget is None or ancestor is None:
@@ -494,95 +472,6 @@ def widget_is_or_inside(widget, ancestor) -> bool:
     return False
 
 
-def _edit_undo_redo(widget, *, redo: bool) -> None:
-    """Undo/redo the focused text field. Never undoes a Git commit (Desktop Edit → Undo)."""
-    current = widget
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if isinstance(current, Gtk.TextView):
-            buf = current.get_buffer()
-            try:
-                buf.set_enable_undo(True)
-            except Exception:
-                pass
-            try:
-                if redo:
-                    if buf.get_can_redo():
-                        buf.redo()
-                elif buf.get_can_undo():
-                    buf.undo()
-            except Exception:
-                pass
-            return
-        delegate = getattr(current, "get_delegate", None)
-        inner = delegate() if callable(delegate) else None
-        if inner is not None and inner is not current and hasattr(inner, "undo"):
-            current = inner
-            continue
-        if hasattr(current, "undo") and hasattr(current, "get_can_undo"):
-            try:
-                if redo:
-                    if current.get_can_redo():
-                        current.redo()
-                elif current.get_can_undo():
-                    current.undo()
-            except Exception:
-                pass
-            return
-        current = current.get_parent() if hasattr(current, "get_parent") else None
-
-
-def apply_edit_menu_action(widget, action: str, *, clipboard=None) -> bool:
-    """Apply `{ role: 'editMenu' }` to a GTK text widget. Returns True if handled."""
-    if widget is None:
-        return False
-    if clipboard is None:
-        getter = getattr(widget, "get_clipboard", None)
-        clipboard = getter() if callable(getter) else None
-    if action in {"undo", "redo"}:
-        _edit_undo_redo(widget, redo=action == "redo")
-        return True
-    if isinstance(widget, Gtk.Editable):
-        if action == "cut":
-            widget.cut_clipboard()
-        elif action == "copy":
-            widget.copy_clipboard()
-        elif action == "paste":
-            widget.paste_clipboard()
-        elif action == "select-all":
-            widget.select_region(0, -1)
-        return True
-    if isinstance(widget, Gtk.TextView):
-        buf = widget.get_buffer()
-        bounds = buf.get_selection_bounds()
-        if isinstance(bounds, tuple) and len(bounds) == 3:
-            has_sel, start, end = bounds
-        elif isinstance(bounds, tuple) and len(bounds) == 2:
-            has_sel, start, end = True, bounds[0], bounds[1]
-        else:
-            has_sel, start, end = False, None, None
-        if action == "copy" and has_sel and clipboard is not None:
-            clipboard.set(buf.get_text(start, end, True))
-        elif action == "cut" and has_sel and clipboard is not None:
-            clipboard.set(buf.get_text(start, end, True))
-            buf.delete(start, end)
-        elif action == "paste" and clipboard is not None:
-            def _paste(_c, result) -> None:
-                try:
-                    text = clipboard.read_text_finish(result)
-                except Exception:
-                    return
-                if text:
-                    buf.insert_at_cursor(text)
-
-            clipboard.read_text_async(None, _paste)
-        elif action == "select-all":
-            buf.select_range(buf.get_start_iter(), buf.get_end_iter())
-        return True
-    return False
-
-
 def edit_menu_items(widget) -> list[MenuItem]:
     """Desktop `{ role: 'editMenu' }` (Undo/Redo/Cut/Copy/Paste/Select All)."""
     return [
@@ -595,71 +484,6 @@ def edit_menu_items(widget) -> list[MenuItem]:
     ]
 
 
-def show_context_menu(anchor: Gtk.Widget, items: Sequence[MenuItem]) -> None:
-    popover = Gtk.Popover()
-    popover.set_has_arrow(False)
-    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-    box.add_css_class("context-menu")
-    for item in items:
-        if item is None:
-            box.append(Gtk.Separator())
-            continue
-        label, action, enabled = item
-        if not callable(action):
-            expander = Gtk.Expander(label=label)
-            expander.set_sensitive(enabled)
-            inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-            for sub in action:
-                if sub is None:
-                    inner.append(Gtk.Separator())
-                    continue
-                sub_label, sub_cb, sub_enabled = sub
-                if not callable(sub_cb):
-                    continue
-                sub_btn = Gtk.Button(label=sub_label)
-                sub_btn.add_css_class("flat")
-                sub_btn.add_css_class("context-menu-item")
-                sub_btn.set_halign(Gtk.Align.FILL)
-                sub_btn.set_sensitive(sub_enabled)
-
-                def _sub_activate(
-                    _b: Gtk.Button,
-                    cb: Callable[[], None] = sub_cb,
-                    pop: Gtk.Popover = popover,
-                ) -> None:
-                    pop.popdown()
-                    cb()
-
-                sub_btn.connect("clicked", _sub_activate)
-                inner.append(sub_btn)
-            expander.set_child(inner)
-            box.append(expander)
-            continue
-        btn = Gtk.Button(label=label)
-        btn.add_css_class("flat")
-        btn.add_css_class("context-menu-item")
-        btn.set_halign(Gtk.Align.FILL)
-        btn.set_sensitive(enabled)
-
-        def _activate(_b: Gtk.Button, cb: Callable[[], None] = action, pop: Gtk.Popover = popover) -> None:
-            pop.popdown()
-            cb()
-
-        btn.connect("clicked", _activate)
-        box.append(btn)
-    popover.set_child(box)
-    popover.set_parent(anchor)
-    popover.popup()
-
-
-def attach_right_click(widget: Gtk.Widget, handler: Callable[[Gtk.Widget], None]) -> None:
-    gesture = Gtk.GestureClick()
-    gesture.set_button(3)
-    gesture.connect("pressed", lambda *_a: handler(widget))
-    widget.add_controller(gesture)
-
-
-# Desktop `ui/resizable/resizable.tsx`
 resizableComponentClass = "resizable-component"
 DefaultMinWidth = 200
 DefaultMaxWidth = 350
@@ -696,197 +520,46 @@ def resize_percentage(width: int, min_width: int, max_width: int) -> int:
     return round(((width - min_width) / span) * 100)
 
 
-def find_active_resizable(widget: Gtk.Widget | None) -> Gtk.Widget | None:
-    """Walk from `document.activeElement` to the focused `.resizable-component`."""
-    current = widget
-    while current is not None:
-        try:
-            if current.has_css_class(resizableComponentClass):
-                return current
-        except Exception:
-            pass
-        current = current.get_parent() if hasattr(current, "get_parent") else None
-    return None
+# Desktop's aria-live announcements when a toolbar control is resized with the
+# keyboard, and the menu labels that drive it.
+EXPAND_ACTIVE_RESIZABLE = "Expand active resizable"
+CONTRACT_ACTIVE_RESIZABLE = "Contract active resizable"
 
 
-def handle_menu_resize_event(widget: Gtk.Widget, increase: bool) -> None:
-    """Desktop `handleMenuResizeEvent` on the focused Resizable."""
-    handler = getattr(widget, "_handle_menu_resize", None)
-    if callable(handler):
-        handler(increase)
+def resize_announcement(description: str, width: int, min_width: int, max_width: int, *, increase: bool) -> str:
+    """`<name> width increased to 60%` -- what a screen reader reads back."""
+    percentage = resize_percentage(width, min_width, max_width)
+    direction = "increased" if increase else "decreased"
+    return f"{description} width {direction} to {percentage}%"
 
 
-def resize_active_resizable(focus: Gtk.Widget | None, increase: bool) -> bool:
-    """Desktop `resizeActiveResizable`: custom event from `document.activeElement`."""
-    target = find_active_resizable(focus)
-    if target is None:
-        return False
-    handle_menu_resize_event(target, increase)
-    return True
+def ignore_selected_files_label(paths: list[str]) -> str:
+    """Desktop's plural ignore entry: `Ignore 3 selected files (add to .gitignore)`."""
+    count = len(paths)
+    if count == 1:
+        return "Ignore file (add to .gitignore)"
+    return f"Ignore {len(paths)} selected files (add to .gitignore)"
 
 
-def attach_keyboard_resize(
-    widget: Gtk.Widget,
-    *,
-    get_width: Callable[[], int],
-    on_resize: Callable[[int], None],
-    description: str,
-    get_min: Callable[[], int] | None = None,
-    get_max: Callable[[], int] | None = None,
-    min_width: int = DefaultMinWidth,
-    max_width: int = DefaultMaxWidth,
-    constraints: dict[str, float] | None = None,
-) -> None:
-    """Listen for Expand/Contract active resizable on this `.resizable-component`."""
-    widget.add_css_class(resizableComponentClass)
-
-    def _min() -> int:
-        if constraints is not None:
-            return resizable_limit(constraints.get("min", min_width), min_width)
-        if get_min is not None:
-            return int(get_min())
-        return int(min_width)
-
-    def _max() -> int:
-        fallback = int(max_width)
-        if constraints is not None:
-            bound = resizable_limit(constraints.get("max", fallback), fallback)
-        elif get_max is not None:
-            bound = int(get_max())
-        else:
-            bound = fallback
-        minimum = _min()
-        return minimum if bound < minimum else bound
-
-    def handle_menu_resize(increase: bool) -> None:
-        # Desktop `handleMenuResizeEvent` / `updateResizeMessage`
-        new_width = nudge_resizable_width(int(get_width()), increase, _min(), _max())
-        on_resize(new_width)
-        direction = "increased" if increase else "decreased"
-        # Desktop AriaLiveContainer: "{description} width increased. Set to N%"
-        message = f"{description} width {direction}. Set to {resize_percentage(new_width, _min(), _max())}%"
-        widget._resize_message = message
-        try:
-            widget.announce(message, Gtk.AccessibleAnnouncementPriority.MEDIUM)
-        except Exception:
-            pass
-
-    widget._handle_menu_resize = handle_menu_resize
+def hidden_changes_menu_label(count: int) -> str:
+    """Menu wording for the filtered-out rows: `2 hidden changes`."""
+    noun = "hidden change" if count == 1 else "hidden changes"
+    return f"{count} {noun}"
 
 
-def attach_paned_keyboard_resize(
-    paned: Gtk.Paned,
-    *,
-    description: str,
-    get_min: Callable[[], int],
-    get_max: Callable[[], int],
-) -> None:
-    """Mark the paned's start child as the Desktop Resizable (not the diff pane)."""
-    start = paned.get_start_child()
-    if start is None:
-        return
-    attach_keyboard_resize(
-        start,
-        get_width=lambda: int(paned.get_position()),
-        on_resize=lambda width: paned.set_position(int(width)),
-        get_min=get_min,
-        get_max=get_max,
-        description=description,
-    )
+def conflict_count_label(count: int) -> str:
+    """`1 conflict` / `3 conflicts` for the merge banner and dialog."""
+    return f"{count} conflict" if count == 1 else f"{count} conflicts"
 
 
-def attach_paned_reset(paned: Gtk.Paned, on_reset: Callable[[], None], *, handle_slop: float = 12.0) -> None:
-    """Desktop Resizable `onDoubleClick` / `onReset` for a Gtk.Paned handle."""
-    click = Gtk.GestureClick()
-    click.set_button(1)
-
-    def pressed(_gesture, n_press: int, x: float, _y: float) -> None:
-        if n_press != 2:
-            return
-        if abs(x - paned.get_position()) > handle_slop:
-            return
-        on_reset()
-
-    click.connect("pressed", pressed)
-    paned.add_controller(click)
+# Desktop's foldout minimum: below this the repository list is a full-width
+# overlay rather than a dropdown (`minWidth: 365`).
+FOLDOUT_MIN_WIDTH = 365
 
 
-def wrap_toolbar_resizable(
-    widget: Gtk.Widget,
-    on_resize: Callable[[int], None],
-    on_reset: Callable[[], None],
-    *,
-    width: int,
-    min_width: int = 160,
-    max_width: int = 720,
-    description: str = "",
-    constraints: dict[str, float] | None = None,
-) -> Gtk.Box:
-    """Desktop `Resizable` for toolbar branch / push-pull buttons (`enableResizingToolbarButtons`)."""
-    box = Gtk.Box()
-    box.add_css_class("toolbar-resizable")
-    box.set_hexpand(False)
-    limits = constraints if constraints is not None else {"min": float(min_width), "max": float(max_width)}
-    limits.setdefault("min", float(min_width))
-    limits.setdefault("max", float(max_width))
-    width = max(int(limits["min"]), int(width))
-    widget.set_size_request(width, -1)
-    widget.set_hexpand(True)
-    handle = Gtk.Box()
-    handle.add_css_class("resize-handle")
-    handle.set_size_request(6, -1)
-    if description:
-        handle.set_tooltip_text(description)
-    try:
-        handle.set_cursor_from_name("col-resize")
-    except Exception:
-        pass
-    box.append(widget)
-    box.append(handle)
-    drag = Gtk.GestureDrag()
-    drag.set_button(1)
-    start = {"width": width}
+def foldout_width(window_width: int, sidebar_width: int) -> int:
+    """Desktop `foldoutWidth`: the repository/branch foldout tracks the sidebar.
 
-    def begin(_gesture, _x: float, _y: float) -> None:
-        min_w = int(limits["min"])
-        start["width"] = max(min_w, widget.get_allocated_width() or widget.get_width() or start["width"])
-
-    def update(_gesture, dx: float, _dy: float) -> None:
-        min_w = int(limits["min"])
-        max_w = int(limits["max"])
-        new = max(min_w, min(max_w, int(start["width"] + dx)))
-        widget.set_size_request(new, -1)
-        on_resize(new)
-
-    drag.connect("drag-begin", begin)
-    drag.connect("drag-update", update)
-    handle.add_controller(drag)
-
-    click = Gtk.GestureClick()
-    click.set_button(1)
-
-    def pressed(_gesture, n_press: int, _x: float, _y: float) -> None:
-        if n_press == 2:
-            on_reset()
-
-    click.connect("pressed", pressed)
-    handle.add_controller(click)
-
-    def toolbar_width() -> int:
-        min_w = int(limits["min"])
-        return max(min_w, widget.get_allocated_width() or widget.get_width() or start["width"])
-
-    def toolbar_resize(new_width: int) -> None:
-        widget.set_size_request(new_width, -1)
-        on_resize(new_width)
-
-    attach_keyboard_resize(
-        box,
-        get_width=toolbar_width,
-        on_resize=toolbar_resize,
-        constraints=limits,
-        description=description or "Toolbar button",
-        min_width=int(limits["min"]),
-        max_width=int(limits["max"]) if limits["max"] < 1e8 else DefaultMaxWidth,
-    )
-    return box
+    It never goes below `FOLDOUT_MIN_WIDTH`, and never wider than the window.
+    """
+    return max(FOLDOUT_MIN_WIDTH, min(int(sidebar_width), int(window_width)))

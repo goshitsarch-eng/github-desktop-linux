@@ -1,5 +1,29 @@
 # Development setup
 
+> [!NOTE]
+> The Linux application lives in [`native/`](../../native/README.md) and is a Qt 6 /
+> Kirigami app, not part of the Electron build described below. See
+> [The Qt application](#the-qt-application) for its setup; the rest of this guide covers
+> the TypeScript/Electron tree, which is kept as the behavioural reference.
+
+## The Qt application
+
+```bash
+# Debian or Ubuntu 24.10+ / Fedora / Arch: see native/README.md for the full table
+sudo apt install python3-pyside6.qtquick python3-pyside6.qtdbus \
+  qml6-module-org-kde-kirigami qml6-module-qtquick-controls breeze-icon-theme git
+
+cd native
+PYTHONPATH=. python3 -m pytest tests -q     # unit, git integration and QML smoke tests
+PYTHONPATH=. python3 -m github_desktop      # run it
+```
+
+There is no build step: the app is Python plus the QML under
+`native/github_desktop/ui/qml`. Run `python3 -m pytest tests -q` in `native/` before
+opening a pull request that touches it. The QML tests fall back to a Kirigami stub where
+KDE Frameworks 6 is not installed, so they run anywhere Qt does — but if you are changing
+QML, install the real Kirigami so you are testing what users get.
+
 ## Prerequisites
 
 Use the versions pinned by the repository. At the time of writing these are:

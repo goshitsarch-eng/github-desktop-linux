@@ -189,6 +189,8 @@ from .api_cache import apply_github_api_cache, clear_github_api_cache, store_git
 from .api_repositories import ApiRepositoriesStore
 from .offset_from import offset_from_now
 from .logging import get_logger
+from .mainloop import has_gui, is_gui_running, is_gui_thread
+from .mainloop import post as post_to_main
 from .models import (
     COMMIT_BATCH_SIZE,
     OVERSIZED_FILE_BYTES,
@@ -688,7 +690,7 @@ class AppStore:
         self._probe_loaded_repository_types()
 
     def _probe_loaded_repository_types(self) -> None:
-        """Desktop `getRepositoryType` after RepositoriesStore.getAll (off the GTK thread)."""
+        """Desktop `getRepositoryType` after RepositoriesStore.getAll (off the GUI thread)."""
         snapshots = [(repo.id, repo.path) for repo in self.repositories]
         if not snapshots:
             return
@@ -813,15 +815,8 @@ class AppStore:
             self.emit()
             return False
 
-        try:
-            from gi.repository import Gio, GLib
-
-            if Gio.Application.get_default() is not None:
-                GLib.idle_add(tick)
-                return
-        except Exception:
-            pass
-        self.emit()
+        if not post_to_main(tick):
+            self.emit()
 
     def _clear_network_progress(self) -> None:
         self.progress_kind = None
@@ -1004,7 +999,7 @@ class AppStore:
         self.emit()
 
     def set_sidebar_width(self, width: int) -> None:
-        """Desktop `_setSidebarWidth` (persist only; the GTK paned already moved)."""
+        """Desktop `_setSidebarWidth` (persist only; the split view already moved)."""
         width = max(220, int(width))
         if self.settings.sidebar_width == width:
             return
@@ -1450,7 +1445,7 @@ class AppStore:
         self.emit()
 
     def take_popups(self) -> list[Popup]:
-        """Drain Desktop `allPopups` for the GTK window to present (nested dialogs)."""
+        """Drain Desktop `allPopups` for the main window to present (nested dialogs)."""
         pending = self._popups.clear()
         return pending
 
@@ -1997,7 +1992,7 @@ class AppStore:
                 if on_done is not None:
                     on_done(exc, None)
                     return
-                if self._gtk_app_running():
+                if self._gui_running():
                     self.show_popup(
                         PopupType.ERROR,
                         error=str(exc),
@@ -2903,16 +2898,7 @@ class AppStore:
                 on_progress(title, value, description)
                 return False
 
-            invoked = False
-            try:
-                from gi.repository import Gio, GLib
-
-                if Gio.Application.get_default() is not None:
-                    GLib.idle_add(tick)
-                    invoked = True
-            except Exception:
-                invoked = False
-            if not invoked:
+            if not post_to_main(tick):
                 tick()
 
         def work() -> None:
@@ -3043,7 +3029,7 @@ class AppStore:
                 log.exception("credential helper sign-in waiter failed")
 
     def _marshal_prompt(self, show: Callable[..., None], timeout: float = 600.0):
-        """Run `show` on the GTK thread and wait. `show` must eventually set the event via a callback."""
+        """Run `show` on the GUI thread and wait. `show` must eventually set the event via a callback."""
         event = threading.Event()
         box: dict[str, object] = {"value": None}
 
@@ -3059,13 +3045,7 @@ class AppStore:
                 finish(None)
             return False
 
-        try:
-            from gi.repository import Gio, GLib
-
-            if Gio.Application.get_default() is None:
-                return None
-            GLib.idle_add(go)
-        except Exception:
+        if not post_to_main(go):
             return None
         event.wait(timeout=timeout)
         return box["value"]
@@ -3147,7 +3127,7 @@ class AppStore:
         return None
 
     def handle_askpass(self, prompt: str) -> str:
-        """Show Desktop SSH dialogs on the GTK thread and return the answer."""
+        """Show Desktop SSH dialogs on the GUI thread and return the answer."""
         from .git.askpass import auto_answer, parse_askpass_prompt
 
         parsed = parse_askpass_prompt(prompt)
@@ -3196,13 +3176,7 @@ class AppStore:
                 )
             return False
 
-        try:
-            from gi.repository import Gio, GLib
-
-            if Gio.Application.get_default() is None:
-                return ""
-            GLib.idle_add(show)
-        except Exception:
+        if not post_to_main(show):
             return ""
         event.wait(timeout=300)
         return box["value"]
@@ -3902,7 +3876,7 @@ class AppStore:
     def ahead_behind_between(self, repo: Repository, from_sha: str | None, to_sha: str | None) -> AheadBehind | None:
         """Desktop `aheadBehindStore` synchronous cache fill for callers that need an immediate result.
 
-        On the GTK thread this is cache-only; UI uses `try_get_ahead_behind` /
+        On the GUI thread this is cache-only; UI uses `try_get_ahead_behind` /
         `request_ahead_behind`. Tests and worker threads still fill from git.
         """
         if not from_sha or not to_sha:
@@ -3914,15 +3888,9 @@ class AppStore:
         if key in cache:
             cache.move_to_end(key)
             return cache[key]
-        # Live git is GTK-unsafe. The UI uses try_get_ahead_behind / request_ahead_behind.
-        if self._gtk_app_running():
-            try:
-                from gi.repository import GLib
-
-                if GLib.main_context_default().is_owner():
-                    return None
-            except Exception:
-                return None
+        # Live git is unsafe on the GUI thread. The UI uses try_get_ahead_behind / request_ahead_behind.
+        if self._gui_running() and is_gui_thread():
+            return None
         result = get_ahead_behind_range(repo.path, f"{from_sha}...{to_sha}")
         cache[key] = result
         cache.move_to_end(key)
@@ -5381,7 +5349,7 @@ class AppStore:
         """Desktop checkout/revert `envForRemoteOperation(getFallbackUrlForProxyResolve)`.
 
         Cache-only: uses ``repo.github.endpoint`` and ``currentRemote``, never
-        shells out to Git on the GTK thread.
+        shells out to Git on the GUI thread.
         """
         gh = repo.github
         endpoint = gh.endpoint if gh is not None else None
@@ -5397,7 +5365,7 @@ class AppStore:
     checkoutEnv = checkout_env
 
     def _network_remote(self, repo: Repository, remotes: Sequence[Remote] | None = None, *, prefer_upstream: bool = False) -> Remote | None:
-        # Cache-only when remotes are omitted so this is safe on the GTK thread.
+        # Cache-only when remotes are omitted so this is safe on the GUI thread.
         # Push/pull/fetch workers pass remotes collected off-thread.
         if remotes is None:
             remotes = list(self.state_for(repo).remotes)
@@ -5652,14 +5620,9 @@ class AppStore:
                 return
             apply(results or {})
 
-        try:
-            from gi.repository import Gio
-
-            if Gio.Application.get_default() is not None:
-                self._run(work, done)
-                return
-        except Exception:
-            pass
+        if has_gui():
+            self._run(work, done)
+            return
         apply(work())
 
     def fetch_repo(self, repo: Repository, fetch_type: FetchType = FetchType.USER_INITIATED) -> None:
@@ -7145,16 +7108,7 @@ class AppStore:
             self.show_popup(PopupType.INVALIDATED_TOKEN, account=account)
             return False
 
-        invoked = False
-        try:
-            from gi.repository import Gio, GLib
-
-            if Gio.Application.get_default() is not None:
-                GLib.idle_add(go)
-                invoked = True
-        except Exception:
-            invoked = False
-        if not invoked:
+        if not post_to_main(go):
             go()
 
     def finish_welcome(self) -> None:
@@ -7758,16 +7712,7 @@ class AppStore:
                     pass
                 return False
 
-            invoked = False
-            try:
-                from gi.repository import Gio, GLib
-
-                if Gio.Application.get_default() is not None:
-                    GLib.idle_add(go)
-                    invoked = True
-            except Exception:
-                invoked = False
-            if not invoked:
+            if not post_to_main(go):
                 go()
 
         return on_event
@@ -7789,33 +7734,18 @@ class AppStore:
                     done(err)
                 return False
 
-            invoked = False
-            try:
-                from gi.repository import Gio, GLib
-
-                if Gio.Application.get_default() is not None:
-                    GLib.idle_add(finish)
-                    invoked = True
-            except Exception:
-                invoked = False
-            if not invoked:
+            if not post_to_main(finish):
                 finish()
 
         self._pool.submit(runner)
 
-    def _gtk_app_running(self) -> bool:
-        if os.environ.get("PYTEST_CURRENT_TEST"):
-            return False
-        try:
-            from gi.repository import Gio
-
-            return Gio.Application.get_default() is not None
-        except Exception:
-            return False
+    def _gui_running(self) -> bool:
+        """True when a Qt application is driving the UI (never under pytest)."""
+        return is_gui_running()
 
     def _run_ui(self, work: Callable[[], Any], done: Callable[..., None]) -> None:
-        """Run `work` off the GTK thread when an application is live; otherwise inline (tests)."""
-        if self._gtk_app_running():
+        """Run `work` off the GUI thread when an application is live; otherwise inline (tests)."""
+        if self._gui_running():
             self._run(work, done)
             return
         err: BaseException | None = None

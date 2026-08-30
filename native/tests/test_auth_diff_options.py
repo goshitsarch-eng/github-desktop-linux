@@ -165,7 +165,7 @@ def test_stash_overwrite_prompts_before_dropping(isolated_config, git_repo: Path
     ]
 
     def boom(*_a, **_k):
-        raise AssertionError("live git stash list on GTK thread")
+        raise AssertionError("live git stash list on the GUI thread")
 
     monkeypatch.setattr("github_desktop.store.get_last_desktop_stash_entry_for_branch", boom)
     store.checkout(repo, Branch("topic", None, "deadbeef", BranchType.LOCAL))

@@ -6,21 +6,17 @@ Ports `app/src/ui/autocompletion/` so the Changes commit box and the squash/amen
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from .length_hint import SUMMARY_LENGTH_HINT, summary_length_hint
+
+# Re-exported: Desktop reaches the summary hint through the commit-message
+# autocompletion module, and the parity tests follow the same path.
+__all__ = ["SUMMARY_LENGTH_HINT", "summary_length_hint"]
+from collections.abc import Sequence
 from typing import Any
-
-import gi
-
-gi.require_version("Gtk", "4.0")
-from gi.repository import GLib, Gtk
 
 from .emoji import emoji_map, matching_shortcodes
 
-from .length_hint import SUMMARY_LENGTH_HINT, summary_length_hint
-
-# Desktop `DefaultMaxHits` in `ui/autocompletion/common.ts`.
 DefaultMaxHits = 25
-
 UNREACHABLE_COMMITS_LEARN_MORE = (
     "https://github.com/desktop/desktop/blob/development/docs/learn-more/unreachable-commits.md"
 )
@@ -81,7 +77,10 @@ def protected_branch_warning(state: Any) -> str | None:
 
 
 def _markup_escape(text: str) -> str:
-    return GLib.markup_escape_text(text or "")
+    """Escape for the Qt rich-text subset the warning labels render in."""
+    import html
+
+    return html.escape(text or "", quote=False)
 
 
 def write_access_warning_markup(repo: Any) -> str | None:
@@ -188,25 +187,6 @@ onShowCreateForkDialog = write_access_warning_markup
 onSwitchBranch = protected_branch_warning_markup
 
 
-def commit_warning_label(markup: str, store: Any) -> Gtk.Label:
-    label = Gtk.Label(wrap=True, xalign=0, use_markup=True)
-    label.set_markup(markup)
-    label.add_css_class("warning")
-    label.connect("activate-link", lambda _widget, uri: handle_commit_warning_uri(store, uri))
-    return label
-
-
-def fill_commit_warning_box(box: Gtk.Box, markups: Sequence[str], store: Any) -> None:
-    child = box.get_first_child()
-    while child is not None:
-        nxt = child.get_next_sibling()
-        box.remove(child)
-        child = nxt
-    for markup in markups:
-        box.append(commit_warning_label(markup, store))
-    box.set_visible(bool(markups))
-
-
 def handle_commit_warning_uri(store: Any, uri: str) -> bool:
     """Desktop `onShowCreateForkDialog` / `onSwitchBranch` / ruleset and http links."""
     from ..models import FoldoutType, PopupType
@@ -279,7 +259,6 @@ def unreachable_commits_message(*, unreachable_tab: bool, count: int) -> str:
     )
 
 
-# Desktop `CoAuthorAutocompletionProvider.renderItem` description for unknown users.
 SEARCH_FOR_USER = "Search for user"
 includeUnknownUser = True
 
@@ -425,42 +404,6 @@ class CoAuthorAutocompletionProvider(UserAutocompletionProvider):
         return self.get_user_autocompletion_items(state, text, include_unknown_user=True, **kwargs)
 
 
-def append_user_hit(list_store: Gtk.ListStore, item: dict[str, Any]) -> None:
-    display = user_hit_display(item)
-    kind = str(item.get("kind") or "known-user")
-    username = str(item.get("username") or "")
-    name = str(item.get("name") or "")
-    email = str(item.get("email") or "")
-    if list_store.get_n_columns() >= 5:
-        list_store.append([display, kind, username, name, email])
-    else:
-        list_store.append([display])
-
-
-def fill_coauthor_store(
-    list_store: Gtk.ListStore,
-    state: Any,
-    *,
-    exclude_login: str | None = None,
-    query: str = "",
-    include_unknown_user: bool = False,
-    exclude_usernames: Sequence[str] = (),
-    endpoint: str = "",
-) -> None:
-    list_store.clear()
-    if state is None and not (include_unknown_user and query):
-        return
-    for item in get_user_autocompletion_items(
-        state,
-        query,
-        include_unknown_user=include_unknown_user,
-        exclude_login=exclude_login,
-        exclude_usernames=exclude_usernames,
-        endpoint=endpoint,
-    ):
-        append_user_hit(list_store, item)
-
-
 def completion_matches(
     state: Any,
     token: str,
@@ -518,128 +461,3 @@ def completion_matches(
     elif token.startswith(":"):
         matches.extend(matching_shortcodes(token, limit=max_hits))
     return matches
-
-
-def populate_completion_store(
-    list_store: Gtk.ListStore,
-    state: Any,
-    token: str,
-    *,
-    exclude_login: str | None = None,
-) -> None:
-    list_store.clear()
-    for item in completion_matches(state, token, exclude_login=exclude_login):
-        list_store.append([item])
-
-
-def replace_entry_token(entry: Gtk.Entry, insert: str) -> None:
-    text = entry.get_text()
-    pos = entry.get_position()
-    token = token_before_cursor(text, pos)
-    start = max(0, pos - len(token))
-    new = text[:start] + insert + " " + text[pos:]
-    entry.set_text(new)
-    entry.set_position(start + len(insert) + 1)
-
-
-def replace_textview_token(textview: Gtk.TextView, insert: str) -> None:
-    buf = textview.get_buffer()
-    cursor = buf.get_iter_at_mark(buf.get_insert())
-    start = cursor.copy()
-    start.set_line_offset(0)
-    prefix = buf.get_text(start, cursor, True)
-    _token, cut = token_from_line_prefix(prefix)
-    replace = cursor.copy()
-    replace.set_line_offset(cut)
-    buf.delete(replace, cursor)
-    buf.insert(replace, insert + " ")
-
-
-def _on_entry_match_selected(completion: Gtk.EntryCompletion, model, it) -> bool:
-    display = model.get_value(it, 0)
-    insert = completion_insert_text(display)
-    entry = completion.get_entry()
-    if entry is None or not insert:
-        return False
-    replace_entry_token(entry, insert)
-    return True
-
-
-def install_entry_completion(entry: Gtk.Entry) -> Gtk.ListStore:
-    """Attach a popup completion that replaces only the current `#` / `@` / `:` token."""
-    store = Gtk.ListStore(str)
-    completion = Gtk.EntryCompletion()
-    completion.set_model(store)
-    completion.set_text_column(0)
-    completion.set_popup_completion(True)
-    completion.set_inline_completion(False)
-    try:
-        completion.set_inline_selection(False)
-    except Exception:
-        pass
-    completion.set_minimum_key_length(1)
-    completion.set_match_func(lambda *_args: True)
-    completion.connect("match-selected", _on_entry_match_selected)
-    entry.set_completion(completion)
-    return store
-
-
-class TextViewCompleter:
-    """Popover completion for a multiline commit description, matching Desktop's textarea."""
-
-    def __init__(
-        self,
-        textview: Gtk.TextView,
-        get_state: Callable[[], Any],
-        *,
-        on_hash: Callable[[], None] | None = None,
-        exclude_login: Callable[[], str | None] | None = None,
-    ) -> None:
-        self.textview = textview
-        self.get_state = get_state
-        self.on_hash = on_hash
-        self.exclude_login = exclude_login
-        self.popover = Gtk.Popover()
-        self.popover.set_parent(textview)
-        self.popover.set_autohide(True)
-        self.listbox = Gtk.ListBox()
-        self.listbox.connect("row-activated", self._on_row)
-        scroll = Gtk.ScrolledWindow()
-        scroll.set_min_content_height(80)
-        scroll.set_min_content_width(220)
-        scroll.set_child(self.listbox)
-        self.popover.set_child(scroll)
-
-    def token(self) -> str:
-        buf = self.textview.get_buffer()
-        cursor = buf.get_iter_at_mark(buf.get_insert())
-        start = cursor.copy()
-        start.set_line_offset(0)
-        prefix = buf.get_text(start, cursor, True)
-        token, _cut = token_from_line_prefix(prefix)
-        return token
-
-    def update(self) -> None:
-        state = self.get_state()
-        token = self.token()
-        while (child := self.listbox.get_first_child()) is not None:
-            self.listbox.remove(child)
-        skip = self.exclude_login() if self.exclude_login else None
-        matches = completion_matches(state, token, exclude_login=skip)
-        if token.startswith("#") and self.on_hash:
-            self.on_hash()
-        if not matches:
-            self.popover.popdown()
-            return
-        for item in matches[:12]:
-            self.listbox.append(Gtk.Label(label=item, xalign=0))
-        self.popover.popup()
-
-    def _on_row(self, _list: Gtk.ListBox, row: Gtk.ListBoxRow) -> None:
-        child = row.get_child()
-        text = child.get_text() if isinstance(child, Gtk.Label) else ""
-        insert = completion_insert_text(text)
-        if not insert:
-            return
-        replace_textview_token(self.textview, insert)
-        self.popover.popdown()

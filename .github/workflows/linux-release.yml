@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    name: Native GTK meson tarball
+    name: Native Qt meson tarball
     runs-on: ubuntu-24.04
 
     steps:
@@ -21,7 +21,7 @@ jobs:
       - name: Install meson and ninja
         run: |
           sudo apt-get update
-          sudo apt-get install -y meson ninja-build python3 python3-gi
+          sudo apt-get install -y meson ninja-build python3
 
       - name: Configure and install into DESTDIR
         working-directory: native

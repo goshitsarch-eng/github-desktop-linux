@@ -232,10 +232,10 @@ def test_add_dropped_paths_probes_off_thread(isolated_config, git_repo, monkeypa
     store = AppStore()
 
     def boom(*_a, **_k):
-        raise AssertionError("live getRepositoryType on GTK thread")
+        raise AssertionError("live getRepositoryType on the GUI thread")
 
     monkeypatch.setattr(store_module, "get_repository_type", boom)
-    monkeypatch.setattr(AppStore, "_gtk_app_running", lambda self: True)
+    monkeypatch.setattr(AppStore, "_gui_running", lambda self: True)
     monkeypatch.setattr(AppStore, "_run", lambda self, work, done: None)
     store.add_dropped_paths([str(git_repo)])
     assert store.popup is None

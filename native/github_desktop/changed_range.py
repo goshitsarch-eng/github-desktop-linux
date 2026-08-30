@@ -62,7 +62,7 @@ def wrap_pango_visible_range(
     open_tag: str,
     close_tag: str,
 ) -> str:
-    """Wrap `[start, start+length)` of visible Pango characters, skipping tags/entities."""
+    """Wrap `[start, start+length)` of visible markup characters, skipping tags/entities."""
     if length <= 0 or start < 0 or not markup:
         return markup
     end = start + length

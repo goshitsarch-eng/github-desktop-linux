@@ -26,7 +26,7 @@ from github_desktop.tags_to_push import (
     store_tags_to_push,
     tags_to_push_key,
 )
-from github_desktop.ui.markdown import is_github_asset_video_url, markdown_to_pango
+from github_desktop.ui.markdown import is_github_asset_video_url, markdown_to_richtext
 
 
 def _get_text(item: dict) -> list[str]:
@@ -202,15 +202,15 @@ def test_github_asset_video_filter() -> None:
     url = "https://user-images.githubusercontent.com/1/clip.mp4"
     assert is_github_asset_video_url(url)
     assert not is_github_asset_video_url("https://user-images.githubusercontent.com/1/clip.png")
-    linked = markdown_to_pango(f"[clip]({url})")
+    linked = markdown_to_richtext(f"[clip]({url})")
     assert ">Video</a>" in linked
     assert url in linked
-    auto = markdown_to_pango(url)
+    auto = markdown_to_richtext(url)
     assert ">Video</a>" in auto
-    stripped = markdown_to_pango('<video src="https://example.com/x.mp4"></video>Hello')
+    stripped = markdown_to_richtext('<video src="https://example.com/x.mp4"></video>Hello')
     assert "<video" not in stripped
     assert "Hello" in stripped
-    kept = markdown_to_pango(f'<video src="{url}"></video>Watch')
+    kept = markdown_to_richtext(f'<video src="{url}"></video>Watch')
     assert ">Video</a>" in kept
     assert url in kept
     assert "Watch" in kept

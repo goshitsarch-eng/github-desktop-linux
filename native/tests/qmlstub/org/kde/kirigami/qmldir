@@ -1,0 +1,30 @@
+# Test double for the org.kde.kirigami module.
+#
+# Kirigami is a runtime dependency of the app, not a build one, and it is not
+# installable on every CI image. This stub gives the smoke test enough of the
+# API surface to instantiate the real QML tree, so a typo in a property name,
+# a missing file or a broken binding still fails the build on images without
+# KF6. Where Kirigami *is* installed the tests use it instead and this stub is
+# never loaded.
+module org.kde.kirigami
+ApplicationWindow 1.0 ApplicationWindow.qml
+Page 1.0 Page.qml
+PageRow 1.0 PageRow.qml
+GlobalDrawer 1.0 GlobalDrawer.qml
+OverlaySheet 1.0 OverlaySheet.qml
+Dialog 1.0 Dialog.qml
+Action 1.0 Action.qml
+Icon 1.0 Icon.qml
+Heading 1.0 Heading.qml
+Separator 1.0 Separator.qml
+SearchField 1.0 SearchField.qml
+PasswordField 1.0 PasswordField.qml
+PlaceholderMessage 1.0 PlaceholderMessage.qml
+IconGroup 1.0 IconGroup.qml
+InlineMessage 1.0 InlineMessage.qml
+ListSectionHeader 1.0 ListSectionHeader.qml
+Avatar 1.0 Avatar.qml
+FormLayout 1.0 FormLayout.qml
+singleton Units 1.0 Units.qml
+singleton Theme 1.0 Theme.qml
+MessageType 1.0 MessageType.qml

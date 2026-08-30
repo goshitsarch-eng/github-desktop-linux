@@ -2,7 +2,7 @@
 
 This is the installation guide for the unofficial Linux releases from `goshitsarch-eng/github-desktop-linux`. GitHub, Inc. does not publish or support these packages.
 
-The Linux UI is a **native GTK 4 + libadwaita** application. Releases publish a meson prefix tarball (`GitHubDesktop-linux-native-<version>.tar.gz`) that installs under `/usr`.
+The Linux UI is a **native Qt 6 + Kirigami** application. Releases publish a meson prefix tarball (`GitHubDesktop-linux-native-<version>.tar.gz`) that installs under `/usr`.
 
 ## Choose a release
 
@@ -20,22 +20,36 @@ Download only from this repository's [Releases page](https://github.com/goshitsa
 
 ## Runtime requirements
 
-Install GTK 4, libadwaita, PyGObject, Git, and a Secret Service provider before launching.
+Install Qt 6, PySide6, Kirigami, Git, and somewhere to keep credentials before launching.
 
-| Purpose | Debian/Ubuntu | Fedora/RHEL |
-| --- | --- | --- |
-| Python GObject / GTK 4 / Adwaita | `python3-gi`, `python3-gi-cairo`, `gir1.2-gtk-4.0`, `gir1.2-adw-1` | `python3-gobject`, `gtk4`, `libadwaita` |
-| Secret Service | `gir1.2-secret-1`, `gnome-keyring` | `libsecret`, `gnome-keyring` |
-| Git | `git` | `git` |
+| Purpose | Debian/Ubuntu | Fedora/RHEL | Arch |
+| --- | --- | --- | --- |
+| Qt 6 for Python | `python3-pyside6.qtquick`, `python3-pyside6.qtdbus` | `python3-pyside6` | `pyside6` |
+| Kirigami (KDE Frameworks 6) | `qml6-module-org-kde-kirigami` | `kf6-kirigami` | `kirigami` |
+| Qt Quick Controls | `qml6-module-qtquick-controls` | `qt6-qtquickcontrols2` | `qt6-declarative` |
+| Icons | `breeze-icon-theme` | `breeze-icon-theme` | `breeze-icons` |
+| Credentials | `kwalletmanager` *or* `libsecret-tools` | `kf6-kwallet` *or* `libsecret` | `kwallet` *or* `libsecret` |
+| Git | `git` | `git` | `git` |
 
 ```bash
-# Debian or Ubuntu
-sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 \
-  gir1.2-secret-1 gnome-keyring git
+# Debian or Ubuntu (24.10 or newer, for KDE Frameworks 6)
+sudo apt install python3-pyside6.qtquick python3-pyside6.qtdbus \
+  qml6-module-org-kde-kirigami qml6-module-qtquick-controls breeze-icon-theme git
 
 # Fedora or RHEL
-sudo dnf install python3-gobject gtk4 libadwaita libsecret gnome-keyring git
+sudo dnf install python3-pyside6 kf6-kirigami qt6-qtquickcontrols2 breeze-icon-theme git
+
+# Arch
+sudo pacman -S pyside6 kirigami qt6-declarative breeze-icons git
 ```
+
+Kirigami must come from the distribution — it is a QML module, not a Python package, so
+`pip` cannot supply it. PySide6 can come from `pip install PySide6` where the
+distribution does not package it.
+
+On a Plasma session the app stores tokens in **KWallet**. Elsewhere it uses the Secret
+Service through libsecret's `secret-tool`, and with neither available it falls back to a
+`0600` file under the config directory.
 
 The native app uses **system Git**. A graphical Linux session is required.
 
@@ -50,7 +64,7 @@ github-desktop
 
 That installs:
 
-- `/usr/bin/github-desktop` — GTK 4 application
+- `/usr/bin/github-desktop` — Qt 6 / Kirigami application
 - `/usr/bin/github` — command-line helper
 - `/usr/share/applications/io.github.desktop.GitHubDesktop.desktop`
 - `/usr/share/icons/hicolor/scalable/apps/io.github.desktop.GitHubDesktop.svg`

@@ -12,7 +12,17 @@ if _ROOT not in sys.path:
 
 
 def main() -> int:
-    from github_desktop.ui.application import run
+    try:
+        from github_desktop.ui.application import run
+    except ImportError as exc:  # pragma: no cover - depends on the install
+        print(
+            f"GitHub Desktop needs PySide6 (Qt 6 for Python): {exc}\n"
+            "Install it with your distribution's package manager "
+            "(python3-pyside6 on Fedora, python3-pyside6.qtquick on Debian "
+            "and Ubuntu, pyside6 on Arch) or with `pip install PySide6`.",
+            file=sys.stderr,
+        )
+        return 1
 
     return run(sys.argv)
 

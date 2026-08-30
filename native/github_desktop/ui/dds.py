@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import struct
-from typing import Any
 
 DDS_MAGIC = 0x20534444
 DDPF_ALPHAPIXELS = 0x1
@@ -50,32 +49,6 @@ def decode_dds_rgba(data: bytes) -> tuple[int, int, bytes] | None:
             return None
         return width, height, raw
     return None
-
-
-def pixbuf_from_dds(data: bytes) -> Any | None:
-    decoded = decode_dds_rgba(data)
-    if decoded is None:
-        return None
-    width, height, rgba = decoded
-    try:
-        import gi
-
-        gi.require_version("GdkPixbuf", "2.0")
-        from gi.repository import GdkPixbuf, GLib
-    except (ValueError, ImportError):
-        return None
-    try:
-        return GdkPixbuf.Pixbuf.new_from_bytes(
-            GLib.Bytes.new(rgba),
-            GdkPixbuf.Colorspace.RGB,
-            True,
-            8,
-            width,
-            height,
-            width * 4,
-        )
-    except Exception:
-        return None
 
 
 def _mask_shift(mask: int) -> tuple[int, int]:
@@ -242,3 +215,22 @@ def _decode_dxt5(payload: bytes, width: int, height: int) -> bytes | None:
             offset += 8
             _write_block(out, width, height, bx, by, _dxt_colors(c0, c1, False), bits, alphas)
     return bytes(out)
+
+
+def image_from_dds(data: bytes):
+    """Decode a DirectDraw Surface into a ``QImage``.
+
+    Qt has no DDS reader, and neither did GTK -- the old code fed the same
+    decoded RGBA buffer to a ``GdkPixbuf`` (``pixbuf_from_dds``). Returns None
+    when the data is not a DDS we can read.
+    """
+    decoded = decode_dds_rgba(data)
+    if decoded is None:
+        return None
+    width, height, rgba = decoded
+    try:
+        from PySide6.QtGui import QImage
+    except Exception:
+        return None
+    # copy() so the QImage owns its buffer once `rgba` goes out of scope.
+    return QImage(rgba, width, height, width * 4, QImage.Format.Format_RGBA8888).copy()

@@ -1,7 +1,7 @@
 """GIT_ASKPASS / SSH_ASKPASS trampoline matching Desktop's askpass handler.
 
 Git and OpenSSH invoke this helper as a separate process. The running app
-listens on a Unix socket, shows the corresponding GTK dialog on the main
+listens on a Unix socket, shows the corresponding dialog on the main
 thread, and returns the answer. github.com's published RSA host key is
 accepted automatically, the same way Desktop does.
 """

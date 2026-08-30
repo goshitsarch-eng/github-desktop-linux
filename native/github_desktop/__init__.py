@@ -1,4 +1,4 @@
-"""Native GTK 4 + libadwaita GitHub Desktop for Linux."""
+"""Native Qt 6 + Kirigami GitHub Desktop for Linux."""
 
 from .version import APP_ID, APP_NAME, __version__
 

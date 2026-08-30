@@ -1,12 +1,12 @@
 # Application architecture
 
-GitHub Desktop for Linux is a **native GTK 4 + libadwaita** application (`native/`) that preserves the GitHub Desktop feature set. The TypeScript/Electron tree remains as the upstream-compatible behavioral reference.
+GitHub Desktop for Linux is a **native Qt 6 + Kirigami** application (`native/`) that preserves the GitHub Desktop feature set. The TypeScript/Electron tree remains as the upstream-compatible behavioral reference.
 
 ## Repository map
 
 | Path | Purpose |
 | --- | --- |
-| `native/` | GTK 4 + libadwaita rewrite (the Linux application) |
+| `native/` | Qt 6 + Kirigami rewrite (the Linux application) |
 | `app/src/main-process/` | Electron main process (legacy reference) |
 | `app/src/ui/` | React components (legacy reference) |
 | `app/src/lib/` | Shared models, Git operations, API clients, state, and utilities |
@@ -20,9 +20,40 @@ GitHub Desktop for Linux is a **native GTK 4 + libadwaita** application (`native
 
 ## Runtime processes
 
-### Native GTK 4 application
+### Native Qt 6 application
 
-`native/github_desktop/ui/application.py` is an `Adw.Application` (id `io.github.desktop.GitHubDesktop`). It is single-instance, handles `x-github-client://`, `x-github-desktop-auth://`, and `x-github-desktop-dev-auth://` URLs, and dispatches the `github` CLI (`open` / `clone`). Appearance is System, Light, or Dark via `Adw.StyleManager`. Git is invoked as a subprocess (`native/github_desktop/git/`). GitHub REST + OAuth live in `native/github_desktop/github/`. Tokens use libsecret with a 0600 file fallback.
+`native/github_desktop/ui/application.py` is a `QApplication` (id
+`io.github.desktop.GitHubDesktop`) that loads the QML tree in
+`native/github_desktop/ui/qml`. Single-instance behaviour is a `QLocalServer` keyed on
+the application id: a second launch hands its argv over that socket and exits, which is
+what makes `github open` and the protocol handlers reach the window already on screen. It
+handles `x-github-client://`, `x-github-desktop-auth://`, and `x-github-desktop-dev-auth://`
+URLs, and dispatches the `github` CLI (`open` / `clone`). Git is invoked as a subprocess
+(`native/github_desktop/git/`); GitHub REST and OAuth live in
+`native/github_desktop/github/`.
+
+Appearance is System, Light, or Dark. System reads `QStyleHints.colorScheme`, which Plasma,
+GNOME and the freedesktop appearance portal all drive, and Kirigami takes its palette from
+the platform theme so the app follows the user's Breeze colour scheme.
+
+Tokens go to KWallet over D-Bus, then to the Secret Service via `secret-tool`, then to a
+`0600` file (`native/github_desktop/keyring.py`).
+
+#### Layering
+
+| Layer | Where | Responsibility |
+| --- | --- | --- |
+| Git and GitHub | `github_desktop/git`, `github_desktop/github` | Subprocess and API calls |
+| State | `github_desktop/store.py` | One observable store; `emit()` on every change |
+| Bridge | `github_desktop/ui/bridge.py` | Store state as QML properties and list models |
+| Interface | `github_desktop/ui/qml` | Kirigami views, dialogs, shared components |
+
+Nothing outside `ui/` imports Qt. The store runs unchanged under pytest and in the CLI, and
+marshals onto the GUI thread through `github_desktop/mainloop.py` when one exists. The list
+models in `ui/models.py` take a fresh snapshot on each store change and diff it, so a
+refresh emits `dataChanged` rather than resetting the view and losing selection or scroll
+position. Text that a dialog or a diff shows lives in `ui/dialogs.py` and `ui/diff_view.py`
+rather than in QML, so the parity tests can read it without a window.
 
 ### Legacy Electron (reference)
 

@@ -85,6 +85,9 @@ class Settings:
     clone_default_directory: str = ""
     default_branch: str = "main"
     show_changes_filter: bool = True
+    # Desktop's stash button choice: always in the toolbar, or only when a
+    # stash exists for the current branch.
+    stash_button_when_exists: bool = False
     spellcheck_enabled: bool = True
     ignored_upstream_remotes: dict[str, bool] = field(default_factory=dict)
     welcome_shown: bool = False

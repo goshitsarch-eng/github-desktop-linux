@@ -196,7 +196,7 @@ def test_get_commits_truncates_like_desktop(git_repo) -> None:
 
 
 def test_shorten_github_autolinks() -> None:
-    from github_desktop.ui.markdown import markdown_to_pango, shorten_github_autolink
+    from github_desktop.ui.markdown import markdown_to_richtext, shorten_github_autolink
 
     repo = "https://github.com/octo/hello"
     assert shorten_github_autolink("https://github.com/octo/hello/issues/42", repo) == "#42"
@@ -207,7 +207,7 @@ def test_shorten_github_autolinks() -> None:
     assert "<tt>6fd7945</tt>" in (shorten_github_autolink(f"https://github.com/octo/hello/commit/{long_sha}", repo) or "")
     other = shorten_github_autolink(f"https://github.com/desktop/desktop/commit/{long_sha}", repo)
     assert other is not None and other.startswith("desktop/desktop@")
-    markup = markdown_to_pango(
+    markup = markdown_to_richtext(
         "See https://github.com/octo/hello/issues/42 please",
         repo_html_url=repo,
     )
@@ -216,23 +216,23 @@ def test_shorten_github_autolinks() -> None:
 
 
 def test_commit_mention_owner_repo_and_range() -> None:
-    from github_desktop.ui.markdown import markdown_to_pango, resolve_owner_repo
+    from github_desktop.ui.markdown import markdown_to_richtext, resolve_owner_repo
 
     repo = "https://github.com/octo/hello"
     assert resolve_owner_repo("desktop/desktop", ("octo", "hello")) == ["desktop", "desktop"]
     assert resolve_owner_repo("octo/hello", ("octo", "hello")) == []
     assert resolve_owner_repo("octo", ("octo", "hello")) == []
     assert resolve_owner_repo("other", ("octo", "hello")) is None
-    owned = markdown_to_pango("See desktop/desktop@1234567 for context", repo_html_url=repo)
+    owned = markdown_to_richtext("See desktop/desktop@1234567 for context", repo_html_url=repo)
     assert "desktop/desktop@" in owned
     assert "<tt>1234567</tt>" in owned
     assert 'href="https://github.com/desktop/desktop/commit/1234567"' in owned
-    same = markdown_to_pango("See octo/hello@abcdef1 here", repo_html_url=repo)
+    same = markdown_to_richtext("See octo/hello@abcdef1 here", repo_html_url=repo)
     assert "octo/hello@" not in same
     assert 'href="https://github.com/octo/hello/commit/abcdef1"' in same
-    ranged = markdown_to_pango("Compare abcdef1...1234567", repo_html_url=repo)
+    ranged = markdown_to_richtext("Compare abcdef1...1234567", repo_html_url=repo)
     assert "compare/abcdef1...1234567" in ranged
-    invalid = markdown_to_pango("See otheruser@abcdef1 please", repo_html_url=repo)
+    invalid = markdown_to_richtext("See otheruser@abcdef1 please", repo_html_url=repo)
     assert "commit/abcdef1" not in invalid
 
 

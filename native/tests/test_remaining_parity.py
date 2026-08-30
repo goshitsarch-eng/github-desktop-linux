@@ -494,10 +494,10 @@ def test_load_repositories_uses_persisted_missing(isolated_config, git_repo: Pat
     assert payload[0]["unsafe"] is True
 
     def boom(*_a, **_k):
-        raise AssertionError("live getRepositoryType on GTK thread")
+        raise AssertionError("live getRepositoryType on the GUI thread")
 
     monkeypatch.setattr(store_module, "get_repository_kind", boom)
-    monkeypatch.setattr(AppStore, "_gtk_app_running", lambda self: True)
+    monkeypatch.setattr(AppStore, "_gui_running", lambda self: True)
     monkeypatch.setattr(AppStore, "_run", lambda self, work, done: None)
 
     loaded = AppStore()
@@ -528,7 +528,7 @@ def test_desktop_stash_for_branch_uses_refresh_cache(isolated_config, git_repo: 
     state.stashes = [entry]
 
     def boom(*_a, **_k):
-        raise AssertionError("live git stash list on GTK thread")
+        raise AssertionError("live git stash list on the GUI thread")
 
     monkeypatch.setattr(store_module, "get_last_desktop_stash_entry_for_branch", boom)
     monkeypatch.setattr(store_module, "get_stashes", boom)
@@ -839,14 +839,12 @@ def test_pull_honors_desktop_flags(git_repo: Path, monkeypatch) -> None:
 
 def test_ctrl_z_is_text_undo_not_git_undo() -> None:
     from github_desktop.menu_update import get_stashed_changes_label
-    from github_desktop.ui.window import MainWindow
+    from github_desktop.ui.actions import ACTIONS_BY_NAME, action_for_shortcut, shortcuts_for
 
-    src = open(MainWindow.__init__.__code__.co_filename, encoding="utf-8").read()
-    assert '"<Ctrl>z": "edit-undo"' in src
-    assert '"<Ctrl>z": "undo-commit"' not in src
-    assert "win.edit-undo" in src
+    assert action_for_shortcut("Ctrl+Z") == "edit-undo"
+    assert "undo-commit" not in ACTIONS_BY_NAME
+    assert shortcuts_for("edit-redo") == ("Ctrl+Shift+Z", "Ctrl+Y")
     assert get_stashed_changes_label(True) == "Hide stashed changes"
-    assert "View pull request on GitHub" in src
 
 
 def test_should_background_fetch_respects_minimum_interval(isolated_config, git_repo: Path) -> None:
@@ -882,7 +880,7 @@ def test_should_background_fetch_uses_refresh_cache(isolated_config, git_repo: P
     store.state_for(repo).last_fetched = None
 
     def boom(*_a, **_k):
-        raise AssertionError("live FETCH_HEAD on GTK thread")
+        raise AssertionError("live FETCH_HEAD on the GUI thread")
 
     monkeypatch.setattr(store_module, "get_last_fetched", boom)
     assert store.should_background_fetch(repo) is True
@@ -966,10 +964,10 @@ def test_add_repositories_probes_off_thread(isolated_config, git_repo: Path, mon
     store = AppStore()
 
     def boom(*_a, **_k):
-        raise AssertionError("live getRepositoryType on GTK thread")
+        raise AssertionError("live getRepositoryType on the GUI thread")
 
     monkeypatch.setattr(store_module, "get_repository_type", boom)
-    monkeypatch.setattr(AppStore, "_gtk_app_running", lambda self: True)
+    monkeypatch.setattr(AppStore, "_gui_running", lambda self: True)
     monkeypatch.setattr(AppStore, "_run", lambda self, work, done: None)
 
     added = store.add_repositories([str(git_repo)])
@@ -1000,13 +998,13 @@ def test_load_repository_git_config_off_thread(isolated_config, git_repo: Path, 
     assert repo is not None
 
     def boom(*_a, **_k):
-        raise AssertionError("live git config on GTK thread")
+        raise AssertionError("live git config on the GUI thread")
 
     monkeypatch.setattr(store_module, "get_config_value", boom)
     monkeypatch.setattr(store_module, "get_global_config_value", boom)
     monkeypatch.setattr(store_module, "read_gitignore", boom)
     monkeypatch.setattr(store_module, "get_remotes", boom)
-    monkeypatch.setattr(AppStore, "_gtk_app_running", lambda self: True)
+    monkeypatch.setattr(AppStore, "_gui_running", lambda self: True)
     monkeypatch.setattr(AppStore, "_run", lambda self, work, done: None)
 
     called = {"n": 0}
@@ -1024,11 +1022,11 @@ def test_load_global_git_preferences_off_thread(isolated_config, monkeypatch) ->
     store = AppStore()
 
     def boom(*_a, **_k):
-        raise AssertionError("live git config on GTK thread")
+        raise AssertionError("live git config on the GUI thread")
 
     monkeypatch.setattr(store_module, "get_global_config_value", boom)
     monkeypatch.setattr(store_module, "get_default_branch", boom)
-    monkeypatch.setattr(AppStore, "_gtk_app_running", lambda self: True)
+    monkeypatch.setattr(AppStore, "_gui_running", lambda self: True)
     monkeypatch.setattr(AppStore, "_run", lambda self, work, done: None)
 
     called = {"n": 0}
@@ -1067,7 +1065,7 @@ def test_handle_remote_error_auth_uses_cached_remotes(isolated_config, git_repo:
     store.state_for(repo).remotes = [Remote(name="origin", url="https://example.com/me/app.git")]
 
     def boom(*_a, **_k):
-        raise AssertionError("live getRemotes on GTK thread")
+        raise AssertionError("live getRemotes on the GUI thread")
 
     monkeypatch.setattr(store_module, "get_remotes", boom)
     store._handle_remote_error(repo, GitError("denied", stderr="authentication failed"))
@@ -1288,7 +1286,7 @@ def test_network_remote_uses_cached_remotes(isolated_config, git_repo: Path, mon
     store.state_for(repo).remotes = []
 
     def boom(*_a, **_k):
-        raise AssertionError("live get_remotes on GTK thread")
+        raise AssertionError("live get_remotes on the GUI thread")
 
     monkeypatch.setattr(store_module, "get_remotes", boom)
     assert store._network_remote(repo) is None

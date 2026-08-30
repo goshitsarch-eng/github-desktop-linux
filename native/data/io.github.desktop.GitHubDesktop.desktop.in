@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=GitHub Desktop
 GenericName=Git client
-Comment=Native GTK 4 GitHub Desktop for Linux
+Comment=Native Qt 6 GitHub Desktop for Linux
 Exec=@bindir@/github-desktop %U
 Icon=io.github.desktop.GitHubDesktop
 Terminal=false

@@ -57,7 +57,7 @@ allMenuIds: tuple[str, ...] = (
     "squash-and-merge-branch",
 )
 
-# Desktop MenuIDs that have no Gio.SimpleAction (submenu containers).
+# Desktop MenuIDs that have no QAction (submenu containers).
 _SUBMENU_IDS = {"branch", "repository"}
 
 # Native window action names for Desktop menu ids.
@@ -450,7 +450,7 @@ def get_menu_state_builder(snapshot: MenuSnapshot) -> MenuStateBuilder:
 
 
 def get_menu_state_from_snapshot(snapshot: MenuSnapshot) -> dict[str, bool]:
-    """Native Gio action enablement from a `MenuSnapshot`."""
+    """Native QAction enablement from a `MenuSnapshot`."""
     return _native_enabled(get_menu_state_builder(snapshot))
 
 
@@ -460,7 +460,7 @@ def menu_snapshot_from_store(
     window_open: bool = True,
     current_popup: bool | None = None,
 ) -> MenuSnapshot:
-    """Build a `MenuSnapshot` from `AppStore` (GTK-free)."""
+    """Build a `MenuSnapshot` from `AppStore` (toolkit-free)."""
     if current_popup is None:
         current_popup = getattr(store, "popup", None) is not None
     cloning = getattr(store, "selected_cloning", None)
@@ -528,7 +528,7 @@ def get_menu_state(
     window_open: bool = True,
     current_popup: bool | None = None,
 ) -> dict[str, bool]:
-    """Desktop `getMenuState` keyed by native Gio.SimpleAction names."""
+    """Desktop `getMenuState` keyed by native QAction names."""
     return get_menu_state_from_snapshot(
         menu_snapshot_from_store(store, window_open=window_open, current_popup=current_popup)
     )
@@ -548,7 +548,7 @@ def apply_menu_state(
     lookup_action: Callable[[str], Any],
     enabled_by_action: dict[str, bool],
 ) -> None:
-    """Apply `getMenuState` to Gio actions (`set_enabled`)."""
+    """Apply `getMenuState` to QActions (`set_enabled`)."""
     for name, enabled in enabled_by_action.items():
         action = lookup_action(name)
         if action is not None:

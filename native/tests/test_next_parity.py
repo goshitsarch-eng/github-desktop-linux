@@ -251,9 +251,9 @@ def test_commit_warns_only_when_included_files_are_hidden(isolated_config, git_r
 
 
 def test_sandboxed_markdown_pango_is_https_only() -> None:
-    from github_desktop.ui.markdown import issue_base_from_html_url, markdown_to_pango
+    from github_desktop.ui.markdown import issue_base_from_html_url, markdown_to_richtext
 
-    markup = markdown_to_pango(
+    markup = markdown_to_richtext(
         "Hello **world** and `code` [docs](https://example.com/a) [bad](javascript:alert(1)) #42",
         issue_base_url="https://github.com/octo/hello/issues",
     )
@@ -262,7 +262,7 @@ def test_sandboxed_markdown_pango_is_https_only() -> None:
     assert 'href="https://example.com/a"' in markup
     assert 'href="javascript:' not in markup
     assert 'href="https://github.com/octo/hello/issues/42"' in markup
-    mentioned = markdown_to_pango(
+    mentioned = markdown_to_richtext(
         "Thanks @octocat for abcdef1",
         issue_base_url="https://github.com/octo/hello/issues",
         repo_html_url="https://github.com/octo/hello",
@@ -271,7 +271,7 @@ def test_sandboxed_markdown_pango_is_https_only() -> None:
     assert "@octocat" in mentioned
     assert "href=\"https://github.com/octo/hello/commit/abcdef1\"" in mentioned
     assert issue_base_from_html_url("https://github.com/octo/hello/pull/9") == "https://github.com/octo/hello/issues"
-    escaped = markdown_to_pango("<script>alert(1)</script>")
+    escaped = markdown_to_richtext("<script>alert(1)</script>")
     assert "<script>" not in escaped
     assert "&lt;script&gt;" in escaped
 
@@ -296,9 +296,9 @@ def test_trailer_separator_characters(git_repo) -> None:
 
 
 def test_markdown_issue_team_and_close_filters() -> None:
-    from github_desktop.ui.markdown import close_keyword_tooltip, markdown_to_pango
+    from github_desktop.ui.markdown import close_keyword_tooltip, markdown_to_richtext
 
-    issues = markdown_to_pango(
+    issues = markdown_to_richtext(
         "See gh-123 and desktop/dugite#9 and /issues/4",
         issue_base_url="https://github.com/octo/hello/issues",
         repo_html_url="https://github.com/octo/hello",
@@ -308,7 +308,7 @@ def test_markdown_issue_team_and_close_filters() -> None:
     assert "desktop/dugite#9" in issues
     assert 'href="https://github.com/desktop/dugite/issues/9"' in issues
     assert 'href="https://github.com/octo/hello/issues/4"' in issues
-    team = markdown_to_pango(
+    team = markdown_to_richtext(
         "cc @desktop/the-a-team and @octocat",
         issue_base_url="https://github.com/desktop/desktop/issues",
     )
@@ -316,7 +316,7 @@ def test_markdown_issue_team_and_close_filters() -> None:
     assert "@desktop/the-a-team" in team
     assert 'href="https://github.com/octocat"' in team
     assert close_keyword_tooltip("Closes #44 after review") == "This pull request closes #44."
-    closed = markdown_to_pango(
+    closed = markdown_to_richtext(
         "Fixes #12",
         issue_base_url="https://github.com/octo/hello/issues",
     )

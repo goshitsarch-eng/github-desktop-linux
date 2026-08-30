@@ -4,7 +4,7 @@
 [![Linux release](https://github.com/goshitsarch-eng/github-desktop-linux/actions/workflows/linux-release.yml/badge.svg)](https://github.com/goshitsarch-eng/github-desktop-linux/actions/workflows/linux-release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-An independently maintained, unofficial Linux port of [GitHub Desktop](https://desktop.github.com/). The Linux UI is a **native GTK 4 + libadwaita** rewrite with light, dark, and system appearance and full feature parity with the classic Desktop workflows (commit, history, diffs, GitHub auth, PRs, rebase/merge/cherry-pick/squash, stashing, CLI, and protocol handlers).
+An independently maintained, unofficial Linux port of [GitHub Desktop](https://desktop.github.com/). The Linux UI is a **native Qt 6 + Kirigami** rewrite that looks and behaves like a KDE application, with light, dark, and system appearance and full feature parity with the classic Desktop workflows (commit, history, diffs, GitHub auth, PRs, rebase/merge/cherry-pick/squash, stashing, CLI, and protocol handlers).
 
 > [!IMPORTANT]
 > This project is not affiliated with, sponsored by, or supported by GitHub, Inc. For problems with these Linux builds, use this repository's [issue tracker](https://github.com/goshitsarch-eng/github-desktop-linux/issues). For GitHub.com account or service problems, contact [GitHub Support](https://support.github.com/).
@@ -14,28 +14,28 @@ An independently maintained, unofficial Linux port of [GitHub Desktop](https://d
   <img width="1072" src="https://user-images.githubusercontent.com/634063/202742985-bb3b3b94-8aca-404a-8d8a-fd6a6f030672.png" alt="GitHub Desktop showing a commit with two co-authors">
 </picture>
 
-## Native GTK 4 app (recommended)
+## Native Qt 6 app (recommended)
 
-The GTK 4 application lives in [`native/`](native/README.md).
+The Qt 6 / Kirigami application lives in [`native/`](native/README.md).
 
 ```bash
-sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 \
-  gir1.2-secret-1 git
+sudo apt install python3-pyside6.qtquick python3-pyside6.qtdbus qml6-module-org-kde-kirigami \
+  qml6-module-qtquick-controls breeze-icon-theme git
 cd native
 PYTHONPATH=. python3 -m github_desktop
 ```
 
-Appearance is System, Light, or Dark under Preferences → Appearance. Tests:
+Appearance is System, Light, or Dark under Settings → Appearance. **System** follows
+the Plasma colour scheme; the other two override it for this application only.
 
 ```bash
 cd native
-PYTHONPATH=. python3 -m pytest tests -q
-xvfb-run -a env GTK_A11Y=none PYTHONPATH=. python3 -m pytest tests/test_gtk_smoke.py -q
+QT_QPA_PLATFORM=offscreen PYTHONPATH=. python3 -m pytest tests -q
 ```
 
 ## Download and install
 
-Tagged releases publish a native meson prefix tarball (`GitHubDesktop-linux-native-<version>.tar.gz`). Install GTK 4, libadwaita, PyGObject, and Git, then:
+Tagged releases publish a native meson prefix tarball (`GitHubDesktop-linux-native-<version>.tar.gz`). Install Qt 6, Kirigami, PySide6, and Git, then:
 
 ```bash
 sudo tar -C / -xzf GitHubDesktop-linux-native-<version>.tar.gz
@@ -58,14 +58,14 @@ PYTHONPATH=. python3 -m github_desktop
 - Commit history, diffs, stashing, rebasing, and conflict resolution
 - Pull request and issue integrations
 - System Git plus a desktop credential helper
-- Linux native GTK 4 packages (meson prefix tarball)
+- Linux native Qt 6 packages (meson prefix tarball)
 - A `github` command-line helper in packaged builds
 
 Feature behavior primarily follows the [upstream GitHub Desktop project](https://github.com/desktop/desktop). Linux packaging and integration issues belong in this repository.
 
 ## Requirements
 
-A modern 64-bit Linux distribution with a graphical desktop is required. The native GTK 4 app needs PyGObject, GTK 4, libadwaita, and Git. Credential storage uses Secret Service (`libsecret`) and normally requires a keyring such as GNOME Keyring.
+A modern 64-bit Linux distribution with a graphical desktop is required. The app needs Qt 6, Kirigami (KDE Frameworks 6), PySide6, and Git. Credential storage uses KWallet where it is running, and otherwise the Secret Service (`secret-tool`); with neither, tokens fall back to a `0600` file under the config directory.
 
 See [installation requirements](docs/installation.md#runtime-requirements) and [known issues](docs/known-issues.md).
 
@@ -96,7 +96,7 @@ After a prefix install, `github` is next to `github-desktop` on `PATH`. Details 
 
 ## Development quick start
 
-Native GTK 4 (this is the Linux application):
+Native Qt 6 / Kirigami (this is the Linux application):
 
 ```bash
 git clone --recurse-submodules https://github.com/goshitsarch-eng/github-desktop-linux.git

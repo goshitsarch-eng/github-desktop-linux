@@ -1,8 +1,8 @@
-"""Sandboxed GFM-lite → Pango markup (Desktop `SandboxedMarkdown` stand-in).
+"""Sandboxed GFM-lite → Qt rich text (Desktop `SandboxedMarkdown` stand-in).
 
-Desktop renders PR bodies in a sandboxed iframe. Native GTK has no WebKit
-requirement, so we convert a safe subset of GitHub Flavored Markdown to Pango
-markup: emphasis, inline/fenced code, https-only links, emoji shortcodes,
+Desktop renders PR bodies in a sandboxed iframe. Pulling WebEngine in for a
+commit body is not worth it, so we convert a safe subset of GitHub Flavored
+Markdown to the rich-text subset a QML ``Text`` understands: emphasis, inline/fenced code, https-only links, emoji shortcodes,
 ``IssueMentionFilter`` (``#123``, ``gh-123``, ``/issues/123``, ``owner/repo#123``),
 ``MentionFilter`` (@user), ``TeamMentionFilter`` (@org/team),
 ``CloseKeywordFilter`` (Closes/Fixes/Resolves with tooltip
@@ -231,13 +231,45 @@ def close_keyword_tooltip(text: str) -> str | None:
     return CLOSE_KEYWORD_TOOLTIP.format(match.group(1))
 
 
-def markdown_to_pango(
+def sandboxed_markdown(
+    markdown: str,
+    *,
+    issue_base_url: str | None = None,
+    max_chars: int = 800,
+    empty: str = "No description provided.",
+    repository=None,
+) -> str:
+    """Markup for a PR/issue body, truncated the way Desktop truncates it.
+
+    QML renders the result in a ``Text`` with ``textFormat: Text.RichText``;
+    :func:`link_is_safe` gates what the link handler will open.
+    """
+    if repository is not None and issue_base_url is None:
+        github = getattr(repository, "github", None)
+        html_url = getattr(github, "html_url", None) if github is not None else None
+        if html_url:
+            issue_base_url = str(html_url).rstrip("/") + "/issues"
+    text = (markdown or "").strip() or empty
+    if len(text) > max_chars:
+        text = text[: max_chars - 1] + "\u2026"
+    repo_html = None
+    if issue_base_url and issue_base_url.rstrip("/").endswith("/issues"):
+        repo_html = issue_base_url.rstrip("/")[: -len("/issues")]
+    return markdown_to_richtext(text, issue_base_url=issue_base_url, repo_html_url=repo_html)
+
+
+def link_is_safe(url: str) -> bool:
+    """True when a link activated in rendered markup may be opened."""
+    return _safe_url(url) is not None
+
+
+def markdown_to_richtext(
     text: str,
     *,
     issue_base_url: str | None = None,
     repo_html_url: str | None = None,
 ) -> str:
-    """Convert a GFM subset to Pango markup. Never emits unsafe URIs."""
+    """Convert a GFM subset to Qt rich text. Never emits unsafe URIs."""
     source = expand_shortcodes(text or "")
     held: list[str] = []
 
@@ -406,52 +438,3 @@ def markdown_to_pango(
     for index, chunk in reversed(list(enumerate(held))):
         escaped = escaped.replace(_PLACEHOLDER.format(index), chunk)
     return escaped
-
-
-def sandboxed_markdown_label(
-    markdown: str,
-    *,
-    issue_base_url: str | None = None,
-    max_chars: int = 800,
-    empty: str = "No description provided.",
-    repository=None,
-):
-    """Gtk.Label showing sandboxed markdown; activates https links."""
-    import gi
-
-    gi.require_version("Gtk", "4.0")
-    from gi.repository import Gtk
-
-    from ..shells import open_external
-
-    if repository is not None and issue_base_url is None:
-        github = getattr(repository, "github", None)
-        html = getattr(github, "html_url", None) if github is not None else None
-        if html:
-            issue_base_url = str(html).rstrip("/") + "/issues"
-    text = (markdown or "").strip() or empty
-    if len(text) > max_chars:
-        text = text[: max_chars - 1] + "…"
-    repo_html = None
-    if issue_base_url and issue_base_url.rstrip("/").endswith("/issues"):
-        repo_html = issue_base_url.rstrip("/")[: -len("/issues")]
-    markup = markdown_to_pango(text, issue_base_url=issue_base_url, repo_html_url=repo_html)
-    label = Gtk.Label(wrap=True, xalign=0)
-    label.set_use_markup(True)
-    label.add_css_class("sandboxed-markdown")
-    try:
-        label.set_markup(markup)
-    except Exception:
-        label.set_use_markup(False)
-        label.set_text(text)
-    tip = close_keyword_tooltip(markdown or "")
-    if tip:
-        label.set_tooltip_text(tip)
-
-    def on_link(_widget, uri: str) -> bool:
-        if _safe_url(uri):
-            open_external(uri)
-        return True
-
-    label.connect("activate-link", on_link)
-    return label
